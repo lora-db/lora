@@ -704,7 +704,10 @@ operations; the CLI does it in CI.
 **S3: compile once.** `lora.persist({ id: source })` parses and validates
 persisted operations at startup, and `lora.execute({ id, variables, context })`
 runs them with no parsing or validation. Ad hoc documents passed to
-`execute({ source })` are cached too. Translation itself takes about 0.13 ms
+`execute({ source })` are cached too. A subscription runs the same way with
+`lora.subscribe({ id | source, variables, context })`, which returns an
+async iterable of results (end it with `context.signal`); `execute()` answers
+a subscription with an error pointing there. Translation itself takes about 0.13 ms
 for a nested page, and statement text depends only on the shape of the
 input, so LoraDB's own plan cache is hit for every repeat.
 
@@ -931,7 +934,7 @@ which only the Node binding has, so the WASM binding serves reads.
 | `maskErrors`                 | production    | Clients get `DATABASE_ERROR` and an `id` only       |
 | `onError`                    |               | Receives each database error's detail and `id`      |
 | `guards`                     | see below     | Document limits; `false` turns them off             |
-| `persistedOnly`              | false         | `execute()` runs persisted operations only          |
+| `persistedOnly`              | false         | `execute()`, `subscribe()` run persisted ops only   |
 | `budget`                     |               | Cost limit per request, from the context            |
 | `onCost`                     |               | Each root field's estimate, total and limit         |
 | `onStatementEnd`             |               | Duration, rows and error of every statement call    |
@@ -942,14 +945,14 @@ Errors carry `extensions.code`: `BAD_USER_INPUT`, `INVALID_CURSOR`,
 `LIMIT_EXCEEDED`, `COST_EXCEEDED`, `UNAUTHENTICATED`, `FORBIDDEN`,
 `NOT_FOUND`, `CONSTRAINT_VIOLATION` (with `type` and `field`),
 `DATABASE_ERROR` (with an `id`, also given to `onError`) and
-`PERSISTED_QUERY_ONLY` (`execute()` got a document under `persistedOnly`). An invalid SDL
+`PERSISTED_QUERY_ONLY` (`execute()` or `subscribe()` got a document under `persistedOnly`). An invalid SDL
 throws one `ModelError` listing every problem, each located by type and
 field.
 
 ### Security defaults
 
 `maxCost` bounds the rows an operation touches; the document guards bound
-the document before that. `execute()` and `persist()` apply them, and
+the document before that. `execute()`, `subscribe()` and `persist()` apply them, and
 `lora.validationRules()` / `lora.envelopPlugin()` bring them to any other
 server (GraphQL Yoga takes the plugin as is):
 

@@ -1,5 +1,7 @@
 import {
   execute as graphqlExecute,
+  subscribe as graphqlSubscribe,
+  getOperationAST,
   getVariableValues,
   GraphQLError,
   Kind,
@@ -175,14 +177,15 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
   /** Called with every database error, masked or not. */
   onError?: (event: DatabaseErrorEvent) => void;
   /**
-   * Limits on the documents `execute()` and `persist()` accept: depth,
+   * Limits on the documents `execute()`, `subscribe()` and `persist()`
+   * accept: depth,
    * aliases, root fields, tokens, introspection. `false` turns them off.
    * For other servers use `validationRules()` or `envelopPlugin()`.
    */
   guards?: DocumentGuards | false;
   /**
-   * Make `execute()` refuse `source` and run only persisted operations
-   * by `id`. Default false.
+   * Make `execute()` and `subscribe()` refuse `source` and run only
+   * persisted operations by `id`. Default false.
    */
   persistedOnly?: boolean;
 }
@@ -865,10 +868,82 @@ export class LoraGraphQL {
   }
 
   /**
-   * Execute an operation against the schema. Parsed and validated
-   * documents are cached by source text; persisted ones by id.
+   * Execute a query or mutation against the schema. Parsed and validated
+   * documents are cached by source text; persisted ones by id. A
+   * subscription runs with {@link LoraGraphQL.subscribe}.
    */
   async execute(args: ExecuteArgs): Promise<ExecutionResult> {
+    const document = this.#document(args);
+    if (!isDocument(document)) return document;
+    if (operationType(document, args.operationName) === "subscription") {
+      return {
+        errors: [
+          new GraphQLError(
+            "execute() runs queries and mutations; run a subscription with subscribe()",
+          ),
+        ],
+      };
+    }
+    const contextValue = args.context ?? {};
+    const result = await graphqlExecute({
+      schema: this.getSchema(),
+      document,
+      variableValues: args.variables,
+      operationName: args.operationName,
+      contextValue,
+    });
+    // The operation's cost estimate, so clients can tune their queries.
+    const spent =
+      contextValue !== null && typeof contextValue === "object"
+        ? this.#spent.get(contextValue)
+        : undefined;
+    if (spent && spent.size > 0) {
+      const cost = [...spent.values()].reduce((a, b) => a + b, 0);
+      return {
+        ...result,
+        extensions: { ...result.extensions, cost: Math.ceil(cost) },
+      };
+    }
+    return result;
+  }
+
+  /**
+   * Run a subscription: an async iterable of results, one per event, or a
+   * single result with the errors when it cannot start (an unknown id, a
+   * validation error, a denied subscribe). Takes the same arguments as
+   * {@link LoraGraphQL.execute}, a persisted id included, with the same
+   * document cache and guards. End it with `return()` on the iterator, or
+   * with an `AbortSignal` passed as `context.signal`.
+   */
+  async subscribe(
+    args: ExecuteArgs,
+  ): Promise<AsyncIterableIterator<ExecutionResult> | ExecutionResult> {
+    const document = this.#document(args);
+    if (!isDocument(document)) return document;
+    const type = operationType(document, args.operationName);
+    if (type && type !== "subscription") {
+      return {
+        errors: [
+          new GraphQLError(
+            `subscribe() runs subscriptions; run a ${type} with execute()`,
+          ),
+        ],
+      };
+    }
+    return graphqlSubscribe({
+      schema: this.getSchema(),
+      document,
+      variableValues: args.variables,
+      operationName: args.operationName,
+      contextValue: args.context ?? {},
+    }) as Promise<AsyncIterableIterator<ExecutionResult> | ExecutionResult>;
+  }
+
+  /**
+   * The document `args` names: a persisted one by id, or `source` parsed
+   * and validated through the cache. An error result when there is none.
+   */
+  #document(args: ExecuteArgs): DocumentNode | ExecutionResult {
     let document: DocumentNode | undefined;
     if (args.id !== undefined) {
       document = this.#persisted.get(args.id);
@@ -903,30 +978,10 @@ export class LoraGraphQL {
       }
     } else {
       return {
-        errors: [new GraphQLError("execute() needs a source or an id")],
+        errors: [new GraphQLError("a source or an id is needed")],
       };
     }
-    const contextValue = args.context ?? {};
-    const result = await graphqlExecute({
-      schema: this.getSchema(),
-      document,
-      variableValues: args.variables,
-      operationName: args.operationName,
-      contextValue,
-    });
-    // The operation's cost estimate, so clients can tune their queries.
-    const spent =
-      contextValue !== null && typeof contextValue === "object"
-        ? this.#spent.get(contextValue)
-        : undefined;
-    if (spent && spent.size > 0) {
-      const cost = [...spent.values()].reduce((a, b) => a + b, 0);
-      return {
-        ...result,
-        extensions: { ...result.extensions, cost: Math.ceil(cost) },
-      };
-    }
-    return result;
+    return document;
   }
 
   // -------------------------------------------------------------------------
@@ -1629,6 +1684,27 @@ export class LoraGraphQL {
       }
     }
   }
+}
+
+function isDocument(
+  value: DocumentNode | ExecutionResult,
+): value is DocumentNode {
+  return (value as DocumentNode).kind === Kind.DOCUMENT;
+}
+
+/**
+ * The type of the operation `operationName` selects; undefined when it
+ * selects none, which graphql then reports.
+ */
+function operationType(
+  document: DocumentNode,
+  operationName: string | null | undefined,
+): "query" | "mutation" | "subscription" | undefined {
+  return getOperationAST(document, operationName)?.operation as
+    | "query"
+    | "mutation"
+    | "subscription"
+    | undefined;
 }
 
 /** The write an event came from, for reads shared across its subscribers. */

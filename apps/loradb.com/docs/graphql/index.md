@@ -220,6 +220,10 @@ at startup. At request time an id is looked up and executed without parsing
 or validation. With `persistedOnly: true`, `execute()` refuses ad hoc
 documents altogether with a `PERSISTED_QUERY_ONLY` error.
 
+Subscriptions, persisted or not, run with `lora.subscribe()`, which takes
+the same arguments and returns an async iterable of results; see
+[serving](/docs/graphql/serving#your-own-handler-with-execute).
+
 `lora-graphql compile` does the validation at build time instead: it writes
 a `manifest.json` for `lora.loadManifest()` and an `operations.d.ts` with
 typed variables and results. Operations read from `.graphql` files get ids

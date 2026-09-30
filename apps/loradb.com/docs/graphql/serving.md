@@ -17,14 +17,14 @@ The package ships runnable versions of these servers in
 
 ## Two ways to run operations
 
-| | `lora.getSchema()` | `lora.execute()` |
+| | `lora.getSchema()` | `lora.execute()` / `lora.subscribe()` |
 | --- | --- | --- |
 | Use with | Any `graphql-js` server | Your own request handler |
 | Document guards | Wire them in (see [below](#document-guards)) | Applied |
 | Parsed document cache | The server's, if any | Built in, by source text (500 documents) |
 | Persisted operations | The server's mechanism | `persist()`, `loadManifest()`, `persistedOnly` |
 | Cost in `extensions.cost` | No | Yes |
-| Subscriptions | Yes, through the server's `subscribe` | No: queries and mutations only |
+| Subscriptions | Yes, through the server's `subscribe` | `subscribe()`; `execute()` runs queries and mutations |
 
 Both run the same resolvers, so authorization, limits, cost checks and
 change tracking behave the same either way.
@@ -201,6 +201,25 @@ createServer(async (req, res) => {
 result carries the operation's estimated cost in `extensions.cost`. See
 [persisted operations](/docs/graphql#execute-and-persisted-operations)
 and [`lora-graphql compile`](/docs/graphql/cli#compile).
+
+A subscription runs with `subscribe()`, which takes the same arguments,
+persisted `id` included, with the same document cache, guards and
+`persistedOnly` rule. It returns an async iterable of results, one per
+event, or a single result with the errors when the subscription cannot
+start. Given a subscription, `execute()` returns an error that says so.
+
+```ts
+const stream = await lora.subscribe({
+  id: body.id,
+  variables: body.variables,
+  context: { jwt, signal: controller.signal }, // aborting ends the stream
+});
+if (!(Symbol.asyncIterator in stream)) return send(stream); // it did not start
+for await (const event of stream) sendEvent(event);
+```
+
+End a stream with the `signal`: `return()` on the iterator only takes
+effect once the next event arrives.
 
 ## Subscriptions over WebSockets
 

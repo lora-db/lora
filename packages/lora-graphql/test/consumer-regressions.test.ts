@@ -2,7 +2,7 @@
 // Festimap brief). Each block names its item; the suite runs on graphql
 // 16 and 17 (`yarn test`, `yarn test:graphql17`).
 
-import { GraphQLScalarType } from "graphql";
+import { GraphQLScalarType, type ExecutionResult } from "graphql";
 import { describe, expect, test } from "vitest";
 import { createDatabase } from "@loradb/lora-node";
 import { LoraGraphQL, loraDriver, ModelError } from "../src/index.js";
@@ -1328,6 +1328,138 @@ describe("G-22: a field's CREATE rule guards what the input sets", () => {
     );
     expect(codes(r)).toEqual(["FORBIDDEN"]);
     expect(await users(t)).toEqual([{ key: "u", verified: false, score: 0 }]);
+    t.close();
+  });
+});
+
+describe("G-21: subscribe() runs a subscription, by id or by source", () => {
+  const typeDefs =
+    J +
+    `type F @node @mutation @subscription
+      @authentication(operations: [SUBSCRIBE]) {
+      key: String! @key
+      child: F @relationship(type: "C", direction: OUT)
+    }`;
+  const signedIn = { jwt: { sub: "a" } };
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+  /** Subscribe with `args`, run `writes`, and return the events' data. */
+  const collect = async (
+    t: Test,
+    args: Parameters<Test["lora"]["subscribe"]>[0],
+    writes: () => Promise<unknown>,
+  ) => {
+    // A stream waiting for its next event ends through the signal.
+    const stop = new AbortController();
+    const it = await t.lora.subscribe({
+      ...args,
+      context: { ...signedIn, signal: stop.signal },
+    });
+    if (!(Symbol.asyncIterator in it)) throw new Error(JSON.stringify(it));
+    const got: unknown[] = [];
+    const done = (async () => {
+      for await (const r of it) got.push(r.errors ?? r.data);
+    })();
+    await settle();
+    await writes();
+    await settle();
+    stop.abort();
+    await done;
+    return got;
+  };
+  const run = (t: Test, id: string) =>
+    t.lora.execute({ id, context: signedIn });
+
+  test("the brief: execute() refuses a subscription with a clear error", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs });
+    t.lora.persist({ s: "subscription { fChanged { key } }" });
+    for (const args of [
+      { source: "subscription { fChanged { key } }" },
+      { id: "s" },
+    ]) {
+      const r = await t.lora.execute({ ...args, context: signedIn });
+      expect(r.errors?.map((e) => e.message)).toEqual([
+        "execute() runs queries and mutations; run a subscription with subscribe()",
+      ]);
+    }
+    t.close();
+  });
+
+  test("allowed: a persisted subscription streams by id", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, persistedOnly: true });
+    t.lora.persist({
+      s: "subscription { fChanged { operation key } }",
+      c: `mutation { createFs(input: [{ key: "x" }]) { fs { key } } }`,
+      u: `mutation { updateF(key: "x", update: { child: { create: { node: { key: "y" } } } }) { f { key } } }`,
+    });
+    expect(
+      await collect(t, { id: "s" }, async () => {
+        await run(t, "c");
+        await run(t, "u");
+      }),
+    ).toEqual([
+      { fChanged: { operation: "CREATE", key: "x" } },
+      { fChanged: { operation: "CREATE", key: "y" } },
+      { fChanged: { operation: "UPDATE", key: "x" } },
+    ]);
+    t.close();
+  });
+
+  test("allowed: by source, with variables and an operation name", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs });
+    t.lora.persist({
+      x: `mutation { createFs(input: [{ key: "x" }]) { fs { key } } }`,
+      y: `mutation { createFs(input: [{ key: "y" }]) { fs { key } } }`,
+    });
+    const source =
+      "query Q { fs { key } } subscription S($k: String) { fChanged(key: $k) { key } }";
+    expect(
+      await collect(
+        t,
+        { source, operationName: "S", variables: { k: "y" } },
+        async () => {
+          await run(t, "x");
+          await run(t, "y");
+        },
+      ),
+    ).toEqual([{ fChanged: { key: "y" } }]);
+    t.close();
+  });
+
+  test("refused: the same guards, persisted-only rule and rules as execute()", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs,
+      guards: { maxDepth: 2 },
+    });
+    const errors = async (args: Parameters<Test["lora"]["subscribe"]>[0]) => {
+      const r = await t.lora.subscribe(args);
+      expect(Symbol.asyncIterator in r).toBe(false);
+      return (r as ExecutionResult).errors?.map((e) => e.message) ?? [];
+    };
+    expect(
+      await errors({
+        source: "subscription { fChanged { key child { key child { key } } } }",
+        context: signedIn,
+      }),
+    ).toContain("the operation nests fields deeper than 2 levels");
+    expect(await errors({ id: "nope" })).toEqual([
+      "unknown persisted operation nope",
+    ]);
+    expect(await errors({ source: "{ fs { key } }" })).toEqual([
+      "subscribe() runs subscriptions; run a query with execute()",
+    ]);
+    // Not signed in: @authentication(operations: [SUBSCRIBE]) refuses.
+    const denied = await t.lora.subscribe({
+      source: "subscription { fChanged { key } }",
+    });
+    expect(codes(denied as ExecutionResult)).toEqual(["UNAUTHENTICATED"]);
+
+    const only = await createTestLoraGraphQL({ typeDefs, persistedOnly: true });
+    const refused = await only.lora.subscribe({
+      source: "subscription { fChanged { key } }",
+      context: signedIn,
+    });
+    expect(codes(refused as ExecutionResult)).toEqual(["PERSISTED_QUERY_ONLY"]);
+    only.close();
     t.close();
   });
 });
