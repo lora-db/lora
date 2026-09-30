@@ -239,6 +239,9 @@ pub struct VariableLengthExpandSource<'a, S: GraphStorage> {
     min_hops: u64,
     max_hops: u64,
     cur_row: Option<Row>,
+    /// The destination node when the input row already binds it: only
+    /// paths ending there match, and the binding is never overwritten.
+    bound_dst: Option<NodeId>,
     pending_zero_hop: bool,
     /// Each frontier entry is `(node, path-from-source)`. The `Option<Arc>`
     /// is `None` for the seed (zero-length path); subsequent steps share
@@ -277,6 +280,7 @@ impl<'a, S: GraphStorage> VariableLengthExpandSource<'a, S> {
             min_hops,
             max_hops,
             cur_row: None,
+            bound_dst: None,
             pending_zero_hop: false,
             frontier: Vec::new(),
             frontier_idx: 0,
@@ -289,8 +293,9 @@ impl<'a, S: GraphStorage> VariableLengthExpandSource<'a, S> {
         }
     }
 
-    fn start_row(&mut self, row: Row, src_id: NodeId) {
+    fn start_row(&mut self, row: Row, src_id: NodeId, bound_dst: Option<NodeId>) {
         self.cur_row = Some(row);
+        self.bound_dst = bound_dst;
         self.pending_zero_hop = self.min_hops == 0;
         self.reset_search_state();
         self.frontier.push((src_id, None));
@@ -312,6 +317,11 @@ impl<'a, S: GraphStorage> VariableLengthExpandSource<'a, S> {
         self.cur_row = None;
         self.pending_zero_hop = false;
         self.reset_search_state();
+    }
+
+    #[inline]
+    fn ends_at_bound_dst(&self, node_id: NodeId) -> bool {
+        self.bound_dst.is_none_or(|dst| dst == node_id)
     }
 
     fn row_for_path(&self, dst_node_id: NodeId, rel_ids: &[u64]) -> ExecResult<Row> {
@@ -357,7 +367,8 @@ impl<'a, S: GraphStorage> RowSource for VariableLengthExpandSource<'a, S> {
                         let Some(src_id) = bound_node_id_for_expand(&row, self.src)? else {
                             continue;
                         };
-                        self.start_row(row, src_id);
+                        let bound_dst = bound_node_id_for_expand(&row, self.dst)?;
+                        self.start_row(row, src_id, bound_dst);
                     }
                     None => return Ok(None),
                 }
@@ -371,7 +382,9 @@ impl<'a, S: GraphStorage> RowSource for VariableLengthExpandSource<'a, S> {
                     ));
                 };
                 if let Some(LoraValue::Node(src_id)) = cur_row.get(self.src) {
-                    return Ok(Some(self.row_for_path(*src_id, &[])?));
+                    if self.ends_at_bound_dst(*src_id) {
+                        return Ok(Some(self.row_for_path(*src_id, &[])?));
+                    }
                 }
             }
 
@@ -410,7 +423,7 @@ impl<'a, S: GraphStorage> RowSource for VariableLengthExpandSource<'a, S> {
                     }
 
                     if self.depth == self.max_hops && self.rel.is_none() {
-                        if self.depth >= self.min_hops {
+                        if self.depth >= self.min_hops && self.ends_at_bound_dst(neighbor_id) {
                             return Ok(Some(self.row_for_path(neighbor_id, &[])?));
                         }
                         continue;
@@ -429,7 +442,7 @@ impl<'a, S: GraphStorage> RowSource for VariableLengthExpandSource<'a, S> {
                             .push((neighbor_id, Some(new_path.clone())));
                     }
 
-                    if self.depth >= self.min_hops {
+                    if self.depth >= self.min_hops && self.ends_at_bound_dst(neighbor_id) {
                         if self.rel.is_some() {
                             // Materialize the path only when the query bound
                             // the variable-length relationship variable.
