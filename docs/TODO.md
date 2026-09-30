@@ -12,12 +12,6 @@ next, **P2** planned, **P3** when convenient.
 
 ---
 
-## P0 — ship now
-
-- [ ] **Release 0.19.0** with the E-3 and E-4 fixes and their follow-ups (every
-      binding's writer-lock audit, named time zones, the temporal constructors).
-      `sync-versions.mjs` raises `@loradb/lora-graphql`'s `lora-node` peer with it.
-
 ## Engine — Cypher correctness
 
 - [ ] P1 **E-4 class, remaining sites.** A value the row carries for other reasons is
@@ -77,6 +71,11 @@ next, **P2** planned, **P3** when convenient.
 
 ## lora-graphql
 
+- [ ] P1 Surface tests for the 0.20 authorization forms (`isViewer`, `viewer`, named rules, masks, relationship rules) on subscriptions, search, counts and aggregates, and nested relationship filters; lists, lookups, connections and mutations are covered.
+- [ ] P2 Detect conflicting relationship rules declared on both directions of one relationship type (today both apply); relationship rules on interface / union targets are refused.
+- [ ] P2 `check` warning listing every type the schema's bypass reaches.
+- [ ] P2 Access matrix: a viewer-related principal; `expectAccess` `update-edge` on single relationships.
+- [ ] P2 FULLTEXT: say when an index skips a value type (non-string list elements and properties are skipped silently).
 - [ ] P1 Mutations make several JS round trips under the writer lock — use `tx.executeMany`, fold validation and read-back into the last write (no `executeMany` in `src/`).
 - [ ] P1 Bounded write queue: fail fast with `OVERLOADED`/503.
 - [ ] P1 `maxCost` counts projected rows only — charge scans, `totalCount` and aggregates (from `explain()`/`analyze()`).
