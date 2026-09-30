@@ -56,7 +56,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | Anonymous nodes / relationships | **Supported** | `()-[:T]->()` |
 | Relationship properties | **Supported** | `-[:FOLLOWS {since: 2020}]->` |
 | Multiple patterns (cross-product) | **Supported** | `MATCH (a), (b)` |
-| Variable-length paths | **Supported** | Fixed range, unbounded, zero-hop, direction, cycle handling |
+| Variable-length paths | **Supported** | Fixed range, unbounded, zero-hop, direction, cycle handling. An endpoint the row already binds is checked, not rebound (also for `shortestPath` / `allShortestPaths`) |
 | Path binding | **Supported** | `MATCH p = (a)-[*]->(b)` |
 | Path functions | **Supported** | `path.length(p)`, `path.nodes(p)`, `path.edges(p)` |
 | Multi-hop explicit patterns | **Supported** | Tested through 6-hop chains |
@@ -71,7 +71,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | Feature | Status |
 |---------|--------|
 | Fixed range `*1..3` | **Supported** |
-| Exact distance `*3..3` | **Supported** |
+| Exact distance `*3` / `*3..3` | **Supported** (`*3` is exactly three hops, as in Cypher) |
 | Unbounded `*` | **Supported** |
 | Upper-bound-only `*..3` | **Supported** |
 | Lower-bound-only `*3..` | **Supported** |
@@ -92,7 +92,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | Unary `-` / `+` | **Supported** | |
 | Equality `=` / `<>` | **Supported** | |
 | Comparison `< > <= >=` | **Supported** | Numbers (integers exactly, also above 2^53), strings, booleans (`false < true`), temporals of one kind, durations, and lists: element by element, a prefix before the longer list. A null or an operand of another kind gives `null`, never `false`, so `[a, b] > $cursor` works for keyset pagination and `NOT (1 < 'a')` is `null`. Two temporals of different kinds (a `DATE` against a `DATETIME`) are an error on every plan, index-backed or not, where Cypher gives `null`: see section 12 |
-| `AND` / `OR` / `NOT` / `XOR` | **Supported** | Three-valued logic with nulls |
+| `AND` / `OR` / `NOT` / `XOR` | **Supported** | Three-valued logic with nulls. `AND` and `OR` short-circuit: after `false AND` / `true OR` the right side is not evaluated, so its errors cannot fail the query (`type.of(x) = 'DATE' AND x >= date(…)` guards the comparison, on index-backed plans too). A `null` left side evaluates the right side; `XOR` always evaluates both |
 | `IN` list membership | **Supported** | Null propagation per Cypher spec |
 | `IS NULL` / `IS NOT NULL` | **Supported** | |
 | `STARTS WITH` / `ENDS WITH` / `CONTAINS` | **Supported** | Case-sensitive |
@@ -237,7 +237,7 @@ All six temporal types have first-class `LoraValue` and `PropertyValue` variants
 | Constructor maps | **Supported** | Calendar (`year, month, day`), ISO week (`year, week, dayOfWeek`; `year` is the week-based year), ordinal (`year, ordinalDay`) and quarter (`year, quarter, dayOfQuarter`) dates; `hour, minute, second, millisecond, microsecond, nanosecond`; `timezone`; `date` / `time` / `datetime` to start from another temporal; `epochSeconds` (with `nanosecond`) and `epochMillis` for `DATETIME`. Keys match case-insensitively. An unknown key, a key the type has no use for, two date forms at once, or a smaller component without the larger ones (`day` without `month`, `minute` without `hour`) is an error naming the key. `weekYear` is not a constructor key (it is not one in Neo4j either) |
 | ISO 8601 strings | **Supported** | Extended and basic forms: `2015-07-21` / `20150721`, `2015-07` / `201507`, `2015`, `2015-W30-2` / `2015W302`, `2015-W30`, `2015-202` / `2015202`, `2015-Q3-21` / `2015Q321`, signed or longer years (`-0044-03-15`); times `HH:MM:SS.f` / `HHMMSS.f`, `HH:MM` / `HHMM`, `HH`, with an offset `Z`, `±HH:MM`, `±HHMM` or `±HH` (at most ±18:00) and, for `DATETIME` and `TIME`, a zone suffix `[Europe/Amsterdam]`. Fields are fixed width (`2015-7-21` and `9:00` are refused). `LOCAL_TIME` and `LOCAL_DATETIME` refuse an offset or zone rather than drop it |
 | Named time zones | **Supported** | IANA zones from a database built into the binary (`jiff`), with daylight saving, on every platform including wasm. A `DATETIME` keeps the zone and prints it: `2026-07-01T12:00:00+02:00[Europe/Amsterdam]`. A local time in a gap moves forward by the gap, one in an overlap takes the earlier offset, as in Neo4j; an offset the zone does not have is an error. Months and days move the wall clock and are re-resolved in the zone, smaller units move the instant. A `TIME` in a named zone takes the zone's current offset. A few non-IANA abbreviations (`PST`, `JST`, …) read as fixed offsets. Stored zoned values use a new encoding (value tag 16 in the snapshot and WAL codecs) that versions before 0.19.0 cannot read; values without a zone keep the old encoding |
-| `dt.timezone`, `dt.offset`, `dt.epochSeconds` accessors | **Not yet implemented** | Component access covers the date and clock fields only |
+| `dt.timezone`, `dt.offset`, `dt.offsetMinutes`, `dt.offsetSeconds`, `dt.epochSeconds`, `dt.epochMillis` | **Supported** | On `DATETIME`; `TIME` has `timezone` and the offset fields. `timezone` is the zone's name, or the offset (`+02:00`, `Z`) without a named zone |
 | `duration(x)` | **Supported** | `x::DURATION`: ISO 8601 string or component map |
 | `temporal.today()` / `'...'::DATE` / `{year, month, day}::DATE` | **Supported** | ISO string, map, or current day |
 | `temporal.now()` / `now()` / `temporal.now(kind)` / `'...'::DATETIME` / `{...}::DATETIME` | **Supported** | Current `DATETIME` by default; `kind` accepts `"date"`, `"time"`, `"local_time"`, `"local_datetime"` |
@@ -254,7 +254,7 @@ All six temporal types have first-class `LoraValue` and `PropertyValue` variants
 | `temporal.between(a, b)` | **Supported** | Between dates or datetimes; datetimes give days and time, no months |
 | `temporal.in_days(a, b)` | **Supported** | Whole days between any two temporals (as `duration.inDays`) |
 
-Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same temporal type. Ordering two values of different temporal types (`date('2026-10-01') >= datetime()`) is an error, not Cypher's `null`: a `WHERE` on it would otherwise drop every row without a word. It fails the same way when a RANGE index answers the predicate and the indexed property holds another temporal type than the bound. `=` between different temporal types is `false`, and `ORDER BY`, `min` and `max` still order mixed values. Convert one side first: `date(x)`, `datetime(x)`. Ordering comparisons and `ORDER BY` use the instant a value denotes, at nanosecond precision (zoned values are compared in UTC); `=` also compares the offset and the named zone. `Date + Duration` and `DateTime - DateTime` arithmetic are supported for the subset of tests in `tests/temporal.rs`.
+Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same temporal type. Ordering two values of different temporal types (`date('2026-10-01') >= datetime()`) is an error, not Cypher's `null`: a `WHERE` on it would otherwise drop every row without a word. It fails the same way when a RANGE index answers the predicate: the index scan hands values of another temporal type to the filter, which compares them as an unindexed scan does, so a guard earlier in the `AND` (`type.of(x) = 'DATE' AND x >= date(…)`) still drops them first. `=` between different temporal types is `false`, and `ORDER BY`, `min` and `max` still order mixed values. Convert one side first: `date(x)`, `datetime(x)`. Ordering comparisons and `ORDER BY` use the instant a value denotes, at nanosecond precision (zoned values are compared in UTC); `=` also compares the offset and the named zone. `Date + Duration` and `DateTime - DateTime` arithmetic are supported for the subset of tests in `tests/temporal.rs`.
 
 ## 13. Spatial types and functions
 
