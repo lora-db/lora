@@ -11,7 +11,7 @@
   "dependencies": {
     "@apollo/server": "^5.5.1",
     "@loradb/lora-graphql": "file:../..",
-    "@loradb/lora-node": "^0.16.2",
+    "@loradb/lora-node": "^0.17.0",
     "graphql": "^16.11.0",
     "jose": "^6.0.0"
   },
