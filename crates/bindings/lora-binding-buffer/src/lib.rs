@@ -56,6 +56,8 @@
 use lora_database::{LoraValue, Row};
 use lora_store::{LoraBinary, LoraPoint, LoraVector, VectorValues};
 
+pub mod stream;
+
 pub const MAGIC: &[u8; 4] = b"LR1\0";
 
 // ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ version.workspace = true
 license.workspace = true
 authors.workspace = true
 publish = false
-description = "Shared binary result-buffer encoder used by every Lora binding."
+description = "Shared binary result-buffer encoder and row-stream helpers used by the Lora bindings."
 
 [dependencies]
 lora-database.workspace = true
