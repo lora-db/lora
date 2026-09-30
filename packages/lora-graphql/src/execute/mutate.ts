@@ -42,6 +42,7 @@ import type {
 import { requestError } from "../errors.js";
 import { toStored } from "../model/points.js";
 import type {
+  Field,
   GraphModel,
   NodeType,
   RelationshipField,
@@ -562,7 +563,7 @@ const NOW: Partial<Record<string, string>> = {
 
 /** `@timestamp` fields for `op`: [property, now-expression]. */
 function timestamps(
-  node: NodeType,
+  node: { fields: ReadonlyMap<string, Field> },
   op: "CREATE" | "UPDATE",
 ): Array<[string, string]> {
   return [...node.fields.values()]
@@ -570,6 +571,16 @@ function timestamps(
       (f): f is ScalarField => f.kind === "scalar" && !!f.timestamp?.has(op),
     )
     .map((f) => [f.property, NOW[f.type]!]);
+}
+
+/** `, r.p = <now>` for a relationship's `@timestamp(operations: [UPDATE])`s. */
+function edgeStamps(model: GraphModel, rel: RelationshipField): string {
+  const props = rel.properties
+    ? model.relationshipProperties.get(rel.properties)
+    : undefined;
+  return (props ? timestamps(props, "UPDATE") : [])
+    .map(([p, now]) => `, r.${name(p)} = ${now}`)
+    .join("");
 }
 
 /** `-[r:T]->(b:Target)` in the direction the owner's field declares. */
@@ -818,6 +829,20 @@ class Runner {
           })),
         ),
       );
+      const props = rel.properties
+        ? this.env.model.relationshipProperties.get(rel.properties)
+        : undefined;
+      const onCreate = [
+        "r += row.defaults",
+        ...(props ? timestamps(props, "CREATE") : []).map(
+          ([p, now]) => `r.${name(p)} = ${now}`,
+        ),
+      ];
+      // A re-connect that sets properties updates the relationship.
+      const onMatch = (props ? timestamps(props, "UPDATE") : []).map(
+        ([p, now]) =>
+          `r.${name(p)} = CASE WHEN size(keys(row.props)) > 0 THEN ${now} ELSE r.${name(p)} END`,
+      );
       const text =
         `UNWIND ${rows} AS row\n` +
         `MATCH (a:${name(owner.labels[0]!)}) WHERE a.${name(owner.key.property)} = row.from` +
@@ -829,7 +854,8 @@ class Runner {
         `\nMERGE (a)${arrow(rel, "r", "b", undefined)}\n` +
         // Defaults apply when the relationship is created, never to an
         // existing one (a re-connect keeps what it has).
-        `ON CREATE SET r += row.defaults\n` +
+        `ON CREATE SET ${onCreate.join(", ")}\n` +
+        (onMatch.length > 0 ? `ON MATCH SET ${onMatch.join(", ")}\n` : "") +
         `SET r += row.props\nRETURN row.from AS from, row.to AS key, existed`;
       const linked = await this.run(text, lctx);
       // Rules on the properties set, now that new and existing
@@ -937,6 +963,7 @@ class Runner {
           : "") +
         andText(authFilter(ctx, target, "b", "READ")) +
         `\nSET r += ${printExpr(bind(ctx, u.set))}` +
+        edgeStamps(this.env.model, u.rel) +
         (u.remove.length > 0
           ? `\nREMOVE ${u.remove.map((p) => `r.${name(p)}`).join(", ")}`
           : "") +

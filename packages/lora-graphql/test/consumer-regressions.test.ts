@@ -795,3 +795,83 @@ describe("G-4 / G-12: an input with nothing in it is left out", () => {
     t.close();
   });
 });
+
+describe("G-13: @timestamp on relationship properties", () => {
+  const typeDefs = `
+    type Person @node @mutation {
+      key: String! @key
+      channels: [Channel!]! @relationship(type: "MEMBER_OF", direction: OUT, properties: "Membership")
+    }
+    type Channel @node @mutation { key: String! @key }
+    type Membership @relationshipProperties {
+      joinedAt: DateTime @timestamp(operations: [CREATE])
+      changedAt: DateTime @timestamp(operations: [UPDATE])
+      note: String
+    }`;
+  const seed = ["CREATE (:Person {key: 'a'}), (:Channel {key: 'c'})"];
+  const stamps = async (t: Test) =>
+    (
+      await cypher(
+        t,
+        "MATCH (:Person)-[r:MEMBER_OF]->(:Channel) RETURN toString(r.joinedAt) AS joined, toString(r.changedAt) AS changed, r.note AS note",
+      )
+    )[0];
+  const connect = (edge: string) =>
+    `mutation { updatePerson(key: "a", update: { channels: { connect: [{ key: "c"${edge} }] } })
+      { person { channelsConnection { edges { properties { joinedAt note } } } } } }`;
+
+  test("CREATE stamps are set when the relationship is created, and kept", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const r = await t.data<{
+      updatePerson: {
+        person: {
+          channelsConnection: {
+            edges: Array<{ properties: { joinedAt: string; note: string } }>;
+          };
+        };
+      };
+    }>(connect(`, edge: { note: "x" }`));
+    const edge = r.updatePerson.person.channelsConnection.edges[0]!.properties;
+    expect(edge.note).toBe("x");
+    expect(Date.parse(edge.joinedAt)).toBeGreaterThan(Date.now() - 60_000);
+    const first = await stamps(t);
+    expect(first!["changed"]).toBeNull();
+    // A re-connect without properties changes nothing.
+    await new Promise((r) => setTimeout(r, 5));
+    await t.data(connect(""));
+    expect(await stamps(t)).toEqual(first);
+    t.close();
+  });
+
+  test("UPDATE stamps follow edge updates and re-connects that set properties", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    await t.data(connect(`, edge: { note: "x" }`));
+    const created = await stamps(t);
+    await t.data(connect(`, edge: { note: "y" }`));
+    const reconnected = await stamps(t);
+    expect(reconnected!["changed"]).not.toBeNull();
+    expect(reconnected!["joined"]).toBe(created!["joined"]);
+    await new Promise((r) => setTimeout(r, 5));
+    await t.data(
+      `mutation { updatePerson(key: "a", update: { channels: { update: [{ key: "c", edge: { note: "z" } }] } }) { person { key } } }`,
+    );
+    const updated = await stamps(t);
+    expect(updated!["note"]).toBe("z");
+    expect(updated!["changed"]! > reconnected!["changed"]!).toBe(true);
+    t.close();
+  });
+
+  test("a nested create stamps its relationship", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    await t.data(
+      `mutation { updatePerson(key: "a", update: { channels: { create: [{ node: { key: "n" } }] } }) { person { key } } }`,
+    );
+    expect(
+      await cypher(
+        t,
+        "MATCH (:Person)-[r:MEMBER_OF]->(:Channel {key: 'n'}) RETURN r.joinedAt IS NOT NULL AS stamped",
+      ),
+    ).toEqual([{ stamped: true }]);
+    t.close();
+  });
+});
