@@ -30,6 +30,24 @@
 //! Passing a `LoraDatabase *` to any function after `lora_db_free` is
 //! undefined behaviour. Passing a `char *` not previously returned by
 //! this crate to `lora_string_free` is also UB.
+//!
+//! ## Threads and the writer lock
+//!
+//! Every call is synchronous and may run on any caller thread. Writes
+//! block their calling thread until the database's writer lock is free;
+//! the library never waits for another caller thread, so every waiter
+//! waits for a writer that is running. Auto-commit writes and
+//! `lora_db_transaction_json` take and release the lock within one call.
+//!
+//! A mutating stream holds the writer lock from `lora_db_stream_open_json`
+//! until it is exhausted or freed. The lock guard must be released on the
+//! thread that took it, and a C caller may pull and free the stream on any
+//! thread, so a mutating stream lives on its own thread (see `stream.rs`).
+//! Caller contract: a host that parks an unfinished mutating stream and
+//! queues its next call behind writes in a fixed thread pool can fill the
+//! pool with writers waiting for that stream, which then never gets a
+//! thread. Drain or free a mutating stream without waiting for other
+//! writes (documented in `lora_ffi.h`).
 
 #![deny(clippy::all)]
 // The FFI deliberately uses raw pointers; the `missing_safety_doc` lint
@@ -41,7 +59,7 @@ use std::ffi::{c_char, c_int, CStr, CString};
 use std::os::raw::c_uchar;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use lora_database::{
     snapshot_credentials_from_json, snapshot_options_from_json, Database as InnerDatabase,
@@ -51,6 +69,7 @@ use lora_database::{
 
 mod errors;
 mod json;
+mod stream;
 
 pub use errors::LoraStatus;
 use errors::{
@@ -59,9 +78,11 @@ use errors::{
 };
 use json::{
     execute_json_payload, explain_json_payload, parse_params, parse_transaction_mode,
-    parse_transaction_statements, profile_json_payload, row_to_json, serialize_rows,
+    parse_transaction_statements, profile_json_payload, serialize_rows,
 };
 use lora_database::{LoraError, LoraErrorCode};
+pub use stream::LoraQueryStream;
+use stream::StreamError;
 
 // ============================================================================
 // Opaque handle
@@ -116,12 +137,6 @@ impl LoraDatabase {
             inner: Arc::new(inner),
         })
     }
-}
-
-/// Opaque native row stream handle.
-pub struct LoraQueryStream {
-    _db: Arc<InnerDatabase<InMemoryGraph>>,
-    stream: Mutex<Option<lora_database::QueryStream<'static>>>,
 }
 
 // ============================================================================
@@ -808,19 +823,13 @@ pub unsafe extern "C" fn lora_db_stream_open_json(
             Err(status) => return status,
         };
 
-        let inner = (*db).inner.clone();
-        let stream = match unsafe { inner.stream_with_params_owned(query, params_map) } {
-            Ok(stream) => stream,
-            Err(e) => {
-                write_lora_error(out_error, e);
-                return LoraStatus::LoraError;
+        match LoraQueryStream::open(&(*db).inner, query, params_map) {
+            Ok(stream) => {
+                *out_stream = Box::into_raw(Box::new(stream));
+                LoraStatus::Ok
             }
-        };
-        *out_stream = Box::into_raw(Box::new(LoraQueryStream {
-            _db: inner,
-            stream: Mutex::new(Some(stream)),
-        }));
-        LoraStatus::Ok
+            Err(e) => write_stream_error(out_error, e),
+        }
     }));
     match result {
         Ok(status) => status as c_int,
@@ -851,18 +860,15 @@ pub unsafe extern "C" fn lora_stream_columns_json(
         if stream.is_null() || out_result.is_null() || out_error.is_null() {
             return LoraStatus::NullPointer;
         }
-        let guard = match (*stream).stream.lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                write_coded_error(out_error, LoraErrorCode::Internal, "stream lock poisoned");
+        let columns = match (*stream).columns() {
+            Ok(Some(columns)) => columns,
+            Ok(None) => {
+                write_coded_error(out_error, LoraErrorCode::Internal, "query stream is closed");
                 return LoraStatus::LoraError;
             }
+            Err(e) => return write_stream_error(out_error, e),
         };
-        let Some(stream) = guard.as_ref() else {
-            write_coded_error(out_error, LoraErrorCode::Internal, "query stream is closed");
-            return LoraStatus::LoraError;
-        };
-        let json = match serde_json::to_string(stream.columns()) {
+        let json = match serde_json::to_string(columns) {
             Ok(json) => json,
             Err(e) => {
                 write_coded_error(out_error, LoraErrorCode::Internal, &format!("{e}"));
@@ -903,37 +909,14 @@ pub unsafe extern "C" fn lora_stream_next_json(
         if stream.is_null() || out_result.is_null() || out_error.is_null() {
             return LoraStatus::NullPointer;
         }
-        let mut guard = match (*stream).stream.lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                write_coded_error(out_error, LoraErrorCode::Internal, "stream lock poisoned");
-                return LoraStatus::LoraError;
-            }
-        };
-        let Some(stream) = guard.as_mut() else {
-            return LoraStatus::Ok;
-        };
-        match stream.next_row() {
-            Ok(Some(row)) => {
-                let json = match serde_json::to_string(&row_to_json(&row)) {
-                    Ok(json) => json,
-                    Err(e) => {
-                        write_coded_error(out_error, LoraErrorCode::Internal, &format!("{e}"));
-                        return LoraStatus::LoraError;
-                    }
-                };
+        match (*stream).next() {
+            Ok(Some(json)) => {
                 *out_result = to_c_string(json);
                 LoraStatus::Ok
             }
-            Ok(None) => {
-                guard.take();
-                LoraStatus::Ok
-            }
-            Err(e) => {
-                guard.take();
-                write_lora_error(out_error, e);
-                LoraStatus::LoraError
-            }
+            // End of stream: `*out_result` stays null.
+            Ok(None) => LoraStatus::Ok,
+            Err(e) => write_stream_error(out_error, e),
         }
     }));
     match result {
@@ -957,6 +940,16 @@ pub unsafe extern "C" fn lora_stream_free(stream: *mut LoraQueryStream) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         drop(Box::from_raw(stream));
     }));
+}
+
+unsafe fn write_stream_error(out_error: *mut *mut c_char, err: StreamError) -> LoraStatus {
+    match err {
+        StreamError::Lora(e) => write_lora_error(out_error, e),
+        StreamError::Internal(message) => {
+            write_coded_error(out_error, LoraErrorCode::Internal, &message)
+        }
+    }
+    LoraStatus::LoraError
 }
 
 // ============================================================================

@@ -22,7 +22,26 @@
  * A single `LoraDatabase` is safe to use from multiple threads;
  * read-only queries can share the store read lock, while writes serialize
  * on the store write lock. `lora_db_free` must not race with any other
- * call on the same handle.
+ * call on the same handle; streams opened from it stay valid after it.
+ *
+ * Every call is synchronous: a write (`lora_db_execute_*`,
+ * `lora_db_transaction_json` in read-write mode, opening a mutating
+ * stream) blocks its calling thread until the writer lock is free. The
+ * library never waits for another caller thread, so on its own it cannot
+ * deadlock a thread pool: every waiter waits for a writer that is running.
+ *
+ * A stream handle may be used and freed on any thread (one call at a
+ * time). A mutating stream (CREATE, SET, MERGE, DELETE, ...) holds the
+ * writer lock from `lora_db_stream_open_json` until it is exhausted or
+ * freed; it runs on its own library thread, which is where the lock is
+ * taken and released. Caller contract: while you hold an unfinished
+ * mutating stream, other writes wait for it, so drain or free it without
+ * waiting for work that needs a write. In a fixed thread pool, do not park
+ * an open mutating stream and queue its next `lora_stream_next_json` /
+ * `lora_stream_free` behind other tasks: if writers occupy every pool
+ * thread first, they wait for the lock and the stream's continuation waits
+ * for a thread, forever. The same applies to one thread writing while it
+ * holds a mutating stream (it waits for itself).
  *
  * Panics
  * ------
@@ -198,7 +217,9 @@ int lora_db_transaction_json(
 
 /* Opens a true native row stream. The returned LoraQueryStream owns the
  * underlying Rust cursor; callers must release it with lora_stream_free.
- * Prematurely freeing a mutating stream rolls the query back. */
+ * A mutating stream holds the writer lock until it is exhausted (which
+ * commits it) or freed (which rolls an unfinished one back); see Threading
+ * above. The handle may be used from any thread, one call at a time. */
 int lora_db_stream_open_json(
     LoraDatabase *db,
     const char *query,
