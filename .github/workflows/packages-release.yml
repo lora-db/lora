@@ -1274,7 +1274,34 @@ jobs:
     if: needs.verify-versions.outputs.dry_run != 'true' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Pushes the module's path-prefixed tag.
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # A Go module in a subdirectory is versioned by tags carrying its
+      # path: `go get .../crates/bindings/lora-go@v1.2.3` resolves the tag
+      # `crates/bindings/lora-go/v1.2.3`, not `v1.2.3`. Tag the release
+      # commit for it (a tag pushed with GITHUB_TOKEN starts no workflow).
+      - name: Tag the Go module
+        shell: bash
+        env:
+          TAG: ${{ needs.verify-versions.outputs.tag }}
+        run: |
+          set -euo pipefail
+          GO_TAG="crates/bindings/lora-go/${TAG}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${GO_TAG}" >/dev/null; then
+            echo "${GO_TAG} already exists"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${GO_TAG}" "${TAG}^{}" -m "lora-go ${TAG}"
+          git push origin "refs/tags/${GO_TAG}"
+
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"

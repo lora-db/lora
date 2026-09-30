@@ -1013,7 +1013,9 @@ every tag push or dispatch:
    archives — but they are useful for downstream consumers who vendor
    a prebuilt static lib.
 3. **`verify-go-module-resolvable`** (only on push, only in non-dry-run
-   mode). Polls `GOPROXY=https://proxy.golang.org go list -m
+   mode). First tags the release commit `crates/bindings/lora-go/<tag>`:
+   Go resolves a module in a subdirectory from tags that carry its
+   path, so `vX.Y.Z` alone is not a version of the Go binding. Then polls `GOPROXY=https://proxy.golang.org go list -m
    github.com/lora-db/lora/crates/bindings/lora-go@<tag>` every 30 seconds for
    up to 5 minutes. Fails if the proxy never returns the tag. This is
    the Go equivalent of checking an npm / PyPI / crates.io package
@@ -1045,6 +1047,14 @@ re-upload.
   which causes `proxy.golang.org` to index the tag on the next
   subsequent `GOPROXY=https://proxy.golang.org` request. Never re-tag
   just because the proxy is slow.
+- If `go get` reports `unknown revision crates/bindings/lora-go/vX.Y.Z`,
+  the module tag is missing (releases before v0.17.0 never had one).
+  Create it on the release commit:
+
+  ```bash
+  git tag -a crates/bindings/lora-go/vX.Y.Z 'vX.Y.Z^{}' -m "lora-go vX.Y.Z"
+  git push origin crates/bindings/lora-go/vX.Y.Z
+  ```
 
 - **If `verify-go` fails against a freshly pushed tag** (e.g. `gofmt`
   drift was not caught before tagging), the Go module is still
