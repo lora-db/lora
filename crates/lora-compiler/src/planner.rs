@@ -86,13 +86,13 @@ impl Planner {
     /// Record the variables `clause` leaves bound for the clauses after it.
     fn track_bindings(&mut self, clause: &ResolvedClause) {
         match clause {
-            ResolvedClause::Match(m) => self.bound.extend(collect_pattern_vars(&m.pattern)),
-            ResolvedClause::Create(c) => self.bound.extend(collect_pattern_vars(&c.pattern)),
+            ResolvedClause::Match(m) => self.bound.extend(pattern_binders(&m.pattern)),
+            ResolvedClause::Create(c) => self.bound.extend(pattern_binders(&c.pattern)),
             ResolvedClause::Merge(m) => {
                 let pattern = ResolvedPattern {
                     parts: vec![m.pattern_part.clone()],
                 };
-                self.bound.extend(collect_pattern_vars(&pattern));
+                self.bound.extend(pattern_binders(&pattern));
             }
             ResolvedClause::Unwind(u) => {
                 self.bound.insert(u.alias);
@@ -191,7 +191,7 @@ impl Planner {
             // then wrap it in an OptionalMatch node that provides null-extension.
 
             // Collect variables introduced by this pattern (for null-extension).
-            let new_vars = collect_pattern_vars(&m.pattern);
+            let new_vars = pattern_binders(&m.pattern);
 
             // Build inner match plan WITHOUT the upstream input — the executor
             // will inject each upstream row individually. The WHERE belongs
@@ -524,8 +524,9 @@ fn sort_keys_on_outputs(
         .collect()
 }
 
-/// Collect all VarIds introduced by a pattern (node vars, relationship vars).
-fn collect_pattern_vars(pattern: &ResolvedPattern) -> Vec<VarId> {
+/// The VarIds a pattern binds (path, node and relationship variables); unlike
+/// `ResolvedPattern::collect_vars`, not the variables its expressions read.
+fn pattern_binders(pattern: &ResolvedPattern) -> Vec<VarId> {
     let mut vars = Vec::new();
     for part in &pattern.parts {
         if let Some(v) = part.binding {
