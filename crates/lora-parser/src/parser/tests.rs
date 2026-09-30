@@ -237,6 +237,27 @@ fn parse_relationship_range_lower_only() {
 }
 
 #[test]
+fn parse_relationship_range_exact() {
+    // `*3` is exactly three hops in Cypher, not three or more.
+    let doc = parse_query("MATCH (a)-[:FOLLOWS*3]->(b) RETURN a").unwrap();
+    let sp = as_regular_single_part(doc);
+    let m = first_match_clause(&sp);
+    let PatternElement::NodeChain { chain, .. } = &m.pattern.parts[0].element else {
+        panic!("expected node chain");
+    };
+
+    let range = chain[0]
+        .relationship
+        .detail
+        .as_ref()
+        .and_then(|d| d.range.as_ref())
+        .expect("expected range");
+
+    assert_eq!(range.start, Some(3));
+    assert_eq!(range.end, Some(3));
+}
+
+#[test]
 fn parse_relationship_range_unbounded() {
     let doc = parse_query("MATCH (a)-[:FOLLOWS*]->(b) RETURN a").unwrap();
     let sp = as_regular_single_part(doc);

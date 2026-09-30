@@ -38,8 +38,8 @@ bounds.
 <QueryCodeBlock code={String.raw`// 1 to 2 hops
 MATCH (a)-[:FOLLOWS*1..2]->(b) RETURN a, b
 
-;// Exactly 3 hops
-MATCH (a)-[:FOLLOWS*3..3]->(b) RETURN b
+;// Exactly 3 hops (same as *3..3)
+MATCH (a)-[:FOLLOWS*3]->(b) RETURN b
 
 ;// Up to 3 hops (same as 1..3)
 MATCH (a)-[:FOLLOWS*..3]->(b) RETURN a, b

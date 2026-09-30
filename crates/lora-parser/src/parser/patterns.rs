@@ -246,39 +246,29 @@ pub(super) fn lower_relationship_types(
     Ok(out)
 }
 
+/// `*` is one or more hops (`start` and `end` open), `*n` exactly `n`,
+/// `*n..` at least `n`, `*..m` at most `m`, `*n..m` from `n` to `m`.
 pub(super) fn lower_range_literal(pair: Pair<Rule>) -> Result<RangeLiteral, ParseError> {
     let span = pair_span(&pair);
     let raw = pair.as_str().trim();
-    let body = raw.strip_prefix('*').unwrap_or(raw);
+    let body = raw.strip_prefix('*').unwrap_or(raw).trim();
+    let bound = |text: &str, what: &str| -> Result<Option<u64>, ParseError> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        text.parse::<u64>()
+            .map(Some)
+            .map_err(|_| ParseError::new(format!("invalid range {what}"), span.start, span.end))
+    };
 
-    let (start, end) = if let Some((lhs, rhs)) = body.split_once("..") {
-        let start = if lhs.is_empty() {
-            None
-        } else {
-            Some(
-                lhs.parse::<u64>()
-                    .map_err(|_| ParseError::new("invalid range start", span.start, span.end))?,
-            )
-        };
-        let end = if rhs.is_empty() {
-            None
-        } else {
-            Some(
-                rhs.parse::<u64>()
-                    .map_err(|_| ParseError::new("invalid range end", span.start, span.end))?,
-            )
-        };
-        (start, end)
-    } else if body.is_empty() {
-        (None, None)
-    } else {
-        (
-            Some(
-                body.parse::<u64>()
-                    .map_err(|_| ParseError::new("invalid range bound", span.start, span.end))?,
-            ),
-            None,
-        )
+    let (start, end) = match body.split_once("..") {
+        Some((lhs, rhs)) => (bound(lhs, "start")?, bound(rhs, "end")?),
+        // A single number is an exact hop count, as in Cypher.
+        None => {
+            let exact = bound(body, "bound")?;
+            (exact, exact)
+        }
     };
 
     Ok(RangeLiteral { start, end, span })
