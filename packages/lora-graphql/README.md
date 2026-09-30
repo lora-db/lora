@@ -725,10 +725,14 @@ claims cost one visibility query and one node read per write.
 
 By default subscriptions see the writes this instance makes. With
 `changeFeed: true` (lora-node), subscriptions and `changes()` are fed by
-the engine's committed change feed instead: every write, whichever path or
-process made it (hand-written Cypher, `@cypher` mutations, imports), in
-commit order, with relationship ends resolved to their `@key`s. A consumer
-that falls behind resumes from its last position. `onWrite` still reports
+the engine's committed change feed instead: every committed write to the
+database, whichever path in the owning process made it (hand-written
+Cypher, `@cypher` mutations, imports, other instances), in commit order,
+with relationship ends resolved to their `@key`s. A database directory is
+open in one process at a time, so this is not a cross-process feed. If the
+reader falls behind the engine it resumes from its last position, which is
+kept in memory: a new instance starts at the current commit and does not
+replay earlier writes. `onWrite` still reports
 this instance's mutations, and `previousState` needs them: the feed carries
 the state after the write. Call `lora.close()` to stop the feed.
 
@@ -866,8 +870,9 @@ which only the Node binding has, so the WASM binding serves reads.
 
 Errors carry `extensions.code`: `BAD_USER_INPUT`, `INVALID_CURSOR`,
 `LIMIT_EXCEEDED`, `COST_EXCEEDED`, `UNAUTHENTICATED`, `FORBIDDEN`,
-`NOT_FOUND`, `CONSTRAINT_VIOLATION` (with `type` and `field`) and
-`DATABASE_ERROR` (with an `id`, also given to `onError`). An invalid SDL
+`NOT_FOUND`, `CONSTRAINT_VIOLATION` (with `type` and `field`),
+`DATABASE_ERROR` (with an `id`, also given to `onError`) and
+`PERSISTED_QUERY_ONLY` (`execute()` got a document under `persistedOnly`). An invalid SDL
 throws one `ModelError` listing every problem, each located by type and
 field.
 

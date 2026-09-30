@@ -1,7 +1,7 @@
 // The engine's committed change feed as write-sets. With `changeFeed:
 // true`, subscriptions and `changes()` are fed from here: every committed
-// write, whichever path or process made it (hand-written Cypher and
-// `@cypher` mutations included), in commit order.
+// write, whichever path in the owning process made it (hand-written
+// Cypher and `@cypher` mutations included), in commit order.
 
 import type { DriverChange, DriverChangeBatch, LoraDriver } from "../driver.js";
 import { keyOf } from "../compile/read.js";

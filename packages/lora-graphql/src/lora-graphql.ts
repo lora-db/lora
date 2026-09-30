@@ -144,9 +144,10 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
   scalars?: Record<string, GraphQLScalarType>;
   /**
    * Feed subscriptions and `changes()` from the engine's committed change
-   * feed (lora-node `db.changes()`): writes from every path and process,
-   * in commit order. `onWrite` still reports this instance's mutations,
-   * and `previousState` needs them. Default false.
+   * feed (lora-node `db.changes()`): every write to the database, from
+   * any path in the process that owns it, in commit order. `onWrite`
+   * still reports this instance's mutations, and `previousState` needs
+   * them. Default false.
    */
   changeFeed?: boolean;
   /**
@@ -633,13 +634,26 @@ export class LoraGraphQL {
 
   /** Indexes in the database that no requirement of the API matches. */
   async #unusedIndexes(): Promise<CheckReport["unused"]> {
-    const [indexes] = await this.#driver.run(
-      [{ text: "SHOW INDEXES", params: {} }],
+    const [indexes, constraints] = await this.#driver.run(
+      [
+        { text: "SHOW INDEXES", params: {} },
+        { text: "SHOW CONSTRAINTS", params: {} },
+      ],
       { mode: "read", timeoutMs: this.#timeoutMs },
+    );
+    // A constraint's backing index serves the constraint: LoraDB names it
+    // in the constraint's `ownedIndex`, not on the index row.
+    const owned = new Set(
+      constraints!.rows.map((row) => row["ownedIndex"]).filter(Boolean),
     );
     const required = this.requirements();
     return indexes!.rows
-      .filter((row) => row["type"] !== "LOOKUP" && !row["owningConstraint"])
+      .filter(
+        (row) =>
+          row["type"] !== "LOOKUP" &&
+          !row["owningConstraint"] &&
+          !owned.has(row["name"]),
+      )
       .filter(
         (row) =>
           !required.some((r) =>

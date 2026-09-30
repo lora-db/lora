@@ -362,7 +362,9 @@ values before an update or delete. Item 3: lora-node `db.changes()`
 (commit-ordered batches with LSNs, WAL-backed resume across restarts,
 `LORA_CHANGES_TRUNCATED` / `LORA_CHANGES_LAGGED`, about 0.5 µs per write
 once a feed has opened) and `changeFeed: true` in the package, which feeds
-subscriptions from it so they see writes from any path or process.
+subscriptions from it so they see writes from any path in the process
+that owns the database (a database directory opens in one process at a
+time, so the feed is not cross-process; its resume position is in memory).
 
 1. **Shared visibility checks.** Each write costs every subscriber a
    visibility query and a node read, O(subscribers × events). Group

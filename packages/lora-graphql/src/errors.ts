@@ -40,7 +40,8 @@ export type LoraGraphQLErrorCode =
   | "FORBIDDEN"
   | "NOT_FOUND"
   | "CONSTRAINT_VIOLATION"
-  | "DATABASE_ERROR";
+  | "DATABASE_ERROR"
+  | "PERSISTED_QUERY_ONLY";
 
 /** A request-time error with a stable `extensions.code`. */
 export function requestError(

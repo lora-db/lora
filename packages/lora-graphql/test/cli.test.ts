@@ -187,6 +187,8 @@ test("check --database reports unused indexes; analyze prints statistics", async
   expect(checked.out).toContain(
     "unused   RANGE index extra_idx on :Festival(internalNotes)",
   );
+  // Constraint-backed indexes (the @key's) serve their constraint.
+  expect(checked.out.match(/^unused/gm)).toHaveLength(1);
   expect(checked.code).toBe(0);
 
   const analyzed = await cli(
