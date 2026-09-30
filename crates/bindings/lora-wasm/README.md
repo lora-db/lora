@@ -255,6 +255,14 @@ public surface — consumers can swap backends without rewriting types.
 - The wasm module runs inside one JavaScript runtime. Auto-commit reads can
   overlap on engine snapshots; write commits serialize. Use more Workers for
   separate graphs or stronger UI isolation.
+- A write stream (`db.stream(...)` or `openExportStream(...)` over a query
+  that writes) runs in a hidden transaction that holds the writer until it
+  is read to the end or closed, and only then commits. Writes started
+  meanwhile (`execute`, `transaction`, another write stream, imports,
+  `clear`, `loadSnapshot`) reject with `LORA_TRANSACTION` instead of
+  waiting, because the only thread that could release the writer is the
+  one asking for it. Reads keep working. `transaction()` itself runs
+  synchronously, so any number of concurrent calls simply run in turn.
 - I64 values are delivered as JS `number` and lose precision above 2^53.
   Applications that need bigint precision should use the native
   `lora-node` binding instead.

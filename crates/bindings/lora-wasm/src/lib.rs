@@ -23,16 +23,18 @@ use lora_database::{
     JsonArrayEncoder, JsonlEncoder, LoraError, LoraValue, QueryResult,
     QueryStream as InnerQueryStream, ResultFormat, RowEncoder, RowMapping, RowParseError,
     SnapshotInfo, StreamingCsvDecoder, StreamingJsonArrayDecoder, StreamingJsonlDecoder,
-    StreamingRowDecoder, DEFAULT_IMPORT_BATCH_SIZE,
+    StreamingRowDecoder, TransactionMode, DEFAULT_IMPORT_BATCH_SIZE,
 };
 
 mod json;
+mod writer;
 
 use json::{
     js_error, js_error_from_anyhow, js_error_from_lora, json_value_to_params,
     parse_snapshot_credentials, parse_snapshot_options, parse_transaction_mode,
     parse_transaction_statements, plan_to_json, profile_to_json, row_to_json, serialize_rows,
 };
+use writer::{WriterClaim, WriterState};
 /// Deprecated umbrella code preserved for binding-level static-message
 /// call sites (stream closed, lock invariants). Engine errors go through
 /// [`js_error_from_anyhow`] which sets the precise `LORA_*` code.
@@ -165,6 +167,45 @@ fn graph_stats_to_js(stats: &GraphStats) -> Result<JsValue, JsError> {
 #[wasm_bindgen(js_name = WasmDatabase)]
 pub struct WasmDatabase {
     db: Arc<InnerDatabase<InMemoryGraph>>,
+    /// Set while a write stream holds the writer lock; see [`writer`].
+    writer: WriterState,
+}
+
+impl WasmDatabase {
+    /// Whether `query` would take the writer lock. A query that fails to
+    /// compile reports `false`: it fails before taking the lock anyway.
+    fn is_mutating(&self, query: &str) -> bool {
+        self.db
+            .explain(query, None)
+            .map(|plan| plan.shape.is_mutating())
+            .unwrap_or(false)
+    }
+
+    /// Error instead of trapping when `query` is a write and a write
+    /// stream holds the writer lock. Classifies only while one is open.
+    fn ensure_can_run(&self, query: &str) -> Result<(), JsError> {
+        if self.writer.held() && self.is_mutating(query) {
+            return self.writer.ensure_free();
+        }
+        Ok(())
+    }
+
+    /// Open a native stream; a write stream also claims the writer.
+    fn open_native_stream(
+        &self,
+        query: &str,
+        params: BTreeMap<String, LoraValue>,
+    ) -> Result<(InnerQueryStream<'static>, Option<WriterClaim>), JsError> {
+        let mutating = self.is_mutating(query);
+        if mutating {
+            self.writer.ensure_free()?;
+        }
+        // SAFETY: the stream's owner (WasmQueryStream / WasmRowExport)
+        // keeps this `Arc<InnerDatabase>` alive for the stream's lifetime.
+        let stream = unsafe { self.db.stream_with_params_owned(query, params) }
+            .map_err(|e| js_error_from_lora(&e))?;
+        Ok((stream, mutating.then(|| self.writer.claim())))
+    }
 }
 
 #[wasm_bindgen(js_class = WasmDatabase)]
@@ -173,6 +214,7 @@ impl WasmDatabase {
     pub fn new() -> Self {
         Self {
             db: Arc::new(InnerDatabase::in_memory()),
+            writer: WriterState::default(),
         }
     }
 
@@ -199,6 +241,7 @@ impl WasmDatabase {
             format: ResultFormat::Rows,
         };
 
+        self.ensure_can_run(query)?;
         let result = self
             .db
             .execute_with_params(query, Some(options), params_map)
@@ -229,6 +272,7 @@ impl WasmDatabase {
             format: ResultFormat::RowArrays,
         };
 
+        self.ensure_can_run(query)?;
         let result = self
             .db
             .execute_with_params(query, Some(options), params_map)
@@ -282,6 +326,7 @@ impl WasmDatabase {
             Some(json_value_to_params(json_value)?)
         };
 
+        self.ensure_can_run(query)?;
         let prof = self
             .db
             .profile(query, params_map)
@@ -302,11 +347,11 @@ impl WasmDatabase {
                 .map_err(|e| js_error(INVALID_PARAMS_CODE, &e.to_string()))?;
             json_value_to_params(json_value)?
         };
-        let stream = unsafe { self.db.stream_with_params_owned(query, params_map) }
-            .map_err(|e| js_error_from_lora(&e))?;
+        let (stream, claim) = self.open_native_stream(query, params_map)?;
         Ok(WasmQueryStream {
             _db: self.db.clone(),
             stream: Some(stream),
+            _writer: claim,
         })
     }
 
@@ -322,6 +367,9 @@ impl WasmDatabase {
             .map_err(|e| js_error(INVALID_PARAMS_CODE, &e.to_string()))?;
         let statements = parse_transaction_statements(json_value)?;
         let mode = parse_transaction_mode(mode.as_deref())?;
+        if matches!(mode, TransactionMode::ReadWrite) {
+            self.writer.ensure_free()?;
+        }
         let options = ExecuteOptions {
             format: ResultFormat::RowArrays,
         };
@@ -349,6 +397,7 @@ impl WasmDatabase {
     }
 
     pub fn clear(&self) -> Result<(), JsError> {
+        self.writer.ensure_free()?;
         self.db.try_clear().map_err(|e| js_error_from_lora(&e))
     }
 
@@ -410,6 +459,7 @@ impl WasmDatabase {
     #[wasm_bindgen(js_name = loadSnapshot)]
     pub fn load_snapshot(&self, bytes: Vec<u8>, options: JsValue) -> Result<JsValue, JsError> {
         let credentials = parse_snapshot_credentials(options)?;
+        self.writer.ensure_free()?;
         let meta = self
             .db
             .load_snapshot_from_bytes_with_credentials(bytes.as_slice(), credentials.as_ref())
@@ -464,6 +514,7 @@ impl WasmDatabase {
         let format = parse_row_format(format, "import")?;
         let mapping: RowMapping = serde_wasm_bindgen::from_value(mapping)
             .map_err(|e| js_error(INVALID_PARAMS_CODE, &format!("invalid mapping: {e}")))?;
+        self.writer.ensure_free()?;
         let stats = self
             .db
             .import_rows(
@@ -488,6 +539,7 @@ impl WasmDatabase {
         batch_size: Option<u32>,
     ) -> Result<JsValue, JsError> {
         let format = parse_row_format(format, "import")?;
+        self.writer.ensure_free()?;
         let stats = self
             .db
             .import_with_template(
@@ -509,8 +561,16 @@ impl Default for WasmDatabase {
 
 #[wasm_bindgen(js_name = WasmQueryStream)]
 pub struct WasmQueryStream {
-    _db: Arc<InnerDatabase<InMemoryGraph>>,
+    // Fields drop in declaration order. The stream borrows from the
+    // database (a write stream holds its writer lock), so it must drop
+    // first: the JS `WasmDatabase` may already be freed, leaving `_db`
+    // as the last owner of the engine.
     stream: Option<InnerQueryStream<'static>>,
+    /// Held by a write stream; released after the stream (and its writer
+    /// lock).
+    _writer: Option<WriterClaim>,
+    /// Keeps the engine alive for `stream`; dropped last.
+    _db: Arc<InnerDatabase<InMemoryGraph>>,
 }
 
 #[wasm_bindgen(js_class = WasmQueryStream)]
@@ -538,18 +598,27 @@ impl WasmQueryStream {
                 .serialize(&Serializer::json_compatible())
                 .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string())),
             Ok(None) => {
-                self.stream.take();
+                self.release();
                 Ok(JsValue::NULL)
             }
             Err(e) => {
-                self.stream.take();
+                self.release();
                 Err(js_error_from_anyhow(&e))
             }
         }
     }
 
     pub fn close(&mut self) {
+        self.release();
+    }
+}
+
+impl WasmQueryStream {
+    /// Drop the stream (committing or rolling back a write stream and
+    /// releasing its writer lock), then the writer claim.
+    fn release(&mut self) {
         self.stream.take();
+        self._writer.take();
     }
 }
 
@@ -571,14 +640,18 @@ impl WasmQueryStream {
 /// independent of the total export size.
 #[wasm_bindgen(js_name = WasmRowExport)]
 pub struct WasmRowExport {
-    /// Kept alive so the QueryStream's snapshot references stay valid.
-    _db: Arc<InnerDatabase<InMemoryGraph>>,
+    // Fields drop in declaration order: `stream` borrows from the
+    // database and must drop before `_db` (see `WasmQueryStream`).
     stream: Option<InnerQueryStream<'static>>,
+    /// Held by a write export; released after `stream`.
+    writer: Option<WriterClaim>,
     encoder: Option<Box<dyn RowEncoder>>,
     buffer: Rc<RefCell<Vec<u8>>>,
     columns: Vec<String>,
     began: bool,
     finished: bool,
+    /// Kept alive so the stream's borrows stay valid; dropped last.
+    _db: Arc<InnerDatabase<InMemoryGraph>>,
 }
 
 /// Rows pulled per `next()` call. Sized so the per-chunk
@@ -658,6 +731,11 @@ impl WasmRowExport {
                             .finish()
                             .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))?;
                         self.finished = true;
+                        // Exhausted: a write export has committed. Release
+                        // the stream and its writer lock now rather than
+                        // on the trailing `null`.
+                        self.stream.take();
+                        self.writer.take();
                         break;
                     }
                     Err(e) => {
@@ -685,6 +763,7 @@ impl WasmRowExport {
 
     fn close_internal(&mut self) {
         self.stream.take();
+        self.writer.take();
         self.encoder.take();
     }
 }
@@ -697,11 +776,10 @@ impl WasmDatabase {
         format: IoFormat,
     ) -> Result<WasmRowExport, JsError> {
         let params_map = parse_optional_params(params)?;
-        // SAFETY: see WasmDatabase::open_stream — the cursor's lifetime
-        // is faked to 'static because the WasmRowExport keeps the
-        // Arc<InnerDatabase> alive for the cursor's whole lifetime.
-        let stream = unsafe { self.db.stream_with_params_owned(query, params_map) }
-            .map_err(|e| js_error_from_lora(&e))?;
+        // The cursor's lifetime is faked to 'static because the
+        // WasmRowExport keeps the Arc<InnerDatabase> alive for the
+        // cursor's whole lifetime.
+        let (stream, claim) = self.open_native_stream(query, params_map)?;
         let columns = stream.columns().to_vec();
 
         let buffer = Rc::new(RefCell::new(Vec::with_capacity(64 * 1024)));
@@ -714,6 +792,7 @@ impl WasmDatabase {
         Ok(WasmRowExport {
             _db: self.db.clone(),
             stream: Some(stream),
+            writer: claim,
             encoder: Some(encoder),
             buffer,
             columns,
@@ -776,6 +855,7 @@ impl WasmDatabase {
             .max(1);
         Ok(WasmRowImport {
             db: self.db.clone(),
+            writer: self.writer.clone(),
             decoder: Some(decoder),
             template,
             batch: Vec::with_capacity(batch_size),
@@ -821,6 +901,8 @@ fn resolve_import_template(value: JsValue) -> Result<String, JsError> {
 #[wasm_bindgen(js_name = WasmRowImport)]
 pub struct WasmRowImport {
     db: Arc<InnerDatabase<InMemoryGraph>>,
+    /// The database's write-stream state: batches are writes.
+    writer: WriterState,
     decoder: Option<Box<dyn StreamingRowDecoder>>,
     template: String,
     batch: Vec<lora_database::LoraValue>,
@@ -852,6 +934,7 @@ impl WasmRowImport {
     /// complete. Returns progress: total bytes ingested, completed
     /// rows so far, and batches committed so far.
     pub fn feed(&mut self, chunk: &[u8]) -> Result<JsValue, JsError> {
+        self.ensure_can_write()?;
         let decoder = self
             .decoder
             .as_mut()
@@ -873,6 +956,7 @@ impl WasmRowImport {
     /// records, and flush the final partial batch. Returns the
     /// final stats and closes the cursor.
     pub fn finish(&mut self) -> Result<JsValue, JsError> {
+        self.ensure_can_write()?;
         let mut decoder = self
             .decoder
             .take()
@@ -904,6 +988,15 @@ impl WasmRowImport {
 }
 
 impl WasmRowImport {
+    /// Refuse a chunk before consuming it when a write stream holds the
+    /// writer lock, so the caller can retry the same chunk later.
+    fn ensure_can_write(&self) -> Result<(), JsError> {
+        if self.dry_run {
+            return Ok(());
+        }
+        self.writer.ensure_free()
+    }
+
     /// Pull whatever the decoder has accumulated since the last call
     /// and fold it into the cursor's running totals. Honors the
     /// per-cursor cap so the JS payload stays bounded even when a
@@ -989,5 +1082,69 @@ impl WasmRowImport {
         })
         .serialize(&Serializer::json_compatible())
         .map_err(|e| js_error(LORA_ERROR_CODE, &e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Host-side checks of handle lifetimes. The JS wrappers can be freed
+    //! in any order (explicit `free()`/`dispose()` or GC finalizers), so a
+    //! stream must stay valid after the `WasmDatabase` that opened it is
+    //! gone. With the stream declared after `_db`, the engine was freed
+    //! before the stream released its writer lock: these tests segfaulted.
+
+    use super::*;
+
+    const WRITE: &str = "UNWIND range(1, 3) AS i CREATE (:S {i: i}) RETURN i";
+
+    fn open(db: &WasmDatabase, query: &str) -> (InnerQueryStream<'static>, Option<WriterClaim>) {
+        match db.open_native_stream(query, BTreeMap::new()) {
+            Ok(opened) => opened,
+            Err(_) => panic!("could not open stream"),
+        }
+    }
+
+    #[test]
+    fn write_stream_outlives_its_database_handle() {
+        let db = WasmDatabase::new();
+        let (stream, claim) = open(&db, WRITE);
+        assert!(claim.is_some(), "a write stream claims the writer");
+        let mut stream = WasmQueryStream {
+            _db: db.db.clone(),
+            stream: Some(stream),
+            _writer: claim,
+        };
+        assert!(stream
+            .stream
+            .as_mut()
+            .unwrap()
+            .next_row()
+            .unwrap()
+            .is_some());
+        // The database handle goes first; the stream is the last owner of
+        // the engine and must release the writer lock before dropping it.
+        drop(db);
+        drop(stream);
+    }
+
+    #[test]
+    fn write_export_outlives_its_database_handle() {
+        let db = WasmDatabase::new();
+        let (stream, claim) = open(&db, WRITE);
+        let buffer = Rc::new(RefCell::new(Vec::new()));
+        let export = WasmRowExport {
+            _db: db.db.clone(),
+            stream: Some(stream),
+            writer: claim,
+            encoder: Some(Box::new(JsonlEncoder::new(SharedBufferWriter(
+                buffer.clone(),
+            )))),
+            buffer,
+            columns: vec!["i".into()],
+            began: false,
+            finished: false,
+        };
+        drop(db);
+        drop(export);
     }
 }
