@@ -216,10 +216,8 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
 - **Engine side:**
   - Once a feed is open, every commit builds its change batch under the writer lock.
   - Retention is a ring of 1,024 batches, with full property maps.
-- **Solutions:**
-  - Index subscribers by type, and by key when one is given.
-  - Build each change's events once.
-  - Cache the compiles per subscription and claims.
+- **Fixed (fan-out):** subscribers are indexed by type, then by key, behind one listener. Each change's events are built once per type it touches, subscribers to other types do no work, and the visibility and node-read compiles are cached per subscription (recompiled when statistics or the `$context` values they read change). With 2,000 subscribers, a 10-node write to the type 710 of them follow went from 179 to 87 ms (median, loaded machine).
+- **Solutions still open:**
   - Batch `node` reads per change.
   - Catch and surface feed errors (reopen with backoff, and report through `onError`).
   - Add a subscription scenario to the harness before relying on subscriptions at scale.

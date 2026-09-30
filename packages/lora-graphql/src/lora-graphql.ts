@@ -302,6 +302,34 @@ const DOCUMENT_CACHE_SIZE = 500;
 /** Compiled root fields kept per field node, across variable values. */
 const COMPILED_PER_FIELD = 16;
 
+/** A subscriber's share of one change: the events of its node type. */
+interface SubscriberDelivery {
+  change: WriteChange;
+  events: ChangeEvent[];
+}
+type SubscriberSink = (delivery: SubscriberDelivery) => void;
+
+interface SubscriberGroup {
+  node: NodeType;
+  all: Set<SubscriberSink>;
+  byKey: Map<string, Set<SubscriberSink>>;
+}
+
+/**
+ * A statement compiled once for a subscription, reused while its claims
+ * and the `$context` values it read are unchanged. `param` names the
+ * parameter each run fills in; `share` keys the reads subscribers share.
+ */
+interface SubscriptionCompile<C> {
+  claims: string;
+  statistics: number;
+  variables: string | undefined;
+  contextReads: Array<[string, unknown]>;
+  compiled: C;
+  param: string;
+  share: string | undefined;
+}
+
 interface CompiledEntry {
   variables: string;
   claims: string;
@@ -342,6 +370,18 @@ export class LoraGraphQL {
   readonly #listeners = new Set<(change: WriteChange) => void>();
   /** Consumers of `changes()` when the engine feed is on. */
   readonly #feedListeners = new Set<(change: WriteChange) => void>();
+  /**
+   * Subscribers by node type, then unfiltered or by key: a change reaches
+   * only the subscribers of the types it touches, with its events built
+   * once per type.
+   */
+  readonly #subscribers = new Map<string, SubscriberGroup>();
+  #undispatch: (() => unknown) | undefined;
+  /** Changed-node reads compiled per subscription context and field node. */
+  readonly #byKeyCompiles = new WeakMap<
+    object,
+    WeakMap<FieldNode, SubscriptionCompile<CompiledRead>>
+  >();
   readonly #feed: EngineFeed | undefined;
   #feedReady: Promise<void> | undefined;
   readonly #documents = new Map<string, DocumentNode>();
@@ -1029,12 +1069,29 @@ export class LoraGraphQL {
   changes(
     options: { signal?: AbortSignal; maxQueued?: number } = {},
   ): AsyncIterableIterator<WriteChange> {
+    return this.#queue<WriteChange>((listener) => {
+      if (this.#feed) {
+        this.#feedListeners.add(listener);
+        return () => this.#feedListeners.delete(listener);
+      }
+      return this.onWrite(listener);
+    }, options);
+  }
+
+  /**
+   * An async iterator over the items a `register`ed listener receives,
+   * queued up to `maxQueued`; `register` returns the unregister call.
+   */
+  #queue<T>(
+    register: (listener: (item: T) => void) => () => void,
+    options: { signal?: AbortSignal; maxQueued?: number },
+  ): AsyncIterableIterator<T> {
     const limit = options.maxQueued ?? this.#maxQueued;
-    const queue: WriteChange[] = [];
+    const queue: T[] = [];
     let wake: (() => void) | undefined;
     let done = false;
     let overflow = false;
-    const listener = (change: WriteChange) => {
+    const listener = (change: T) => {
       // A consumer that falls this far behind is ended with an error,
       // instead of holding every write in memory.
       if (queue.length >= limit) {
@@ -1045,15 +1102,12 @@ export class LoraGraphQL {
       }
       wake?.();
     };
-    let stop: () => void;
+    const unregister = register(listener);
+    const stop = () => void unregister();
     let ready: Promise<void> | undefined;
     if (this.#feed) {
-      this.#feedListeners.add(listener);
-      stop = () => this.#feedListeners.delete(listener);
       this.#feedReady ??= this.#feed.start();
       ready = this.#feedReady;
-    } else {
-      stop = this.onWrite(listener);
     }
     const finish = () => {
       done = true;
@@ -1063,7 +1117,7 @@ export class LoraGraphQL {
     };
     if (options.signal?.aborted) finish();
     else options.signal?.addEventListener("abort", finish, { once: true });
-    const iterator: AsyncIterableIterator<WriteChange> = {
+    const iterator: AsyncIterableIterator<T> = {
       [Symbol.asyncIterator]: () => iterator,
       next: async () => {
         if (ready) await ready;
@@ -1198,8 +1252,10 @@ export class LoraGraphQL {
     change: object | undefined,
     statements: Statement[],
     run: () => Promise<QueryResult[]>,
+    /** Precomputed key of the statements, from a reused compile. */
+    shareKey?: string,
   ): Promise<QueryResult[]> {
-    const key = change ? stableKey(statements) : undefined;
+    const key = change ? (shareKey ?? stableKey(statements)) : undefined;
     if (!change || key === undefined) return run();
     let reads = this.#sharedReads.get(change);
     if (!reads) {
@@ -1220,6 +1276,7 @@ export class LoraGraphQL {
     context: unknown,
     info?: GraphQLResolveInfo,
     change?: object,
+    shareKey?: string,
   ): Promise<unknown> {
     this.#charge(field, compiled.cost, context, info);
     for (const statement of compiled.statements) {
@@ -1235,16 +1292,20 @@ export class LoraGraphQL {
         () =>
           owned
             ? runInOrder(owned, compiled.statements)
-            : this.#shared(change, compiled.statements, () =>
-                this.#driver.run(compiled.statements, {
-                  mode: compiled.mode,
-                  timeoutMs: this.#timeoutMs,
-                  signal,
-                  // Queries and object @cypher fields are checked read-only
-                  // when the model is built; writes never reach this path.
-                  verified: compiled.mode === "read",
-                  ...(compiled.bounded && { bounded: true }),
-                }),
+            : this.#shared(
+                change,
+                compiled.statements,
+                () =>
+                  this.#driver.run(compiled.statements, {
+                    mode: compiled.mode,
+                    timeoutMs: this.#timeoutMs,
+                    signal,
+                    // Queries and object @cypher fields are checked read-only
+                    // when the model is built; writes never reach this path.
+                    verified: compiled.mode === "read",
+                    ...(compiled.bounded && { bounded: true }),
+                  }),
+                shareKey,
               ),
       );
     } catch (err) {
@@ -1460,12 +1521,18 @@ export class LoraGraphQL {
     // Whether events must be checked in the database: read rules, or a
     // `where` (on the node as it is after the write).
     const check = guarded || (where != null && Object.keys(where).length > 0);
-    for await (const change of this.changes({ signal })) {
-      const events = changeEvents(change, node).filter(
-        (e) =>
-          wanted.has(e.operation) &&
-          (key == null || keyOf(e.key) === keyOf(key)),
-      );
+    const visible = check
+      ? this.#visibleCheck(node, where, base, context)
+      : undefined;
+    // Only changes to this type (and this key, when one is followed)
+    // arrive, with their events already built.
+    const deliveries = this.#queue<SubscriberDelivery>(
+      (sink) =>
+        this.#addSubscriber(node, key == null ? undefined : keyOf(key), sink),
+      { signal },
+    );
+    for await (const { change, events: all } of deliveries) {
+      const events = all.filter((e) => wanted.has(e.operation));
       if (events.length === 0) continue;
       // A deleted node cannot be checked: its deletion reaches only
       // subscribers that follow its key, and only unfiltered ones.
@@ -1473,73 +1540,210 @@ export class LoraGraphQL {
         (e) => e.operation === "DELETE" && (!check || (key != null && !where)),
       );
       const live = events.filter((e) => e.operation !== "DELETE");
-      const visible = check
-        ? await this.#visible(
-            node,
+      const seen = visible
+        ? await visible(
             live.map((e) => e.key),
-            where,
-            base,
-            context,
             change,
           )
         : undefined;
       for (const event of [...live, ...deletions]) {
         if (
           event.operation !== "DELETE" &&
-          visible &&
-          !visible.has(keyOf(event.key))
+          seen &&
+          !seen.has(keyOf(event.key))
         ) {
           continue;
         }
-        yield event;
+        // Events are built once per change and type: each subscriber gets
+        // its own copy, since per-event cost is charged by root value.
+        const own = { ...event };
+        Object.defineProperty(own, CHANGE, { value: change });
+        yield own;
       }
     }
   }
 
-  /** Which of `keys` the subscriber may read (and `where` matches), in one query. */
-  async #visible(
+  /** Index a subscriber by type and key; returns its removal. */
+  #addSubscriber(
     node: NodeType,
-    keys: unknown[],
+    key: string | undefined,
+    sink: SubscriberSink,
+  ): () => void {
+    // One listener serves every subscriber, registered while any exist.
+    if (!this.#undispatch) {
+      const dispatch = (change: WriteChange) => this.#dispatch(change);
+      if (this.#feed) {
+        this.#feedListeners.add(dispatch);
+        this.#undispatch = () => this.#feedListeners.delete(dispatch);
+      } else {
+        this.#undispatch = this.onWrite(dispatch);
+      }
+    }
+    let group = this.#subscribers.get(node.name);
+    if (!group) {
+      group = { node, all: new Set(), byKey: new Map() };
+      this.#subscribers.set(node.name, group);
+    }
+    const g = group;
+    let sinks = g.all;
+    if (key !== undefined) {
+      sinks = g.byKey.get(key) ?? new Set();
+      g.byKey.set(key, sinks);
+    }
+    sinks.add(sink);
+    return () => {
+      sinks.delete(sink);
+      if (key !== undefined && sinks.size === 0) g.byKey.delete(key);
+      if (
+        g.all.size === 0 &&
+        g.byKey.size === 0 &&
+        this.#subscribers.get(node.name) === g
+      ) {
+        this.#subscribers.delete(node.name);
+        if (this.#subscribers.size === 0) {
+          this.#undispatch?.();
+          this.#undispatch = undefined;
+        }
+      }
+    };
+  }
+
+  /**
+   * Hand one change to the subscribers of the types it touches: each
+   * type's events are built once, and keyed subscribers get only the
+   * events of their key.
+   */
+  #dispatch(change: WriteChange): void {
+    if (this.#subscribers.size === 0) return;
+    const types = new Set<string>();
+    for (const refs of [change.deleted, change.created, change.entities]) {
+      for (const e of refs) types.add(e.type);
+    }
+    for (const refs of [change.connected, change.disconnected]) {
+      for (const r of refs) {
+        types.add(r.from.type);
+        types.add(r.to.type);
+      }
+    }
+    const deliver = (sinks: Set<SubscriberSink>, events: ChangeEvent[]) => {
+      for (const sink of sinks) {
+        try {
+          sink({ change, events });
+        } catch {
+          // One subscriber's failure must not stop the others.
+        }
+      }
+    };
+    for (const type of types) {
+      const group = this.#subscribers.get(type);
+      if (!group) continue;
+      const events = changeEvents(change, group.node);
+      if (events.length === 0) continue;
+      if (group.all.size > 0) deliver(group.all, events);
+      if (group.byKey.size === 0) continue;
+      const byKey = new Map<string, ChangeEvent[]>();
+      for (const e of events) {
+        const id = keyOf(e.key);
+        if (!group.byKey.has(id)) continue;
+        const list = byKey.get(id);
+        if (list) list.push(e);
+        else byKey.set(id, [e]);
+      }
+      for (const [id, list] of byKey) {
+        const sinks = group.byKey.get(id);
+        if (sinks) deliver(sinks, list);
+      }
+    }
+  }
+
+  /**
+   * Whether a subscription may see nodes: which of `keys` it may read
+   * (and its `where` matches), in one query per change. The statement is
+   * compiled once per subscription, again only when its claims or the
+   * `$context` values it read change.
+   */
+  #visibleCheck(
+    node: NodeType,
     where: Record<string, unknown> | null | undefined,
     base: SelectionContext,
     context: unknown,
-    change?: object,
-  ): Promise<Set<string>> {
-    if (keys.length === 0) return new Set();
-    const ctx = this.#context(base, context);
-    const text = printClauses([
-      { kind: "unwind", expr: bind(ctx, keys), alias: "k" },
-      {
-        kind: "match",
-        pattern: {
-          start: { variable: "n", labels: [node.labels[0]!] },
-          hops: [],
+  ): (keys: unknown[], change: object) => Promise<Set<string>> {
+    let cached: SubscriptionCompile<Statement> | undefined;
+    return async (keys, change) => {
+      if (keys.length === 0) return new Set();
+      const claims = stableKey(this.#jwt(context) ?? null);
+      let entry = cached;
+      if (
+        !entry ||
+        claims === undefined ||
+        entry.claims !== claims ||
+        !sameContextReads(entry.contextReads, context)
+      ) {
+        const ctx = this.#context(base, context);
+        const slot: unknown[] = [];
+        const text = printClauses([
+          { kind: "unwind", expr: bind(ctx, slot), alias: "k" },
+          {
+            kind: "match",
+            pattern: {
+              start: { variable: "n", labels: [node.labels[0]!] },
+              hops: [],
+            },
+            where: and(
+              bin("=", prop(v("n"), node.key.property), v("k")),
+              compileNodeWhere(ctx, node, "n", where),
+              authFilter(ctx, node, "n", "READ"),
+              authValidate(ctx, node, "n", "READ", "BEFORE"),
+              authFilter(ctx, node, "n", "SUBSCRIBE"),
+              authValidate(ctx, node, "n", "SUBSCRIBE", "BEFORE"),
+            ),
+          },
+          {
+            kind: "return",
+            items: [{ expr: prop(v("n"), node.key.property), alias: "key" }],
+          },
+        ]);
+        // The key list is bound directly, so the slot is always found.
+        entry = slotCompile(
+          { text, params: ctx.params },
+          slot,
+          claims,
+          0,
+          undefined,
+          ctx.contextReads,
+        )!;
+        cached = claims === undefined ? undefined : entry;
+      }
+      const statements = [
+        {
+          text: entry.compiled.text,
+          params: { ...entry.compiled.params, [entry.param]: keys },
         },
-        where: and(
-          bin("=", prop(v("n"), node.key.property), v("k")),
-          compileNodeWhere(ctx, node, "n", where),
-          authFilter(ctx, node, "n", "READ"),
-          authValidate(ctx, node, "n", "READ", "BEFORE"),
-          authFilter(ctx, node, "n", "SUBSCRIBE"),
-          authValidate(ctx, node, "n", "SUBSCRIBE", "BEFORE"),
-        ),
-      },
-      {
-        kind: "return",
-        items: [{ expr: prop(v("n"), node.key.property), alias: "key" }],
-      },
-    ]);
-    const statements = [{ text, params: ctx.params }];
-    const [result] = await this.#shared(change, statements, () =>
-      this.#driver.run(statements, {
-        mode: "read",
-        timeoutMs: this.#timeoutMs,
-        verified: true,
-      }),
-    );
-    return new Set(result!.rows.map((r) => keyOf(r["key"])));
+      ];
+      const share =
+        entry.share === undefined
+          ? undefined
+          : `${entry.share}\0${keys.map(keyOf).join("\0")}`;
+      const [result] = await this.#shared(
+        change,
+        statements,
+        () =>
+          this.#driver.run(statements, {
+            mode: "read",
+            timeoutMs: this.#timeoutMs,
+            verified: true,
+          }),
+        share,
+      );
+      return new Set(result!.rows.map((r) => keyOf(r["key"])));
+    };
   }
 
+  /**
+   * A changed node for a subscriber. The read is compiled once per
+   * subscription (context), field node, claims and variables, with the
+   * key as its only varying parameter.
+   */
   #resolveByKey(
     node: NodeType,
     key: unknown,
@@ -1547,15 +1751,73 @@ export class LoraGraphQL {
     context: unknown,
     change?: object,
   ): Promise<unknown> {
-    const ctx = this.#context(infoContext(info), context);
-    const compiled = compileRoot(
-      ctx,
-      "single",
-      node,
-      { [node.key.name]: key },
-      info.fieldNodes,
-    );
-    return this.#run(info.fieldName, compiled, context, info, change);
+    const field = info.fieldNodes[0]!;
+    const claims = stableKey(this.#jwt(context) ?? null);
+    const variables = stableKey(coercedVariables(info.variableValues));
+    const byField =
+      context !== null && typeof context === "object"
+        ? (this.#byKeyCompiles.get(context) ??
+          this.#byKeyCompiles.set(context, new WeakMap()).get(context)!)
+        : undefined;
+    let entry = byField?.get(field);
+    if (
+      !entry ||
+      claims === undefined ||
+      variables === undefined ||
+      entry.claims !== claims ||
+      entry.variables !== variables ||
+      entry.statistics !== this.#statisticsVersion ||
+      !sameContextReads(entry.contextReads, context)
+    ) {
+      const ctx = this.#context(infoContext(info), context);
+      const slot = {};
+      const compiled = compileRoot(
+        ctx,
+        "single",
+        node,
+        { [node.key.name]: slot },
+        info.fieldNodes,
+      );
+      entry =
+        compiled.statements.length === 1
+          ? slotCompile(
+              compiled,
+              slot,
+              claims,
+              this.#statisticsVersion,
+              variables,
+              ctx.contextReads,
+              compiled.statements[0]!,
+            )
+          : undefined;
+      if (!entry) {
+        // Not reusable: compile again with the key itself.
+        const direct = compileRoot(
+          this.#context(infoContext(info), context),
+          "single",
+          node,
+          { [node.key.name]: key },
+          info.fieldNodes,
+        );
+        return this.#run(info.fieldName, direct, context, info, change);
+      }
+      if (claims !== undefined && variables !== undefined) {
+        byField?.set(field, entry);
+      }
+    }
+    const statement = entry.compiled.statements[0]!;
+    const compiled: CompiledRead = {
+      ...entry.compiled,
+      statements: [
+        {
+          text: statement.text,
+          params: { ...statement.params, [entry.param]: key },
+        },
+      ],
+    };
+    const share =
+      entry.share === undefined ? undefined : `${entry.share}\0${keyOf(key)}`;
+    return this.#run(info.fieldName, compiled, context, info, change, share);
   }
 
   #resolveSearch(
@@ -1967,6 +2229,50 @@ function stableKey(value: unknown): string | undefined {
   };
   const json = JSON.stringify(walk(value));
   return ok ? (json ?? "undefined") : undefined;
+}
+
+/** A cached compile still holds for these `$context` values. */
+function sameContextReads(
+  reads: Array<[string, unknown]>,
+  context: unknown,
+): boolean {
+  return reads.every(
+    ([path, value]) =>
+      stableKey(lookupPath(context, path)) === stableKey(value),
+  );
+}
+
+/**
+ * A compile made with `slot` as one parameter's value, reusable with that
+ * parameter filled in per run; undefined unless exactly one parameter
+ * holds the slot.
+ */
+function slotCompile<C>(
+  compiled: C,
+  slot: unknown,
+  claims: string | undefined,
+  statistics: number,
+  variables: string | undefined,
+  contextReads: Array<[string, unknown]>,
+  statement: Statement = compiled as Statement,
+): SubscriptionCompile<C> | undefined {
+  const slots = Object.keys(statement.params).filter(
+    (name) => statement.params[name] === slot,
+  );
+  if (slots.length !== 1) return undefined;
+  const param = slots[0]!;
+  const rest = { ...statement.params };
+  delete rest[param];
+  const fixed = stableKey({ text: statement.text, params: rest });
+  return {
+    claims: claims ?? "",
+    statistics,
+    variables,
+    contextReads,
+    compiled,
+    param,
+    share: fixed === undefined ? undefined : `s:${param}\0${fixed}`,
+  };
 }
 
 function sameTarget(

@@ -87,7 +87,7 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P1 Compile cache is keyed on all claims + all variables, so per-user tokens recompile every request (`src/lora-graphql.ts:1266`). Key on what the compile read; cap total size.
 - [ ] P2 Resolve `@populatedBy` callbacks in parallel before `begin()` (`src/execute/mutate.ts:1238`).
 - [ ] P2 Batch a delete's neighbour lookup with `UNWIND` (`mutate.ts:1624,1670`).
-- [ ] P2 Subscription fan-out: index subscribers by type+key, build each change's events once (`src/lora-graphql.ts:1730`); add a subscription scenario to `bench/load`.
+- [ ] P2 Add a subscription scenario to `bench/load` (fan-out is indexed by type+key but not load tested over HTTP).
 - [ ] P2 `check()` plan-checks queries only — extend to mutations and subscriptions.
 - [ ] P2 `@cypher` `cost` argument; document its per-row semantics (`src/model/directives.ts:196`).
 - [ ] P2 Schema lint: warn on low-cardinality inferred indexes (enum, boolean, `@default`).
