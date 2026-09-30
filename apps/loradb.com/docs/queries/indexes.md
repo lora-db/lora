@@ -197,6 +197,19 @@ non-alphanumeric characters. Multiple query terms use AND semantics:
 all terms must be present. Scores are based on summed term frequency
 and results are sorted by descending score.
 
+A list property is indexed element by element: each string in the list
+is tokenized and indexed, whether the list was written before or after
+the index was created. Non-string list elements and non-string
+properties are skipped silently, without an error:
+
+<QueryCodeBlock code={String.raw`CREATE FULLTEXT INDEX article_tags FOR (a:Article) ON EACH [a.tags];
+
+CREATE (:Article {title: 'Graphs', tags: ['graph databases', 'cypher', 42]});
+
+CALL db.index.fulltext.queryNodes('article_tags', 'cypher')
+YIELD node, score
+RETURN node.title, score;`} />
+
 `fulltext.analyzer` accepts `'standard'` and `'simple'`; unsupported
 names are rejected. `fulltext.eventually_consistent` accepts a boolean
 option, but index maintenance is currently synchronous.
@@ -284,6 +297,22 @@ WHERE geo.within_bbox(
 )
 RETURN p
 // NodeByPointScan`} />
+
+A WGS-84 bounding box whose lower-left longitude is greater than its
+upper-right longitude crosses the antimeridian. The POINT index answers
+it with two seeks, one for `[lowerLeft.longitude, 180]` and one for
+`[-180, upperRight.longitude]`, for node and relationship indexes alike:
+
+<QueryCodeBlock code={String.raw`MATCH (v:Venue)
+WHERE geo.within_bbox(
+  v.location,
+  {longitude: 170, latitude: -50}::POINT,
+  {longitude: -170, latitude: -30}::POINT
+)
+RETURN v`} />
+
+See [`geo.within_bbox`](../functions/spatial#geowithin_bbox) for the full
+semantics.
 
 The same rewrite family exists for relationship scans when the pattern
 can be satisfied from the relationship index:

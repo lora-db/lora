@@ -103,7 +103,7 @@ in the internal documentation.
 | Feature | Status |
 |---|---|
 | WGS-84 3D [`geo.distance`](./functions/spatial#geodistance) honouring `height` | Not yet supported — computes surface great-circle only |
-| `geo.within_bbox()` | Supported for same-SRID 2D/3D bounding boxes; mixed SRIDs (including 2D vs 3D) fail the query |
+| `geo.within_bbox()` | Supported for same-SRID 2D/3D bounding boxes, including WGS-84 boxes across the antimeridian (lower-left longitude greater than upper-right, as in Neo4j's `point.withinBBox`); mixed SRIDs (including 2D vs 3D) fail the query |
 | `point.fromWKT()` / WKT output | Not yet supported |
 | CRS transformation between SRIDs | Not yet supported — cross-SRID `geo.distance` fails the query |
 | Custom SRIDs | Not supported — only `7203`, `9157`, `4326`, `4979` |

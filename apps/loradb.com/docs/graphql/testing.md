@@ -1,19 +1,21 @@
 ---
 title: Testing a LoraGraphQL API
 sidebar_label: Testing
-description: Test a @loradb/lora-graphql API against an in-memory LoraDB with createTestLoraGraphQL, assert the Cypher it runs, and fail tests when a query stops using its index with expectSeeks.
+description: Test a @loradb/lora-graphql API against an in-memory LoraDB with createTestLoraGraphQL, assert the Cypher it runs, and fail tests when a query stops using its index with expectSeeks, and assert who may do what with expectAccess.
 ---
 
 # Testing
 
-`@loradb/lora-graphql/testing` has two helpers:
+`@loradb/lora-graphql/testing` has three helpers:
 
 - `createTestLoraGraphQL` builds the API over a fresh in-memory LoraDB,
   with every index and constraint created and your seed data loaded.
 - `expectSeeks` fails when a query's statements stop using the index
   access they were compiled for.
+- `expectAccess` checks who may do what, as a given caller, against the
+  database.
 
-Both need `@loradb/lora-node` (a dev dependency is enough) and work with
+All three need `@loradb/lora-node` (a dev dependency is enough) and work with
 any test runner: failures are plain thrown errors.
 
 ```bash
@@ -171,6 +173,49 @@ Options:
 [`lora-graphql check`](/docs/graphql/cli#check); use `check` in CI to
 cover every operation your clients send, and `expectSeeks` for the few
 queries whose plans you want to pin next to the code.
+
+## Asserting access
+
+```ts
+import { expectAccess } from "@loradb/lora-graphql/testing";
+
+test("trip members", async () => {
+  await expectAccess(t, {
+    as: { sub: "lou", roles: [] },
+    allowed: [
+      "read Trip lou:tomorrowland",
+      'update Person lou {"name": "Lou"}',
+      "connect Trip.members lou:tomorrowland → f1",
+    ],
+    denied: [
+      'update-edge Trip.members lou:tomorrowland → f1 {"rsvp": "GOING"}',
+    ],
+  });
+});
+```
+
+`expectAccess(t, { as, context?, allowed?, denied? })` runs each entry as
+the caller (`as` is the claims; leave it out to act anonymously), each in
+a transaction that is rolled back, so probes leave no trace. Entries:
+
+- `read`, `create`, `update` or `delete` a `Type key`, with optional input
+  as JSON (`create Trip lou:x {"name": "X"}`);
+- `connect`, `disconnect` or `update-edge` a `Type.field key → key`
+  (`->` works too), with optional edge properties as JSON.
+
+Denied means `FORBIDDEN`, `UNAUTHENTICATED`, `NOT_FOUND` (a node the
+caller cannot see) or, for `read`, not visible. Any other error is a
+mismatch either way. When entries disagree, it throws once, listing every
+mismatch:
+
+```text
+access as {"sub":"bo","roles":[]} differs in 2 entries:
+  expected allowed, was denied: connect Trip.members lou:tml → cy (FORBIDDEN: not allowed to connect Trip.members)
+  expected denied, was allowed: read Trip lou:tml
+```
+
+For the whole picture rather than chosen entries, snapshot
+[`lora.accessMatrix()`](/docs/graphql/api-reference#accessmatrix).
 
 ## Tips
 

@@ -257,6 +257,13 @@ Returns a list per matched `p` — ideal when you'd otherwise add a new
 `MATCH` stage and an aggregation just to assemble "each owner's
 items".
 
+A pattern comprehension whose start node is not bound by the outer row
+runs its pattern once per row. Put the lookup key in an inline property
+map, as in <CypherCode code="[(v:Person {subject: $s}) WHERE v.verified | v.name]" />
+(the key is `subject`), and LoraDB seeks it through an index like
+`MATCH` does, rather than scanning the label for every row. See
+[Performance → Query shape notes](../performance#unbound-start-nodes-in-pattern-subqueries).
+
 ### Take top-N inline
 
 <QueryCodeBlock code={String.raw`MATCH (u:User)

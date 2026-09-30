@@ -157,6 +157,28 @@ node scripts/summarize-benchmarks.mjs \
 | High `relative_error_pct` | Criterion saw noisy measurements | Re-run before drawing conclusions |
 | One slow outlier in CI | Shared runner noise is possible | Re-run the job, then compare trend across runs |
 
+## Query Shape Notes
+
+### Unbound start nodes in pattern subqueries
+
+A pattern comprehension, <CypherCode code="EXISTS { }" /> or
+<CypherCode code="COUNT { }" /> runs once per outer row. When its start
+node is not bound by the outer row, write the lookup key as an inline
+property map. LoraDB then seeks that property through an index, the
+same way `MATCH` does, instead of scanning the whole label once per
+outer row:
+
+<QueryCodeBlock code={String.raw`// Seeks :Person(subject) once per row
+MATCH (n:Post)
+WHERE size([(v:Person {subject: $s}) WHERE v.verified | 1]) > 0
+RETURN count(n) AS c`} />
+
+The seek applies to the inline map only. Moving the same key into the
+inner `WHERE` (<CypherCode code="(v:Person) WHERE v.subject = $s" />)
+keeps the per-row label scan, so its cost grows with the size of the
+label times the number of outer rows. Other predicates, such as
+<CypherCode code="v.verified" /> above, still belong in `WHERE`.
+
 ## See Also
 
 - [Queries → Paths](./queries/paths#performance) for path-query cost notes.

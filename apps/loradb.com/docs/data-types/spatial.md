@@ -112,6 +112,21 @@ WHERE geo.within_bbox(
 )
 RETURN c`} />
 
+On WGS-84, a lower-left longitude greater than the upper-right
+longitude describes a box that crosses the antimeridian, for example
+from 170° to -170° around the Pacific:
+
+<QueryCodeBlock code={String.raw`MATCH (c:City)
+WHERE geo.within_bbox(
+  c.location,
+  {longitude: 170, latitude: -60}::POINT,
+  {longitude: -170, latitude: 60}::POINT
+)
+RETURN c`} />
+
+Cartesian corners are normalised to min/max, so their order does not
+matter. See [`geo.within_bbox`](../functions/spatial#geowithin_bbox).
+
 ### 3D Cartesian distance
 
 <QueryCodeBlock code={String.raw`CREATE (p:Anchor {pos: {x: 0, y: 0, z: 0}::POINT})

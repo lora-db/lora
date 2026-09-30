@@ -24,12 +24,21 @@ lora-graphql directives > directives.graphql
 
 or import `directiveTypeDefs` from `@loradb/lora-graphql`.
 
+A directive applies where the tables below say, and nowhere else. One in a
+position the model would not apply (an `@authorization` on an interface
+field, a `@selectable` on a field of an object type without `@node`, a
+`@limit` on a scalar field) is a model error at startup naming the
+directive and the position, never silently ignored. `DIRECTIVE_POSITIONS`
+in
+[`src/model/positions.ts`](https://github.com/lora-db/lora/blob/main/packages/lora-graphql/src/model/positions.ts)
+is the full table.
+
 ## Model directives
 
 | Directive | On | Meaning |
 | --- | --- | --- |
 | `@node(labels:, plural:)` | type | A node label set. Default: the type name. The first label is the primary one: reads match on it, indexes and constraints go on it, and no two types may share it. Creates set every label. `plural` names the root fields |
-| `@key(generate:)` | field | Required, unique and immutable. A non-null `String`, `ID`, `Int` or `BigInt`, exactly one per type. The sort tie-breaker, cursor anchor and mutation address. `generate: true` (on `ID` or `String`) fills a UUID on create when the input leaves it out |
+| `@key(generate:, scope:, separator:)` | field | Required, unique and immutable. A non-null `String`, `ID`, `Int` or `BigInt`, exactly one per type. The sort tie-breaker, cursor anchor and mutation address. `generate: true` (on `ID` or `String`) fills a UUID on create when the input leaves it out. `scope: VIEWER` makes a created key start with the caller's `@viewer` claim and `separator` (default `:`), as in `lou:tomorrowland`. See [owner-scoped keys](/docs/graphql/authorization#owner-scoped-keys) |
 | `@unique` | field | A uniqueness constraint |
 | `@index(kind: RANGE \| TEXT \| POINT)` | field | An explicit index. Usually inferred from `@filterable` and `@sortable` |
 | `@relationship(...)` | field | An edge to a `@node` type, interface or union. See [below](#relationship) |
@@ -38,8 +47,8 @@ or import `directiveTypeDefs` from `@loradb/lora-graphql`.
 | `@alias(property:)` | field | The API name differs from the stored property |
 | `@private` | field | Stored, never exposed |
 | `@readonly` | field | Exposed, never client-settable |
-| `@settable(onCreate:, onUpdate:)` | field | Which mutations may set it, for example set once on create |
-| `@selectable(onRead:, onAggregate:)` | field | `onRead: false` makes a field write-only |
+| `@settable(onCreate:, onUpdate:)` | field | Which mutations may set it, for example set once on create. On a relationship: whether the inputs offer it. On a relationship property: `onUpdate: false` also refuses a re-connect that would change it |
+| `@selectable(onRead:, onAggregate:)` | field | `onRead: false` makes a field write-only. On a relationship property it leaves the edge type too (`onAggregate: false`: the edge aggregates) |
 | `@default(value:)` | field | Stored on create when the input leaves the field out |
 | `@timestamp(operations: [CREATE, UPDATE])` | field | Set to the current time; never client-settable. On `DateTime`, `LocalDateTime` or `Date` |
 | `@populatedBy(callback:, operations: [CREATE, UPDATE])` | field | Computed on write by a named callback from the `callbacks` option; never client-settable. See [below](#populatedby) |
@@ -105,6 +114,11 @@ type Festival @node {
   over them, or an object type without `@node` whose fields are read from a
   returned map.
 - Arguments must be scalars or enums, and `jwt` is reserved.
+- SDL argument defaults (`peers(limit: Int = 2)`) are kept in the
+  published schema and applied at execution, on graphql 16 and 17. The
+  engine refuses <CypherCode code="LIMIT null" /> and
+  <CypherCode code="SKIP null" />, so a client passing an explicit
+  `limit: null` gets an error instead of every row.
 - On `Query` and object types the statement may not write. On `Mutation` it
   may, but the library cannot know what it wrote: its `onWrite` event is
   broad, and so are its subscription events unless `changeFeed: true`
@@ -197,12 +211,46 @@ with `@mutation(CREATE)`; declare it nullable there.)
 | `@groupBy` | field | A grouping key of `<plural>Grouped(by:)`: a readable, non-list, non-point field. Needs `@query(aggregate: true)` |
 | `@limit(default:, max:)` | type, interface, union, list relationship | Page size bounds. May only lower the global `max` |
 | `@relayId` | `@key` field | Adds an opaque global `id` (type name and key), the `Node` interface and `node(id:)`. The type may not have its own `id` field |
-| `@authentication(operations:, jwt:)` | type, field | Needs an authenticated request whose claims satisfy `jwt` |
-| `@authorization(filter:, validate:)` | type (filter and validate), field (validate) | Row-level rules, compiled into statements |
+| `@authentication(operations:, jwt:)` | type, field | Needs an authenticated request whose claims satisfy `jwt`. On a relationship field it also guards writes through the field |
+| `@authorization(filter:, validate:, bypass:, public:, mask:)` | type (filter, validate, bypass, public), field (validate, mask) | Row-level rules, compiled into statements. See [below](#authorization-arguments) |
+| `@authorizationRules(rules: [{ name, where }])` | `extend schema` | Named claims-only rules, used in any rule as `{ rule: "name" }` |
+| `@authorizationRule(name:, where:)` | `@node` type, repeatable | A named rule of this type, found before the schema's rules |
+| `@authorizationDefaults(bypass:, mutations:)` | `extend schema` | A claims-only test that skips every filter and validate rule, and the default write rule of `@mutation` types that declare none |
 | `@jwt`, `@jwtClaim(path:)` | type, field | The claims shape; rules may only use declared claims |
+| `@viewer(type:, field:)` | `@jwt` claim | The claim naming the caller's node, by a `@key` or `@unique` field of `type`. Enables `isViewer` and `viewer` in rules |
 
-The [authorization](/docs/graphql/authorization) page covers the last three
-in depth.
+The [authorization](/docs/graphql/authorization) page covers the
+authorization directives in depth.
+
+### @authorization arguments {#authorization-arguments}
+
+| Argument | On | Meaning |
+| --- | --- | --- |
+| `filter` | type | Rules that hide nodes the caller may not see. Default operations `[READ, UPDATE, DELETE]` |
+| `validate` | type, field | Rules that fail the request with `FORBIDDEN`. Default operations `[READ, CREATE, UPDATE, DELETE]`, `when: [BEFORE, AFTER]`. On a relationship field, also the relationship operations below |
+| `bypass` | type | `false` keeps the schema's `@authorizationDefaults(bypass:)` from skipping this type's rules |
+| `public` | `@mutation` type | Operations deliberately open to every caller, so `check()` does not report them as unguarded |
+| `mask` | scalar field of a `@node` type (not the `@key`) | `[{ unless, value }]`: a row failing `unless` reads the field as `value` (`null` when left out) instead of failing the request. See [field masks](/docs/graphql/authorization#field-masks) |
+
+Each `filter` and `validate` rule takes `requireAuthentication`. It has no
+default in the SDL, but a rule that leaves it out still behaves as `true`:
+without a token the rule denies.
+
+`AuthOperation` values:
+
+| Value | Meaning |
+| --- | --- |
+| `READ`, `CREATE`, `UPDATE`, `DELETE` | The node operations |
+| `CREATE_RELATIONSHIP`, `DELETE_RELATIONSHIP` | Connects and disconnects, for filter rules on both ends and for `@authentication` |
+| `SUBSCRIBE` | Subscriptions (`@authentication`) |
+| `CONNECT` | On a relationship field: creating one of its relationships (connect, nested create) |
+| `DISCONNECT` | On a relationship field: removing one of its relationships (disconnect) |
+| `UPDATE_EDGE` | On a relationship field: setting properties on an existing relationship (edge update, re-connect) |
+| `READ_EDGE` | On a relationship field: reading, filtering, sorting or aggregating its properties |
+
+The four relationship operations take `validate` rules over `source`,
+`target` and `edge`. See
+[rules on relationship fields](/docs/graphql/authorization#relationship-rules).
 
 ### Filter operators
 
@@ -230,7 +278,11 @@ In a `where`, operators are camelCase fields: `eq`, `in`, `lt`, `lte`,
 - `caseInsensitive` nests the string operators: `{ caseInsensitive: { eq: "sunland" } }`.
   It offers `eq`, plus whichever of `in`, `contains`, `startsWith` and
   `endsWith` the field also lists.
-- `withinBBox` takes `{ lowerLeft, upperRight }`, edges included.
+- `withinBBox` takes `{ lowerLeft, upperRight }`, edges included. On
+  WGS-84 points, a `lowerLeft.longitude` greater than
+  `upperRight.longitude` means the box crosses the antimeridian: a
+  `lowerLeft` longitude of 170 and an `upperRight` longitude of -170 cover
+  the 20 degrees across the date line. The POINT index still answers it.
 - `distance` takes `{ from, lte }`, in metres for geographic points.
 - Points are given as `PointInput` (`{ longitude, latitude, height }`) or
   `CartesianPointInput` (`{ x, y, z }`).

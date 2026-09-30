@@ -189,6 +189,14 @@ This is the anti-join pattern — cheaper than
 `OPTIONAL MATCH … WHERE other IS NULL` when you don't need the optional
 result.
 
+When the subquery's start node is not bound by the outer row, give it
+an inline property map, for example
+<CypherCode code="EXISTS { MATCH (v:Person {subject: $s}) WHERE v.verified }" />.
+The same applies to `COUNT { }`. LoraDB seeks that property through an
+index, as `MATCH` does, instead of scanning the label once per outer
+row. See
+[Performance → Query shape notes](../performance#unbound-start-nodes-in-pattern-subqueries).
+
 ## List predicates
 
 Ask a question about the elements of a list. Covered fully in

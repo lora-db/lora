@@ -111,6 +111,25 @@ WHERE geo.within_bbox(
 )
 RETURN v`} />
 
+### Boxes across the antimeridian
+
+On WGS-84 points, a `lowerLeft.longitude` greater than
+`upperRight.longitude` means the box crosses the antimeridian (the
+180° meridian). The box then covers longitudes
+`[lowerLeft.longitude, 180]` and `[-180, upperRight.longitude]`, the
+same rule as Neo4j's `point.withinBBox`. Latitude is still an ordinary
+`[lowerLeft.latitude, upperRight.latitude]` range.
+
+<QueryCodeBlock code={String.raw`// Fiji (178°E) and Samoa (172°W) are inside; Paris is not
+WITH {longitude: 170, latitude: -60}::POINT AS ll,
+     {longitude: -170, latitude: 60}::POINT AS ur
+RETURN geo.within_bbox({longitude: 178.0, latitude: -18.0}::POINT, ll, ur) AS fiji,
+       geo.within_bbox({longitude: -172.0, latitude: -13.8}::POINT, ll, ur) AS samoa,
+       geo.within_bbox({longitude: 2.35, latitude: 48.85}::POINT, ll, ur) AS paris`} />
+
+Cartesian boxes have no wrap-around: their corners are normalised to
+min/max on each axis, so the two corners may be given in either order.
+
 POINT indexes can accelerate bounding-box and radius predicates when
 the query is scoped to a matching label or relationship type:
 
@@ -118,6 +137,10 @@ the query is scoped to a matching label or relationship type:
 MATCH (v:Venue)
 WHERE geo.within_bbox(v.location, $southwest, $northeast)
 RETURN v`} />
+
+A box across the antimeridian still uses the index: it runs as two
+seeks, one on each side of the 180° meridian, for node and relationship
+POINT indexes.
 
 ## Component access
 

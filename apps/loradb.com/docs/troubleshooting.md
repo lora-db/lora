@@ -205,6 +205,7 @@ Common mistakes:
 | `DeleteNodeWithRelationships` | Use [`DETACH DELETE`](./queries/set-delete#detach-delete) instead of plain `DELETE`. |
 | `MissingRelationshipType` | `CREATE (a)-[]->(b)` — a [relationship](./concepts/relationships) must have a type. |
 | `ReadOnlyCreate` | Should not occur via normal paths; file a bug if you see this. |
+| `LIMIT expects a non-negative integer, got null` | `SKIP` / `LIMIT` got `null` (often an unbound parameter), a negative number or a fraction. See [below](#limit-expects-a-non-negative-integer-got-null). |
 
 ### Queries return empty results
 
@@ -914,6 +915,29 @@ to `null`, which silently filters out every row.
 
 <QueryCodeBlock code={String.raw`MATCH (u:User) WHERE u.id = $id RETURN u
 // If $id is not bound, this returns zero rows without raising`} />
+
+### `LIMIT expects a non-negative integer, got null`
+
+**Symptom:** A paginated query fails with
+`LIMIT expects a non-negative integer, got null` (or the same message
+for `SKIP`).
+
+**Likely cause:** The `$limit` / `$offset` parameter was not bound, or
+the host passed `null`, a negative number or a fraction. `SKIP` and
+`LIMIT` take a non-negative integer (an integral float such as `10.0`
+is accepted). As in Neo4j, `LIMIT null` is an error, not "no limit";
+older LoraDB releases treated it as unlimited.
+
+**Fix:** Bind an integer on every call. To make the limit optional,
+build the query without the `LIMIT` clause when the caller wants every
+row.
+
+<QueryCodeBlock code={String.raw`MATCH (u:User)
+RETURN u
+ORDER BY u.id
+SKIP $offset
+LIMIT $limit
+// Both $offset and $limit must be bound to non-negative integers`} />
 
 ### `= null` never matches
 

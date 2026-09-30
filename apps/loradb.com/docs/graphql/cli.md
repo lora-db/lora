@@ -1,7 +1,7 @@
 ---
 title: lora-graphql CLI
 sidebar_label: CLI
-description: Every lora-graphql command (print, directives, requirements, check, compile, analyze, diff and migrate neo4j), with its flags, output and exit codes, and how to run them in CI.
+description: Every lora-graphql command (print, access, directives, requirements, check, compile, analyze, diff and migrate neo4j), with its flags, output and exit codes, and how to run them in CI.
 ---
 
 # The lora-graphql CLI
@@ -17,6 +17,7 @@ npx lora-graphql <command> [arguments]
 | Command | Does | Needs a database |
 | --- | --- | --- |
 | [`print`](#print) | The public SDL clients see | No |
+| [`access`](#access) | Who may do what, per type, field and kind of caller | No |
 | [`directives`](#directives) | The directive definitions, for editors | No |
 | [`requirements`](#requirements) | Constraints and indexes the API needs | No |
 | [`check`](#check) | CI gate: model, lint, `@cypher` statements and plans | In-memory, or `--database` |
@@ -51,6 +52,30 @@ lora-graphql print schema.graphql
 Prints the generated API as SDL, sorted, without model directives:
 exactly what clients can query. Review it before shipping, and commit it
 if you want API changes to show up in code review.
+
+## access
+
+```bash
+lora-graphql access schema.graphql [--json]
+```
+
+Prints who may do what: for every type and guarded field, each operation
+as each kind of caller, with the verdict and the rules that decide it.
+
+```text
+Post           READ    anonymous      filtered         filter[0], filter[1], filter[2], filter[3]
+Post           READ    roles:admin    allowed          filter[0], filter[1], filter[2], filter[3]
+Post           CREATE  anonymous      unauthenticated  @authentication, validate[0]
+Post.royalties READ    authenticated  validated        validate[0]
+```
+
+Principals are `anonymous`, `authenticated` (a token with no roles), and
+one per claim value the rules test with `includes`, `eq` or `in`. Verdicts
+are `allowed`, `filtered` (only rows a filter admits), `validated`
+(checked per row, `FORBIDDEN` on failure), `masked`, `denied` and
+`unauthenticated`. The output is stable: commit it, or the `--json` form,
+and review access changes as diffs. The same list comes from
+[`lora.accessMatrix()`](./api-reference#accessmatrix).
 
 ## directives
 
@@ -109,7 +134,8 @@ The CI gate. By default it opens an in-memory LoraDB, creates everything
 the API needs, and then:
 
 1. validates the model and prints its warnings;
-2. prints lint notes;
+2. prints lint notes, and fails on `@mutation` types whose generated writes
+   no rule guards;
 3. plans every `@cypher` statement with the engine;
 4. compiles every **query** in the operation files and plans each
    statement, reporting any that does not seek the way it was compiled
@@ -118,7 +144,7 @@ the API needs, and then:
 It exits `1` on any error, and `0` otherwise:
 
 ```text
-lint     Festival: has mutations (CREATE, UPDATE, DELETE) but no @authentication or @authorization: any caller that reaches the API can write it
+lint     Doc: filter[0] holds for every authenticated caller: it only keeps out anonymous ones (use @authentication for that)
 lint     Festival.name: CASE_INSENSITIVE compares lowercased values and cannot use an index: every such filter scans the label
 ok       2 root field(s) in 2 operation(s) seek as expected
 ```
@@ -128,7 +154,21 @@ ok       2 root field(s) in 2 operation(s) seek as expected
 | `warning` | A model warning, for example an unused `@cypher` argument | No |
 | `lint` | A valid but costly or risky choice | No |
 | `unused` | An index in the database that the API does not need | No |
-| `error` | A missing requirement, a rejected `@cypher` statement, an operation that does not compile, a plan finding, or a plan that differs from the baseline | Yes |
+| `error` | An unguarded `@mutation` type, a missing requirement, a rejected `@cypher` statement, an operation that does not compile, a plan finding, or a plan that differs from the baseline | Yes |
+
+An unguarded `@mutation` type is one with a generated write (`CREATE`,
+`UPDATE`, `DELETE`) that no `@authentication`, `@authorization` rule or
+`@authorizationDefaults(mutations:)` default covers: any caller that
+reaches the API could make it. Declare an intended one with
+`@authorization(public: [CREATE, ...])`.
+
+The authorization lints (they do not fail the run) flag:
+
+- a filter rule every signed-in caller passes, which only keeps out
+  anonymous callers;
+- a rule whose default `requireAuthentication: true` refuses anonymous
+  callers an `OR` branch that needs no claims;
+- field rules the schema's bypass skips for the callers passing it.
 
 ### Operations
 

@@ -54,6 +54,7 @@ options do not supply.
 | `maskErrors` | `NODE_ENV === "production"` | Clients get `DATABASE_ERROR` and an `id` instead of the engine's message |
 | `guards` | see [guards](#documentguards) | Document limits for `execute()` and `persist()`. `false` turns them off |
 | `persistedOnly` | `false` | `execute()` refuses `source` and runs persisted operations only |
+| `mutationTransaction` | `"field"` | `"operation"`: `execute()` runs every root field of a mutation in one transaction, rolled back (with `data: null`) when any fails |
 
 ### Extensibility
 
@@ -191,12 +192,29 @@ driver points at, as it is: it does not create indexes. The report:
 | --- | --- | --- |
 | `ok` | `true` when nothing below fails | |
 | `warnings` | Model warnings | No |
-| `lint` | Valid but costly or risky choices | No |
+| `lint` | Valid but costly or risky choices, authorization lints included | No |
+| `security` | `@mutation` types with generated writes no rule guards (declare intended ones with `@authorization(public: [...])`) | Yes |
 | `cypher` | `@cypher` statements the engine rejects, or that write from a query | Yes |
 | `missing` | Constraints and indexes the database lacks | Yes |
 | `unused` | Indexes the database has that the API does not need | No |
 | `plans` | Plan reports per operation and root field | Yes, if any has findings |
 | `errors` | Operations that failed to compile | Yes |
+
+### accessMatrix()
+
+```ts
+accessMatrix(): AccessEntry[]
+// { type, field?, operation, principal, verdict, by }
+```
+
+Who may do what, read off the model: for every type and guarded field,
+each operation as each kind of caller (`anonymous`, `authenticated`, and
+one principal per claim value the rules test, such as `roles:admin`). The
+`verdict` is `allowed`, `filtered`, `validated`, `masked`, `denied` or
+`unauthenticated`, and `by` names the rules that decide it (`filter[0]`,
+`validate[1]`, `@authentication`, `bypass`, `public`). The order is stable,
+so a snapshot in CI turns access changes into reviewable diffs. The CLI
+prints it with [`lora-graphql access`](./cli#access).
 
 ### explain(document, variables?, options?)
 

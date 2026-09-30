@@ -33,7 +33,12 @@ are **evaluated after** projection and
 ```
 
 `n` must be a non-negative integer literal or a parameter that resolves
-to one. Negative or non-integer `SKIP` / `LIMIT` is a semantic error.
+to one. An integral float such as `10.0` is accepted. A negative number,
+a fraction, or `null` is an error, as in Neo4j. That includes an omitted
+parameter: if the host never binds `$limit`, then
+<CypherCode code="LIMIT $limit" /> fails with
+`LIMIT expects a non-negative integer, got null` instead of returning
+every row.
 
 ## Order a single column
 
@@ -104,6 +109,11 @@ RETURN n
 ORDER BY n.id
 SKIP $offset
 LIMIT $page_size`} />
+
+Bind both parameters on every call. An unbound `$page_size` resolves to
+`null`, and `LIMIT null` is an error rather than "no limit". To make
+the limit optional, leave the `LIMIT` clause out of the query text, or
+pass a large explicit number from the host.
 
 ### Stable pagination
 

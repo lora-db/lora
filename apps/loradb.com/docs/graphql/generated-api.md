@@ -73,6 +73,12 @@ interfaces and unions.
 - **Absent and `null` filters are left out of the statement**, so a filter
   bound to an unset variable costs nothing. `eq: null` does not mean "is
   null": use `isNull: true`, where the field offers `IS_NULL`.
+- An `OR` branch left empty that way is left out of the `OR`, and an `OR`
+  or `NOT` with nothing left is left out entirely: an unset variable never
+  widens a filter to every row. With
+  `OR: [{ region: { in: $r } }, { country: { in: $c } }]` and only `$r`
+  set, the filter is `region IN $r`. A literal `OR: []` still matches
+  nothing.
 - `count` takes `eq`, `lt`, `lte`, `gt` and `gte`. `count` and `single`
   count related nodes once each, however many relationships lead to them.
   `all` holds on an empty set, and a missing property fails it.
@@ -226,7 +232,8 @@ type Event @node @fulltext(indexes: [{ fields: ["title", "summary"] }]) {
 ```
 
 - Full-text queries AND their terms, fold case and accents, and treat a
-  trailing `*` as a prefix.
+  trailing `*` as a prefix. A `[String!]` field in `@fulltext` indexes
+  each of its strings.
 - Vector search takes a query `vector`, or the key of a node whose
   embedding to start from (`to`, which is left out of the results).
 - A search index returns its top candidates before `where` applies. With a
@@ -235,6 +242,9 @@ type Event @node @fulltext(indexes: [{ fields: ["title", "summary"] }]) {
 - `searchEventsConnection` and `similarEventsConnection` page forward
   with `first` and `after`. Search connections page by keyset on score and
   key. Vector connections page within `4 × @limit(max:)` candidates.
+- Search connections take `totalCount`: every match after `where` and the
+  read rules, whatever the page (a vector search counts within its
+  candidate window). A selection of only `totalCount` reads no page.
 - Read rules apply to every result. Both index kinds are created by
   `assertSchema({ create: true })`.
 
@@ -374,7 +384,15 @@ commits, that:
 - `@authorization` validate rules hold, type and field level (`FORBIDDEN`).
 
 Any failure rolls the whole mutation back. A mutation creates or deletes at
-most `maxBatch` nodes. `info` reports `nodesCreated`, `nodesUpdated`,
+most `maxBatch` nodes.
+
+Atomicity is per root field: in an operation with several root fields,
+each runs in its own transaction, so a later failure leaves the earlier
+ones committed. With `mutationTransaction: "operation"`, `execute()`
+(persisted operations included) runs every root field of a mutation in one
+transaction, committed only when the operation reports no error; otherwise
+it rolls back and returns `data: null`. With another server, put a
+`lora.begin()` transaction in the context (see [Transactions](#transactions)). `info` reports `nodesCreated`, `nodesUpdated`,
 `nodesDeleted`, `relationshipsCreated` and `relationshipsDeleted`.
 
 Deletes follow `@relationship(onDelete:)`: `DETACH` (default) removes the

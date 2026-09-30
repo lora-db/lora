@@ -79,6 +79,10 @@ MATCH (n) RETURN n ORDER BY n.last ASC, n.first DESC;
 MATCH (n) RETURN n ORDER BY n.name DESC SKIP 5 LIMIT 10;
 MATCH (n) RETURN n LIMIT 1`} />
 
+`SKIP` and `LIMIT` take a non-negative integer. `null` (for example an
+unbound `$limit`), a negative number or a fraction is an error, not
+"no limit".
+
 ### Map projection
 
 Shape a node or relationship into a map with only the keys you want —
