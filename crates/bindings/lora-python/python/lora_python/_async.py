@@ -13,6 +13,15 @@ service other coroutines while the engine runs.
 This is the pragmatic, well-understood pattern for async-wrapping a
 CPU-bound Rust function in Python. It requires no unsafe lifetime
 juggling and stays trivially debuggable.
+
+A small or saturated executor delays writes but cannot deadlock them.
+Every executor call is self-contained: ``execute`` and ``transaction``
+take the writer lock, run, commit and release it within one native call
+on one thread, with the GIL released, and never wait for another
+executor task. The writer holding the lock is therefore always running,
+however many others wait on executor threads. The one call that keeps
+the lock across awaits, a mutating ``stream``, opens on a dedicated
+thread and pulls its rows from the native stream's own thread.
 """
 
 from __future__ import annotations
@@ -21,6 +30,7 @@ import asyncio
 import contextvars
 import functools
 import sys
+import threading
 from typing import Any, AsyncIterator, Callable, Iterable, Mapping, Optional, TypeVar
 
 from ._native import Database as _Database
@@ -45,6 +55,46 @@ else:  # pragma: no cover — exercised in the 3.8 CI leg
         return await loop.run_in_executor(
             None, functools.partial(ctx.run, func, *args, **kwargs)
         )
+
+
+def _hand_over(future: "asyncio.Future[Any]", stream: Any, error: Optional[BaseException]) -> None:
+    """Settle an opening stream's future on the loop (see ``_open_stream``)."""
+    if future.cancelled():
+        if stream is not None:
+            stream.close()  # nobody will iterate it: roll back, free the lock
+    elif error is not None:
+        future.set_exception(error)
+    else:
+        future.set_result(stream)
+
+
+def _open_stream(
+    inner: _Database,
+    query: str,
+    params: Optional[dict],
+    loop: asyncio.AbstractEventLoop,
+    opened: "asyncio.Future[Any]",
+) -> None:
+    """Open a mutating stream on a thread of its own.
+
+    Opening waits (GIL released) for the writer lock, which another stream
+    or writer may hold for a while. Waiting on the event loop blocked the
+    loop, often the only thread that could finish the stream holding the
+    lock: a deadlock. Waiting on the default executor would park one of
+    its few threads per waiting stream. This thread only waits for the
+    lock, hands the open stream to the loop and exits.
+    """
+    stream, error = None, None
+    try:
+        stream = inner.stream(query, params)
+    except BaseException as caught:  # noqa: BLE001 - handed to the awaiting coroutine
+        error = caught
+    try:
+        loop.call_soon_threadsafe(_hand_over, opened, stream, error)
+    except RuntimeError:
+        # The loop closed meanwhile; nobody is waiting for the stream.
+        if stream is not None:
+            stream.close()
 
 
 class AsyncDatabase:
@@ -122,13 +172,34 @@ class AsyncDatabase:
     ) -> AsyncIterator[Mapping[str, Any]]:
         """Yield query rows asynchronously.
 
-        The native binding keeps a Rust ``QueryStream`` open and pulls one
-        row for each async iteration step.
+        Rows are pulled one per iteration step, never ahead. A read-only
+        stream reads a snapshot and never waits for a lock, so it opens
+        on the event loop. A mutating stream takes the writer lock when it
+        opens, so it opens on a thread of its own (``_open_stream``), and
+        holds the lock until it is exhausted (commit) or closed early
+        (rollback: ``break``, an exception, cancellation). Its rows come
+        from the native stream's own thread, which holds the lock and never
+        waits for the loop or the executor.
         """
-        stream = self._inner.stream(query, dict(params) if params is not None else None)
-        for row in stream:
-            yield row
-            await asyncio.sleep(0)
+        params = dict(params) if params is not None else None
+        if self._inner._stream_is_mutating(query):
+            loop = asyncio.get_running_loop()
+            opened = loop.create_future()
+            threading.Thread(
+                target=_open_stream,
+                args=(self._inner, query, params, loop, opened),
+                name="lora-stream-open",
+                daemon=True,
+            ).start()
+            stream = await opened
+        else:
+            stream = self._inner.stream(query, params)
+        try:
+            for row in stream:
+                yield row
+                await asyncio.sleep(0)
+        finally:
+            stream.close()
 
     async def transaction(
         self,

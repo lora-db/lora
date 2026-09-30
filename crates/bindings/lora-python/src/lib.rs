@@ -33,7 +33,10 @@ use lora_database::{
 
 mod errors;
 mod from_python;
+mod stream;
 mod to_python;
+
+use stream::NativeStream;
 
 use errors::{lora_query_err_from_anyhow, InvalidParamsError, LoraError, LoraQueryError};
 use from_python::{
@@ -234,12 +237,13 @@ impl Database {
         query_profile_to_py(py, &prof)
     }
 
-    /// Return an iterator over result rows. The query is materialized by
-    /// `execute()` first, then Python consumes the row list lazily.
+    /// Return an iterator that pulls result rows one at a time. A mutating
+    /// query holds the writer lock until the stream is exhausted (commit)
+    /// or closed (rollback).
     #[pyo3(signature = (query, params=None))]
     fn stream<'py>(
         &self,
-        _py: Python<'py>,
+        py: Python<'py>,
         query: String,
         params: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<PyQueryStream> {
@@ -248,12 +252,26 @@ impl Database {
             _ => BTreeMap::new(),
         };
         let db = self.inner()?;
-        let stream = unsafe { db.stream_with_params_owned(&query, params_map) }
+        // A mutating stream waits here for the writer lock, so the GIL is
+        // released: the thread holding the lock may need it to finish.
+        let (stream, columns) = py
+            .allow_threads(move || NativeStream::open(&db, &query, params_map))
             .map_err(lora_query_err_from_anyhow)?;
         Ok(PyQueryStream {
-            _db: db,
-            stream: Some(stream),
+            columns,
+            stream: Mutex::new(Some(stream)),
         })
+    }
+
+    /// Whether `stream(query)` would open a mutating stream, i.e. one that
+    /// holds the writer lock until it is exhausted or closed. Compiles the
+    /// query into the plan cache (the stream then reuses the plan) without
+    /// running it. Used by `AsyncDatabase.stream` to pick where to open it.
+    fn _stream_is_mutating(&self, py: Python<'_>, query: String) -> PyResult<bool> {
+        let db = self.inner()?;
+        py.allow_threads(move || db.explain(&query, None))
+            .map(|plan| plan.shape.is_mutating())
+            .map_err(lora_query_err_from_anyhow)
     }
 
     /// Execute statement objects inside one native transaction.
@@ -300,9 +318,11 @@ impl Database {
         Ok(out)
     }
 
-    /// Drop every node and relationship. Constant-time.
-    fn clear(&self) -> PyResult<()> {
-        self.inner()?.clear();
+    /// Drop every node and relationship. Constant-time, but waits for the
+    /// writer lock, so it runs with the GIL released.
+    fn clear(&self, py: Python<'_>) -> PyResult<()> {
+        let db = self.inner()?;
+        py.allow_threads(move || db.clear());
         Ok(())
     }
 
@@ -481,43 +501,61 @@ impl Database {
     }
 }
 
-#[pyclass(name = "QueryStream", module = "lora_python._native", unsendable)]
+/// A row stream. Thread-safe: a mutating stream runs on its own thread
+/// (see `stream.rs`), so `next()`, `close()` and the final drop may happen
+/// on any Python thread, before or after the `Database` is closed.
+#[pyclass(name = "QueryStream", module = "lora_python._native")]
 pub struct PyQueryStream {
-    _db: Arc<InnerDatabase<InMemoryGraph>>,
-    stream: Option<lora_database::QueryStream<'static>>,
+    columns: Vec<String>,
+    stream: Mutex<Option<NativeStream>>,
+}
+
+impl PyQueryStream {
+    fn slot(&self) -> PyResult<std::sync::MutexGuard<'_, Option<NativeStream>>> {
+        self.stream
+            .lock()
+            .map_err(|_| LoraQueryError::new_err("query stream lock poisoned"))
+    }
 }
 
 #[pymethods]
 impl PyQueryStream {
     fn columns(&self) -> PyResult<Vec<String>> {
-        let stream = self
-            .stream
-            .as_ref()
-            .ok_or_else(|| LoraQueryError::new_err("query stream is closed"))?;
-        Ok(stream.columns().to_vec())
+        match self.slot()?.as_ref() {
+            Some(_) => Ok(self.columns.clone()),
+            None => Err(LoraQueryError::new_err("query stream is closed")),
+        }
     }
 
-    fn close(&mut self) {
-        self.stream.take();
+    /// Close the stream. An unfinished mutating stream rolls back and
+    /// releases the writer lock before this returns.
+    fn close(&self) -> PyResult<()> {
+        let stream = self.slot()?.take();
+        drop(stream);
+        Ok(())
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
-    fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
-        let stream = match self.stream.as_mut() {
-            Some(stream) => stream,
-            None => return Ok(None),
+    fn __next__<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let mut slot = self.slot()?;
+        let Some(stream) = slot.as_mut() else {
+            return Ok(None);
         };
-        match stream.next_row() {
+        // Pulling keeps the GIL: it never waits for a lock (a mutating
+        // stream's actor took the writer lock when it opened and needs no
+        // GIL to answer), and releasing the GIL per row would make every
+        // row queue for it behind busy Python threads.
+        match stream.next() {
             Ok(Some(row)) => Ok(Some(row_to_py_dict(py, &row)?)),
             Ok(None) => {
-                self.stream.take();
+                slot.take();
                 Ok(None)
             }
             Err(e) => {
-                self.stream.take();
+                slot.take();
                 Err(lora_query_err_from_anyhow(e))
             }
         }

@@ -105,6 +105,31 @@ the Python GIL for the duration of engine work, so other coroutines on the
 event loop can progress while a query runs. A dedicated test proves the
 event loop continues ticking during a 2 000-node `MATCH`.
 
+## Concurrency, transactions and streams
+
+Writers serialize on the database's writer lock; readers never wait for
+it. Every call that may wait for the lock (`execute`, `transaction`,
+`clear`, `load_snapshot`, opening a `stream`) waits with the GIL released,
+so the thread holding the lock always keeps running.
+
+- `execute()` and `transaction([...])` take the lock, run, commit and
+  release it within one call on one thread. On `AsyncDatabase` they run on
+  the loop's default executor; a small or saturated executor delays writes
+  but cannot deadlock them, since the writer holding the lock never needs
+  an executor thread to finish.
+- A mutating `stream()` (one whose query writes) holds the writer lock
+  from open until it is exhausted (commit) or closed early (rollback).
+  It runs on a native thread of its own, so a stream can be pulled,
+  closed or garbage-collected on any thread, and may outlive the
+  `Database` it came from. `AsyncDatabase.stream` opens it on a dedicated
+  thread, never on the event loop, and pulls one row per iteration step.
+- While your own code holds a mutating stream open, do not wait on
+  another write to the same database from that same thread or coroutine:
+  that write waits for the lock your stream holds. On `AsyncDatabase`,
+  avoid awaiting other database calls inside the loop body of a mutating
+  stream when many writers may be queued on the executor; collect the
+  rows first, or use `transaction([...])`.
+
 ## Typed value model
 
 Same conceptual contract as `lora-node` / `lora-wasm`:

@@ -53,6 +53,7 @@ class Database:
         query: str,
         params: Optional[Mapping[str, Any]] = None,
     ) -> Iterator[Mapping[str, Any]]: ...
+    def _stream_is_mutating(self, query: str) -> bool: ...
     def transaction(
         self,
         statements: Iterable[Mapping[str, Any]],
@@ -123,7 +124,12 @@ class Database:
     def __repr__(self) -> str: ...
 
 class QueryStream(Iterator[Mapping[str, Any]]):
-    """Native pull-based query stream."""
+    """Native pull-based query stream.
+
+    A mutating stream holds the writer lock until it is exhausted (commit)
+    or closed (rollback). Safe to pull, close or drop on any thread, and
+    after the ``Database`` is closed.
+    """
 
     def columns(self) -> list[str]: ...
     def close(self) -> None: ...
