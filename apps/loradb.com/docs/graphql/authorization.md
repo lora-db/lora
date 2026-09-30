@@ -292,7 +292,9 @@ type Post @node {
 - Field-level `@authorization(validate:)` guards one field. Reading it on a
   row that fails is `FORBIDDEN`, filtering by it only matches rows that
   pass, sorting or aggregating by it is refused, and writing it checks the
-  rule.
+  rule. A write is what the input sets: a create that leaves the field out
+  is not checked against it, even when `@default` or `@populatedBy` fills
+  it.
 - Field-level `@authentication` also guards filtering, sorting and
   aggregating on the field.
 - Relationship and `@cypher` fields take field-level `@authorization` with

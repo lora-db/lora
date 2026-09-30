@@ -1247,3 +1247,87 @@ describe("G-20: a create under a hidden key answers as under a free one", () => 
     t.close();
   });
 });
+
+describe("G-22: a field's CREATE rule guards what the input sets", () => {
+  const rule = `@authorization(validate: [{ operations: [CREATE, UPDATE], where: { jwt: { roles: { includes: "admin" } } } }])`;
+  const typeDefs =
+    J +
+    `type User @node @mutation {
+      key: String! @key
+      verified: Boolean! @default(value: false) ${rule}
+      score: Int! @populatedBy(callback: "zero", operations: [CREATE]) ${rule}
+      name: String
+    }`;
+  const zero = () => 0;
+  const make = () => createTestLoraGraphQL({ typeDefs, callbacks: { zero } });
+  const users = (t: Test) =>
+    cypher(
+      t,
+      "MATCH (u:User) RETURN u.key AS key, u.verified AS verified, u.score AS score ORDER BY key",
+    );
+
+  test("allowed: server-filled @default and @populatedBy values are not the caller's write", async () => {
+    const t = await make();
+    const r = await t.run(
+      `mutation { createUsers(input: [{ key: "u", name: "U" }]) { users { key verified score } } }`,
+      {},
+      member,
+    );
+    expect(r.errors).toBeUndefined();
+    expect(r.data).toEqual({
+      createUsers: { users: [{ key: "u", verified: false, score: 0 }] },
+    });
+    const up = await t.run(
+      `mutation { upsertUsers(input: [{ key: "v" }]) { users { key verified } } }`,
+      {},
+      member,
+    );
+    expect(up.errors).toBeUndefined();
+    t.close();
+  });
+
+  test("allowed: an admin sets the field", async () => {
+    const t = await make();
+    const r = await t.run(
+      `mutation { createUsers(input: [{ key: "u", verified: true }]) { users { verified } } }`,
+      {},
+      admin,
+    );
+    expect(r.data).toEqual({ createUsers: { users: [{ verified: true }] } });
+    t.close();
+  });
+
+  test("refused: a non-admin who sets it, also next to a row that does not", async () => {
+    const t = await make();
+    for (const input of [
+      `[{ key: "u", verified: false }]`,
+      `[{ key: "u" }, { key: "w", verified: true }]`,
+    ]) {
+      const r = await t.run(
+        `mutation { createUsers(input: ${input}) { users { key } } }`,
+        {},
+        member,
+      );
+      expect(codes(r)).toEqual(["FORBIDDEN"]);
+    }
+    expect(await users(t)).toEqual([]);
+    t.close();
+  });
+
+  test("refused: the UPDATE rule still guards updates", async () => {
+    const t = await make();
+    await t.run(
+      `mutation { createUsers(input: [{ key: "u" }]) { users { key } } }`,
+      {},
+      member,
+    );
+    const r = await t.run(
+      `mutation { updateUser(key: "u", update: { verified: true }) { user { verified } } }`,
+      {},
+      member,
+    );
+    expect(codes(r)).toEqual(["FORBIDDEN"]);
+    expect(await users(t)).toEqual([{ key: "u", verified: false, score: 0 }]);
+    t.close();
+  });
+});

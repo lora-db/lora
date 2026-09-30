@@ -627,8 +627,12 @@ type Post
 - Field-level `@authorization(validate:)` guards one field: reading it on a
   row that fails is `FORBIDDEN`, filtering by it only matches rows that
   pass, sorting or aggregating by it is refused, and writing it checks the
-  rule. Field-level `@authentication` also guards filtering, sorting and
-  aggregating on the field.
+  rule. A write is what the input sets: a create that leaves the field out
+  is not checked against it, even when `@default` or `@populatedBy` fills
+  it, so a CREATE rule can keep a `verified: Boolean! @default(value: false)`
+  settable by admins only while anyone creates the node. Field-level
+  `@authentication` also guards filtering, sorting and aggregating on the
+  field.
 - Reading a guarded field is checked per row, token or not: without the
   token a rule needs, each row reads the field as `UNAUTHENTICATED`. The
   statement has the same shape either way, so `compile()`, `explain()`,

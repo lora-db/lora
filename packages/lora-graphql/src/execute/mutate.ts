@@ -143,6 +143,12 @@ interface Link {
 interface CreateRow {
   key: unknown;
   props: Input;
+  /**
+   * Fields the input sets. Field rules guard these only: a `@default`,
+   * `@populatedBy` value or generated key is the server's, not the
+   * caller's write (G-22).
+   */
+  written: Set<string>;
 }
 
 interface EdgeUpdate {
@@ -232,6 +238,10 @@ class WritePlan {
       key = globalThis.crypto.randomUUID();
     }
     const props: Input = {};
+    const written = new Set<string>();
+    if (input[node.key.name] !== undefined && input[node.key.name] !== null) {
+      written.add(node.key.name);
+    }
     for (const f of node.fields.values()) {
       if (f.kind !== "scalar" || f.key) continue;
       const value = input[f.name];
@@ -244,6 +254,7 @@ class WritePlan {
         }
         checkFieldAuthentication(this.ctx, node.name, f, "CREATE");
         props[f.property] = toStored(f, value);
+        written.add(f.name);
       } else if (f.populatedBy?.operations.has("CREATE")) {
         this.pending.push(async () => {
           props[f.property] = toStored(
@@ -261,7 +272,7 @@ class WritePlan {
       }
     }
     const list = this.creates.get(node) ?? [];
-    list.push({ key, props });
+    list.push({ key, props, written });
     this.creates.set(node, list);
     for (const f of node.fields.values()) {
       if (f.kind !== "relationship") continue;
@@ -1381,19 +1392,27 @@ class Runner {
     }
   }
 
-  /** AFTER rules on created nodes, and on nodes this mutation updated. */
+  /**
+   * AFTER rules on created nodes: the type's rules on every row, a field's
+   * rules on the rows whose input sets the field. Rows are checked in
+   * groups that set the same guarded fields.
+   */
   async validateCreated(plan: WritePlan): Promise<void> {
     for (const [node, rows] of plan.creates) {
-      const fields = new Set<string>();
-      for (const f of node.fields.values()) {
-        if (f.kind === "scalar" && f.authorization) fields.add(f.name);
+      const guarded = [...node.fields.values()]
+        .filter((f) => f.kind === "scalar" && f.authorization)
+        .map((f) => f.name);
+      const groups = new Map<string, { fields: string[]; keys: unknown[] }>();
+      for (const r of rows) {
+        const fields = guarded.filter((f) => r.written.has(f));
+        const id = fields.join("\0");
+        const group = groups.get(id) ?? { fields, keys: [] };
+        group.keys.push(r.key);
+        groups.set(id, group);
       }
-      await this.validateAfter(
-        node,
-        rows.map((r) => r.key),
-        "CREATE",
-        fields,
-      );
+      for (const { fields, keys } of groups.values()) {
+        await this.validateAfter(node, keys, "CREATE", new Set(fields));
+      }
     }
   }
 

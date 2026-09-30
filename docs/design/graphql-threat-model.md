@@ -36,7 +36,11 @@ Phase 12 of [graphql-next-phases.md](graphql-next-phases.md).
   `__proto__` and other inherited names resolve to nothing. `eq`, `in`
   and `includes` on claims compare structurally.
 - **Write a guarded field.** Field-level rules apply on every path that
-  writes the field. Relationship properties are covered on connect,
+  writes the field. They guard the caller's writes: a value the server
+  fills (`@default`, `@populatedBy`, a generated key) on a create whose
+  input leaves the field out is not checked against the field's CREATE
+  rule (G-22). The server's defaults are part of the schema, not of the
+  request. Relationship properties are covered on connect,
   nested create, re-connect and edge update; a re-connect is checked
   against the UPDATE rules when the relationship already exists and
   against CREATE otherwise, after the `MERGE`, and a refusal rolls the
