@@ -605,7 +605,7 @@ type Post
   with their `sub` and `:`. The claim must be a string, number or boolean;
   otherwise the rule denies. Pick a separator no `sub` contains: with `-`,
   user `a` could take `a-b-…`, the key space of user `a-b`. See
-  [docs/design/graphql-claim-interpolation.md](../../docs/design/graphql-claim-interpolation.md).
+  [docs/design/graphql-threat-model.md](../../docs/design/graphql-threat-model.md).
 - **Claim tests run in JavaScript at compile time**, so an admin's
   statement carries no filter at all. Statements stay specialised and
   index-friendly.
@@ -1022,7 +1022,7 @@ Measured on LoraDB 0.15 over 20 000 festivals and 100 000 relationships
 
 | Rule                                                                                 | Why                                                                                  |
 | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
-| Relationship filters as `size([… \| 1])`; aggregates of related values with `reduce` | No `OPTIONAL MATCH`; `EXISTS { }` does not parse; aggregates nest safely             |
+| Relationship filters as `size([… \| 1])`; aggregates of related values with `reduce` | No `OPTIONAL MATCH`; aggregates nest safely                                          |
 | `CALL { }` for nested lists, nested connections, `@cypher` and interface members     | The only way to sort, limit and aggregate per parent                                 |
 | Ordered by an always-present string: `WHERE s >= ""`                                 | The planner walks the index in order and stops at the limit: 0.03 ms instead of 7 ms |
 | Mutation statements seek the key in their own `MATCH`, then expand                   | The plan no longer depends on the optimizer finding the seek: 0.06 ms per connect    |
@@ -1047,7 +1047,7 @@ Measured on LoraDB 0.15 over 20 000 festivals and 100 000 relationships
 | `@authorization` rules evaluated in Cypher                  | Claim checks folded in JavaScript; node rules compiled           |
 | You pick indexes                                            | Inferred from the API, and verified with `explain()`             |
 | Unbounded lists; complexity left to you                     | Every list bounded; a cost limit per operation                   |
-| Subscriptions over CDC                                      | `@subscription`, from library-made writes                        |
+| Subscriptions over CDC                                      | `@subscription`, from library-made writes or, with `changeFeed: true`, every committed write |
 | Interfaces and unions with `UNION`                          | Per-member subqueries merged by sort, each using its own indexes |
 | Federation                                                  | Not supported                                                    |
 
@@ -1067,7 +1067,7 @@ before a following `SET`, list comparison (`[a, b] > $list`) and
 | An aggregate nested in a call (`head(collect(x))`, `collect(x)[0..2]`) is not aggregated | `WITH collect(x) AS c RETURN head(c)`; `reduce` for per-parent aggregates |
 | `max`, `sum` and `avg` over durations are wrong                                          | Duration aggregates are folded with `reduce`                              |
 | Integer division returns a float; negative list slices (`l[..-1]`) return `[]`           | `toInteger(a / b)` for Int fields; `l[..size(l) - n]`                     |
-| `COUNT { … RETURN DISTINCT x }`, `EXISTS { }` and `UNION` inside `CALL` do not parse     | `reduce` for distinct counts; comprehensions; per-member subqueries       |
+| `COUNT { … RETURN DISTINCT x }` and `UNION` inside `CALL` do not parse                   | `reduce` for distinct counts; per-member subqueries                       |
 
 ## Development
 

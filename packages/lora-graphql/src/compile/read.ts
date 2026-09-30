@@ -1,7 +1,7 @@
 // Read operations → one parameterised statement each (plus a count
 // statement in the same read transaction when a connection asks for
-// `totalCount`). See the Translation Rules in
-// docs/design/graphql-implementation-plan.md.
+// `totalCount`). See the translation rules in
+// apps/loradb.com/docs/graphql/translation-rules.md.
 
 import {
   getNamedType,
