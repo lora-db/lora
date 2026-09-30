@@ -93,6 +93,19 @@ export declare class Database {
    */
   openStream(query: string, params?: Record<string, any> | null | undefined, timeoutMs?: number | null | undefined, cancelToken?: number | null | undefined): number
   streamColumns(streamId: number): string[]
+  /**
+   * Whether stream `stream_id` is pulled with [`Self::stream_next_async`]
+   * (a mutating stream) rather than [`Self::stream_next`].
+   */
+  streamIsAsync(streamId: number): boolean
+  /**
+   * Pull the next row of a mutating stream. Resolves with the row, or
+   * `null` at the end (the stream's writes are then committed); a failure
+   * rolls them back. The pull runs on the stream's own thread, which
+   * first waits for the writer lock. After the end or a failure, the
+   * caller closes the stream with [`Self::stream_close`].
+   */
+  streamNextAsync(streamId: number): Promise<Record<string, any> | null>
   streamNext(streamId: number): Record<string, any> | null
   streamClose(streamId: number): void
   /**

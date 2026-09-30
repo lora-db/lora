@@ -209,6 +209,11 @@ class NativeRowStream<
   readonly #inner: InstanceType<typeof NativeDatabase>;
   readonly #streamId: number;
   readonly #signal: AbortSignal | undefined;
+  /**
+   * A mutating stream opens (waiting for the writer lock) and is pulled on
+   * its own native thread, so the event loop never waits for the lock.
+   */
+  readonly #async: boolean;
   #release: (() => void) | undefined;
   #closed = false;
 
@@ -222,6 +227,7 @@ class NativeRowStream<
     this.#streamId = streamId;
     this.#signal = signal;
     this.#release = release;
+    this.#async = inner.streamIsAsync(streamId);
   }
 
   #finish(): void {
@@ -229,6 +235,10 @@ class NativeRowStream<
     const release = this.#release;
     this.#release = undefined;
     release?.();
+    // A read-only stream is already gone once it ended or failed; a
+    // mutating one is dropped here, after its writes committed or rolled
+    // back.
+    if (this.#async) this.#inner.streamClose(this.#streamId);
   }
 
   [Symbol.asyncIterator](): AsyncIterableIterator<T> {
@@ -248,13 +258,20 @@ class NativeRowStream<
       return { done: true, value: undefined };
     }
     try {
-      const row = this.#inner.streamNext(this.#streamId) as T | null;
+      const row = (
+        this.#async
+          ? await this.#inner.streamNextAsync(this.#streamId)
+          : this.#inner.streamNext(this.#streamId)
+      ) as T | null;
       if (row === null) {
         this.#finish();
         return { done: true, value: undefined };
       }
       return { done: false, value: row };
     } catch (err) {
+      // A pull still pending when the stream was closed (or ended by
+      // another pull) settles as closed: that is the end, not a failure.
+      if (this.#closed) return { done: true, value: undefined };
       this.#finish();
       if (this.#signal?.aborted) throw this.#signal.reason;
       throw wrapError(err);

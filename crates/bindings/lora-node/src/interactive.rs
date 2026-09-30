@@ -20,11 +20,17 @@
 //! transaction, which rolls it back and releases the writer lock. That is
 //! how an abandoned transaction rolls back on `dispose()`, on GC of its
 //! database handle, or at process exit (nothing was ever committed).
+//!
+//! A command the actor never runs (queued behind a failed statement or a
+//! commit, or sent after the handle closed) still settles its promise: its
+//! [`Done`] reports the transaction closed when dropped. The JS thread
+//! never waits for an actor that is opening or running a statement (see
+//! [`crate::actor`]).
 
 use std::collections::BTreeMap;
 use std::sync::mpsc::{self, Receiver, SendError, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::thread::JoinHandle;
 
 use napi::{Error as NapiError, Status};
 
@@ -33,21 +39,29 @@ use lora_database::{
     TransactionMode,
 };
 
+use crate::actor::{self, Lifecycle};
 use crate::errors::format_lora_error;
+use crate::QueryLimit;
 
-/// Called by the actor, on its thread, with a command's outcome.
-pub(crate) type Done<T> = Box<dyn FnOnce(Result<T, String>) + Send + 'static>;
+/// Completion callback of a transaction command; reports the transaction
+/// closed if the command never runs.
+pub(crate) type Done<T> = actor::Done<T>;
+
+/// Wrap `callback` as a transaction command's [`Done`].
+pub(crate) fn done<T>(callback: impl FnOnce(Result<T, String>) + Send + 'static) -> Done<T> {
+    actor::Done::new(closed, callback)
+}
 
 enum Command {
     Execute {
         query: String,
         params: BTreeMap<String, LoraValue>,
-        deadline: Option<Instant>,
+        limit: QueryLimit,
         done: Done<QueryResult>,
     },
     ExecuteMany {
         statements: Vec<(String, BTreeMap<String, LoraValue>)>,
-        deadline: Option<Instant>,
+        limit: QueryLimit,
         done: Done<Vec<QueryResult>>,
     },
     Commit {
@@ -58,110 +72,124 @@ enum Command {
     },
 }
 
-impl Command {
-    /// Complete a command the actor will never see: it had already stopped.
-    fn fail(self) {
-        match self {
-            Command::Execute { done, .. } => done(Err(closed())),
-            Command::ExecuteMany { done, .. } => done(Err(closed())),
-            Command::Commit { done } | Command::Rollback { done } => done(Err(closed())),
-        }
-    }
-}
-
 /// Handle to one open transaction's actor thread.
 pub(crate) struct TxActor {
     commands: Mutex<Option<Sender<Command>>>,
-    thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Settles `begin()`; taken by the actor once the transaction is open,
+    /// or by [`Self::close`] (rejecting it) if that comes first.
+    opened: Arc<Mutex<Option<Done<()>>>>,
+    lifecycle: Lifecycle,
+    thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Drop for TxActor {
-    /// Close the channel and wait for the actor to finish. An unfinished
-    /// transaction is rolled back and its writer lock (and database
-    /// handle) released before this returns, so a `dispose()` followed by
-    /// a re-open of the same directory never races the rollback.
+    /// Close the actor. An idle one is joined, so its transaction is rolled
+    /// back and its writer lock (and database handle) released before this
+    /// returns, and a `dispose()` followed by a re-open of the same
+    /// directory never races the rollback. One still opening (waiting for
+    /// the writer lock) or running a statement is not joined: the JS thread
+    /// must not wait for it (the lock holder may need the JS thread for its
+    /// next command). It rolls back and exits by itself.
     fn drop(&mut self) {
         self.close();
         let thread = self.thread.get_mut().ok().and_then(Option::take);
-        if let Some(thread) = thread {
-            // Never join from the actor's own thread.
-            if thread.thread().id() != std::thread::current().id() {
-                let _ = thread.join();
-            }
-        }
+        actor::finish(&self.lifecycle, thread);
     }
 }
 
 impl TxActor {
     /// Spawn the actor, which opens the transaction; returns at once.
-    /// `opened` is called on the actor thread when the transaction is open —
-    /// for a read-write one, once the writer lock is held — or failed to open.
+    /// `opened` is called when the transaction is open (for a read-write
+    /// one, once the writer lock is held), failed to open, or was closed
+    /// before it opened.
     pub(crate) fn spawn(
         db: Arc<InnerDatabase<InMemoryGraph>>,
         mode: TransactionMode,
         opened: Done<()>,
-    ) -> Result<Self, String> {
+    ) -> Self {
         let (commands, inbox) = mpsc::channel::<Command>();
-        let thread = std::thread::Builder::new()
-            .name("lora-tx".into())
-            .spawn(move || run(db, mode, inbox, opened))
-            .map_err(|e| format!("LORA_INTERNAL: could not start transaction thread: {e}"))?;
-        Ok(Self {
+        let opened = Arc::new(Mutex::new(Some(opened)));
+        let lifecycle = Lifecycle::new();
+        let thread = {
+            let opened = opened.clone();
+            let lifecycle = lifecycle.clone();
+            std::thread::Builder::new()
+                .name("lora-tx".into())
+                .spawn(move || run(db, mode, inbox, opened, lifecycle))
+        };
+        let thread = match thread {
+            Ok(thread) => Some(thread),
+            Err(e) => {
+                // Nothing will open the transaction: settle `begin()` now.
+                lifecycle.ending();
+                if let Some(opened) = take(&opened) {
+                    opened.call(Err(format!(
+                        "LORA_INTERNAL: could not start transaction thread: {e}"
+                    )));
+                }
+                None
+            }
+        };
+        Self {
             commands: Mutex::new(Some(commands)),
-            thread: Mutex::new(Some(thread)),
-        })
+            opened,
+            lifecycle,
+            thread: Mutex::new(thread),
+        }
     }
 
-    /// Stop accepting commands. The actor rolls back once it has the
-    /// transaction and finds the channel closed. `dispose()` closes every
-    /// actor before joining any, so an actor still waiting for the writer
-    /// lock is never joined while the one holding the lock waits for a
-    /// command.
+    /// Stop accepting commands. Commands already queued are not run: they
+    /// and a pending `begin()` settle with the "closed" error. The actor
+    /// rolls back once it has the transaction and exits.
     pub(crate) fn close(&self) {
+        self.lifecycle.close();
         if let Ok(mut commands) = self.commands.lock() {
             commands.take();
         }
+        drop(take(&self.opened));
     }
 
     fn send(&self, command: Command) {
         let sender = self.commands.lock().ok().and_then(|c| c.clone());
-        match sender {
-            Some(sender) => {
-                if let Err(SendError(command)) = sender.send(command) {
-                    command.fail();
-                }
+        if let Some(sender) = sender {
+            if let Err(SendError(command)) = sender.send(command) {
+                // The actor has stopped; dropping the command settles it.
+                drop(command);
             }
-            None => command.fail(),
         }
+        // No sender: the command drops here and settles as closed.
     }
 
+    /// Run one statement. `limit`'s deadline is computed when the statement
+    /// starts, so time queued behind other commands does not count.
     pub(crate) fn execute(
         &self,
         query: String,
         params: BTreeMap<String, LoraValue>,
-        deadline: Option<Instant>,
+        limit: QueryLimit,
         done: Done<QueryResult>,
     ) {
         self.send(Command::Execute {
             query,
             params,
-            deadline,
+            limit,
             done,
         })
     }
 
     /// Run `statements` in order in one round trip to the actor. Stops at
     /// the first failure, which rolls the transaction back like a failed
-    /// [`Self::execute`]; one `deadline` bounds the whole batch.
+    /// [`Self::execute`]; one deadline, computed when the batch starts,
+    /// bounds the whole batch.
     pub(crate) fn execute_many(
         &self,
         statements: Vec<(String, BTreeMap<String, LoraValue>)>,
-        deadline: Option<Instant>,
+        limit: QueryLimit,
         done: Done<Vec<QueryResult>>,
     ) {
         self.send(Command::ExecuteMany {
             statements,
-            deadline,
+            limit,
             done,
         })
     }
@@ -175,7 +203,11 @@ impl TxActor {
     }
 }
 
-fn closed() -> String {
+fn take(opened: &Mutex<Option<Done<()>>>) -> Option<Done<()>> {
+    opened.lock().unwrap_or_else(|p| p.into_inner()).take()
+}
+
+pub(crate) fn closed() -> String {
     "LORA_TRANSACTION: transaction is no longer open (already committed, rolled back, or failed)"
         .to_string()
 }
@@ -184,19 +216,34 @@ fn run(
     db: Arc<InnerDatabase<InMemoryGraph>>,
     mode: TransactionMode,
     inbox: Receiver<Command>,
-    opened: Done<()>,
+    opened: Arc<Mutex<Option<Done<()>>>>,
+    lifecycle: Lifecycle,
 ) {
     // SAFETY: `db` lives on this thread's stack for as long as `tx`
     // does (it is declared first, so it is dropped last), and the
     // transaction never leaves this thread.
     let tx = unsafe { db.begin_transaction_owned(mode) };
+    let opened = take(&opened);
     let mut tx = match tx {
         Ok(tx) => {
-            opened(Ok(()));
+            if opened.is_none() || !lifecycle.opened() {
+                // Closed while waiting for the writer lock: `tx` rolls back
+                // here and `opened`, if still ours, reports the closure.
+                lifecycle.ending();
+                drop(tx);
+                drop(opened);
+                return;
+            }
+            if let Some(opened) = opened {
+                opened.call(Ok(()));
+            }
             tx
         }
         Err(e) => {
-            opened(Err(format_lora_error(&e)));
+            lifecycle.ending();
+            if let Some(opened) = opened {
+                opened.call(Err(format_lora_error(&e)));
+            }
             return;
         }
     };
@@ -204,24 +251,29 @@ fn run(
         format: ResultFormat::RowArrays,
     });
 
-    // `recv` fails once every handle is dropped: fall out of the loop and
-    // drop `tx`, which rolls back.
+    // `recv` fails once the handle is dropped: fall out of the loop and
+    // drop `tx`, which rolls back. Returning drops `inbox`, and with it any
+    // queued command, which then settles as closed.
     while let Ok(command) = inbox.recv() {
+        if !lifecycle.begin_command() {
+            // Closed: `command` settles as closed; `tx` rolls back.
+            break;
+        }
         match command {
             Command::Execute {
                 query,
                 params,
-                deadline,
+                limit,
                 done,
             } => {
-                let result = match deadline {
+                let result = match limit.deadline() {
                     Some(deadline) => {
                         tx.execute_with_params_deadline(&query, options, params, deadline)
                     }
                     None => tx.execute_with_params(&query, options, params),
                 };
                 match result {
-                    Ok(result) => done(Ok(result)),
+                    Ok(result) => done.call(Ok(result)),
                     Err(e) => {
                         // A failed statement poisons the transaction, as in
                         // `transaction()`: roll back instead of letting later
@@ -229,16 +281,18 @@ fn run(
                         // lock is released before the caller hears of it.
                         let message = format_lora_error(&e);
                         let _ = tx.rollback();
-                        done(Err(message));
+                        lifecycle.ending();
+                        done.call(Err(message));
                         return;
                     }
                 }
             }
             Command::ExecuteMany {
                 statements,
-                deadline,
+                limit,
                 done,
             } => {
+                let deadline = limit.deadline();
                 let total = statements.len();
                 let mut results = Vec::with_capacity(total);
                 let mut failure = None;
@@ -262,27 +316,31 @@ fn run(
                     }
                 }
                 match failure {
-                    None => done(Ok(results)),
+                    None => done.call(Ok(results)),
                     Some(message) => {
                         // Same as a failed `Execute`: the transaction is
                         // rolled back and closed.
                         let _ = tx.rollback();
-                        done(Err(message));
+                        lifecycle.ending();
+                        done.call(Err(message));
                         return;
                     }
                 }
             }
             Command::Commit { done } => {
                 let result = tx.commit().map_err(|e| format_lora_error(&e));
-                done(result);
+                lifecycle.ending();
+                done.call(result);
                 return;
             }
             Command::Rollback { done } => {
                 let result = tx.rollback().map_err(|e| format_lora_error(&e));
-                done(result);
+                lifecycle.ending();
+                done.call(result);
                 return;
             }
         }
+        lifecycle.idle();
     }
 }
 

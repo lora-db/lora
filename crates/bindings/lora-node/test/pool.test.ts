@@ -129,4 +129,114 @@ describe("interactive transactions and the libuv pool", () => {
       count: 2,
     });
   });
+  it("settles every command queued behind a failed statement and exits", async () => {
+    const r = await child(
+      `const db = await createDatabase();
+       const status = (all) => all.map((x) => x.status + ":" + (x.reason?.code ?? ""));
+       const tx = await db.begin();
+       const a = await Promise.allSettled([tx.execute("THIS IS NOT CYPHER"), tx.execute("RETURN 1"), tx.executeMany([{ query: "RETURN 1" }])]);
+       const tx2 = await db.begin();
+       const b = await Promise.allSettled([tx2.execute("THIS IS NOT CYPHER"), tx2.commit()]);
+       const tx3 = await db.begin();
+       const c = await Promise.allSettled([tx3.commit(), tx3.execute("RETURN 1")]);
+       console.log(JSON.stringify([status(a), status(b), status(c)]));`,
+      2,
+      10_000,
+    );
+    expect(r).toMatchObject({ finished: true, code: 0 });
+    expect(JSON.parse(r.out.trim())).toEqual([
+      [
+        "rejected:LORA_PARSE",
+        "rejected:LORA_TRANSACTION",
+        "rejected:LORA_TRANSACTION",
+      ],
+      ["rejected:LORA_PARSE", "rejected:LORA_TRANSACTION"],
+      ["fulfilled:", "rejected:LORA_TRANSACTION"],
+    ]);
+  });
+
+  it("rejects begin() after dispose() and exits", async () => {
+    const r = await child(
+      `const db = await createDatabase();
+       db.dispose();
+       await db.begin().then(() => console.log("opened?"), (e) => console.log("rejected " + e.message));`,
+      2,
+      10_000,
+    );
+    expect(r).toMatchObject({ finished: true, code: 0 });
+    expect(r.out.trim()).toBe("rejected database is closed");
+  });
+
+  it("returns from dispose() promptly with a begin() waiting on a shared directory", async () => {
+    // Two handles on one directory share an engine and its writer lock. The
+    // lock holder is a transaction on the other handle, which needs the JS
+    // thread for its next command: dispose() must not wait for the waiter.
+    const r = await child(
+      `const { mkdtempSync } = await import("node:fs");
+       const { tmpdir } = await import("node:os");
+       const { join } = await import("node:path");
+       const dir = mkdtempSync(join(tmpdir(), "lora-pool-"));
+       const a = await createDatabase("g", { databaseDir: dir });
+       const b = await createDatabase("g", { databaseDir: dir });
+       const held = await b.begin();
+       await held.execute("CREATE (:N)");
+       const waiting = a.begin().then(() => "opened?", (e) => "rejected " + e.code);
+       await new Promise((r) => setTimeout(r, 50));
+       a.dispose();
+       const outcome = await waiting;
+       await held.commit();
+       const { rows } = await b.execute("MATCH (n:N) RETURN count(n) AS c");
+       b.dispose();
+       console.log(JSON.stringify({ outcome, count: rows[0].c }));`,
+      2,
+      10_000,
+    );
+    expect(r).toMatchObject({ finished: true, code: 0 });
+    expect(JSON.parse(r.out.trim())).toEqual({
+      outcome: "rejected LORA_TRANSACTION",
+      count: 1,
+    });
+  });
+
+  it("opens a mutating stream while a transaction holds the writer lock", async () => {
+    // Opening it used to wait for the lock on the JS thread, which the
+    // transaction needed to commit.
+    const r = await child(
+      `const db = await createDatabase();
+       const tx = await db.begin();
+       await tx.execute("CREATE (:A)");
+       const s = db.stream("MATCH (n) SET n.y = 1 RETURN n.y AS y");
+       const cols = s.columns();
+       const rows = s.toArray();
+       await tx.commit();
+       console.log(JSON.stringify({ cols, rows: await rows }));
+       const unfinished = db.stream("MATCH (n) SET n.y = 2 RETURN n.y AS y");
+       await unfinished.next();
+       unfinished.close(); // rolls back
+       const { rows: after } = await db.execute("MATCH (n) RETURN n.y AS y");
+       console.log(JSON.stringify(after));`,
+      2,
+      10_000,
+    );
+    expect(r).toMatchObject({ finished: true, code: 0 });
+    expect(r.out.trim().split("\n")).toEqual([
+      JSON.stringify({ cols: ["y"], rows: [{ y: 1 }] }),
+      JSON.stringify([{ y: 1 }]),
+    ]);
+  });
+
+  it("starts a statement's timeout when it runs, not while it is queued", async () => {
+    const r = await child(
+      `const db = await createDatabase();
+       const tx = await db.begin();
+       const slow = tx.execute("UNWIND range(1, 3000000) AS x RETURN count(x) AS c");
+       const quick = tx.execute("RETURN 1 AS one", {}, { timeoutMs: 200 });
+       const [s, q] = await Promise.allSettled([slow, quick]);
+       await tx.rollback();
+       console.log(s.status + " " + (q.status === "fulfilled" ? "ok" : q.reason.code));`,
+      2,
+    );
+    expect(r).toMatchObject({ finished: true, code: 0 });
+    expect(r.out.trim()).toBe("fulfilled ok");
+  });
 });

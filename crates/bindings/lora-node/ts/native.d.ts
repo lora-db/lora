@@ -67,6 +67,9 @@ export declare class Database {
   ): number;
   streamColumns(streamId: number): string[];
   streamNext(streamId: number): Record<string, unknown> | null;
+  /** True for a mutating stream, which is pulled with `streamNextAsync`. */
+  streamIsAsync(streamId: number): boolean;
+  streamNextAsync(streamId: number): Promise<Record<string, unknown> | null>;
   streamClose(streamId: number): void;
   transaction(
     statements: Array<{

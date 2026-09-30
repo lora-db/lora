@@ -73,7 +73,11 @@ const bounded = await createDatabase("app", { queryTimeoutMs: 1000 });
 with application logic in between. A `read_write` transaction holds the
 writer lock until it commits or rolls back, so no other write interleaves
 (other writers wait; keep it short). A failed statement rolls it back, and
-an unfinished transaction rolls back when disposed.
+an unfinished transaction rolls back when disposed. Calls still queued on a
+transaction that failed, committed or rolled back reject with
+`LORA_TRANSACTION`, as does a `begin()` still waiting for the writer lock
+when its database is disposed. A statement's `timeoutMs` starts when it
+runs, not while it waits behind earlier statements of the transaction.
 
 ```ts
 await using tx = await db.begin("read_write");
@@ -400,7 +404,9 @@ See `ts/types.ts` (`LoraErrorCode`) for the full list.
   for it occupies a pool thread meanwhile, delaying other queries (never
   deadlocking: the writer holding the lock always runs). Prefer
   `await`-in-a-loop or a single batched query for heavy write workloads.
-  Interactive transactions wait on their own threads, not the pool.
+  Interactive transactions wait on their own threads, not the pool, and so
+  do mutating `stream()`s: one opens without blocking the event loop, and
+  its first `next()` waits for the writer lock.
 - **Stream timeouts.** `stream()` checks its deadline between rows, so a
   single pull that does a lot of work (a large aggregation) finishes before
   the check fires. `execute()` and `transaction()` check throughout.
