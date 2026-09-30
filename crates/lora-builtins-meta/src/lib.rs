@@ -398,9 +398,16 @@ pub const BUILTIN_SPECS: &[BuiltinSpec] = &[
     spec("temporal.add", 2, Some(2)),
     spec("temporal.get", 2, Some(2)),
     spec("temporal.fields", 1, Some(1)),
-    spec("temporal.truncate", 2, Some(2)),
+    // 3..4 arguments: the Cypher `<type>.truncate(unit, value[, map])`
+    // lowering appends the target type.
+    spec("temporal.truncate", 2, Some(4)),
     spec("temporal.between", 2, Some(2)),
     spec("temporal.in_days", 2, Some(2)),
+    spec("temporal.in_months", 2, Some(2)),
+    spec("temporal.in_seconds", 2, Some(2)),
+    spec("temporal.duration_between", 2, Some(2)),
+    spec("temporal.from_epoch", 2, Some(2)),
+    spec("temporal.from_epoch_millis", 1, Some(1)),
     // -- bytes.* ------------------------------------------------------------
     spec("bytes.size", 1, Some(1)),
     spec("bytes.from_string", 1, Some(2)),
@@ -494,6 +501,13 @@ pub const BUILTIN_ALIASES: &[BuiltinAlias] = &[
     alias("localdatetime", "temporal.now"),
     alias("localtime", "temporal.now"),
     alias("duration", "temporal.now"),
+    // Cypher's namespaced temporal functions.
+    alias("duration.between", "temporal.duration_between"),
+    alias("duration.inmonths", "temporal.in_months"),
+    alias("duration.indays", "temporal.in_days"),
+    alias("duration.inseconds", "temporal.in_seconds"),
+    alias("datetime.fromepoch", "temporal.from_epoch"),
+    alias("datetime.fromepochmillis", "temporal.from_epoch_millis"),
     alias("point", "geo.point"),
     alias("timestamp", "temporal.timestamp"),
     alias("timezone", "temporal.timezone"),

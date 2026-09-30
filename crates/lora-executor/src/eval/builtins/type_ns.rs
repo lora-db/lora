@@ -16,7 +16,8 @@ use lora_store::{
 use crate::value::LoraValue;
 
 use super::super::errors::set_eval_error;
-use super::super::point::{build_point_from_map, timezone_name_to_offset};
+use super::super::point::build_point_from_map;
+use super::temporal_build::{self, Kind};
 
 pub(super) fn dispatch(op: &str, args: &[LoraValue]) -> Option<LoraValue> {
     Some(match op {
@@ -235,7 +236,7 @@ pub(super) fn cast_can(args: &[LoraValue]) -> LoraValue {
     let Some(target) = RuntimeType::parse(target) else {
         return LoraValue::Null;
     };
-    LoraValue::Bool(cast_value(args.first(), &target, false).is_some())
+    LoraValue::Bool(cast_value(args.first(), &target, false).is_ok())
 }
 
 pub(super) fn cast_to(args: &[LoraValue]) -> LoraValue {
@@ -257,10 +258,11 @@ pub(super) fn cast_to(args: &[LoraValue]) -> LoraValue {
     match args.first() {
         None | Some(LoraValue::Null) => LoraValue::Null,
         Some(value) => match cast_value(Some(value), &target, true) {
-            Some(cast) => cast,
-            None => {
+            Ok(cast) => cast,
+            Err(reason) => {
+                let reason = reason.map(|r| format!(": {r}")).unwrap_or_default();
                 set_eval_error(format!(
-                    "cannot cast {} to {}",
+                    "cannot cast {} to {}{reason}",
                     crate::errors::value_kind(value),
                     target.display()
                 ));
@@ -280,27 +282,28 @@ pub(super) fn cast_try(args: &[LoraValue]) -> LoraValue {
     cast_value(args.first(), &target, false).unwrap_or(LoraValue::Null)
 }
 
-fn cast_value(
-    value: Option<&LoraValue>,
-    target: &RuntimeType,
-    report_errors: bool,
-) -> Option<LoraValue> {
+/// A failed cast, with the reason when there is more to say than
+/// "cannot cast X to Y".
+type CastResult = Result<LoraValue, Option<String>>;
+
+fn cast_value(value: Option<&LoraValue>, target: &RuntimeType, report_errors: bool) -> CastResult {
+    let plain = |cast: Option<LoraValue>| cast.ok_or(None);
     match target {
-        RuntimeType::String => cast_string(value),
-        RuntimeType::Integer => cast_integer(value),
-        RuntimeType::Float => cast_float(value),
-        RuntimeType::Boolean => cast_boolean(value),
-        RuntimeType::Date => cast_date(value),
-        RuntimeType::Time => cast_time(value),
-        RuntimeType::LocalTime => cast_local_time(value),
-        RuntimeType::DateTime => cast_datetime(value),
-        RuntimeType::LocalDateTime => cast_local_datetime(value),
+        RuntimeType::String => plain(cast_string(value)),
+        RuntimeType::Integer => plain(cast_integer(value)),
+        RuntimeType::Float => plain(cast_float(value)),
+        RuntimeType::Boolean => plain(cast_boolean(value)),
+        RuntimeType::Date => cast_temporal(value, Kind::Date),
+        RuntimeType::Time => cast_temporal(value, Kind::Time),
+        RuntimeType::LocalTime => cast_temporal(value, Kind::LocalTime),
+        RuntimeType::DateTime => cast_temporal(value, Kind::DateTime),
+        RuntimeType::LocalDateTime => cast_temporal(value, Kind::LocalDateTime),
         RuntimeType::Duration => cast_duration(value),
-        RuntimeType::Point => cast_point(value, report_errors),
+        RuntimeType::Point => plain(cast_point(value, report_errors)),
         RuntimeType::Vector { coord, dimension } => {
-            cast_vector(value, coord.as_deref(), *dimension)
+            plain(cast_vector(value, coord.as_deref(), *dimension))
         }
-        _ => None,
+        _ => Err(None),
     }
 }
 
@@ -351,124 +354,65 @@ fn cast_boolean(value: Option<&LoraValue>) -> Option<LoraValue> {
 }
 
 // Temporal casts follow Cypher's constructors: `date(x)` is
-// `cast.to(x, DATE)`. A string is parsed, a map gives the components, and
-// another temporal value contributes the components the target has: the
-// date of a datetime, the wall clock of a zoned time. A value without a
-// date or a time the target needs (a TIME cast to DATE) does not cast.
+// `cast.to(x, DATE)`. A string is parsed, a map gives the components (see
+// `temporal_build`), and another temporal value contributes the
+// components the target has: the date of a datetime, the wall clock of a
+// zoned time. A value without a date or a time the target needs (a TIME
+// cast to DATE) does not cast.
 
-fn cast_date(value: Option<&LoraValue>) -> Option<LoraValue> {
-    Some(LoraValue::Date(match value? {
-        LoraValue::Date(d) => d.clone(),
-        LoraValue::DateTime(dt) => dt.date(),
-        LoraValue::LocalDateTime(dt) => local_datetime_date(dt),
-        LoraValue::String(s) => LoraDate::parse(s)
-            .or_else(|_| LoraDateTime::parse(s).map(|dt| dt.date()))
-            .ok()?,
-        LoraValue::Map(m) => map_date(m)?,
-        _ => return None,
-    }))
-}
-
-fn cast_time(value: Option<&LoraValue>) -> Option<LoraValue> {
-    Some(LoraValue::Time(match value? {
-        LoraValue::Time(t) => t.clone(),
-        LoraValue::LocalTime(t) => {
-            LoraTime::new(t.hour, t.minute, t.second, t.nanosecond, 0).ok()?
-        }
-        LoraValue::DateTime(dt) => LoraTime::new(
-            dt.hour,
-            dt.minute,
-            dt.second,
-            dt.nanosecond,
-            dt.offset_seconds,
-        )
-        .ok()?,
-        LoraValue::LocalDateTime(dt) => {
-            LoraTime::new(dt.hour, dt.minute, dt.second, dt.nanosecond, 0).ok()?
-        }
-        LoraValue::String(s) => LoraTime::parse(s).ok()?,
-        LoraValue::Map(m) => {
-            let (h, mi, sec, ns) = map_clock(m)?;
-            LoraTime::new(h, mi, sec, ns, map_offset(m)?).ok()?
-        }
-        _ => return None,
-    }))
-}
-
-fn cast_local_time(value: Option<&LoraValue>) -> Option<LoraValue> {
-    Some(LoraValue::LocalTime(match value? {
-        LoraValue::LocalTime(t) => t.clone(),
-        LoraValue::Time(t) => LoraLocalTime::new(t.hour, t.minute, t.second, t.nanosecond).ok()?,
-        LoraValue::DateTime(dt) => {
-            LoraLocalTime::new(dt.hour, dt.minute, dt.second, dt.nanosecond).ok()?
-        }
-        LoraValue::LocalDateTime(dt) => {
-            LoraLocalTime::new(dt.hour, dt.minute, dt.second, dt.nanosecond).ok()?
-        }
-        LoraValue::String(s) => LoraLocalTime::parse(s).ok()?,
-        LoraValue::Map(m) => {
-            let (h, mi, sec, ns) = map_clock(m)?;
-            LoraLocalTime::new(h, mi, sec, ns).ok()?
-        }
-        _ => return None,
-    }))
-}
-
-fn cast_datetime(value: Option<&LoraValue>) -> Option<LoraValue> {
-    Some(LoraValue::DateTime(match value? {
-        LoraValue::DateTime(dt) => dt.clone(),
-        LoraValue::Date(d) => LoraDateTime::new(d.year, d.month, d.day, 0, 0, 0, 0, 0).ok()?,
-        LoraValue::LocalDateTime(dt) => LoraDateTime::new(
-            dt.year,
-            dt.month,
-            dt.day,
-            dt.hour,
-            dt.minute,
-            dt.second,
-            dt.nanosecond,
-            0,
-        )
-        .ok()?,
-        // A date alone is midnight UTC: `datetime('2026-10-01')`.
-        LoraValue::String(s) => match LoraDateTime::parse(s) {
-            Ok(dt) => dt,
-            Err(_) => {
-                let d = LoraDate::parse(s).ok()?;
-                LoraDateTime::new(d.year, d.month, d.day, 0, 0, 0, 0, 0).ok()?
+fn cast_temporal(value: Option<&LoraValue>, kind: Kind) -> CastResult {
+    match value.ok_or(None)? {
+        LoraValue::String(s) => parse_temporal(s, kind).map_err(Some),
+        LoraValue::Map(m) => temporal_build::from_map(m, kind).map_err(Some),
+        other => Ok(match (kind, other) {
+            (Kind::Date, LoraValue::Date(d)) => LoraValue::Date(d.clone()),
+            (Kind::Date, LoraValue::DateTime(dt)) => LoraValue::Date(dt.date()),
+            (Kind::Date, LoraValue::LocalDateTime(dt)) => LoraValue::Date(local_datetime_date(dt)),
+            (Kind::Time, LoraValue::Time(t)) => LoraValue::Time(t.clone()),
+            (Kind::LocalTime, LoraValue::LocalTime(t)) => LoraValue::LocalTime(t.clone()),
+            (Kind::DateTime, LoraValue::DateTime(dt)) => LoraValue::DateTime(dt.clone()),
+            (Kind::LocalDateTime, LoraValue::LocalDateTime(dt)) => {
+                LoraValue::LocalDateTime(dt.clone())
             }
-        },
-        LoraValue::Map(m) => {
-            let d = map_date(m)?;
-            let (h, mi, sec, ns) = map_clock(m)?;
-            LoraDateTime::new(d.year, d.month, d.day, h, mi, sec, ns, map_offset(m)?).ok()?
-        }
-        _ => return None,
-    }))
+            // Every other pair goes through the components.
+            _ => temporal_build::convert(other, kind).ok_or(None)?,
+        }),
+    }
 }
 
-fn cast_local_datetime(value: Option<&LoraValue>) -> Option<LoraValue> {
-    let (date, (h, mi, sec, ns)) = match value? {
-        LoraValue::LocalDateTime(dt) => return Some(LoraValue::LocalDateTime(dt.clone())),
-        LoraValue::DateTime(dt) => (dt.date(), (dt.hour, dt.minute, dt.second, dt.nanosecond)),
-        LoraValue::Date(d) => (d.clone(), (0, 0, 0, 0)),
-        LoraValue::String(s) => match LoraLocalDateTime::parse(s) {
-            Ok(dt) => return Some(LoraValue::LocalDateTime(dt)),
-            Err(_) => (LoraDate::parse(s).ok()?, (0, 0, 0, 0)),
-        },
-        LoraValue::Map(m) => (map_date(m)?, map_clock(m)?),
-        _ => return None,
-    };
-    // Validates the clock the same way `LoraLocalDateTime::parse` does.
-    LoraLocalTime::new(h, mi, sec, ns).ok()?;
-    Some(LoraValue::LocalDateTime(LoraLocalDateTime {
-        year: date.year,
-        month: date.month,
-        day: date.day,
-        hour: h,
-        minute: mi,
-        second: sec,
-        nanosecond: ns,
-    }))
+fn parse_temporal(s: &str, kind: Kind) -> Result<LoraValue, String> {
+    Ok(match kind {
+        Kind::Date => LoraValue::Date(match LoraDate::parse(s) {
+            Ok(d) => d,
+            // The date of a datetime string.
+            Err(e) => LoraDateTime::parse(s).map(|dt| dt.date()).map_err(|_| e)?,
+        }),
+        Kind::Time => LoraValue::Time(LoraTime::parse(s)?),
+        Kind::LocalTime => LoraValue::LocalTime(LoraLocalTime::parse(s)?),
+        // A date alone is midnight UTC: `datetime('2026-10-01')`.
+        Kind::DateTime => LoraValue::DateTime(match LoraDateTime::parse(s) {
+            Ok(dt) => dt,
+            Err(e) => {
+                let d = LoraDate::parse(s).map_err(|_| e)?;
+                LoraDateTime::new(d.year, d.month, d.day, 0, 0, 0, 0, 0)?
+            }
+        }),
+        Kind::LocalDateTime => LoraValue::LocalDateTime(match LoraLocalDateTime::parse(s) {
+            Ok(dt) => dt,
+            Err(e) => {
+                let d = LoraDate::parse(s).map_err(|_| e)?;
+                LoraLocalDateTime {
+                    year: d.year,
+                    month: d.month,
+                    day: d.day,
+                    hour: 0,
+                    minute: 0,
+                    second: 0,
+                    nanosecond: 0,
+                }
+            }
+        }),
+    })
 }
 
 fn local_datetime_date(dt: &LoraLocalDateTime) -> LoraDate {
@@ -479,78 +423,13 @@ fn local_datetime_date(dt: &LoraLocalDateTime) -> LoraDate {
     }
 }
 
-fn map_int(m: &std::collections::BTreeMap<String, LoraValue>, key: &str) -> Option<Option<i64>> {
-    match m.get(key) {
-        None | Some(LoraValue::Null) => Some(None),
-        Some(v) => v.as_i64().map(Some),
-    }
-}
-
-/// `{year, month, day}`; `year` is required, `month` and `day` default
-/// to 1. A non-integer component does not cast.
-fn map_date(m: &std::collections::BTreeMap<String, LoraValue>) -> Option<LoraDate> {
-    let year = i32::try_from(map_int(m, "year")??).ok()?;
-    let month = u32::try_from(map_int(m, "month")?.unwrap_or(1)).ok()?;
-    let day = u32::try_from(map_int(m, "day")?.unwrap_or(1)).ok()?;
-    LoraDate::new(year, month, day).ok()
-}
-
-/// `{hour, minute, second, millisecond, microsecond, nanosecond}`, all
-/// defaulting to 0; the sub-second parts add up as in Cypher.
-fn map_clock(m: &std::collections::BTreeMap<String, LoraValue>) -> Option<(u32, u32, u32, u32)> {
-    let part = |key: &str| -> Option<u32> { u32::try_from(map_int(m, key)?.unwrap_or(0)).ok() };
-    let nanos = part("millisecond")? as u64 * 1_000_000
-        + part("microsecond")? as u64 * 1_000
-        + part("nanosecond")? as u64;
-    if nanos >= 1_000_000_000 {
-        return None;
-    }
-    Some((
-        part("hour")?,
-        part("minute")?,
-        part("second")?,
-        nanos as u32,
-    ))
-}
-
-/// The `timezone` of a map: an offset (`'+01:00'`, `'Z'`) or one of the
-/// zone names the engine knows. An unknown zone does not cast, rather than
-/// quietly reading as UTC.
-fn map_offset(m: &std::collections::BTreeMap<String, LoraValue>) -> Option<i32> {
-    match m.get("timezone") {
-        None | Some(LoraValue::Null) => Some(0),
-        Some(LoraValue::String(tz)) => {
-            if let Ok(t) = LoraTime::parse(&format!("00:00{tz}")) {
-                return Some(t.offset_seconds);
-            }
-            let offset = timezone_name_to_offset(tz);
-            (offset != 0 || matches!(tz.as_str(), "UTC" | "GMT" | "Europe/London"))
-                .then_some(offset)
-        }
-        _ => None,
-    }
-}
-
-fn cast_duration(value: Option<&LoraValue>) -> Option<LoraValue> {
-    Some(match value? {
-        LoraValue::Duration(d) => LoraValue::Duration(d.clone()),
-        LoraValue::String(s) => LoraValue::Duration(LoraDuration::parse(s).ok()?),
-        LoraValue::Map(m) => {
-            let years = m.get("years").and_then(LoraValue::as_i64).unwrap_or(0);
-            let months = m.get("months").and_then(LoraValue::as_i64).unwrap_or(0);
-            let days = m.get("days").and_then(LoraValue::as_i64).unwrap_or(0);
-            let hours = m.get("hours").and_then(LoraValue::as_i64).unwrap_or(0);
-            let minutes = m.get("minutes").and_then(LoraValue::as_i64).unwrap_or(0);
-            let seconds = m.get("seconds").and_then(LoraValue::as_i64).unwrap_or(0);
-            LoraValue::Duration(LoraDuration {
-                months: years * 12 + months,
-                days,
-                seconds: hours * 3600 + minutes * 60 + seconds,
-                nanoseconds: 0,
-            })
-        }
-        _ => return None,
-    })
+fn cast_duration(value: Option<&LoraValue>) -> CastResult {
+    Ok(LoraValue::Duration(match value.ok_or(None)? {
+        LoraValue::Duration(d) => d.clone(),
+        LoraValue::String(s) => LoraDuration::parse(s).map_err(Some)?,
+        LoraValue::Map(m) => temporal_build::duration_from_map(m).map_err(Some)?,
+        _ => return Err(None),
+    }))
 }
 
 fn cast_point(value: Option<&LoraValue>, report_errors: bool) -> Option<LoraValue> {

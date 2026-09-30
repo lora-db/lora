@@ -12,6 +12,9 @@ use lora_store::{
 
 use crate::value::LoraValue;
 
+use super::super::errors::set_eval_error;
+use super::temporal_build::{self, Between, Kind};
+
 pub(super) fn dispatch(op: &str, args: &[LoraValue]) -> Option<LoraValue> {
     Some(match op {
         // Current-instant
@@ -30,6 +33,11 @@ pub(super) fn dispatch(op: &str, args: &[LoraValue]) -> Option<LoraValue> {
         "truncate" => truncate(args),
         "between" => between(args),
         "in_days" => in_days(args),
+        "duration_between" => duration_between(args, Between::Full),
+        "in_months" => duration_between(args, Between::Months),
+        "in_seconds" => duration_between(args, Between::Seconds),
+        "from_epoch" => from_epoch(args),
+        "from_epoch_millis" => from_epoch_millis(args),
         _ => return None,
     })
 }
@@ -266,55 +274,106 @@ fn fields(args: &[LoraValue]) -> LoraValue {
     LoraValue::Map(m)
 }
 
+/// `temporal.truncate(unit, value)` (either order) keeps the value's type
+/// and returns null for a unit or a value it cannot truncate.
+///
+/// The Cypher `<type>.truncate(unit, value[, map])` forms lower to
+/// `temporal.truncate(unit, value, [map,] TYPE)`: they build `TYPE` and
+/// fail on a bad unit, value or map. `temporal.truncate(unit, value, map)`
+/// keeps the value's type.
 fn truncate(args: &[LoraValue]) -> LoraValue {
-    // Accept either argument order — `temporal.truncate('month', d)` reads
-    // best in Cypher; `temporal.truncate(d, 'month')` matches the
-    // value-first convention of the rest of `temporal.*`.
-    let (unit_str, value) = match (args.first(), args.get(1)) {
-        (Some(LoraValue::String(u)), Some(v)) => (u.clone(), v),
-        (Some(v), Some(LoraValue::String(u))) => (u.clone(), v),
+    if args.len() < 2 {
+        return LoraValue::Null;
+    }
+    if args.len() == 2 {
+        let (unit, value) = match (&args[0], &args[1]) {
+            (LoraValue::String(u), v) | (v, LoraValue::String(u)) => (u, v),
+            _ => return LoraValue::Null,
+        };
+        return temporal_build::truncate(unit, value, None, None).unwrap_or(LoraValue::Null);
+    }
+    let (map, kind) = match &args[2..] {
+        [LoraValue::String(ty)] => (&LoraValue::Null, Kind::from_type_name(ty)),
+        [map] => (map, None),
+        [map, LoraValue::String(ty)] => (map, Kind::from_type_name(ty)),
         _ => return LoraValue::Null,
     };
-    let unit = unit_str.to_ascii_lowercase();
-    let t = value;
-    match t {
-        LoraValue::Date(d) => match unit.as_str() {
-            "year" => LoraValue::Date(LoraDate {
-                year: d.year,
-                month: 1,
-                day: 1,
-            }),
-            "month" => LoraValue::Date(d.truncate_to_month()),
-            "day" => LoraValue::Date(d.clone()),
-            _ => LoraValue::Null,
-        },
-        LoraValue::DateTime(dt) => match unit.as_str() {
-            "year" => LoraValue::DateTime(LoraDateTime {
-                year: dt.year,
-                month: 1,
-                day: 1,
-                hour: 0,
-                minute: 0,
-                second: 0,
-                nanosecond: 0,
-                offset_seconds: dt.offset_seconds,
-            }),
-            "month" => LoraValue::DateTime(LoraDateTime {
-                year: dt.year,
-                month: dt.month,
-                day: 1,
-                hour: 0,
-                minute: 0,
-                second: 0,
-                nanosecond: 0,
-                offset_seconds: dt.offset_seconds,
-            }),
-            "day" => LoraValue::DateTime(dt.truncate_to_day()),
-            "hour" => LoraValue::DateTime(dt.truncate_to_hour()),
-            _ => LoraValue::Null,
-        },
+    let (unit, value) = match (&args[0], &args[1]) {
+        (LoraValue::Null, _) | (_, LoraValue::Null) => return LoraValue::Null,
+        (LoraValue::String(u), v) => (u, v),
+        (other, _) => {
+            set_eval_error(format!(
+                "truncate unit must be a string, got {}",
+                crate::errors::value_kind(other)
+            ));
+            return LoraValue::Null;
+        }
+    };
+    let map = match map {
+        LoraValue::Null => None,
+        LoraValue::Map(m) => Some(m),
+        other => {
+            set_eval_error(format!(
+                "truncate components must be a map, got {}",
+                crate::errors::value_kind(other)
+            ));
+            return LoraValue::Null;
+        }
+    };
+    temporal_build::truncate(unit, value, map, kind).unwrap_or_else(|e| {
+        set_eval_error(e);
+        LoraValue::Null
+    })
+}
+
+/// `duration.between(a, b)` and `duration.inMonths / inDays /
+/// inSeconds`; null when either is null.
+fn duration_between(args: &[LoraValue], what: Between) -> LoraValue {
+    match (args.first(), args.get(1)) {
+        (Some(a), Some(b)) if !matches!(a, LoraValue::Null) && !matches!(b, LoraValue::Null) => {
+            match temporal_build::between(a, b, what) {
+                Ok(d) => LoraValue::Duration(d),
+                Err(e) => {
+                    set_eval_error(e);
+                    LoraValue::Null
+                }
+            }
+        }
         _ => LoraValue::Null,
     }
+}
+
+/// `datetime.fromepoch(seconds, nanoseconds)`.
+fn from_epoch(args: &[LoraValue]) -> LoraValue {
+    match (args.first(), args.get(1)) {
+        (Some(LoraValue::Int(s)), Some(LoraValue::Int(ns))) => {
+            report(temporal_build::from_epoch(*s, *ns))
+        }
+        (Some(LoraValue::Null), _) | (_, Some(LoraValue::Null)) => LoraValue::Null,
+        _ => {
+            set_eval_error("datetime.fromepoch expects two integers".to_string());
+            LoraValue::Null
+        }
+    }
+}
+
+/// `datetime.fromepochmillis(milliseconds)`.
+fn from_epoch_millis(args: &[LoraValue]) -> LoraValue {
+    match args.first() {
+        Some(LoraValue::Int(ms)) => report(temporal_build::from_epoch_millis(*ms)),
+        Some(LoraValue::Null) => LoraValue::Null,
+        _ => {
+            set_eval_error("datetime.fromepochmillis expects an integer".to_string());
+            LoraValue::Null
+        }
+    }
+}
+
+fn report(result: Result<LoraValue, String>) -> LoraValue {
+    result.unwrap_or_else(|e| {
+        set_eval_error(e);
+        LoraValue::Null
+    })
 }
 
 fn between(args: &[LoraValue]) -> LoraValue {
@@ -329,11 +388,13 @@ fn between(args: &[LoraValue]) -> LoraValue {
     }
 }
 
+/// Whole days from `a` to `b`: `temporal.in_days` and Cypher's
+/// `duration.inDays`.
 fn in_days(args: &[LoraValue]) -> LoraValue {
     match (args.first(), args.get(1)) {
         (Some(LoraValue::Date(a)), Some(LoraValue::Date(b))) => {
             LoraValue::Duration(LoraDuration::in_days(a, b))
         }
-        _ => LoraValue::Null,
+        _ => duration_between(args, Between::Days),
     }
 }

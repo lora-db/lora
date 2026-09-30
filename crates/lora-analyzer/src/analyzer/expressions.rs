@@ -520,7 +520,10 @@ struct NamedLowering {
 /// (`temporal.now('date')`) and `date(x)` builds a DATE from `x`
 /// (`cast.to(x, DATE)`), and likewise for the other Cypher temporal
 /// constructors. They all alias `temporal.now` for completion and
-/// resolution, but only the name says which type to build.
+/// resolution, but only the name says which type to build. The same goes
+/// for `<type>.transaction()` / `.statement()` / `.realtime()` (the
+/// current instant) and `<type>.truncate(unit, value[, map])`
+/// (`temporal.truncate(unit, value[, map], <TYPE>)`).
 fn named_lowering(fn_name: &str, arg_count: usize) -> Option<NamedLowering> {
     let lower = fn_name.to_ascii_lowercase();
     let cast = |target: &'static str, ty: &str| NamedLowering {
@@ -544,6 +547,34 @@ fn named_lowering(fn_name: &str, arg_count: usize) -> Option<NamedLowering> {
             }
         }
     };
+    // `date.transaction()`, `datetime.truncate(unit, value[, map])`, …
+    if let Some((ty, member)) = lower.split_once('.') {
+        let (now_kind, type_name) = match ty {
+            "date" => ("date", "DATE"),
+            "datetime" => ("datetime", "DATETIME"),
+            "localdatetime" => ("local_datetime", "LOCAL_DATETIME"),
+            "time" => ("time", "TIME"),
+            "localtime" => ("local_time", "LOCAL_TIME"),
+            _ => return None,
+        };
+        return Some(match member {
+            // One clock: the transaction, statement and real-time clocks
+            // all read the current instant.
+            "transaction" | "statement" | "realtime" => NamedLowering {
+                target: "temporal.now",
+                trailing: LiteralValue::String(now_kind.to_string()),
+                min_args: 0,
+                max_args: 0,
+            },
+            "truncate" => NamedLowering {
+                target: "temporal.truncate",
+                trailing: LiteralValue::TypeName(type_name.to_string()),
+                min_args: 2,
+                max_args: 3,
+            },
+            _ => return None,
+        });
+    }
     Some(match lower.as_str() {
         "tostring" => cast("cast.to", "STRING"),
         "tointeger" => cast("cast.to", "INTEGER"),

@@ -352,11 +352,32 @@ impl fmt::Display for LoraDuration {
             write!(f, "{}D", self.days)?;
         }
 
-        let hours = self.seconds / 3600;
-        let minutes = (self.seconds % 3600) / 60;
-        let secs = self.seconds % 60;
+        // Seconds and nanoseconds as one signed quantity, so `PT1.5S` keeps
+        // its fraction and `PT-0.5S` its sign.
+        // (i64 arithmetic: this is on the result path of every duration.)
+        let (total_secs, frac, negative) = if self.nanoseconds == 0 {
+            (self.seconds, 0, self.seconds < 0)
+        } else {
+            let mut secs = self
+                .seconds
+                .saturating_add(self.nanoseconds / 1_000_000_000);
+            let mut frac = self.nanoseconds % 1_000_000_000;
+            // Give both parts the same sign.
+            if secs > 0 && frac < 0 {
+                secs -= 1;
+                frac += 1_000_000_000;
+            } else if secs < 0 && frac > 0 {
+                secs += 1;
+                frac -= 1_000_000_000;
+            }
+            (secs, frac.unsigned_abs(), secs < 0 || frac < 0)
+        };
+        let is_zero = total_secs == 0 && frac == 0;
+        let hours = total_secs / 3600;
+        let minutes = (total_secs % 3600) / 60;
+        let secs = total_secs % 60;
 
-        if hours != 0 || minutes != 0 || secs != 0 || self.nanoseconds != 0 {
+        if !is_zero {
             write!(f, "T")?;
             if hours != 0 {
                 write!(f, "{}H", hours)?;
@@ -364,15 +385,22 @@ impl fmt::Display for LoraDuration {
             if minutes != 0 {
                 write!(f, "{}M", minutes)?;
             }
-            if secs != 0 {
+            if frac != 0 {
+                let sign = if negative { "-" } else { "" };
+                let digits = format!("{frac:09}");
+                write!(
+                    f,
+                    "{sign}{}.{}S",
+                    secs.unsigned_abs(),
+                    digits.trim_end_matches('0')
+                )?;
+            } else if secs != 0 {
                 write!(f, "{}S", secs)?;
-            } else if self.nanoseconds != 0 {
-                write!(f, "0.{:09}S", self.nanoseconds)?;
             }
         }
 
         // Zero duration
-        if self.months == 0 && self.days == 0 && self.seconds == 0 && self.nanoseconds == 0 {
+        if self.months == 0 && self.days == 0 && is_zero {
             write!(f, "0D")?;
         }
 
@@ -383,6 +411,26 @@ impl fmt::Display for LoraDuration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_keeps_the_fraction_of_a_second() {
+        let d = |seconds, nanoseconds| {
+            LoraDuration {
+                months: 0,
+                days: 0,
+                seconds,
+                nanoseconds,
+            }
+            .to_string()
+        };
+        assert_eq!(d(1, 500_000_000), "PT1.5S");
+        assert_eq!(d(0, 5), "PT0.000000005S");
+        assert_eq!(d(91, 123_456_789), "PT1M31.123456789S");
+        assert_eq!(d(-1, -500_000_000), "PT-1.5S");
+        assert_eq!(d(0, -500_000_000), "PT-0.5S");
+        assert_eq!(d(3600, 0), "PT1H");
+        assert_eq!(d(1, -1_000_000_000), "P0D");
+    }
 
     #[test]
     fn parse_rejects_component_overflow() {

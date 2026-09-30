@@ -19,8 +19,9 @@ Each value is first-class: store it as a
 | Parse ISO string | <CypherCode code="'…'::DATE" />, <CypherCode code="'…'::DATETIME" />, etc. |
 | From components | <CypherCode code="{year, month, day}::DATE" />, … |
 | Construct duration | <CypherCode code="'P…'::DURATION" />, <CypherCode code="{days, hours, …}::DURATION" /> |
-| Truncate | [<CypherCode code="temporal.truncate(unit, value)" />](#truncation) |
-| Difference | [<CypherCode code="temporal.between(a, b)" />, <CypherCode code="temporal.in_days(a, b)" />](#temporalbetween--temporalin_days) |
+| From epoch | <CypherCode code="datetime.fromepoch(seconds, nanos)" />, <CypherCode code="datetime.fromepochmillis(ms)" /> |
+| Truncate | [<CypherCode code="temporal.truncate(unit, value)" />, <CypherCode code="date.truncate(unit, value, map)" />](#truncation) |
+| Difference | [<CypherCode code="duration.between(a, b)" />, <CypherCode code="duration.inDays(a, b)" />](#durationbetween), [<CypherCode code="temporal.between(a, b)" />, <CypherCode code="temporal.in_days(a, b)" />](#temporalbetween--temporalin_days) |
 | Component access | <CypherCode code="dt.year" />, <CypherCode code="dt.month" />, <CypherCode code="dt.hour" />, <CypherCode code="dur.days" /> … |
 | Add/subtract | <CypherCode code="date + duration" />, <CypherCode code="datetime - datetime" /> |
 
@@ -55,6 +56,36 @@ convert is an error.
        date(datetime('2026-10-01T23:30:00+02:00')) AS day,  // 2026-10-01
        datetime('2026-10-01') AS midnight,                   // 2026-10-01T00:00:00Z
        time({hour: 9, minute: 30, timezone: '+01:00'}) AS t`} />
+
+`date.transaction()`, `date.statement()` and `date.realtime()` (and the
+same on `time`, `localtime`, `datetime` and `localdatetime`) return the
+current value too. LoraDB has one clock, so the three agree.
+
+A map gives the components. Besides `year, month, day`, a date can be an
+ISO week date (`{year, week, dayOfWeek}`, where `year` is the week-based
+year), an ordinal date (`{year, ordinalDay}`) or a quarter date
+(`{year, quarter, dayOfQuarter}`). A clock takes `hour, minute, second,
+millisecond, microsecond, nanosecond`, and the zoned types a `timezone`.
+`date`, `time` and `datetime` keys start from another temporal and the
+other keys override its components; a zoned value given a new `timezone`
+keeps its instant. A smaller component needs the larger ones (`day`
+needs `month`, `second` needs `minute`), and a key the type has no use
+for is an error that names it. `datetime({epochSeconds, nanosecond})` and
+`datetime({epochMillis})` build an instant from the Unix epoch.
+
+<QueryCodeBlock code={String.raw`RETURN date({year: 1984, week: 10, dayOfWeek: 3}) AS week_date,      // 1984-03-07
+       date({year: 1984, ordinalDay: 202}) AS ordinal,                  // 1984-07-20
+       date({year: 1984, quarter: 3, dayOfQuarter: 45}) AS quarter,     // 1984-08-14
+       date({date: date('1984-10-11'), day: 28}) AS moved,              // 1984-10-28
+       datetime.fromepochmillis(1724198400000) AS instant               // 2024-08-21T00:00:00Z`} />
+
+Strings take every ISO 8601 form, extended or basic: `2015-07-21` /
+`20150721`, `2015-07`, `2015`, week dates `2015-W30-2` / `2015W302`,
+ordinal dates `2015-202` / `2015202`, quarter dates `2015-Q3-21`, and
+times such as `21:40:32.142+01:00`, `214032.142+0100`, `21:40` or `21`
+with an offset of `Z`, `±HH:MM`, `±HHMM` or `±HH`. Fields are fixed width
+(`2015-7-21` is refused), and the local types refuse an offset rather
+than drop it: `localtime('12:00+01:00')` is an error.
 
 The zero-argument current-value helpers also have bare aliases:
 <CypherCode code="now()" /> for <CypherCode code="temporal.now()" />,
@@ -139,6 +170,16 @@ RETURN 'PT90M'::DURATION;                        // 90 minutes
 RETURN {years: 1, months: 2, days: 3}::DURATION; // equivalent map form
 RETURN CAST('PT90M' AS DURATION)                // CAST form`} />
 
+A duration map takes `years, months, weeks, days, hours, minutes,
+seconds, milliseconds, microseconds, nanoseconds`, each an integer or a
+float. A fraction cascades into the smaller units as in Neo4j: a month
+is 30.436875 days on average.
+
+<QueryCodeBlock code={String.raw`RETURN duration({hours: 1.5});                    // PT1H30M
+RETURN duration({weeks: 2.5});                    // P17DT12H
+RETURN duration({months: 0.75});                  // P22DT19H51M49.5S
+RETURN duration({seconds: 1, milliseconds: 500})  // PT1.5S`} />
+
 ### Query casts vs parameters
 
 Every binding ships a helper so you can pass typed values in
@@ -182,12 +223,26 @@ ORDER BY year, month`} />
 
 ## Truncation
 
-Reduce a temporal value to a coarser unit.
+Reduce a temporal value to a coarser unit. The units are
+`"millennium"`, `"century"`, `"decade"`, `"year"`, `"weekYear"` (the
+Monday starting week 1 of the ISO week-based year), `"quarter"`,
+`"month"`, `"week"` (the Monday of the week), `"day"`, `"hour"`,
+`"minute"`, `"second"`, `"millisecond"` and `"microsecond"`. A `DATE`
+takes the units down to `"day"`; a `TIME` or `LOCAL_TIME` the units from
+`"day"` down.
 
-| Function | Supported units |
-|---|---|
-| <CypherCode code="temporal.truncate(unit, date)" /> | `"year"`, `"month"`, `"day"` |
-| <CypherCode code="temporal.truncate(unit, datetime)" /> | `"year"`, `"month"`, `"day"`, `"hour"` |
+`temporal.truncate(unit, value)` keeps the value's type and returns
+`null` for a unit it cannot apply. The Cypher forms
+`date.truncate(unit, value[, map])`, and likewise on `datetime`,
+`localdatetime`, `time` and `localtime`, build the named type, then apply
+the map's components over the result; an unknown unit or a unit the type
+does not have is an error. A `timezone` in the map replaces the zone and
+keeps the local time.
+
+<QueryCodeBlock code={String.raw`RETURN date.truncate('week', date('2017-11-11'));                  // 2017-11-06
+RETURN date.truncate('week', date('2017-11-11'), {dayOfWeek: 2});  // 2017-11-07
+RETURN datetime.truncate('minute', datetime('2017-11-11T12:31:14Z'))
+        // 2017-11-11T12:31:00Z`} />
 
 <QueryCodeBlock code={String.raw`RETURN temporal.truncate('month', '2024-01-15'::DATE);       // 2024-01-01
 RETURN temporal.truncate('year',  '2024-07-01'::DATE);       // 2024-01-01
@@ -229,6 +284,21 @@ is exactly 30 days.
 
 <QueryCodeBlock code={String.raw`RETURN '2024-01-31'::DATE + 'P1M'::DURATION;     // 2024-02-29 (leap year)
 RETURN '2024-01-31'::DATE + 'P30D'::DURATION    // 2024-03-01`} />
+
+### duration.between
+
+`duration.between(a, b)` is the duration from `a` to `b` in months, then
+days, then time, as in Neo4j. `duration.inMonths`, `duration.inDays` and
+`duration.inSeconds` measure in one unit only, counting complete units.
+The two values can be of different temporal types: a value without a
+time is at midnight, with only one side zoned the other is read in the
+same zone, and when either lacks a date only the times of day count.
+
+<QueryCodeBlock code={String.raw`RETURN duration.between(date('1984-10-11'), date('1985-11-25'));   // P1Y1M14D
+RETURN duration.inDays(date('1984-10-11'), date('1985-11-25'));    // P410D
+RETURN duration.inSeconds(date('1984-10-11'),
+                          datetime('1984-10-12T01:00:32.142+01:00'))
+        // PT25H32.142S`} />
 
 ### temporal.between / temporal.in_days
 
@@ -377,8 +447,7 @@ zone; two `LocalDateTime` values compare by naive wall-clock order.
 
 ### Strict ISO parsing
 
-Non-ISO shapes (`MM/DD/YYYY`, RFC-2822, ISO week-dates) are rejected at
-parse time. Normalise on the host side before passing to
+Non-ISO shapes (`MM/DD/YYYY`, RFC-2822) are rejected at parse time. Normalise on the host side before passing to
 `'…'::DATE` / `'…'::DATETIME`.
 
 ### `temporal.today()` with no args — now vs wall clock
@@ -389,9 +458,6 @@ See [WASM → gotchas](../getting-started/wasm#performance--best-practices).
 
 ## Limitations
 
-- **`temporal.truncate`** supports `"year"`, `"month"`, and `"day"` for
-  `DATE` values; `"year"`, `"month"`, `"day"`, and `"hour"` for
-  `DATETIME` values.
 - Arithmetic between values of **different** temporal types
   (e.g. `Date - Time`) is not supported. Convert first.
 - Parsing is strict ISO 8601 — non-ISO shapes (`MM/DD/YYYY`,

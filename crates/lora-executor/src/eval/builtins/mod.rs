@@ -39,6 +39,7 @@ mod number;
 mod path;
 mod string_ns;
 mod temporal;
+mod temporal_build;
 mod text;
 mod type_ns;
 mod uuid_ns;
