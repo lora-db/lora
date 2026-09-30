@@ -80,6 +80,7 @@ use json::{
     execute_json_payload, explain_json_payload, parse_params, parse_transaction_mode,
     parse_transaction_statements, profile_json_payload, serialize_rows,
 };
+use lora_binding_buffer::stream::ShapeCache;
 use lora_database::{LoraError, LoraErrorCode};
 pub use stream::LoraQueryStream;
 use stream::StreamError;
@@ -92,12 +93,15 @@ use stream::StreamError;
 /// so execution semantics are identical across bindings.
 pub struct LoraDatabase {
     inner: Arc<InnerDatabase<InMemoryGraph>>,
+    /// Stream shapes per query text (see `stream.rs`).
+    shapes: ShapeCache,
 }
 
 impl LoraDatabase {
     fn new() -> Self {
         Self {
             inner: Arc::new(InnerDatabase::in_memory()),
+            shapes: ShapeCache::default(),
         }
     }
 
@@ -105,6 +109,7 @@ impl LoraDatabase {
         let inner = InnerDatabase::open_with_wal(WalConfig::enabled(wal_dir))?;
         Ok(Self {
             inner: Arc::new(inner),
+            shapes: ShapeCache::default(),
         })
     }
 
@@ -124,6 +129,7 @@ impl LoraDatabase {
         let inner = InnerDatabase::open_with_wal_snapshots(WalConfig::enabled(wal_dir), snapshots)?;
         Ok(Self {
             inner: Arc::new(inner),
+            shapes: ShapeCache::default(),
         })
     }
 
@@ -135,6 +141,7 @@ impl LoraDatabase {
         let inner = InnerDatabase::open_named(database_name, options)?;
         Ok(Self {
             inner: Arc::new(inner),
+            shapes: ShapeCache::default(),
         })
     }
 }
@@ -823,7 +830,7 @@ pub unsafe extern "C" fn lora_db_stream_open_json(
             Err(status) => return status,
         };
 
-        match LoraQueryStream::open(&(*db).inner, query, params_map) {
+        match LoraQueryStream::open(&(*db).inner, &(*db).shapes, query, params_map) {
             Ok(stream) => {
                 *out_stream = Box::into_raw(Box::new(stream));
                 LoraStatus::Ok
