@@ -287,6 +287,14 @@ fn split(args: &[LoraValue]) -> LoraValue {
             ),
             Err(_) => LoraValue::Null,
         }
+    } else if sep.is_empty() {
+        // An empty delimiter splits into characters, as in Cypher: `str::split`
+        // would add an empty string at each end.
+        LoraValue::List(
+            s.chars()
+                .map(|c| LoraValue::String(c.to_string()))
+                .collect(),
+        )
     } else {
         LoraValue::List(
             s.split(sep.as_str())

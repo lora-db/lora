@@ -163,7 +163,7 @@ normalization supports NFC/NFD/NFKC/NFKD.
 | `string.slice(str, start[, len])` | **Supported** |
 | `string.prefix(str, n)`, `string.suffix(str, n)` | **Supported** |
 | `string.find`, `string.count`, `string.before`, `string.after` | **Supported** |
-| `string.split(str, delim)` (`split` alias), `string.join(list, delim)`, `string.words(str)` | **Supported** |
+| `string.split(str, delim)` (`split` alias), `string.join(list, delim)`, `string.words(str)` | **Supported** | An empty `delim` splits into characters: `split('p12', '')` is `['p', '1', '2']` |
 | `string.slugify`, `string.escape`, `string.url_encode`, `string.url_decode` | **Supported** |
 | `string.reverse(str)` / `value.reverse(str)` | **Supported** |
 | `string.length(str)` (`char_length`, `character_length` aliases), `value.size(str)` / `size(str)` | **Supported** |

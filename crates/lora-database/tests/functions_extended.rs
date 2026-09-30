@@ -191,6 +191,26 @@ fn split_consecutive_delimiters() {
     assert_eq!(arr[2], "b");
 }
 
+/// An empty delimiter splits into characters, with no empty strings at the
+/// ends (E-2: it returned `["", "p", "1", "2", ""]`).
+#[test]
+fn split_empty_delimiter_gives_the_characters() {
+    let db = TestDb::new();
+    assert_eq!(
+        db.scalar("RETURN split('p12', '')"),
+        serde_json::json!(["p", "1", "2"])
+    );
+    assert_eq!(
+        db.scalar("RETURN string.split('aé€😀', '')"),
+        serde_json::json!(["a", "é", "€", "😀"])
+    );
+    assert_eq!(db.scalar("RETURN split('', '')"), serde_json::json!([]));
+    assert_eq!(
+        db.scalar("RETURN size(split('abc', ''))"),
+        serde_json::json!(3)
+    );
+}
+
 // ============================================================
 // 5. Substring function — edge cases
 // ============================================================

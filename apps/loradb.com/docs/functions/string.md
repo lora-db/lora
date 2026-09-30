@@ -150,10 +150,12 @@ Length exceeding the input returns the whole string:
 <QueryCodeBlock code={String.raw`RETURN string.split('a,b,c,d', ',');         // ['a', 'b', 'c', 'd']
 RETURN string.split('one two three', ' ');   // ['one', 'two', 'three']
 RETURN string.split('x', ',');               // ['x']
+RETURN string.split('p12', '');              // ['p', '1', '2']
 RETURN string.join(['red', 'green'], ', ');  // 'red, green'
 RETURN string.words('  red green\tblue ')   // ['red', 'green', 'blue']`} />
 
-Empty input returns `['']`.
+Empty input returns `['']`. An empty delimiter splits into characters
+(and `split('', '')` is `[]`).
 `string.words` uses Unicode whitespace and drops empty fields, which is
 usually what you want for tokenizing human-entered text.
 
