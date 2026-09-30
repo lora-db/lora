@@ -19,6 +19,7 @@ export class EngineFeed {
   readonly #driver: LoraDriver;
   readonly #model: GraphModel;
   readonly #emit: (change: WriteChange) => void;
+  readonly #onError: (err: unknown) => void;
   readonly #byLabel = new Map<string, NodeType>();
   readonly #ids = new Map<number, EntityRef>();
   #controller: AbortController | undefined;
@@ -28,10 +29,12 @@ export class EngineFeed {
     driver: LoraDriver,
     model: GraphModel,
     emit: (change: WriteChange) => void,
+    onError: (err: unknown) => void = () => {},
   ) {
     this.#driver = driver;
     this.#model = model;
     this.#emit = emit;
+    this.#onError = onError;
     for (const node of model.nodes.values()) {
       this.#byLabel.set(node.labels[0]!, node);
     }
@@ -59,24 +62,58 @@ export class EngineFeed {
     void this.#pump(feed, signal);
   }
 
+  /**
+   * Deliver batches until the feed ends or fails. Runs detached, so it
+   * never throws: a feed that fell behind resumes where it stopped at
+   * once; any other failure is reported and the feed reopens from its
+   * last position after a backoff (100 ms doubling to 10 s, reset by a
+   * delivered batch), until stop().
+   */
   async #pump(
     feed: AsyncIterable<DriverChangeBatch>,
     signal: AbortSignal,
+    backoffMs = 100,
   ): Promise<void> {
+    let delay = backoffMs;
     try {
       for await (const batch of feed) {
         this.#lastLsn = batch.lsn;
         const change = await this.#toChange(batch);
         if (change) this.#emit(change);
+        delay = 100;
       }
+      return;
     } catch (err) {
       if (signal.aborted) return;
-      // A consumer that fell behind resumes where it stopped.
-      if ((err as { code?: string }).code === "LORA_CHANGES_LAGGED") {
-        await this.#open();
-        return;
+      if ((err as { code?: string }).code !== "LORA_CHANGES_LAGGED") {
+        this.#report(err);
+        await sleep(delay, signal);
+        delay = Math.min(delay * 2, 10_000);
       }
-      throw err;
+    }
+    while (!signal.aborted) {
+      try {
+        const next = this.#driver.changes!({
+          ...(this.#lastLsn !== undefined ? { fromLsn: this.#lastLsn } : {}),
+          signal,
+        });
+        await next.ready;
+        void this.#pump(next, signal, delay);
+        return;
+      } catch (err) {
+        if (signal.aborted) return;
+        this.#report(err);
+        await sleep(delay, signal);
+        delay = Math.min(delay * 2, 10_000);
+      }
+    }
+  }
+
+  #report(err: unknown): void {
+    try {
+      this.#onError(err);
+    } catch {
+      // A failing error hook must not stop the feed.
     }
   }
 
@@ -224,4 +261,18 @@ function fill(change: WriteChange): void {
       [...change.connected, ...change.disconnected].map((r) => r.type),
     ),
   ].sort();
+}
+
+/** Resolve after `ms`, or at once when `signal` aborts. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+    function done() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    }
+  });
 }

@@ -134,3 +134,50 @@ test("changeFeed needs a driver with changes()", () => {
       }),
   ).toThrow("changeFeed needs a driver with changes()");
 });
+
+test("a failing change feed is reported and reopened, never an unhandled rejection", async () => {
+  // A non-lag feed error was rethrown inside the detached pump: an
+  // unhandled rejection, which crashes Node by default (vitest fails the
+  // run on one too).
+  const db = await createDatabase();
+  const driver = loraDriver(db);
+  const changes = driver.changes!;
+  let opened = 0;
+  let reopened!: () => void;
+  const reopen = new Promise<void>((resolve) => (reopened = resolve));
+  driver.changes = (options) => {
+    opened++;
+    if (opened === 1) {
+      return {
+        ready: Promise.resolve(),
+        // eslint-disable-next-line require-yield
+        async *[Symbol.asyncIterator]() {
+          throw new Error("feed broke");
+        },
+      };
+    }
+    const feed = changes(options);
+    void feed.ready.then(reopened);
+    return feed;
+  };
+  const errors: Array<{ field: string; message: string }> = [];
+  const lora = new LoraGraphQL({
+    typeDefs,
+    driver,
+    changeFeed: true,
+    onError: ({ field, message }) => errors.push({ field, message }),
+  });
+  await lora.assertSchema({ create: true });
+  const controller = new AbortController();
+  const stream = lora.changes({ signal: controller.signal });
+  const first = stream.next();
+  await reopen;
+  // No batch had arrived before the failure, so there was no position to
+  // resume from: write only once the reopened feed is listening.
+  await lora.execute({
+    source: `mutation { createPosts(input: [{ key: "p1", title: "T", published: true }]) { info { nodesCreated } } }`,
+  });
+  expect((await first).value).toMatchObject({ created: [{ key: "p1" }] });
+  expect(errors).toEqual([{ field: "changeFeed", message: "feed broke" }]);
+  controller.abort();
+});

@@ -204,7 +204,10 @@ export interface CostEvent {
 export interface DatabaseErrorEvent {
   /** Correlation id, also in the client error's `extensions.id`. */
   id: string;
-  /** The root field that failed. */
+  /**
+   * The root field that failed, or `changeFeed` for a failure of the
+   * change feed (it reopens from where it stopped after a backoff).
+   */
   field: string;
   /** The engine's message, which may name labels, properties and Cypher. */
   message: string;
@@ -408,16 +411,27 @@ export class LoraGraphQL {
           "changeFeed needs a driver with changes() (@loradb/lora-node)",
         );
       }
-      this.#feed = new EngineFeed(options.driver, this.model, (change) => {
-        change.timestamp ??= new Date().toISOString();
-        for (const l of this.#feedListeners) {
-          try {
-            l(change);
-          } catch {
-            // A consumer's failure must not stop the feed.
+      this.#feed = new EngineFeed(
+        options.driver,
+        this.model,
+        (change) => {
+          change.timestamp ??= new Date().toISOString();
+          for (const l of this.#feedListeners) {
+            try {
+              l(change);
+            } catch {
+              // A consumer's failure must not stop the feed.
+            }
           }
-        }
-      });
+        },
+        (err) =>
+          this.#onError?.({
+            id: globalThis.crypto.randomUUID(),
+            field: "changeFeed",
+            message: err instanceof Error ? err.message : String(err),
+            error: err,
+          }),
+      );
     }
     this.#observer = new Observer(options);
     this.#budget = options.budget;

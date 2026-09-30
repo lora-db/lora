@@ -21,10 +21,6 @@ next, **P2** planned, **P3** when convenient.
       `packages/lora-graphql/src/guards.ts:119-146` counts `__schema`/`__type` like any
       field. Skip introspection subtrees or add `maxIntrospectionDepth`; add the
       acceptance test from Festimap's `LORADB_REQUESTS.md`.
-- [ ] **Change-feed errors crash the process.** Any error but LAGGED is rethrown inside
-      the floating `void this.#pump()` (`src/execute/feed.ts:59,79`) → unhandled
-      rejection. Catch, reopen with backoff, report via `onError`.
-
 ## Engine — Cypher correctness
 
 - [ ] P1 **E-4 class, remaining sites.** A value the row carries for other reasons is
