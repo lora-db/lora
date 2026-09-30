@@ -1470,7 +1470,61 @@ fn collect_vars_inner(expr: &ResolvedExpr, out: &mut BTreeSet<VarId>) {
                 }
             }
         }
-        _ => {}
+        // A pattern reads the outer variables it names (`(a)<-[:T]-(x)`
+        // reads `a`). Its own fresh variables are collected too: an
+        // over-approximation, which only ever keeps a predicate in place.
+        ResolvedExpr::ExistsSubquery { pattern, where_ } => {
+            collect_pattern_vars(pattern, out);
+            if let Some(w) = where_ {
+                collect_vars_inner(w, out);
+            }
+        }
+        ResolvedExpr::PatternComprehension {
+            pattern,
+            where_,
+            map_expr,
+        } => {
+            collect_pattern_vars(pattern, out);
+            if let Some(w) = where_ {
+                collect_vars_inner(w, out);
+            }
+            collect_vars_inner(map_expr, out);
+        }
+        ResolvedExpr::Literal(_) | ResolvedExpr::Parameter(_) => {}
+    }
+}
+
+fn collect_pattern_vars(pattern: &lora_analyzer::ResolvedPattern, out: &mut BTreeSet<VarId>) {
+    use lora_analyzer::{ResolvedNode, ResolvedPatternElement};
+    let node = |n: &ResolvedNode, out: &mut BTreeSet<VarId>| {
+        out.extend(n.var);
+        if let Some(p) = &n.properties {
+            collect_vars_inner(p, out);
+        }
+    };
+    for part in &pattern.parts {
+        out.extend(part.binding);
+        match &part.element {
+            ResolvedPatternElement::Node {
+                var, properties, ..
+            } => {
+                out.extend(*var);
+                if let Some(p) = properties {
+                    collect_vars_inner(p, out);
+                }
+            }
+            ResolvedPatternElement::NodeChain { head, chain }
+            | ResolvedPatternElement::ShortestPath { head, chain, .. } => {
+                node(head, out);
+                for link in chain {
+                    out.extend(link.rel.var);
+                    if let Some(p) = &link.rel.properties {
+                        collect_vars_inner(p, out);
+                    }
+                    node(&link.node, out);
+                }
+            }
+        }
     }
 }
 
