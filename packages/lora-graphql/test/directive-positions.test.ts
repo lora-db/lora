@@ -24,6 +24,8 @@ const USE: Record<string, string> = {
   jwt: "@jwt",
   jwtClaim: '@jwtClaim(path: "x")',
   viewer: '@viewer(type: "T", field: "key")',
+  authorizationRule:
+    '@authorizationRule(name: "r", where: { jwt: { sub: { eq: "x" } } })',
   relationshipProperties: "@relationshipProperties",
   alias: '@alias(property: "p")',
   private: "@private",
@@ -183,7 +185,11 @@ describe("no directive is silently ignored", () => {
   test("every library directive has a sample use", () => {
     // @storedAs (on scalars) and @authorizationDefaults (on the schema)
     // have one place each, which graphql-js enforces.
-    const elsewhere = new Set(["storedAs", "authorizationDefaults"]);
+    const elsewhere = new Set([
+      "storedAs",
+      "authorizationDefaults",
+      "authorizationRules",
+    ]);
     expect(
       [...locations.keys()].filter((n) => !USE[n] && !elsewhere.has(n)),
     ).toEqual([]);

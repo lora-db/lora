@@ -223,6 +223,22 @@ export const directiveTypeDefs = /* GraphQL */ `
     public: [AuthOperation!]
   ) on OBJECT | FIELD_DEFINITION
 
+  "Named rules over claims, usable in any rule as { rule: name }, on \`extend schema\`."
+  directive @authorizationRules(
+    rules: [AuthorizationRuleDefinition!]!
+  ) on SCHEMA
+
+  input AuthorizationRuleDefinition {
+    name: String!
+    where: AuthorizationWhere!
+  }
+
+  "A named rule of this type, usable in its rules as { rule: name } and through a relationship to it as { rel: { rule: name } }."
+  directive @authorizationRule(
+    name: String!
+    where: AuthorizationWhere!
+  ) repeatable on OBJECT
+
   "Schema-wide authorization settings, on \`extend schema\`."
   directive @authorizationDefaults(
     "A claims-only test (jwt, AND, OR, NOT): a request passing it skips every filter and validate rule (not @authentication)."
@@ -339,6 +355,7 @@ export const directiveTypeDefs = /* GraphQL */ `
 
 /** Names defined by the prelude; never treated as user types. */
 export const PRELUDE_TYPES = new Set([
+  "AuthorizationRuleDefinition",
   "QueryDirection",
   "OnDelete",
   "FulltextIndex",

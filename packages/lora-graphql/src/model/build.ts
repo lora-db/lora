@@ -34,6 +34,7 @@ import {
   checkViewer,
   desugarRule,
   type DesugarContext,
+  type NamedRules,
   type ViewerMapping,
 } from "./desugar.js";
 import { codeOnly, maskLiterals, scanParams } from "./cypher-lexer.js";
@@ -173,6 +174,29 @@ export function buildModel(
       defaults.bypass = args["bypass"] as AuthorizationWhere;
     if (args["mutations"] != null)
       defaults.mutations = args["mutations"] as AuthorizationWhere;
+  }
+  // `extend schema @authorizationRules(rules: [...])`: claims-only rules.
+  const schemaRules = new Map<string, AuthorizationWhere>();
+  for (const node of [schema.astNode, ...schema.extensionASTNodes]) {
+    for (const dir of node?.directives ?? []) {
+      if (dir.name.value !== "authorizationRules") continue;
+      const args = directive(
+        d("authorizationRules"),
+        { astNode: { directives: [dir] } },
+        (message) => problems.push({ type: "schema", message }),
+      );
+      for (const r of (args?.["rules"] as
+        | Array<{ name: string; where: AuthorizationWhere }>
+        | undefined) ?? []) {
+        if (schemaRules.has(r.name)) {
+          problems.push({
+            type: "schema",
+            message: `@authorizationRules: rule "${r.name}" is defined twice`,
+          });
+        }
+        schemaRules.set(r.name, r.where);
+      }
+    }
   }
 
   const enums = new Map<string, EnumType>();
@@ -733,9 +757,76 @@ export function buildModel(
     }
   }
 
+  // `@authorizationRule(name:, where:)` on node types (repeatable).
+  const typeRules = new Map<string, Map<string, AuthorizationWhere>>();
+  for (const t of nodeTypes) {
+    const own = new Map<string, AuthorizationWhere>();
+    for (const dir of t.astNode?.directives ?? []) {
+      if (dir.name.value !== "authorizationRule") continue;
+      const args = directive(
+        d("authorizationRule"),
+        { astNode: { directives: [dir] } },
+        atType(t.name),
+      );
+      if (!args) continue;
+      const name = args["name"] as string;
+      if (own.has(name)) {
+        atType(t.name)(`@authorizationRule: rule "${name}" is defined twice`);
+      }
+      if (schemaRules.has(name)) {
+        atType(t.name)(
+          `@authorizationRule: rule "${name}" shadows the schema rule of that name; rename one`,
+        );
+      }
+      own.set(name, args["where"] as AuthorizationWhere);
+    }
+    if (own.size > 0) typeRules.set(t.name, own);
+  }
+  const namedRules: NamedRules = { schema: schemaRules, byType: typeRules };
+  const schemaDesugar = (where: AuthorizationWhere) =>
+    desugarRule(
+      {
+        nodes,
+        props: relationshipProperties,
+        viewer,
+        rules: namedRules,
+        at: (message) =>
+          problems.push({
+            type: "schema",
+            message: `@authorization: ${message}`,
+          }),
+      },
+      undefined,
+      where,
+    );
+  // Schema rules test claims only, so they stay compile-time decisions.
+  for (const [name, where] of schemaRules) {
+    const expanded = schemaDesugar(where);
+    const violations = claimsOnlyViolations(expanded);
+    for (const key of violations) {
+      problems.push({
+        type: "schema",
+        message: `@authorizationRules: rule "${name}" tests claims only (jwt, AND, OR, NOT); ${key} is not allowed (a node rule belongs on its type, with @authorizationRule)`,
+      });
+    }
+    if (violations.length === 0) {
+      checkRuleWhere(
+        nodes,
+        relationshipProperties,
+        undefined,
+        "schema",
+        undefined,
+        expanded,
+        problems,
+        jwtShape,
+      );
+    }
+  }
+
   // @authorizationDefaults: a claims-only bypass, and the write rule of
   // every @mutation type without one of its own.
   if (defaults.bypass) {
+    defaults.bypass = schemaDesugar(defaults.bypass);
     const violations = claimsOnlyViolations(defaults.bypass);
     for (const key of violations) {
       problems.push({
@@ -816,6 +907,7 @@ export function buildModel(
       nodes,
       props: relationshipProperties,
       viewer,
+      rules: namedRules,
       at: (message) =>
         problems.push({
           type,
@@ -853,6 +945,24 @@ export function buildModel(
       if (f.authorization) {
         desugar(undefined, props.name, f.name, f.authorization.validate);
       }
+    }
+  }
+  // Named rules of a type are checked as rules of that type, used or not.
+  for (const [typeName, own] of typeRules) {
+    const node = nodes.get(typeName);
+    if (!node) continue;
+    for (const where of own.values()) {
+      const rule = { where };
+      desugar(node, typeName, undefined, [rule]);
+      checkAuthorizationWhere(
+        nodes,
+        relationshipProperties,
+        node,
+        rule.where,
+        problems,
+        jwtShape,
+        viewerNode,
+      );
     }
   }
 

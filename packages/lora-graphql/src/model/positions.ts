@@ -48,6 +48,7 @@ export const DIRECTIVE_POSITIONS: Readonly<
 > = {
   "node type": [
     "node",
+    "authorizationRule",
     "query",
     "mutation",
     "subscription",

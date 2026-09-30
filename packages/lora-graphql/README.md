@@ -683,6 +683,52 @@ type Post
 - Rules are checked against the model at startup: an unknown field,
   operator or (with `@jwt`) claim, or a test that is empty or null, is an
   error, not an open door.
+- **Named rules.** Define a rule once and use it as `{ rule: "name" }`
+  wherever a rule part may stand:
+
+  ```graphql
+  extend schema
+    @authorizationRules(
+      rules: [{ name: "admin", where: { jwt: { roles: { includes: "admin" } } } }]
+    )
+
+  type Trip
+    @node
+    @authorizationRule(
+      name: "member"
+      where: {
+        OR: [
+          { node: { members: { some: { isViewer: true } } } }
+          { node: { owner: { isViewer: true } } }
+        ]
+      }
+    )
+    @authorization(
+      filter: [{ where: { OR: [{ rule: "member" }, { rule: "admin" }] } }]
+    ) { ... }
+
+  type PackingItem
+    @node
+    @authorization(
+      filter: [
+        {
+          where: {
+            OR: [{ node: { trip: { rule: "member" } } }, { rule: "admin" }]
+          }
+        }
+      ]
+    ) { ... }
+  ```
+
+  Schema rules (`@authorizationRules`) test claims only. A type's rules
+  (`@authorizationRule`, repeatable) are found first, then the schema's;
+  inside a node filter (`trip: { rule: "member" }`) the name is a rule of
+  that node's type, and that rule must test `node` only. Rules are inlined
+  at startup, so they compile to exactly the hand-written statement. An
+  unknown name, a type rule shadowing a schema rule, and a cycle (named
+  with its chain) are model errors. `bypass` and `mutations` in
+  `@authorizationDefaults` may name rules too.
+
 - **Schema-wide defaults.**
 
   ```graphql

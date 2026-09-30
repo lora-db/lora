@@ -5,6 +5,11 @@
 // - `isViewer: true` on the viewer type (the `@viewer` claim's type) becomes
 //   `{ <viewer field>: { eq: "$jwt.<claim>" } }`, at any depth of a `node`
 //   filter: `{ node: { author: { isViewer: true } } }`.
+// - `{ rule: "name" }` is replaced by that named rule's where: a rule of
+//   the type it stands on (`@authorizationRule`), or a claims-only schema
+//   rule (`@authorizationRules`). Inside a node filter it names a rule of
+//   that node's type and must test `node` only:
+//   `{ node: { trip: { rule: "member" } } }`.
 
 import type { ModelProblem } from "../errors.js";
 import type {
@@ -20,10 +25,19 @@ export interface ViewerMapping {
   field: string;
 }
 
+/** Named rules: claims-only schema rules, and rules per node type. */
+export interface NamedRules {
+  schema: ReadonlyMap<string, AuthorizationWhere>;
+  byType: ReadonlyMap<string, ReadonlyMap<string, AuthorizationWhere>>;
+}
+
 export interface DesugarContext {
   nodes: ReadonlyMap<string, NodeType>;
   props: ReadonlyMap<string, RelationshipPropertiesType>;
   viewer: ViewerMapping | undefined;
+  rules?: NamedRules;
+  /** Named rules being expanded, to report a cycle with its chain. */
+  expanding?: string[];
   at: (message: string) => void;
 }
 
@@ -45,9 +59,18 @@ export function desugarRule(
   ends?: { source: NodeType; target: NodeType },
 ): AuthorizationWhere {
   if (!isRecord(where)) return where;
+  const keys = Object.keys(where);
+  if (keys.length === 1 && keys[0] === "rule") {
+    // Alone, the reference is its rule: exactly the hand-written form.
+    return expandRule(ctx, owner, where["rule"]) ?? {};
+  }
   const out: Where = {};
+  const extra: Where[] = [];
   for (const [key, value] of Object.entries(where)) {
-    if (key === "AND" || key === "OR") {
+    if (key === "rule") {
+      const expanded = expandRule(ctx, owner, value);
+      if (expanded) extra.push(expanded);
+    } else if (key === "AND" || key === "OR") {
       out[key] = Array.isArray(value)
         ? value.map((w) => desugarRule(ctx, owner, w as Where, ends))
         : value;
@@ -67,7 +90,112 @@ export function desugarRule(
       out[key] = value;
     }
   }
+  if (extra.length > 0) {
+    out["AND"] = [...(Array.isArray(out["AND"]) ? out["AND"] : []), ...extra];
+  }
   return out;
+}
+
+/**
+ * The where of the rule `name` names, where it stands: a rule of `owner`
+ * (`@authorizationRule`), else a schema rule. Its own references expand
+ * too; a cycle is reported with its chain.
+ */
+function expandRule(
+  ctx: DesugarContext,
+  owner: NodeType | undefined,
+  name: unknown,
+): Where | undefined {
+  if (typeof name !== "string") {
+    ctx.at("`rule` takes the name of a rule");
+    return undefined;
+  }
+  const own = owner && ctx.rules?.byType.get(owner.name)?.get(name);
+  const schema = ctx.rules?.schema.get(name);
+  const id = own ? `${owner.name}.${name}` : name;
+  const def = own ?? schema;
+  if (!def) {
+    ctx.at(
+      `unknown rule "${name}"${owner ? ` (not a rule of ${owner.name} or of the schema)` : " (not a schema rule)"}`,
+    );
+    return undefined;
+  }
+  return withinRule(ctx, id, () =>
+    desugarRule(ctx, own ? owner : undefined, def),
+  );
+}
+
+/** Expand a named rule's body, refusing a cycle. */
+function withinRule(
+  ctx: DesugarContext,
+  id: string,
+  expand: () => Where,
+): Where | undefined {
+  const stack = (ctx.expanding ??= []);
+  const at = stack.indexOf(id);
+  if (at >= 0) {
+    ctx.at(`rule cycle: ${[...stack.slice(at), id].join(" → ")}`);
+    return undefined;
+  }
+  stack.push(id);
+  try {
+    return expand();
+  } finally {
+    stack.pop();
+  }
+}
+
+/**
+ * A rule of `node`'s type, used inside a node filter: its `node` parts
+ * become the filter itself. A rule that tests anything but `node` (claims,
+ * the viewer) cannot stand inside a node filter.
+ */
+function expandNodeRule(
+  ctx: DesugarContext,
+  node: NodeType,
+  name: unknown,
+): unknown {
+  if (typeof name !== "string") {
+    ctx.at("`rule` takes the name of a rule");
+    return undefined;
+  }
+  const def = ctx.rules?.byType.get(node.name)?.get(name);
+  if (!def) {
+    ctx.at(
+      ctx.rules?.schema.has(name)
+        ? `rule "${name}" is a schema rule over claims; use it beside node, not inside it`
+        : `unknown rule "${name}" (not a rule of ${node.name})`,
+    );
+    return undefined;
+  }
+  const expanded = withinRule(ctx, `${node.name}.${name}`, () =>
+    desugarRule(ctx, node, def),
+  );
+  return expanded && toNodeFilter(ctx, node, name, expanded);
+}
+
+function toNodeFilter(
+  ctx: DesugarContext,
+  node: NodeType,
+  name: string,
+  where: Where,
+): unknown {
+  const parts: unknown[] = [];
+  for (const [key, value] of Object.entries(where)) {
+    if (key === "node") parts.push(value);
+    else if (key === "AND" || key === "OR") {
+      parts.push({
+        [key]: (value as Where[]).map((w) => toNodeFilter(ctx, node, name, w)),
+      });
+    } else if (key === "NOT") {
+      parts.push({ NOT: toNodeFilter(ctx, node, name, value as Where) });
+    } else {
+      ctx.at(
+        `rule ${node.name}.${name} tests ${key}; only a rule that tests node alone can be used inside a node filter`,
+      );
+    }
+  }
+  return parts.length === 1 ? parts[0] : { AND: parts };
 }
 
 /** A `node` filter over `node`, sugar expanded, keys kept in order. */
@@ -77,10 +205,19 @@ export function desugarNode(
   where: unknown,
 ): unknown {
   if (!isRecord(where)) return where;
+  const keys = Object.keys(where);
+  if (keys.length === 1 && keys[0] === "rule") {
+    return expandNodeRule(ctx, node, where["rule"]) ?? {};
+  }
   const out: Where = {};
   // Tests that must go under AND, because their key is taken.
   const extra: Where[] = [];
   for (const [key, value] of Object.entries(where)) {
+    if (key === "rule") {
+      const expanded = expandNodeRule(ctx, node, value);
+      if (expanded) extra.push(expanded as Where);
+      continue;
+    }
     if (key === "AND" || key === "OR") {
       out[key] = Array.isArray(value)
         ? value.map((w) => desugarNode(ctx, node, w))
