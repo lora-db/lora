@@ -61,7 +61,8 @@
     "lint:fix": "eslint src test bench --fix",
     "format": "prettier --write src test",
     "format:check": "prettier --check src test",
-    "bench": "vitest bench --run"
+    "bench": "vitest bench --run",
+    "bench:load": "node bench/load/main.mjs"
   },
   "peerDependencies": {
     "@loradb/lora-node": "^0.18.0",
