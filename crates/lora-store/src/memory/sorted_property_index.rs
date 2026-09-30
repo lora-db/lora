@@ -146,32 +146,41 @@ impl SortedPropertyIndex {
         Some(out)
     }
 
-    /// Whether the scope holds a temporal value of another kind than
-    /// `like` (a DATE when `like` is a DATETIME, ...). `Some(false)` when
-    /// `like` is not temporal; `None` when the scope is not indexed. Two
-    /// probes: the temporal kinds are contiguous, so only the first and
-    /// last temporal keys can differ in kind from `like`.
-    pub(super) fn holds_other_temporal_kind(
+    /// Ids whose value is a temporal of another kind than `like` (a DATE
+    /// when `like` is a DATETIME, ...). Empty when `like` is not temporal;
+    /// `None` when the scope is not indexed. Each temporal kind is one
+    /// contiguous run of keys, so this reads only the other kinds' runs:
+    /// two range probes plus the ids found.
+    pub(super) fn other_temporal_kind_ids(
         &self,
         label: &str,
         property: &str,
         like: &PropertyValue,
-    ) -> Option<bool> {
+    ) -> Option<Vec<u64>> {
         let scope = self
             .by_scope
             .get(&ScopedPropertyKey::new(label, property))?;
-        let Some(kind) = PropertyIndexKey::from_value(like).and_then(|k| k.temporal_kind()) else {
-            return Some(false);
+        let Some(key) = PropertyIndexKey::from_value(like) else {
+            return Some(Vec::new());
+        };
+        let (Some(kind_floor), Some(kind_ceiling)) = (key.kind_floor(), key.kind_ceiling()) else {
+            return Some(Vec::new());
         };
         let (floor, ceiling) = PropertyIndexKey::all_temporals();
-        let mut temporals = scope
-            .by_value
-            .range(Bound::Included(floor), Bound::Included(ceiling));
-        let other = |key: Option<(&PropertyIndexKey, &IdSet)>| {
-            key.and_then(|(k, _)| k.temporal_kind())
-                .is_some_and(|k| k != kind)
-        };
-        Some(other(temporals.next()) || other(temporals.next_back()))
+        let mut out = BTreeSet::new();
+        extend_ids(
+            &mut out,
+            scope
+                .by_value
+                .range(Bound::Included(floor), Bound::Excluded(kind_floor)),
+        );
+        extend_ids(
+            &mut out,
+            scope
+                .by_value
+                .range(Bound::Excluded(kind_ceiling), Bound::Included(ceiling)),
+        );
+        Some(out.into_iter().collect())
     }
 
     /// Ids in `[lo, hi]` (inclusive; the caller refilters exact bounds)

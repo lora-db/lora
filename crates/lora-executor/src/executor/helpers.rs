@@ -47,9 +47,7 @@ use lora_compiler::physical::{
 use lora_store::{GraphStorage, NodeId, Properties, PropertyValue, RelationshipId};
 
 use crate::errors::{value_kind, ExecResult, ExecutorError};
-use crate::eval::{
-    eval_expr, eval_expr_result, eval_truthy_result, temporal_kind_mismatch, EvalContext,
-};
+use crate::eval::{eval_expr, eval_expr_result, eval_truthy_result, EvalContext};
 use crate::value::{lora_value_to_property, LoraPath, LoraValue, Row};
 
 /// Deadline guard. Returns `QueryTimeout` once the deadline has
@@ -681,6 +679,8 @@ pub(super) fn expand_var_len_rows<S: GraphStorage>(
         let Some(src_node_id) = bound_node_id_for_expand(&row, op.src)? else {
             continue;
         };
+        // A destination the row already binds is checked, never rebound.
+        let bound_dst = bound_node_id_for_expand(&row, op.dst)?;
 
         let expansions = variable_length_expand(
             storage,
@@ -693,6 +693,9 @@ pub(super) fn expand_var_len_rows<S: GraphStorage>(
         );
 
         for result in expansions {
+            if bound_dst.is_some_and(|dst| dst != result.dst_node_id) {
+                continue;
+            }
             let mut new_row = row.clone();
             new_row.insert(op.dst, LoraValue::Node(result.dst_node_id));
 
@@ -1220,6 +1223,7 @@ pub(crate) fn node_by_property_range_scan_rows<S: GraphStorage>(
 ) -> ExecResult<Vec<Row>> {
     let eval_ctx = EvalContext { storage, params };
     let mut out = Vec::new();
+    let mut other_kinds = OtherKindScan::default();
 
     for row in base_rows {
         check_optional_deadline(deadline)?;
@@ -1239,14 +1243,23 @@ pub(crate) fn node_by_property_range_scan_rows<S: GraphStorage>(
             hi: hi_value.as_ref(),
             hi_inclusive: op.hi_inclusive,
         };
+        let bounds = [lo_value.as_ref(), hi_value.as_ref()];
         let bound_id = bound_node_id_for_expand(&row, op.var)?;
-        check_node_range_temporal_kinds(storage, op, bound_id, &filter)?;
 
         if let Some(existing_id) = bound_id {
-            if node_matches_range_filter(storage, existing_id, &filter) {
+            if node_matches_range_filter(storage, existing_id, &filter)
+                || bound_node_has_other_kind(storage, existing_id, op, bounds)
+            {
                 out.push(row);
             }
             continue;
+        }
+
+        // Temporals of another kind first, for the Filter above to judge.
+        for id in other_kind_node_ids(storage, op, bounds, &mut other_kinds) {
+            let mut new_row = row.clone();
+            new_row.insert(op.var, LoraValue::Node(id));
+            out.push(new_row);
         }
 
         if op.order.is_some() {
@@ -1334,107 +1347,182 @@ pub(crate) fn node_by_text_scan_rows<S: GraphStorage>(
     Ok(out)
 }
 
-/// A temporal range bound against a property that holds temporals of
-/// another kind fails, as the same comparison does in a filter
-/// ([`temporal_kind_mismatch`]); the index keeps each kind apart and would
-/// skip those values without a word. With an index the check is two index
-/// probes; without one (or with the node already bound) it reads the
-/// values the scan compares.
-pub(crate) fn check_node_range_temporal_kinds<S: GraphStorage>(
-    storage: &S,
-    op: &lora_compiler::NodeByPropertyRangeScanExec,
-    bound_id: Option<NodeId>,
-    filter: &NodeRangeFilter<'_>,
-) -> ExecResult<()> {
-    for bound in [filter.lo, filter.hi].into_iter().flatten() {
-        let stored_kind_mismatch = |id: NodeId| {
-            storage
-                .with_node(id, |n| {
-                    n.properties
-                        .get(op.key.as_str())
-                        .and_then(|v| temporal_kind_mismatch(&LoraValue::from(v), bound))
-                })
-                .flatten()
-        };
-        if let Some(id) = bound_id {
-            if let Some(msg) = stored_kind_mismatch(id) {
-                return Err(ExecutorError::RuntimeError(msg));
+/// The temporal kinds of a range scan's bounds, at most two.
+fn temporal_bound_kinds(bounds: [Option<&LoraValue>; 2]) -> Vec<(&'static str, &LoraValue)> {
+    let mut kinds: Vec<(&'static str, &LoraValue)> = Vec::with_capacity(2);
+    for bound in bounds.into_iter().flatten() {
+        if let Some(kind) = temporal_kind_name(bound) {
+            if !kinds.iter().any(|(k, _)| *k == kind) {
+                kinds.push((kind, bound));
             }
-            continue;
-        }
-        let Some(kind) = temporal_kind_name(bound) else {
-            continue;
-        };
-        let indexed = match (
-            single_label_hint(&op.labels),
-            lora_value_to_property(bound.clone()),
-        ) {
-            (Some(label), Ok(like)) => {
-                storage.node_range_holds_other_temporal_kind(label, &op.key, &like)
-            }
-            _ => None,
-        };
-        let mismatch = match indexed {
-            Some(false) => None,
-            Some(true) => Some(other_temporal_kind_message(&op.key, kind)),
-            None => scan_node_ids_for_label_groups(storage, &op.labels)
-                .into_iter()
-                .find_map(stored_kind_mismatch),
-        };
-        if let Some(msg) = mismatch {
-            return Err(ExecutorError::RuntimeError(msg));
         }
     }
-    Ok(())
+    kinds
 }
 
-/// Relationship counterpart of [`check_node_range_temporal_kinds`].
-fn check_rel_range_temporal_kinds<S: GraphStorage>(
+/// Whether `value` is a temporal of a kind none of `kinds` is.
+fn is_other_temporal_kind(value: &PropertyValue, kinds: &[(&'static str, &LoraValue)]) -> bool {
+    temporal_kind_name(&LoraValue::from(value))
+        .is_some_and(|kind| kinds.iter().any(|(k, _)| *k != kind))
+}
+
+/// Per-call memo of a label or type scan, for when no index can list the
+/// other-kind ids. Held for one scan call only: in the pull path writes
+/// can land between rows, so it is never kept across them.
+#[derive(Default)]
+pub(crate) struct OtherKindScan<Id> {
+    temporals: Option<Vec<(Id, &'static str)>>,
+}
+
+impl<Id: Copy> OtherKindScan<Id> {
+    fn ids(
+        &mut self,
+        kinds: &[(&'static str, &LoraValue)],
+        scan: impl FnOnce() -> Vec<(Id, &'static str)>,
+    ) -> Vec<Id> {
+        self.temporals
+            .get_or_insert_with(scan)
+            .iter()
+            .filter(|(_, kind)| kinds.iter().any(|(k, _)| k != kind))
+            .map(|(id, _)| *id)
+            .collect()
+    }
+}
+
+/// Nodes a range scan emits besides its matches: those whose `op.key`
+/// holds a temporal of another kind than a temporal bound. The index keeps
+/// each kind apart and would skip them without a word; emitted, they reach
+/// the `Filter` above the scan, which compares them as an unindexed scan
+/// does. So an unguarded `x >= date(…)` fails on a DATETIME `x`, while a
+/// guard such as `type.of(x) = 'DATE' AND x >= date(…)` drops the row
+/// before the comparison (`AND` short-circuits). Reads only the other
+/// kinds' runs of the index (two probes plus the ids found); without an
+/// index, the label once per call.
+pub(crate) fn other_kind_node_ids<S: GraphStorage>(
+    storage: &S,
+    op: &lora_compiler::NodeByPropertyRangeScanExec,
+    bounds: [Option<&LoraValue>; 2],
+    fallback: &mut OtherKindScan<NodeId>,
+) -> Vec<NodeId> {
+    let kinds = temporal_bound_kinds(bounds);
+    if kinds.is_empty() {
+        return Vec::new();
+    }
+    // A label every matching node has: its index lists the candidates.
+    let index_label = op
+        .labels
+        .iter()
+        .find(|group| group.len() == 1)
+        .map(|group| group[0].as_str());
+    let mut ids = BTreeSet::new();
+    let mut need_scan = index_label.is_none();
+    if let Some(label) = index_label {
+        for (_, bound) in &kinds {
+            let listed = lora_value_to_property((*bound).clone())
+                .ok()
+                .and_then(|like| storage.node_range_other_temporal_kind_ids(label, &op.key, &like));
+            match listed {
+                Some(listed) => ids.extend(listed),
+                None => need_scan = true,
+            }
+        }
+        // Several bound kinds: a value of one bound's kind is "other" for
+        // the other bound, which each probe already lists.
+    }
+    if need_scan {
+        ids.extend(fallback.ids(&kinds, || {
+            scan_node_ids_for_label_groups(storage, &op.labels)
+                .into_iter()
+                .filter_map(|id| {
+                    storage
+                        .with_node(id, |n| {
+                            n.properties
+                                .get(op.key.as_str())
+                                .and_then(|v| temporal_kind_name(&LoraValue::from(v)))
+                        })
+                        .flatten()
+                        .map(|kind| (id, kind))
+                })
+                .collect()
+        }));
+        return ids.into_iter().collect();
+    }
+    let single = op.labels.len() == 1 && op.labels[0].len() == 1;
+    ids.into_iter()
+        .filter(|id| {
+            single
+                || storage
+                    .with_node(*id, |n| node_matches_label_groups(&n.labels, &op.labels))
+                    .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// Whether the bound node `id` matches the scan's labels and holds a
+/// temporal of another kind than a temporal bound; see
+/// [`other_kind_node_ids`].
+pub(crate) fn bound_node_has_other_kind<S: GraphStorage>(
+    storage: &S,
+    id: NodeId,
+    op: &lora_compiler::NodeByPropertyRangeScanExec,
+    bounds: [Option<&LoraValue>; 2],
+) -> bool {
+    let kinds = temporal_bound_kinds(bounds);
+    !kinds.is_empty()
+        && storage
+            .with_node(id, |n| {
+                node_matches_label_groups(&n.labels, &op.labels)
+                    && n.properties
+                        .get(op.key.as_str())
+                        .is_some_and(|v| is_other_temporal_kind(v, &kinds))
+            })
+            .unwrap_or(false)
+}
+
+/// Relationship counterpart of [`other_kind_node_ids`].
+fn other_kind_rel_ids<S: GraphStorage>(
     storage: &S,
     op: &lora_compiler::RelByPropertyRangeScanExec,
     bounds: [Option<&LoraValue>; 2],
-) -> ExecResult<()> {
-    for bound in bounds.into_iter().flatten() {
-        let Some(kind) = temporal_kind_name(bound) else {
-            continue;
-        };
-        let like = lora_value_to_property(bound.clone()).ok();
-        let indexed = |ty: &str| {
-            like.as_ref().and_then(|like| {
-                storage.relationship_range_holds_other_temporal_kind(ty, &op.key, like)
-            })
-        };
-        let types: Vec<Option<&str>> = if op.types.is_empty() {
-            vec![None]
-        } else {
-            op.types.iter().map(|t| Some(t.as_str())).collect()
-        };
-        for ty in types {
-            let mismatch = match ty.and_then(indexed) {
-                Some(false) => None,
-                Some(true) => Some(other_temporal_kind_message(&op.key, kind)),
-                None => {
-                    let ids = match ty {
-                        Some(ty) => storage.rel_ids_by_type(ty),
-                        None => storage.all_rel_ids(),
-                    };
-                    ids.into_iter().find_map(|id| {
-                        storage
-                            .with_relationship(id, |r| {
-                                r.properties.get(op.key.as_str()).and_then(|v| {
-                                    temporal_kind_mismatch(&LoraValue::from(v), bound)
-                                })
-                            })
-                            .flatten()
-                    })
-                }
-            };
-            if let Some(msg) = mismatch {
-                return Err(ExecutorError::RuntimeError(msg));
+    fallback: &mut OtherKindScan<RelationshipId>,
+) -> Vec<RelationshipId> {
+    let kinds = temporal_bound_kinds(bounds);
+    if kinds.is_empty() {
+        return Vec::new();
+    }
+    let mut ids = BTreeSet::new();
+    let mut need_scan = op.types.is_empty();
+    for ty in &op.types {
+        for (_, bound) in &kinds {
+            let listed = lora_value_to_property((*bound).clone())
+                .ok()
+                .and_then(|like| {
+                    storage.relationship_range_other_temporal_kind_ids(ty, &op.key, &like)
+                });
+            match listed {
+                Some(listed) => ids.extend(listed),
+                None => need_scan = true,
             }
         }
     }
-    Ok(())
+    if need_scan {
+        ids.extend(fallback.ids(&kinds, || {
+            rel_candidate_ids(storage, &op.types, |_| None)
+                .into_iter()
+                .filter_map(|id| {
+                    storage
+                        .with_relationship(id, |r| {
+                            r.properties
+                                .get(op.key.as_str())
+                                .and_then(|v| temporal_kind_name(&LoraValue::from(v)))
+                        })
+                        .flatten()
+                        .map(|kind| (id, kind))
+                })
+                .collect()
+        }));
+    }
+    ids.into_iter().collect()
 }
 
 fn temporal_kind_name(value: &LoraValue) -> Option<&'static str> {
@@ -1446,14 +1534,6 @@ fn temporal_kind_name(value: &LoraValue) -> Option<&'static str> {
         LoraValue::LocalTime(_) => "LOCAL_TIME",
         _ => return None,
     })
-}
-
-fn other_temporal_kind_message(key: &str, kind: &str) -> String {
-    format!(
-        "cannot compare `{key}` with a {kind}: some `{key}` values are temporals of another \
-         type, and temporal values of different types do not order against each other; \
-         convert one side first, e.g. date(x) or datetime(x)"
-    )
 }
 
 pub(crate) struct NodeRangeFilter<'a> {
@@ -2382,6 +2462,7 @@ pub(crate) fn rel_by_property_range_scan_rows<S: GraphStorage>(
 ) -> ExecResult<Vec<Row>> {
     let eval_ctx = EvalContext { storage, params };
     let mut out = Vec::new();
+    let mut other_kinds = OtherKindScan::default();
 
     for row in base_rows {
         check_optional_deadline(deadline)?;
@@ -2394,7 +2475,19 @@ pub(crate) fn rel_by_property_range_scan_rows<S: GraphStorage>(
             .clone()
             .and_then(|v| lora_value_to_property(v).ok());
 
-        check_rel_range_temporal_kinds(storage, op, [lo_value.as_ref(), hi_value.as_ref()])?;
+        // Temporals of another kind first, for the Filter above to judge
+        // (see `other_kind_node_ids`).
+        let bounds = [lo_value.as_ref(), hi_value.as_ref()];
+        for rel_id in other_kind_rel_ids(storage, op, bounds, &mut other_kinds) {
+            if let Some(result) = storage.with_relationship(rel_id, |rel| {
+                if !op.types.is_empty() && !op.types.iter().any(|t| t == &rel.rel_type) {
+                    return Ok(());
+                }
+                emit_rel_rows(op.direction, op.src, op.rel, op.dst, rel, &row, &mut out)
+            }) {
+                result?;
+            }
+        }
         let candidate_ids = rel_candidate_ids(storage, &op.types, |ty| {
             storage.relationship_range_candidates(ty, &op.key, lo_prop.as_ref(), hi_prop.as_ref())
         });

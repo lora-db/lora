@@ -802,17 +802,18 @@ pub trait GraphStorage {
         None
     }
 
-    /// Whether the range index on `label.property` holds a temporal value
-    /// of another kind than `like` (a DATE when `like` is a DATETIME).
-    /// Lets a range scan on a temporal bound fail on a kind mismatch the
-    /// index would otherwise skip without a word. `None` when no index
-    /// covers `(label, property)`.
-    fn node_range_holds_other_temporal_kind(
+    /// Ids of `label` nodes whose `property` holds a temporal value of
+    /// another kind than `like` (a DATE when `like` is a DATETIME). A range
+    /// scan on a temporal bound emits them too, so the comparison above it
+    /// sees them as an unindexed scan would, instead of the index skipping
+    /// them without a word. `None` when no index covers
+    /// `(label, property)`.
+    fn node_range_other_temporal_kind_ids(
         &self,
         _label: &str,
         _property: &str,
         _like: &PropertyValue,
-    ) -> Option<bool> {
+    ) -> Option<Vec<NodeId>> {
         None
     }
 
@@ -886,14 +887,14 @@ pub trait GraphStorage {
         None
     }
 
-    /// Mirror of [`Self::node_range_holds_other_temporal_kind`] for
+    /// Mirror of [`Self::node_range_other_temporal_kind_ids`] for
     /// relationships of `rel_type`.
-    fn relationship_range_holds_other_temporal_kind(
+    fn relationship_range_other_temporal_kind_ids(
         &self,
         _rel_type: &str,
         _property: &str,
         _like: &PropertyValue,
-    ) -> Option<bool> {
+    ) -> Option<Vec<RelationshipId>> {
         None
     }
 

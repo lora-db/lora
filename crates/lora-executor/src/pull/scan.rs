@@ -525,7 +525,13 @@ pub struct OrderedRangeScanSource<'a, S: GraphStorage> {
     upstream: Box<dyn RowSource + 'a>,
     ctx: StreamCtx<'a, S>,
     op: &'a NodeByPropertyRangeScanExec,
-    current: Option<(Row, crate::executor::OrderedRangeCursor)>,
+    /// The input row, the temporals of another kind still to emit (see
+    /// `other_kind_node_ids`), and the cursor over the range.
+    current: Option<(
+        Row,
+        std::vec::IntoIter<lora_store::NodeId>,
+        crate::executor::OrderedRangeCursor,
+    )>,
 }
 
 impl<'a, S: GraphStorage> OrderedRangeScanSource<'a, S> {
@@ -546,8 +552,10 @@ impl<'a, S: GraphStorage> OrderedRangeScanSource<'a, S> {
 impl<'a, S: GraphStorage> RowSource for OrderedRangeScanSource<'a, S> {
     fn next_row(&mut self) -> ExecResult<Option<Row>> {
         loop {
-            if let Some((row, cursor)) = self.current.as_mut() {
-                if let Some(id) = cursor.next_id(self.ctx.storage) {
+            if let Some((row, others, cursor)) = self.current.as_mut() {
+                // Temporals of another kind come first, for the Filter above
+                // to judge before any LIMIT can stop the scan.
+                if let Some(id) = others.next().or_else(|| cursor.next_id(self.ctx.storage)) {
                     let mut out = row.clone();
                     out.insert(self.op.var, LoraValue::Node(id));
                     return Ok(Some(out));
@@ -560,15 +568,15 @@ impl<'a, S: GraphStorage> RowSource for OrderedRangeScanSource<'a, S> {
             let eval_ctx = self.ctx.eval_ctx();
             let lo = self.op.lo.as_ref().map(|e| eval_expr(e, &row, &eval_ctx));
             let hi = self.op.hi.as_ref().map(|e| eval_expr(e, &row, &eval_ctx));
-            let cursor =
-                crate::executor::OrderedRangeCursor::new(self.ctx.storage, self.op, lo, hi);
-            crate::executor::check_node_range_temporal_kinds(
+            let others = crate::executor::other_kind_node_ids(
                 self.ctx.storage,
                 self.op,
-                None,
-                &cursor.filter(),
-            )?;
-            self.current = Some((row, cursor));
+                [lo.as_ref(), hi.as_ref()],
+                &mut crate::executor::OtherKindScan::default(),
+            );
+            let cursor =
+                crate::executor::OrderedRangeCursor::new(self.ctx.storage, self.op, lo, hi);
+            self.current = Some((row, others.into_iter(), cursor));
         }
     }
 }

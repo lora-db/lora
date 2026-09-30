@@ -432,14 +432,6 @@ impl PropertyIndexKey {
         }
     }
 
-    /// The kind of a temporal key; `None` for every other key.
-    pub(super) fn temporal_kind(&self) -> Option<TemporalKind> {
-        match self {
-            Self::Temporal { kind, .. } => Some(*kind),
-            _ => None,
-        }
-    }
-
     /// The first and last possible temporal keys: the temporal kinds sit
     /// next to each other, so these bound all of them at once.
     pub(super) fn all_temporals() -> (Self, Self) {

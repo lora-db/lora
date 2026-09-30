@@ -70,7 +70,7 @@ pub(crate) use helpers::{
     rel_by_point_scan_rows, rel_by_property_range_scan_rows, rel_by_text_scan_rows, resolve_range,
     scan_node_ids_for_label_groups, GroupValueKey, NodePropertyCandidates,
 };
-pub(crate) use helpers::{check_node_range_temporal_kinds, OrderedRangeCursor};
+pub(crate) use helpers::{other_kind_node_ids, OrderedRangeCursor, OtherKindScan};
 pub(crate) use optional::{
     merge_optional_rows, null_extend_optional_row, optional_can_correlate, optional_match_rows,
     optional_rows_compatible,

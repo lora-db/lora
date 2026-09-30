@@ -297,14 +297,14 @@ impl GraphStorage for InMemoryGraph {
         Some(candidates.into_iter().collect())
     }
 
-    fn node_range_holds_other_temporal_kind(
+    fn node_range_other_temporal_kind_ids(
         &self,
         label: &str,
         property: &str,
         like: &PropertyValue,
-    ) -> Option<bool> {
+    ) -> Option<Vec<NodeId>> {
         self.sorted_indexes_read(crate::StoredIndexEntity::Node)
-            .holds_other_temporal_kind(label, property, like)
+            .other_temporal_kind_ids(label, property, like)
     }
 
     fn node_range_ordered_chunk(
@@ -368,14 +368,14 @@ impl GraphStorage for InMemoryGraph {
         Some(candidates.into_iter().collect())
     }
 
-    fn relationship_range_holds_other_temporal_kind(
+    fn relationship_range_other_temporal_kind_ids(
         &self,
         rel_type: &str,
         property: &str,
         like: &PropertyValue,
-    ) -> Option<bool> {
+    ) -> Option<Vec<RelationshipId>> {
         self.sorted_indexes_read(crate::StoredIndexEntity::Relationship)
-            .holds_other_temporal_kind(rel_type, property, like)
+            .other_temporal_kind_ids(rel_type, property, like)
     }
 
     fn relationship_point_within_bbox(
