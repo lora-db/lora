@@ -103,6 +103,12 @@ each check runs. The user-facing rules are in the package
 
 ## Writes and change events
 
+- `isViewer` and `viewer` (with `@viewer`) are resolved from the claim the
+  server verified, like `$jwt.sub`: the library never looks the caller up
+  by anything the client sends. The `@viewer` field must be `@key` or
+  `@unique`, so a claim names at most one node. A missing claim is unknown
+  and never grants, including under `NOT`.
+
 - A directive in a position the model would not apply is a model error at
   startup (`src/model/positions.ts`), so a rule or visibility directive
   written to protect data is never accepted and ignored. `@authentication`

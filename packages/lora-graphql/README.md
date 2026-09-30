@@ -136,19 +136,20 @@ Model:
 
 API:
 
-| Directive                                             | On                                           | Meaning                                                                                                    |
-| ----------------------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `@query(read:, aggregate:)`                           | type, interface, union                       | Generated reads                                                                                            |
-| `@mutation(operations: [CREATE, UPDATE, DELETE])`     | type                                         | Generated mutations; none without it                                                                       |
-| `@subscription(operations: [CREATE, UPDATE, DELETE])` | type                                         | Generated subscriptions; none without it                                                                   |
-| `@filterable(byValue: [...])`                         | field                                        | Filter operators. Bare: `EQ` and `IN` (lists: `INCLUDES`). On a relationship: enables relationship filters |
-| `@sortable`                                           | field                                        | Sort and paginate by this field (on a relationship property: `sort: [{ edge: { ... } }]`)                  |
-| `@groupBy`                                            | field                                        | A grouping key of `<plural>Grouped(by:)` (needs `@query(aggregate: true)`)                                 |
-| `@limit(default:, max:)`                              | type, interface, union, list relationship    | Page size bounds                                                                                           |
-| `@relayId`                                            | `@key` field                                 | Adds a global `id` and the `Node` interface                                                                |
-| `@authentication(operations:, jwt:)`                  | type, field                                  | Needs an authenticated request, whose claims satisfy `jwt`                                                 |
-| `@authorization(filter:, validate:)`                  | type (filter and validate), field (validate) | Row-level rules, compiled into statements                                                                  |
-| `@jwt`, `@jwtClaim(path:)`                            | type, field                                  | The claims shape; rules may only use declared claims                                                       |
+| Directive                                             | On                                           | Meaning                                                                                                       |
+| ----------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `@query(read:, aggregate:)`                           | type, interface, union                       | Generated reads                                                                                               |
+| `@mutation(operations: [CREATE, UPDATE, DELETE])`     | type                                         | Generated mutations; none without it                                                                          |
+| `@subscription(operations: [CREATE, UPDATE, DELETE])` | type                                         | Generated subscriptions; none without it                                                                      |
+| `@filterable(byValue: [...])`                         | field                                        | Filter operators. Bare: `EQ` and `IN` (lists: `INCLUDES`). On a relationship: enables relationship filters    |
+| `@sortable`                                           | field                                        | Sort and paginate by this field (on a relationship property: `sort: [{ edge: { ... } }]`)                     |
+| `@groupBy`                                            | field                                        | A grouping key of `<plural>Grouped(by:)` (needs `@query(aggregate: true)`)                                    |
+| `@limit(default:, max:)`                              | type, interface, union, list relationship    | Page size bounds                                                                                              |
+| `@relayId`                                            | `@key` field                                 | Adds a global `id` and the `Node` interface                                                                   |
+| `@authentication(operations:, jwt:)`                  | type, field                                  | Needs an authenticated request, whose claims satisfy `jwt`                                                    |
+| `@authorization(filter:, validate:)`                  | type (filter and validate), field (validate) | Row-level rules, compiled into statements                                                                     |
+| `@jwt`, `@jwtClaim(path:)`                            | type, field                                  | The claims shape; rules may only use declared claims                                                          |
+| `@viewer(type:, field:)`                              | `@jwt` claim                                 | The claim naming the caller's node (by a `@key` or `@unique` field): enables `isViewer` and `viewer` in rules |
 
 `directiveTypeDefs` (or `lora-graphql directives`) prints these as SDL for
 editors and codegen.
@@ -623,6 +624,17 @@ type Post
   `"$context.path"` strings values from the GraphQL context. `jwt` tests
   claims (`eq`, `in`, `includes`, `contains`, `startsWith`, `endsWith`,
   `lt`, `lte`, `gt`, `gte`, `exists`).
+- **The caller's own node.** Mark the claim that identifies the caller
+  with `@viewer(type: "Person", field: "subject")` (the field is `@key` or
+  `@unique`), so the key can stay a slug while the subject is an identity
+  provider's opaque id. Rules then say `{ node: { isViewer: true } }` on
+  the viewer type, or `{ node: { author: { isViewer: true } } }` through a
+  relationship; this expands to `{ subject: { eq: "$jwt.sub" } }` at
+  startup and compiles to exactly the same statement. `viewer: { verified:
+{ eq: true } }` tests the caller's own node: one seek by the claim. Both
+  are unknown without the claim, so `NOT { isViewer: true }` never grants a
+  signed-out caller. `isViewer` takes `true` only; use `NOT` for the
+  opposite.
 - Inside a longer string, write `${jwt.path}` or `${context.path}`:
   `key: { startsWith: "${jwt.sub}:" }` confines a user to keys that begin
   with their `sub` and `:`. The claim must be a string, number or boolean;

@@ -23,6 +23,7 @@ const USE: Record<string, string> = {
   populatedBy: '@populatedBy(callback: "cb")',
   jwt: "@jwt",
   jwtClaim: '@jwtClaim(path: "x")',
+  viewer: '@viewer(type: "T", field: "key")',
   relationshipProperties: "@relationshipProperties",
   alias: '@alias(property: "p")',
   private: "@private",

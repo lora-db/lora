@@ -184,7 +184,7 @@ export const DIRECTIVE_POSITIONS: Readonly<
   ],
   "interface relationship field": ["declareRelationship"],
   "field of an object type without @node": [],
-  "@jwt claim": ["jwtClaim"],
+  "@jwt claim": ["jwtClaim", "viewer"],
 };
 
 const HINTS: Partial<Record<Position, string>> = {

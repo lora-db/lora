@@ -30,6 +30,12 @@ import { RANGE_UNINDEXABLE } from "../analyze/indexes.js";
 import { ModelError, type ModelProblem } from "../errors.js";
 import { directiveTypeDefs, PRELUDE_TYPES } from "./directives.js";
 import { checkDirectivePositions } from "./positions.js";
+import {
+  checkViewer,
+  desugarRule,
+  type DesugarContext,
+  type ViewerMapping,
+} from "./desugar.js";
 import { codeOnly, maskLiterals, scanParams } from "./cypher-lexer.js";
 import type {
   AbstractType,
@@ -161,6 +167,7 @@ export function buildModel(
   const unionTypes: GraphQLUnionType[] = [];
   let jwtShape: Map<string, string> | undefined;
   let jwtType: string | undefined;
+  let viewer: ViewerMapping | undefined;
   const warnings: ModelWarning[] = [];
   for (const t of userTypes) {
     if (isScalarType(t)) {
@@ -229,6 +236,21 @@ export function buildModel(
       for (const f of Object.values(t.getFields())) {
         const claim = directive(d("jwtClaim"), f, atType(t.name));
         jwtShape.set(f.name, (claim?.["path"] as string | undefined) ?? f.name);
+        const viewerArgs = directive(d("viewer"), f, atType(t.name));
+        if (viewerArgs) {
+          if (viewer) {
+            problems.push({
+              type: t.name,
+              field: f.name,
+              message: `only one @viewer claim is allowed (${viewer.claim} has one)`,
+            });
+          }
+          viewer = {
+            claim: f.name,
+            type: viewerArgs["type"] as string,
+            field: viewerArgs["field"] as string,
+          };
+        }
       }
       continue;
     }
@@ -692,6 +714,57 @@ export function buildModel(
     }
   }
 
+  // Rule sugar (isViewer, viewer) expands into the plain rule AST before
+  // the rules are checked, so the checks and the compiler see one form.
+  if (viewer && jwtType) checkViewer(viewer, nodes, jwtType, problems);
+  const viewerNode = viewer ? nodes.get(viewer.type) : undefined;
+  const desugar = (
+    owner: NodeType | undefined,
+    type: string,
+    field: string | undefined,
+    rules: ReadonlyArray<{ where: AuthorizationWhere }>,
+  ) => {
+    const ctx: DesugarContext = {
+      nodes,
+      props: relationshipProperties,
+      viewer,
+      at: (message) =>
+        problems.push({
+          type,
+          ...(field ? { field } : {}),
+          message: `@authorization: ${message}`,
+        }),
+    };
+    for (const rule of rules) {
+      (rule as { where: AuthorizationWhere }).where = desugarRule(
+        ctx,
+        owner,
+        rule.where,
+      );
+    }
+  };
+  for (const node of nodes.values()) {
+    desugar(node, node.name, undefined, [
+      ...(node.authorization?.filter ?? []),
+      ...(node.authorization?.validate ?? []),
+    ]);
+    for (const f of node.fields.values()) {
+      if (f.authorization) {
+        desugar(node, node.name, f.name, [
+          ...f.authorization.filter,
+          ...f.authorization.validate,
+        ]);
+      }
+    }
+  }
+  for (const props of relationshipProperties.values()) {
+    for (const f of props.fields.values()) {
+      if (f.authorization) {
+        desugar(undefined, props.name, f.name, f.authorization.validate);
+      }
+    }
+  }
+
   for (const node of nodes.values()) {
     const rules = [
       ...(node.authorization?.filter ?? []),
@@ -717,6 +790,7 @@ export function buildModel(
         rule.where,
         problems,
         jwtShape,
+        viewerNode,
       );
     }
     for (const where of [
@@ -818,6 +892,7 @@ export function buildModel(
     scalars,
     scalarDescriptions,
     jwt: jwtShape,
+    viewer,
     cursorSecret: options.cursorSecret,
   };
   // An update input with nothing in it would break the schema: the
@@ -1748,6 +1823,7 @@ function checkAuthorizationWhere(
   where: unknown,
   problems: ModelProblem[],
   jwtShape?: ReadonlyMap<string, string>,
+  viewerNode?: NodeType,
 ) {
   checkRuleWhere(
     nodes,
@@ -1758,6 +1834,7 @@ function checkAuthorizationWhere(
     where,
     problems,
     jwtShape,
+    viewerNode,
   );
 }
 
@@ -1776,6 +1853,7 @@ function checkRuleWhere(
   where: unknown,
   problems: ModelProblem[],
   jwtShape?: ReadonlyMap<string, string>,
+  viewerNode?: NodeType,
 ) {
   const at = (message: string) =>
     problems.push({
@@ -1806,6 +1884,19 @@ function checkRuleWhere(
               at(`${here}: $jwt.${ref} is not a claim of the @jwt type`);
           }
         }
+      } else if (k === "viewer") {
+        // Desugaring already reported a missing @viewer.
+        if (viewerNode) {
+          checkNodeWhere(nodes, props, viewerNode, value, here, at);
+          for (const problem of ruleStringProblems(value))
+            at(`${here}: ${problem}`);
+          if (jwtShape) {
+            for (const ref of claimRefs(value)) {
+              if (!jwtShape.has(ref))
+                at(`${here}: $jwt.${ref} is not a claim of the @jwt type`);
+            }
+          }
+        }
       } else if (k === "jwt") {
         if (!isRecord(value)) at(`${here} must be an object`);
         else {
@@ -1829,7 +1920,7 @@ function checkRuleWhere(
           }
         }
       } else {
-        at(`${here}: expected node, jwt, AND, OR or NOT`);
+        at(`${here}: expected node, viewer, jwt, AND, OR or NOT`);
       }
     }
   };

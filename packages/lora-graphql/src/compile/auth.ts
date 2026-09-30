@@ -15,8 +15,8 @@ import type {
   NodeType,
 } from "../model/types.js";
 import { PLACEHOLDER } from "../model/types.js";
-import { and, lit, not, or, type Expr } from "./cypher.js";
-import { noteClaim, type CompileContext } from "./context.js";
+import { and, bin, fn, lit, not, or, type Expr } from "./cypher.js";
+import { bind, freshVar, noteClaim, type CompileContext } from "./context.js";
 import { compileNodeWhere } from "./filter.js";
 
 type Where = Record<string, unknown>;
@@ -330,6 +330,8 @@ function compileRulePart(
     } else if (key === "NOT") {
       const inner = compileRulePart(ctx, node, variable, value as Where, true);
       parts.push(typeof inner === "boolean" ? !inner : not(inner));
+    } else if (key === "viewer") {
+      parts.push(viewerTest(ctx, value));
     } else if (key === "jwt") {
       parts.push(matchClaims(ctx, value as Where));
     } else if (key === "node" && node) {
@@ -353,6 +355,50 @@ function compileRulePart(
     }
   }
   return foldAnd(parts);
+}
+
+/**
+ * `viewer: { … }`: the caller's own node (found by the `@viewer` claim)
+ * passes the filter. One seek by the claim, as a pattern comprehension so
+ * it composes with the rest of the rule:
+ * `size([(v:Person {subject: $claim}) WHERE <filter> | 1]) > 0`. Without
+ * the claim it is unknown, like any test on a missing claim.
+ */
+function viewerTest(ctx: CompileContext, where: unknown): Folded {
+  const mapping = ctx.model.viewer;
+  const node = mapping && ctx.model.nodes.get(mapping.type);
+  // The model build refuses `viewer` without a @viewer claim.
+  if (!mapping || !node) return false;
+  const id = substitute(`$jwt.${mapping.claim}`, ctx);
+  const bound = substitute(where, ctx);
+  if (!id.ok || !bound.ok) throw new MissingClaim();
+  const field = node.fields.get(mapping.field);
+  const property = field?.kind === "scalar" ? field.property : mapping.field;
+  const x = freshVar(ctx, "viewer");
+  const wasInAuth = ctx.inAuth;
+  ctx.inAuth = true;
+  try {
+    const pred = compileNodeWhere(ctx, node, x, bound.value as Where);
+    return bin(
+      ">",
+      fn("size", {
+        kind: "comprehension",
+        pattern: {
+          start: {
+            variable: x,
+            labels: [node.labels[0]!],
+            properties: [{ key: property, value: bind(ctx, id.value) }],
+          },
+          hops: [],
+        },
+        where: pred,
+        projection: lit(1),
+      }),
+      lit(0),
+    );
+  } finally {
+    ctx.inAuth = wasInAuth;
+  }
 }
 
 function foldAnd(parts: Folded[]): Folded {

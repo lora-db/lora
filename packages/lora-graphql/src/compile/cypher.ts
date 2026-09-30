@@ -77,6 +77,8 @@ export type ProjectionEntry =
 export interface NodePattern {
   variable?: string;
   labels: string[];
+  /** Inline `{key: value}` properties: a start node seeks on them. */
+  properties?: Array<{ key: string; value: Expr }>;
 }
 
 export interface RelPattern {
@@ -348,7 +350,10 @@ function printOperand(e: Expr, parentOp?: BinaryOp): string {
 
 function printNode(n: NodePattern): string {
   const labels = n.labels.map((l) => ":" + name(l)).join("");
-  return `(${n.variable ? name(n.variable) : ""}${labels})`;
+  const props = n.properties?.length
+    ? ` {${n.properties.map((p) => `${name(p.key)}: ${printExpr(p.value)}`).join(", ")}}`
+    : "";
+  return `(${n.variable ? name(n.variable) : ""}${labels}${props})`;
 }
 
 export function printPattern(p: Pattern): string {

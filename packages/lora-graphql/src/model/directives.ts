@@ -102,6 +102,9 @@ export const directiveTypeDefs = /* GraphQL */ `
   "Where a declared claim lives in the token, e.g. app_metadata.roles."
   directive @jwtClaim(path: String!) on FIELD_DEFINITION
 
+  "The claim that identifies the caller: the node of \`type\` whose \`field\` (a @key or @unique field) equals it. Enables isViewer and viewer in rules."
+  directive @viewer(type: String!, field: String!) on FIELD_DEFINITION
+
   "Properties carried by a relationship type."
   directive @relationshipProperties on OBJECT
 

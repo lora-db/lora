@@ -355,6 +355,8 @@ export interface GraphModel {
   objects: ReadonlyMap<string, PlainObjectType>;
   /** The `@jwt` claims shape, when declared: claim name → token path. */
   jwt: ReadonlyMap<string, string> | undefined;
+  /** The `@viewer` claim: the caller's node type and identifying field. */
+  viewer: { claim: string; type: string; field: string } | undefined;
   /** Secret cursors are signed with, when configured. */
   cursorSecret: string | undefined;
 }
