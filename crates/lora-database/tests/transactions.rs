@@ -755,6 +755,120 @@ fn auto_commit_write_stream_with_wal_rolls_back_partial_consumption() {
     }
 }
 
+fn count_nodes(db: &Database<lora_database::InMemoryGraph>, label: &str) -> JsonValue {
+    let rows = rows_json(
+        db.execute(
+            &format!("MATCH (n:{label}) RETURN count(n) AS c"),
+            rows_options(),
+        )
+        .unwrap(),
+    );
+    rows[0]["c"].clone()
+}
+
+#[test]
+fn auto_commit_write_stream_pull_defers_commit_until_finish() {
+    let db = Database::in_memory();
+    let mut stream = db
+        .stream("UNWIND [1,2,3] AS x CREATE (:Pulled {value:x}) RETURN x")
+        .unwrap();
+    let mut rows = 0;
+    while stream.pull().unwrap().is_some() {
+        rows += 1;
+    }
+    assert_eq!(rows, 3);
+    // Drained but not committed: further pulls stay at the end.
+    assert!(stream.pull().unwrap().is_none());
+    stream.finish().unwrap();
+    // Finished: later calls report the end.
+    assert!(stream.next_row().unwrap().is_none());
+    stream.finish().unwrap();
+    drop(stream);
+    assert_eq!(count_nodes(&db, "Pulled"), JsonValue::Number(3.into()));
+}
+
+#[test]
+fn auto_commit_write_stream_next_row_commits_after_pull_drained() {
+    let db = Database::in_memory();
+    let mut stream = db
+        .stream("UNWIND [1,2] AS x CREATE (:Mixed {value:x}) RETURN x")
+        .unwrap();
+    while stream.pull().unwrap().is_some() {}
+    assert!(stream.next_row().unwrap().is_none());
+    drop(stream);
+    assert_eq!(count_nodes(&db, "Mixed"), JsonValue::Number(2.into()));
+}
+
+#[test]
+fn auto_commit_write_stream_drained_by_pull_rolls_back_on_drop() {
+    let db = Database::in_memory();
+    {
+        let mut stream = db
+            .stream("UNWIND [1,2,3] AS x CREATE (:Abandoned {value:x}) RETURN x")
+            .unwrap();
+        while stream.pull().unwrap().is_some() {}
+        // Dropped at the end without `finish`: rolls back.
+    }
+    assert_eq!(count_nodes(&db, "Abandoned"), JsonValue::Number(0.into()));
+    // The writer lock was released.
+    db.execute("CREATE (:After)", rows_options()).unwrap();
+    assert_eq!(count_nodes(&db, "After"), JsonValue::Number(1.into()));
+}
+
+#[test]
+fn auto_commit_write_stream_finish_runs_the_rest_and_commits() {
+    let db = Database::in_memory();
+    let mut stream = db
+        .stream("UNWIND [1,2,3] AS x CREATE (:Rest {value:x}) RETURN x")
+        .unwrap();
+    assert!(stream.pull().unwrap().is_some());
+    stream.finish().unwrap();
+    drop(stream);
+    assert_eq!(count_nodes(&db, "Rest"), JsonValue::Number(3.into()));
+}
+
+#[test]
+fn auto_commit_write_stream_pull_error_rolls_back() {
+    // A query ending in a write streams row by row, so the duplicate's
+    // constraint error surfaces from `pull` after earlier rows were written.
+    let db = Database::in_memory();
+    db.execute(
+        "CREATE CONSTRAINT failing_id FOR (n:Failing) REQUIRE n.id IS UNIQUE",
+        rows_options(),
+    )
+    .unwrap();
+    {
+        let mut stream = db
+            .stream("UNWIND [1, 2, 3, 1] AS x CREATE (:Failing {id: x})")
+            .unwrap();
+        let mut result = stream.pull();
+        while let Ok(Some(_)) = result {
+            result = stream.pull();
+        }
+        assert!(
+            result.is_err(),
+            "expected a constraint error, got {result:?}"
+        );
+        assert!(stream.finish().is_err());
+    }
+    assert_eq!(count_nodes(&db, "Failing"), JsonValue::Number(0.into()));
+    db.execute("CREATE (:Failing {id: 1})", rows_options())
+        .unwrap();
+    assert_eq!(count_nodes(&db, "Failing"), JsonValue::Number(1.into()));
+}
+
+#[test]
+fn read_stream_pull_matches_next_row() {
+    let db = Database::in_memory();
+    db.execute("UNWIND [1,2] AS x CREATE (:R {value:x})", rows_options())
+        .unwrap();
+    let mut stream = db.stream("MATCH (r:R) RETURN r.value AS v").unwrap();
+    assert!(stream.pull().unwrap().is_some());
+    assert!(stream.pull().unwrap().is_some());
+    assert!(stream.pull().unwrap().is_none());
+    stream.finish().unwrap();
+}
+
 #[test]
 fn db_stream_read_only_uses_live_pull_cursor() {
     // Verifies that `Database::stream` for a read query produces

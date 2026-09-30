@@ -80,7 +80,9 @@ impl Database<InMemoryGraph> {
     /// full cursor exhaustion calls `tx.commit` (publishing staged
     /// changes and replaying the tx-local WAL buffer); a premature
     /// drop or any error from `next_row` calls `tx.rollback` so
-    /// the live store and the WAL stay untouched.
+    /// the live store and the WAL stay untouched. A caller that reads
+    /// ahead uses [`QueryStream::pull`], which does not commit at the
+    /// end, and commits with [`QueryStream::finish`].
     pub fn stream_with_params(
         &self,
         query: &str,

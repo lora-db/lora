@@ -180,6 +180,11 @@ pub(crate) struct AutoCommitGuard<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StreamState {
     Active,
+    /// An auto-commit stream's cursor reached its end through
+    /// [`QueryStream::pull`]: no rows remain, and the commit waits for
+    /// [`QueryStream::next_row`] or [`QueryStream::finish`]. Dropping
+    /// the stream in this state rolls back.
+    Drained,
     Exhausted,
     Errored,
 }
@@ -253,10 +258,37 @@ impl<'a> QueryStream<'a> {
     /// been observed, subsequent calls keep returning that terminal
     /// state — the cursor never tries to recover or re-execute.
     pub fn next_row(&mut self) -> Result<Option<Row>> {
+        self.advance(true)
+    }
+
+    /// Pull the next row like [`Self::next_row`], except that reaching
+    /// the end of a mutating (auto-commit) stream does not commit it.
+    ///
+    /// Once `pull` returns `Ok(None)`, the writes stay staged, and the
+    /// stream keeps the writer lock, until the stream is committed by
+    /// [`Self::finish`] (or a further [`Self::next_row`]) or rolled back
+    /// by dropping it. A binding can therefore read rows ahead of its
+    /// consumer and still roll back if the consumer abandons the stream
+    /// before its end. An error rolls back, as with `next_row`. On a
+    /// read-only or transaction-bound stream `pull` is `next_row`.
+    pub fn pull(&mut self) -> Result<Option<Row>> {
+        self.advance(false)
+    }
+
+    /// Run the stream to its end, discarding any rows not yet pulled,
+    /// and commit a mutating (auto-commit) stream. Equivalent to calling
+    /// [`Self::next_row`] until it returns `Ok(None)`; typically called
+    /// after [`Self::pull`] returned `Ok(None)`.
+    pub fn finish(&mut self) -> Result<()> {
+        while self.advance(true)?.is_some() {}
+        Ok(())
+    }
+
+    fn advance(&mut self, commit: bool) -> Result<Option<Row>> {
         match &mut self.inner {
             StreamInner::Live { state, cursor, .. } => match *state {
                 StreamState::Errored => Err(anyhow!("query stream errored")),
-                StreamState::Exhausted => Ok(None),
+                StreamState::Exhausted | StreamState::Drained => Ok(None),
                 StreamState::Active => match cursor.next_row() {
                     Ok(Some(row)) => Ok(Some(row)),
                     Ok(None) => {
@@ -275,7 +307,7 @@ impl<'a> QueryStream<'a> {
                 lease,
             } => match *state {
                 StreamState::Errored => Err(anyhow!("query stream errored")),
-                StreamState::Exhausted => Ok(None),
+                StreamState::Exhausted | StreamState::Drained => Ok(None),
                 StreamState::Active => {
                     let pull = match cursor.as_mut() {
                         Some(c) => c.next_row(),
@@ -308,6 +340,11 @@ impl<'a> QueryStream<'a> {
             } => match *state {
                 StreamState::Errored => Err(anyhow!("query stream errored")),
                 StreamState::Exhausted => Ok(None),
+                StreamState::Drained if !commit => Ok(None),
+                StreamState::Drained => {
+                    commit_drained(state, guard)?;
+                    Ok(None)
+                }
                 StreamState::Active => {
                     let pull = match cursor.as_mut() {
                         Some(c) => c.next_row(),
@@ -323,16 +360,11 @@ impl<'a> QueryStream<'a> {
                             // into the staged graph release before
                             // commit moves staged out of inner.
                             cursor.take();
-                            match guard.commit() {
-                                Ok(()) => {
-                                    *state = StreamState::Exhausted;
-                                    Ok(None)
-                                }
-                                Err(e) => {
-                                    *state = StreamState::Errored;
-                                    Err(e)
-                                }
+                            *state = StreamState::Drained;
+                            if commit {
+                                commit_drained(state, guard)?;
                             }
+                            Ok(None)
                         }
                         Err(e) => {
                             cursor.take();
@@ -410,14 +442,29 @@ impl<'a> Drop for QueryStream<'a> {
                 // staged graph release before the guard rolls back
                 // (which moves staged to None).
                 cursor.take();
-                // Premature drop = rollback. Successful exhaustion
-                // already finalized the guard via `commit()` in
-                // `next_row`, so this path is a no-op for the
-                // exhausted case.
+                // Premature drop = rollback, including a stream
+                // drained by `pull` but never committed. Successful
+                // exhaustion already finalized the guard via
+                // `commit()` in `next_row`, so this path is a no-op
+                // for the exhausted case.
                 if !guard.finalized && !matches!(state, StreamState::Exhausted) {
                     guard.rollback();
                 }
             }
+        }
+    }
+}
+
+/// Commit a drained auto-commit stream and record the outcome.
+fn commit_drained(state: &mut StreamState, guard: &mut AutoCommitGuard<'_>) -> Result<()> {
+    match guard.commit() {
+        Ok(()) => {
+            *state = StreamState::Exhausted;
+            Ok(())
+        }
+        Err(e) => {
+            *state = StreamState::Errored;
+            Err(e)
         }
     }
 }
