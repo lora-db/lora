@@ -35,8 +35,8 @@ use super::helpers::{
     dedup_rows_by_vars, indexed_node_property_candidates, label_group_candidates_prefiltered,
     node_matches_label_groups, node_matches_property_filter, scan_node_ids_for_label_groups,
 };
-use super::sort_rows_with_top_k;
 use super::{merge_optional_rows, optional_match_rows};
+use super::{sort_row_bound, sort_rows_with_top_k};
 
 #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
 const PARALLEL_ROW_THRESHOLD: usize = 20_000;
@@ -983,7 +983,8 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             params: &self.ctx.params,
         };
 
-        sort_rows_with_top_k(&mut rows, &op.items, &eval_ctx, op.top_k);
+        let bound = sort_row_bound(op.top_k, op.limit.as_ref(), &eval_ctx);
+        sort_rows_with_top_k(&mut rows, &op.items, &eval_ctx, bound);
 
         Ok(rows)
     }

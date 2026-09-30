@@ -174,7 +174,7 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
   - All three count as 0 or 1 against `maxCost`, which counts projected rows, not scanned rows (`read.ts:336-376`).
 - **Solutions:**
   - **Engine:**
-    - a top-k sort for `ORDER BY … LIMIT`;
+    - done: a bounded sort for `ORDER BY … SKIP … LIMIT`, literal or parameter (`LIMIT $pN`), keeps at most max(2k, 64) rows and evaluates sort keys once per row. At 100k festivals the filtered, sorted page statement went from 142 to 74 ms;
     - choosing the index-ordered scan when the filter is non-selective;
     - counting a range from the index without visiting nodes.
   - **Library:**

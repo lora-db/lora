@@ -280,6 +280,17 @@ pub struct Sort {
     /// Optional upper bound for rows the sort must retain because a parent
     /// LIMIT will discard everything after this many sorted rows.
     pub top_k: Option<usize>,
+    /// The parent LIMIT's `SKIP` / `LIMIT` expressions when they are not
+    /// literals (`LIMIT $n`): the executor evaluates them once per run and
+    /// keeps only `skip + limit` rows, like a static [`Sort::top_k`].
+    pub limit: Option<SortLimit>,
+}
+
+/// A parent LIMIT's row bound, evaluated at run time (see [`Sort::limit`]).
+#[derive(Debug, Clone)]
+pub struct SortLimit {
+    pub skip: Option<ResolvedExpr>,
+    pub limit: ResolvedExpr,
 }
 
 #[derive(Debug, Clone)]

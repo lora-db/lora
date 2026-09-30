@@ -7,10 +7,10 @@
 use lora_store::GraphStorage;
 
 use crate::errors::ExecResult;
-use crate::executor::sort_rows_with_top_k;
+use crate::executor::SortBuffer;
 use crate::value::Row;
 
-use super::{drain, RowSource, StreamCtx};
+use super::{RowSource, StreamCtx};
 
 /// Skip the first `skip` rows, emit at most `limit` rows from
 /// upstream, then return `None` regardless of whether upstream is
@@ -67,9 +67,10 @@ impl<'a> RowSource for LimitSource<'a> {
 /// drains the entire upstream into a `Vec`, sorts it by the plan's
 /// sort items, then yields one row at a time on subsequent calls.
 ///
-/// Memory is O(N) in the number of input rows — Sort can't avoid
-/// that. The win is that everything *above* a `SortSource` (typically
-/// a write op like CREATE / SET) streams: the auto-commit pipeline
+/// Memory is O(N) in the number of input rows, or O(k) under a
+/// `LIMIT` bound (`top_k`), which keeps only the best k rows. The win
+/// is that everything *above* a `SortSource` (typically a write op
+/// like CREATE / SET) streams: the auto-commit pipeline
 /// pulls one sorted row, applies the per-row write, and emits,
 /// instead of materializing both Sort's output and the write op's
 /// output.
@@ -112,10 +113,14 @@ impl<'a, S: GraphStorage> SortSource<'a, S> {
         items: &[lora_analyzer::ResolvedSortItem],
         top_k: Option<usize>,
     ) -> ExecResult<Vec<Row>> {
-        let mut rows = drain(upstream.as_mut())?;
+        // Rows stream into the buffer: with a bound only the best `top_k`
+        // are ever held.
         let eval_ctx = ctx.eval_ctx();
-        sort_rows_with_top_k(&mut rows, items, &eval_ctx, top_k);
-        Ok(rows)
+        let mut buffer = SortBuffer::new(items, top_k);
+        while let Some(row) = upstream.next_row()? {
+            buffer.push(row, &eval_ctx);
+        }
+        Ok(buffer.finish())
     }
 }
 

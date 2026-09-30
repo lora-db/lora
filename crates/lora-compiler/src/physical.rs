@@ -229,6 +229,9 @@ pub struct SortExec {
     pub items: Vec<ResolvedSortItem>,
     /// Optional upper bound for rows Sort must retain before a parent LIMIT.
     pub top_k: Option<usize>,
+    /// Run-time bound from a parent `LIMIT $n` (see
+    /// [`crate::logical::Sort::limit`]).
+    pub limit: Option<crate::logical::SortLimit>,
 }
 
 #[derive(Debug, Clone)]

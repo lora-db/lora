@@ -12,7 +12,7 @@ pub use logical::{
     Aggregation, Argument, Create, Delete, Expand, Filter, Foreach, Limit, LogicalOp, LogicalPlan,
     Merge, NodeByPointScan, NodeByPropertyRangeScan, NodeByPropertyScan, NodeByTextScan, NodeScan,
     OptionalMatch, PathBuild, PlanNodeId, PointPredicate, Projection, RelByPointScan,
-    RelByPropertyRangeScan, RelByTextScan, Remove, Set, Sort, TextPredicate, Unwind,
+    RelByPropertyRangeScan, RelByTextScan, Remove, Set, Sort, SortLimit, TextPredicate, Unwind,
 };
 pub use optimizer::Optimizer;
 pub use physical::{

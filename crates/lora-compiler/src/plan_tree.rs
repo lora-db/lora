@@ -357,6 +357,13 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
             );
             if let Some(top_k) = n.top_k {
                 d.insert("top_k".to_string(), top_k.to_string());
+            } else if let Some(bound) = &n.limit {
+                let limit = expr_str(&bound.limit);
+                let top_k = match &bound.skip {
+                    Some(skip) => format!("{} + {limit}", expr_str(skip)),
+                    None => limit,
+                };
+                d.insert("top_k".to_string(), top_k);
             }
             PlanDescription::with_children("Sort", d, vec![n.input])
         }

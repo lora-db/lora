@@ -514,7 +514,8 @@ Use `bigint` parameters or string-encoded ids for large values. See
 - Unbounded variable-length traversals explode fast. Cap with a max
   depth: `[:R*1..6]`.
 - `ORDER BY` on a huge unbounded result requires a full sort. Pair
-  with `LIMIT`.
+  it with `LIMIT` (a literal or a parameter): the sort then keeps only
+  `SKIP + LIMIT` rows, though it still reads every match.
 - See [Limitations → Storage](./limitations#storage) for the full list
   of storage gaps.
 

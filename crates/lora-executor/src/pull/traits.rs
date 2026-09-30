@@ -472,12 +472,14 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             input,
             items,
             top_k,
+            limit,
         }) => {
             let upstream =
                 build_streaming_dispatch(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
+            let bound = crate::executor::sort_row_bound(*top_k, limit.as_ref(), &ctx.eval_ctx());
             Ok(Box::new(SortSource::new_with_top_k(
-                upstream, ctx, items, *top_k,
+                upstream, ctx, items, bound,
             )))
         }
 

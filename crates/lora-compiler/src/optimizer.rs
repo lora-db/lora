@@ -130,12 +130,32 @@ impl Optimizer {
     fn annotate_top_k_sorts(&self, plan: &mut LogicalPlan) {
         let len = plan.nodes.len();
         for i in 0..len {
-            let Some((input, bound)) = limit_sort_bound(&plan.nodes[i]) else {
+            let LogicalOp::Limit(limit) = &plan.nodes[i] else {
                 continue;
             };
-
-            if let Some(sort) = sort_op_mut(&mut plan.nodes[input]) {
-                sort.top_k = merge_top_k_bound(sort.top_k, bound);
+            let input = limit.input;
+            match limit_sort_bound(&plan.nodes[i]) {
+                Some((_, bound)) => {
+                    if let Some(sort) = sort_op_mut(&mut plan.nodes[input]) {
+                        sort.top_k = merge_top_k_bound(sort.top_k, bound);
+                    }
+                }
+                // `LIMIT $n`: bound the sort with the same expressions,
+                // evaluated once per run.
+                None => {
+                    let Some(limit_expr) = limit.limit.clone() else {
+                        continue;
+                    };
+                    let skip = limit.skip.clone();
+                    if let Some(sort) = sort_op_mut(&mut plan.nodes[input]) {
+                        if sort.limit.is_none() {
+                            sort.limit = Some(SortLimit {
+                                skip,
+                                limit: limit_expr,
+                            });
+                        }
+                    }
+                }
             }
         }
     }
@@ -392,6 +412,7 @@ fn lower_logical_op(op: LogicalOp) -> PhysicalOp {
             input: sort.input,
             items: sort.items,
             top_k: sort.top_k,
+            limit: sort.limit,
         }),
 
         LogicalOp::Limit(limit) => PhysicalOp::Limit(LimitExec {

@@ -358,6 +358,7 @@ impl Planner {
                     input: node,
                     items: sort_keys_on_outputs(order, items),
                     top_k: None,
+                    limit: None,
                 }));
             }
             if has_limit {
@@ -394,6 +395,7 @@ impl Planner {
             input: node,
             items: order.to_vec(),
             top_k: None,
+            limit: None,
         }));
         if has_limit {
             node = self.push(LogicalOp::Limit(Limit {

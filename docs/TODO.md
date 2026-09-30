@@ -53,8 +53,6 @@ next, **P2** planned, **P3** when convenient.
 
 ## Engine — performance
 
-- [ ] P1 Top-k never applies to generated reads: the optimizer only plans it for a
-      literal `LIMIT`, lora-graphql emits `LIMIT $pN` (`lora-compiler/src/optimizer.rs:1322-1357`).
 - [ ] P1 Indexed posting lists are cloned whole on write — O(nodes sharing the value)
       per write (`lora-store/src/memory/id_set.rs`, whole-bucket COW).
 - [ ] P2 Composite multi-property seeks (`optimizer.rs:975`); composite RANGE indexes are catalog-only (`:484+`).

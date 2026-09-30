@@ -75,4 +75,4 @@ pub(crate) use optional::{
     merge_optional_rows, null_extend_optional_row, optional_can_correlate, optional_match_rows,
     optional_rows_compatible,
 };
-pub(crate) use sort::sort_rows_with_top_k;
+pub(crate) use sort::{sort_row_bound, sort_rows_with_top_k, SortBuffer};
