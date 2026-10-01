@@ -95,13 +95,13 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `AND` / `OR` / `NOT` / `XOR` | **Supported** | Three-valued logic with nulls. `AND` and `OR` short-circuit: after `false AND` / `true OR` the right side is not evaluated, so its errors cannot fail the query (`type.of(x) = 'DATE' AND x >= date(…)` guards the comparison, on index-backed plans too). A `null` left side evaluates the right side; `XOR` always evaluates both |
 | `IN` list membership | **Supported** | Null propagation per Cypher spec |
 | `IS NULL` / `IS NOT NULL` | **Supported** | |
-| `STARTS WITH` / `ENDS WITH` / `CONTAINS` | **Supported** | Case-sensitive |
+| `STARTS WITH` / `ENDS WITH` / `CONTAINS` | **Supported** | Case-sensitive. A TEXT index serves all three; with only a RANGE index on the property, `STARTS WITH` seeks it as the range `s <= x < string.prefix_end(s)` |
 | `CASE` (generic and simple) | **Supported** | |
 | Regex matching `=~` | **Supported** | Full Rust `regex` crate |
 | List indexing `[i]` | **Supported** | Negative indices supported |
 | List slicing `[a..b]` | **Supported** | Open-ended slices |
-| List concatenation `+` | **Supported** | |
-| String concatenation `+` | **Supported** | |
+| List concatenation `+` | **Supported** | A list and an element append (`[1] + 2`) or prepend (`0 + [1]`) |
+| String concatenation `+` | **Supported** | A string and a number concatenate in either order (`'p' + 1` is `'p1'`); a string with another type is an error |
 | List comprehension `[x IN list WHERE p \| e]` | **Supported** | |
 | Pattern comprehension `[pattern WHERE p \| e]` | **Supported** | A start node the outer row does not bind, with an inline property map (`[(v:Person {subject: $s}) \| v]`), seeks that property instead of scanning the label; the same holds for `EXISTS { }` and `COUNT { }` |
 | `EXISTS { pattern }` subquery | **Supported** | In WHERE |

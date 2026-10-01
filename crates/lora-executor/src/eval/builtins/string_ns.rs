@@ -11,6 +11,7 @@ use crate::value::LoraValue;
 pub(super) fn dispatch(op: &str, args: &[LoraValue]) -> Option<LoraValue> {
     Some(match op {
         "upper" => unary_str(args, |s| s.to_uppercase()),
+        "prefix_end" => prefix_end(args),
         "lower" => unary_str(args, |s| s.to_lowercase()),
         "capitalize" => capitalize(args),
         "case" => case(args),
@@ -58,6 +59,29 @@ fn as_str(v: Option<&LoraValue>) -> Option<&str> {
         LoraValue::String(s) => Some(s.as_str()),
         _ => None,
     }
+}
+
+/// The smallest string greater than every string starting with `s`: the
+/// last character that can be incremented is, and what follows it is
+/// dropped. `x STARTS WITH s` is `s <= x < string.prefix_end(s)`, which a
+/// RANGE index answers. Null when there is no such string (the empty
+/// prefix, or one of only U+10FFFF): every string at or above `s` matches.
+fn prefix_end(args: &[LoraValue]) -> LoraValue {
+    let Some(s) = as_str(args.first()) else {
+        return LoraValue::Null;
+    };
+    let mut chars: Vec<char> = s.chars().collect();
+    while let Some(last) = chars.pop() {
+        let next = match last as u32 {
+            0xD7FF => Some('\u{E000}'),
+            code => char::from_u32(code + 1),
+        };
+        if let Some(next) = next {
+            chars.push(next);
+            return LoraValue::String(chars.into_iter().collect());
+        }
+    }
+    LoraValue::Null
 }
 
 fn unary_str(args: &[LoraValue], f: impl Fn(&str) -> String) -> LoraValue {

@@ -1290,7 +1290,14 @@ pub(crate) fn node_by_property_range_scan_rows<S: GraphStorage>(
     for row in base_rows {
         check_optional_deadline(deadline)?;
         let lo_value = op.lo.as_ref().map(|expr| eval_expr(expr, &row, &eval_ctx));
-        let hi_value = op.hi.as_ref().map(|expr| eval_expr(expr, &row, &eval_ctx));
+        // A null upper bound reads as none: the Filter kept above every
+        // index scan still judges each row (a STARTS WITH prefix with no
+        // successor, `string.prefix_end` null, scans to the end).
+        let hi_value = op
+            .hi
+            .as_ref()
+            .map(|expr| eval_expr(expr, &row, &eval_ctx))
+            .filter(|v| !matches!(v, LoraValue::Null));
         let lo_prop = lo_value
             .clone()
             .and_then(|v| lora_value_to_property(v).ok());
@@ -2541,7 +2548,14 @@ pub(crate) fn rel_by_property_range_scan_rows<S: GraphStorage>(
     for row in base_rows {
         check_optional_deadline(deadline)?;
         let lo_value = op.lo.as_ref().map(|expr| eval_expr(expr, &row, &eval_ctx));
-        let hi_value = op.hi.as_ref().map(|expr| eval_expr(expr, &row, &eval_ctx));
+        // A null upper bound reads as none: the Filter kept above every
+        // index scan still judges each row (a STARTS WITH prefix with no
+        // successor, `string.prefix_end` null, scans to the end).
+        let hi_value = op
+            .hi
+            .as_ref()
+            .map(|expr| eval_expr(expr, &row, &eval_ctx))
+            .filter(|v| !matches!(v, LoraValue::Null));
         let lo_prop = lo_value
             .clone()
             .and_then(|v| lora_value_to_property(v).ok());

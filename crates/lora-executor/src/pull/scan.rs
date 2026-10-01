@@ -567,7 +567,13 @@ impl<'a, S: GraphStorage> RowSource for OrderedRangeScanSource<'a, S> {
             };
             let eval_ctx = self.ctx.eval_ctx();
             let lo = self.op.lo.as_ref().map(|e| eval_expr(e, &row, &eval_ctx));
-            let hi = self.op.hi.as_ref().map(|e| eval_expr(e, &row, &eval_ctx));
+            // A null upper bound reads as none (see the buffered scan).
+            let hi = self
+                .op
+                .hi
+                .as_ref()
+                .map(|e| eval_expr(e, &row, &eval_ctx))
+                .filter(|v| !matches!(v, LoraValue::Null));
             let others = crate::executor::other_kind_node_ids(
                 self.ctx.storage,
                 self.op,

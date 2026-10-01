@@ -31,6 +31,7 @@ offsets.
 | Slug / escape / URL | [`string.slugify`, `string.escape`, `string.url_encode`, `string.url_decode`](#encoding-and-escaping) |
 | Normalise Unicode | [`string.normalize`](#normalize) |
 | Convert type | [`toString`, `toInteger`, `toFloat`, `toBoolean`](#type-conversion) |
+| Prefix bound | [`string.prefix_end`](#stringprefix_end) |
 | Predicate in `WHERE` | [`STARTS WITH`, `ENDS WITH`, `CONTAINS`, `=~`](#string-operators-in-where) |
 
 ## string.lower / string.upper {#tolower--toupper}
@@ -308,6 +309,17 @@ names, keep the conversion explicit:
 WITH row, TRY_CAST(row.shipped_on AS DATE) AS shipped_on
 WHERE shipped_on IS NOT NULL
 CREATE (:Shipment {id: row.id, shipped_on: shipped_on})`} />
+
+## string.prefix_end {#stringprefix_end}
+
+The smallest string greater than every string that starts with the
+argument: its last character that can be incremented is, and what
+follows is dropped. `null` when there is none (the empty string, or one
+of only U+10FFFF characters). `x STARTS WITH s` is the range
+`s <= x < string.prefix_end(s)`, which is how a RANGE index answers
+`STARTS WITH`.
+
+<QueryCodeBlock code={String.raw`RETURN string.prefix_end('ab')      // 'ac'`} />
 
 ## String operators (in [`WHERE`](../queries/where)) {#string-operators-in-where}
 

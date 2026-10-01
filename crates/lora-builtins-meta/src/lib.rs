@@ -259,6 +259,7 @@ pub const BUILTIN_SPECS: &[BuiltinSpec] = &[
     spec("list.compact", 1, Some(1)),
     // -- string.* -----------------------------------------------------------
     spec("string.upper", 1, Some(1)),
+    spec("string.prefix_end", 1, Some(1)),
     spec("string.lower", 1, Some(1)),
     spec("string.capitalize", 1, Some(2)),
     spec("string.case", 2, Some(2)),

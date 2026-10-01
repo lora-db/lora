@@ -567,6 +567,32 @@ fn collect_index_candidates(
     }
 
     if let Some(candidate) = text_predicate_for_var(predicate, scan.var) {
+        // `x STARTS WITH s` is the range `s <= x < string.prefix_end(s)`,
+        // which a RANGE index answers when there is no TEXT index.
+        if matches!(candidate.predicate, TextPredicate::StartsWith)
+            && !is_tautological_text(&candidate)
+            && first_simple_label(&scan.labels)
+                .is_some_and(|label| stats.has_node_range_index(label, &candidate.key))
+        {
+            out.push(LogicalOp::NodeByPropertyRangeScan(
+                NodeByPropertyRangeScan {
+                    input: scan.input,
+                    var: scan.var,
+                    labels: scan.labels.clone(),
+                    key: candidate.key.clone(),
+                    lo: Some(candidate.query.clone()),
+                    lo_inclusive: true,
+                    hi: Some(ResolvedExpr::Function {
+                        function: lora_analyzer::FunctionId::builtin("string.prefix_end")
+                            .expect("string.prefix_end is a builtin"),
+                        distinct: false,
+                        args: vec![candidate.query.clone()],
+                    }),
+                    hi_inclusive: false,
+                    order: None,
+                },
+            ));
+        }
         if !is_tautological_text(&candidate)
             && first_simple_label(&scan.labels)
                 .is_some_and(|label| stats.has_node_text_index(label, &candidate.key))

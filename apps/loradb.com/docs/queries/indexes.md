@@ -43,7 +43,7 @@ Index names may also come from a string parameter:
 
 | Kind | Syntax | Useful predicates |
 |---|---|---|
-| RANGE | `CREATE INDEX ...` or `CREATE RANGE INDEX ...` | `=`, `<`, `<=`, `>`, `>=`, bounded ranges |
+| RANGE | `CREATE INDEX ...` or `CREATE RANGE INDEX ...` | `=`, `<`, `<=`, `>`, `>=`, bounded ranges, and `STARTS WITH` (as a prefix range) when no TEXT index covers the property |
 | TEXT | `CREATE TEXT INDEX ...` | `STARTS WITH`, `CONTAINS`, `ENDS WITH` |
 | POINT | `CREATE POINT INDEX ...` | `geo.within_bbox(...)`, `geo.distance(...) <= radius` |
 | LOOKUP | `CREATE LOOKUP INDEX ...` | Catalog-visible label/type token indexes |
@@ -287,7 +287,7 @@ in the returned plan tree:
 ;// NodeByPropertyRangeScan
 
 MATCH (p:Person) WHERE p.name STARTS WITH 'Al' RETURN p
-;// NodeByTextScan
+;// NodeByTextScan with a TEXT index; NodeByPropertyRangeScan with only a RANGE index
 
 MATCH (p:Place)
 WHERE geo.within_bbox(
