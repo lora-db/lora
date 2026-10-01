@@ -2390,7 +2390,12 @@ function projectRelationshipConnection(
           { kind: "match", pattern, where: and(filter, keyset) },
           {
             kind: "with",
-            items: [{ expr: v(r) }, { expr: v(x) }],
+            // A READ_EDGE rule may test the parent end: keep it in scope.
+            items: [
+              { expr: v(r) },
+              { expr: v(x) },
+              ...(edgeRead !== undefined ? [{ expr: v(parent) }] : []),
+            ],
             orderBy: sortItems(x, sort, r),
             limit: bind(ctx, first + 1),
           },

@@ -225,3 +225,66 @@ describe("model checks", () => {
     );
   });
 });
+
+describe("READ_EDGE from either side", () => {
+  const sides = (
+    rule: "people" | "rooms",
+  ) => `type Claims @jwt { sub: String! @viewer(type: "Person", field: "key") }
+type Seen @relationshipProperties { at: String }
+type Person @node { key: String! @key
+  rooms: [Room!]! @relationship(type: "IN", direction: OUT, properties: "Seen")${
+    rule === "rooms"
+      ? `
+    @authorization(validate: [{ operations: [READ_EDGE], where: { source: { isViewer: true } } }])`
+      : ""
+  } }
+type Room @node { key: String! @key
+  people: [Person!]! @relationship(type: "IN", direction: IN, properties: "Seen")${
+    rule === "people"
+      ? `
+    @authorization(validate: [{ operations: [READ_EDGE], where: { target: { isViewer: true } } }])`
+      : ""
+  } }`;
+  const seed =
+    "CREATE (u:Person {key: 'u'})-[:IN {at: '1'}]->(r:Room {key: 'r'}), (:Person {key: 'v'})-[:IN {at: '2'}]->(r)";
+  const u = { jwt: { sub: "u" } };
+
+  for (const rule of ["people", "rooms"] as const) {
+    test(`with the rule on ${rule === "people" ? "Room.people" : "Person.rooms"}`, async () => {
+      const t = await createTestLoraGraphQL({ typeDefs: sides(rule), seed });
+      // The viewer reads their own edge from either end.
+      const own = await t.run(
+        '{ person(key: "u") { roomsConnection { edges { properties { at } } } } }',
+        {},
+        u,
+      );
+      expect(own.errors).toBeUndefined();
+      expect(JSON.stringify(own.data)).toContain('"at":"1"');
+      const fromRoom = await t.run(
+        '{ rooms { peopleConnection(where: { node: { key: { eq: "u" } } }) { edges { properties { at } } } } }',
+        {},
+        u,
+      );
+      expect(fromRoom.errors).toBeUndefined();
+      // Another person's edge reads FORBIDDEN, from both ends.
+      expect(
+        codes(
+          await t.run(
+            '{ person(key: "v") { roomsConnection { edges { properties { at } } } } }',
+            {},
+            u,
+          ),
+        ),
+      ).toEqual(["FORBIDDEN"]);
+      expect(
+        codes(
+          await t.run(
+            '{ rooms { peopleConnection(where: { node: { key: { eq: "v" } } }) { edges { properties { at } } } } }',
+            {},
+            u,
+          ),
+        ),
+      ).toEqual(["FORBIDDEN"]);
+    });
+  }
+});
