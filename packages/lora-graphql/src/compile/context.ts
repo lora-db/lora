@@ -76,7 +76,21 @@ export function noteClaim(
 }
 
 /** Bind a value as the next positional parameter `$pN`. */
+/**
+ * A rule value that is an expression, not a parameter: a string with
+ * `${viewer.field}` placeholders, read from the caller's node in the
+ * statement. `bind` returns the expression as is.
+ */
+export const EXPR = Symbol("expr");
+
+export function exprValue(expr: Expr): { [EXPR]: Expr } {
+  return { [EXPR]: expr };
+}
+
 export function bind(ctx: CompileContext, value: unknown): Expr {
+  if (value !== null && typeof value === "object" && EXPR in value) {
+    return (value as { [EXPR]: Expr })[EXPR];
+  }
   const name = `p${Object.keys(ctx.params).length}`;
   ctx.params[name] = value;
   return param(name);

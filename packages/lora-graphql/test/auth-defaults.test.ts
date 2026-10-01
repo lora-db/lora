@@ -206,3 +206,25 @@ describe("model checks", () => {
     ).toContain("@authorization(bypass:, public:) belong on the type");
   });
 });
+
+test("a write the claims refuse runs no statement (G-37)", async () => {
+  const t = await createTestLoraGraphQL({
+    typeDefs:
+      claims +
+      `extend schema @authorizationDefaults(mutations: { jwt: { roles: { includes: "admin" } } })
+type G @node @mutation { key: String! @key }`,
+  });
+  t.statements.length = 0;
+  const r = await t.run(
+    'mutation { createGs(input: [{ key: "x" }]) { gs { key } } }',
+    {},
+    { jwt: { sub: "u", roles: [] } },
+  );
+  expect(codes(r)).toEqual(["FORBIDDEN"]);
+  expect(t.statements).toHaveLength(0);
+  const anonymous = await t.run(
+    'mutation { deleteG(key: "x") { nodesDeleted } }',
+  );
+  expect(codes(anonymous)).toEqual(["UNAUTHENTICATED"]);
+  expect(t.statements).toHaveLength(0);
+});

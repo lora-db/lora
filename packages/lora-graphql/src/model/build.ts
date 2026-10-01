@@ -2267,6 +2267,8 @@ function checkRuleWhere(
   const nodePart = (t: NodeType, value: unknown, here: string) => {
     checkNodeWhere(nodes, props, t, value, here, at);
     for (const problem of ruleStringProblems(value)) at(`${here}: ${problem}`);
+    for (const problem of viewerRefProblems(value, viewerNode))
+      at(`${here}: ${problem}`);
     if (jwtShape) {
       for (const ref of claimRefs(value)) {
         if (!jwtShape.has(ref))
@@ -2678,6 +2680,46 @@ const REFERENCE_PATH = /^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$/;
  * string "$jwt.path" names a path and nothing else; any `${` starts a
  * `${jwt.path}` or `${context.path}` placeholder.
  */
+/** `${viewer.field}` placeholders need @viewer, a scalar field, a string operand. */
+function viewerRefProblems(
+  value: unknown,
+  viewerNode: NodeType | undefined,
+  inList = false,
+): string[] {
+  if (typeof value === "string") {
+    const refs = [...value.matchAll(PLACEHOLDER)].filter(
+      (m) => m[1] === "viewer",
+    );
+    if (refs.length === 0) return [];
+    if (!viewerNode) {
+      return [
+        `"${value}": \${viewer.…} needs a @viewer claim on the @jwt type`,
+      ];
+    }
+    const out: string[] = [];
+    if (inList) {
+      out.push(
+        `"${value}": \${viewer.…} stands for one value, not inside a list`,
+      );
+    }
+    for (const m of refs) {
+      if (viewerNode.fields.get(m[2]!)?.kind !== "scalar") {
+        out.push(`"${value}": ${viewerNode.name} has no scalar field ${m[2]}`);
+      }
+    }
+    return out;
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((v) => viewerRefProblems(v, viewerNode, true));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.values(value).flatMap((v) =>
+      viewerRefProblems(v, viewerNode, inList),
+    );
+  }
+  return [];
+}
+
 function ruleStringProblems(value: unknown): string[] {
   if (typeof value === "string") {
     if (value.includes("${")) {

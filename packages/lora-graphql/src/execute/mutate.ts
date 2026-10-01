@@ -2030,6 +2030,22 @@ export interface MutationResult {
   change: WriteChange;
 }
 
+/**
+ * Throw UNAUTHENTICATED / FORBIDDEN when the validate rules for `op` are
+ * decided against the request by its claims alone, so a refused write
+ * takes no statement (and no writer lock). Rules that depend on the rows
+ * are left to the statements.
+ */
+function settleClaims(
+  ctx: CompileContext,
+  node: NodeType,
+  op: "CREATE" | "UPDATE" | "DELETE",
+): void {
+  const probe = { ...ctx, params: {}, vars: new Set(ctx.vars) };
+  authValidate(probe, node, "n", op, "BEFORE");
+  authValidate(probe, node, "n", op, "AFTER");
+}
+
 async function lookupViewerKey(
   env: MutationEnv,
   tx: DriverTransaction,
@@ -2090,6 +2106,9 @@ export async function executeMutation(
           ? "DELETE"
           : op;
   checkAuthentication(planCtx, node, authOp);
+  // Rules the claims alone settle against refuse before any statement,
+  // as @authentication does (an upsert may turn out an update: skipped).
+  if (op !== "UPSERT") settleClaims(planCtx, node, authOp);
 
   const tx =
     owned ??

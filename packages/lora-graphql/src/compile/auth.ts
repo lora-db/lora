@@ -19,7 +19,13 @@ import type {
 } from "../model/types.js";
 import { PLACEHOLDER } from "../model/types.js";
 import { and, bin, fn, lit, not, or, type Expr } from "./cypher.js";
-import { bind, freshVar, noteClaim, type CompileContext } from "./context.js";
+import {
+  bind,
+  exprValue,
+  freshVar,
+  noteClaim,
+  type CompileContext,
+} from "./context.js";
 import { compileNodeWhere, compilePropsWhere } from "./filter.js";
 
 type Where = Record<string, unknown>;
@@ -802,6 +808,95 @@ export function sameValue(a: unknown, b: unknown): boolean {
  * `${jwt.path}` / `${context.path}` placeholders inside strings; not ok
  * when a referenced value is absent (or, in a placeholder, not a scalar).
  */
+/**
+ * A rule string with `${viewer.field}` placeholders: the caller's node's
+ * fields, found by the `@viewer` claim. A placeholder naming the field the
+ * claim maps to is the claim itself; another field is read in the
+ * statement, with one seek by the claim. Without the claim it is unknown.
+ */
+function viewerString(
+  ctx: CompileContext,
+  value: string,
+): { ok: boolean; value: unknown } {
+  const mapping = ctx.model.viewer;
+  const node = mapping && ctx.model.nodes.get(mapping.type);
+  if (!mapping || !node) return { ok: false, value: undefined };
+  const id = claim(ctx, mapping.claim, true);
+  if (typeof id !== "string" && typeof id !== "number") {
+    return { ok: false, value: undefined };
+  }
+  const parts: Expr[] = [];
+  let text = "";
+  let ok = true;
+  let last = 0;
+  const flush = () => {
+    if (text) parts.push(bind(ctx, text));
+    text = "";
+  };
+  for (const m of value.matchAll(PLACEHOLDER)) {
+    text += value.slice(last, m.index);
+    last = m.index! + m[0].length;
+    const [, source, path] = m as unknown as [string, string, string];
+    if (source === "viewer") {
+      if (path === mapping.field) {
+        text += String(id);
+        continue;
+      }
+      const field = node.fields.get(path);
+      const property = field?.kind === "scalar" ? field.property : path;
+      const v = freshVar(ctx, "viewer");
+      flush();
+      parts.push(
+        fn("head", {
+          kind: "comprehension",
+          pattern: {
+            start: {
+              variable: v,
+              labels: [node.labels[0]!],
+              properties: [
+                {
+                  key:
+                    (node.fields.get(mapping.field) as { property?: string })
+                      ?.property ?? mapping.field,
+                  value: bind(ctx, id),
+                },
+              ],
+            },
+            hops: [],
+          },
+          where: undefined,
+          projection: {
+            kind: "prop",
+            target: { kind: "var", name: v },
+            key: property,
+          },
+        }),
+      );
+      continue;
+    }
+    const resolved =
+      source === "jwt"
+        ? claim(ctx, path)
+        : lookupPath(ctx.requestContext, path);
+    if (source === "context") ctx.contextReads.push([path, resolved]);
+    if (
+      typeof resolved === "string" ||
+      typeof resolved === "number" ||
+      typeof resolved === "boolean"
+    ) {
+      text += String(resolved);
+    } else ok = false;
+  }
+  text += value.slice(last);
+  if (!ok) return { ok: false, value: undefined };
+  if (parts.length === 0) return { ok: true, value: text };
+  flush();
+  return {
+    ok: true,
+    value: exprValue(parts.reduce((a, b) => bin("+", a, b))),
+  };
+}
+
 function substitute(
   value: unknown,
   ctx: CompileContext,
@@ -809,6 +904,9 @@ function substitute(
   // "\$…" is the literal string "$…" (an unescaped "$…" is a placeholder).
   if (typeof value === "string" && value.startsWith("\\$")) {
     return { ok: true, value: value.slice(1) };
+  }
+  if (typeof value === "string" && value.includes("${viewer.")) {
+    return viewerString(ctx, value);
   }
   if (typeof value === "string" && value.includes("${")) {
     let ok = true;

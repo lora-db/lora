@@ -206,3 +206,70 @@ describe("model checks", () => {
     ).toContain("only one @viewer claim is allowed (sub has one)");
   });
 });
+
+describe("${viewer.field} placeholders (G-33)", () => {
+  const typeDefs = (
+    rule: string,
+  ) => `type Claims @jwt { sub: String! @viewer(type: "Person", field: "subject") }
+type Person @node { key: String! @key  subject: String! @unique }
+type Presence @node @mutation(operations: [CREATE])
+  @authorization(validate: [{ operations: [CREATE], where: { node: ${rule} } }]) {
+  key: String! @key
+}`;
+  const seed =
+    "CREATE (:Person {key: 'lou', subject: 'auth0|abc'}), (:Person {key: 'bo', subject: 'auth0|def'})";
+  const create = (
+    t: Awaited<ReturnType<typeof createTestLoraGraphQL>>,
+    key: string,
+    sub?: string,
+  ) =>
+    t.run(
+      `mutation { createPresences(input: [{ key: "${key}" }]) { presences { key } } }`,
+      {},
+      sub ? { jwt: { sub } } : {},
+    );
+
+  test("one-per-person key: eq ${viewer.key}", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: typeDefs('{ key: { eq: "${viewer.key}" } }'),
+      seed,
+    });
+    expect(codes(await create(t, "lou", "auth0|abc"))).toBeUndefined();
+    expect(codes(await create(t, "bo", "auth0|abc"))).toEqual(["FORBIDDEN"]);
+    expect(codes(await create(t, "lou"))).toEqual(["UNAUTHENTICATED"]);
+  });
+
+  test("pair key: endsWith :${viewer.key}", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: typeDefs('{ key: { endsWith: ":${viewer.key}" } }'),
+      seed,
+    });
+    expect(codes(await create(t, "bo:lou", "auth0|abc"))).toBeUndefined();
+    expect(codes(await create(t, "lou:bo", "auth0|abc"))).toEqual([
+      "FORBIDDEN",
+    ]);
+  });
+
+  test("needs @viewer and a scalar field", () => {
+    const problems = (sdl: string) => {
+      try {
+        buildModel(sdl);
+        return [];
+      } catch (err) {
+        if (err instanceof ModelError)
+          return err.problems.map((p) => p.message);
+        throw err;
+      }
+    };
+    expect(
+      problems(typeDefs('{ key: { eq: "${viewer.nope}" } }')).some((m) =>
+        m.includes("Person has no scalar field nope"),
+      ),
+    ).toBe(true);
+    expect(
+      problems(typeDefs('{ key: { in: ["${viewer.key}"] } }')).some((m) =>
+        m.includes("not inside a list"),
+      ),
+    ).toBe(true);
+  });
+});
