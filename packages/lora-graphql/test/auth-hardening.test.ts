@@ -1,6 +1,7 @@
 import { parse, subscribe, type ExecutionResult } from "graphql";
 import { buildModel } from "../src/index.js";
 import { festivalHarness, type Harness } from "./harness.js";
+import { createTestLoraGraphQL } from "../src/testing.js";
 
 const typeDefs = /* GraphQL */ `
   type Claims @jwt {
@@ -210,4 +211,28 @@ test("upsert keeps create-only fields of existing nodes", async () => {
     { key: "p1", badge: "b1" },
     { key: "p9", badge: "b9" },
   ]);
+});
+
+test("a $-string in a rule must be a known placeholder (G-38)", async () => {
+  const sdl = (value: string) => `type Claims @jwt { sub: String! }
+    type Pin @node @mutation(operations: [CREATE])
+      @authorization(validate: [{ operations: [CREATE], where: { node: { key: { eq: ${JSON.stringify(value)} } } } }]) {
+      key: String! @key }`;
+  for (const typo of ["$jtw.sub", "$viewer.key", "$context"]) {
+    expect(() => buildModel(sdl(typo))).toThrow(
+      `"${typo}" is not a placeholder: write $jwt.<claim> or $context.<path>`,
+    );
+  }
+  // An escaped "$" is the literal string.
+  const t = await createTestLoraGraphQL({ typeDefs: sdl("\\$jtw.sub") });
+  const create = (key: string) =>
+    t.run(
+      `mutation { createPins(input: [{ key: ${JSON.stringify(key)} }]) { pins { key } } }`,
+      {},
+      { jwt: { sub: "x" } },
+    );
+  expect((await create("$jtw.sub")).errors).toBeUndefined();
+  expect((await create("other")).errors?.[0]?.extensions?.["code"]).toBe(
+    "FORBIDDEN",
+  );
 });

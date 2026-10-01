@@ -2702,6 +2702,17 @@ function ruleStringProblems(value: unknown): string[] {
         ];
       }
     }
+    // A misspelt placeholder would be compared as a literal and silently
+    // stop meaning what it says. A literal "$" is written "\\$".
+    if (
+      value.startsWith("$") &&
+      !value.startsWith("$jwt.") &&
+      !value.startsWith("$context.")
+    ) {
+      return [
+        `"${value}" is not a placeholder: write $jwt.<claim> or $context.<path>, or "\\${value}" for the literal string`,
+      ];
+    }
     return [];
   }
   if (Array.isArray(value)) return value.flatMap(ruleStringProblems);

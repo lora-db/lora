@@ -795,6 +795,10 @@ function substitute(
   value: unknown,
   ctx: CompileContext,
 ): { ok: boolean; value: unknown } {
+  // "\$…" is the literal string "$…" (an unescaped "$…" is a placeholder).
+  if (typeof value === "string" && value.startsWith("\\$")) {
+    return { ok: true, value: value.slice(1) };
+  }
   if (typeof value === "string" && value.includes("${")) {
     let ok = true;
     const built = value.replace(
