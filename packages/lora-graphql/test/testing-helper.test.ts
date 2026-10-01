@@ -118,3 +118,27 @@ type Trip @node @mutation
     ).rejects.toThrow(/expected `<read\|create/);
   });
 });
+
+test("expectAccess: a write to a hidden node is denied, not allowed (G-39)", async () => {
+  const t = await createTestLoraGraphQL({
+    typeDefs: `type Claims @jwt { sub: String! @viewer(type: "Person", field: "key") }
+    type Person @node { key: String! @key }
+    type Trip @node @mutation(operations: [UPDATE, DELETE]) @authorization(public: [UPDATE, DELETE], filter: [{ where: { node: { owner: { isViewer: true } } } }]) {
+      key: String! @key
+      owner: Person! @relationship(type: "OWNS", direction: IN, nestedOperations: [])
+      members: [Person!]! @relationship(type: "MEMBER", direction: IN, nestedOperations: [CONNECT, DISCONNECT]) }`,
+    seed: "CREATE (:Person {key: 'lou'})-[:OWNS]->(:Trip {key: 't'}), (:Person {key: 'eve'})",
+  });
+  await expectAccess(t, {
+    as: { sub: "eve" },
+    denied: [
+      "connect Trip.members t → eve",
+      "disconnect Trip.members t → eve",
+      "delete Trip t",
+    ],
+  });
+  await expectAccess(t, {
+    as: { sub: "lou" },
+    allowed: ["connect Trip.members t → eve", "delete Trip t"],
+  });
+});

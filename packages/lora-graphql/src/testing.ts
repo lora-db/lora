@@ -205,7 +205,10 @@ async function tryAccess(
   entry: string,
   expectations: AccessExpectations,
 ): Promise<AccessOutcome> {
-  const { source, variables, isRead, root } = accessOperation(lora, entry);
+  const { source, variables, isRead, root, wrote } = accessOperation(
+    lora,
+    entry,
+  );
   const tx = await lora.begin();
   try {
     const result = await lora.execute({
@@ -229,6 +232,13 @@ async function tryAccess(
             message: `${String(code ?? "error")}: ${error.message}`,
           };
     }
+    const payload = (result.data as Record<string, unknown> | null)?.[root];
+    if (
+      wrote &&
+      (payload == null || !wrote(payload as Record<string, unknown>))
+    ) {
+      return { kind: "denied", message: "not visible, nothing written" };
+    }
     if (isRead) {
       const value = (result.data as Record<string, unknown> | null)?.[root];
       if (value == null) return { kind: "denied", message: "not visible" };
@@ -248,6 +258,8 @@ function accessOperation(
   variables: Record<string, unknown>;
   isRead: boolean;
   root: string;
+  /** How the payload says nothing was written: a hidden target answers no error. */
+  wrote?: (payload: Record<string, unknown>) => boolean;
 } {
   const m =
     /^\s*(read|create|update|delete|connect|disconnect|update-edge)\s+([A-Za-z_][\w]*)(?:\.([A-Za-z_]\w*))?\s+(\S+)(?:\s*(?:→|->)\s*(\S+))?\s*(\{.*\})?\s*$/s.exec(
@@ -304,18 +316,20 @@ function accessOperation(
     case "update":
       return {
         operation,
-        source: `mutation($key: ${keyType}, $update: ${typeName}UpdateInput!) { update${typeName}(${node.key.name}: $key, update: $update) { __typename } }`,
+        source: `mutation($key: ${keyType}, $update: ${typeName}UpdateInput!) { update${typeName}(${node.key.name}: $key, update: $update) { ${lower} { __typename } info { relationshipsDeleted } } }`,
         variables: { key, update: input },
         isRead: false,
         root: `update${typeName}`,
+        wrote: (p) => p[lower] != null,
       };
     case "delete":
       return {
         operation,
-        source: `mutation($key: ${keyType}) { delete${typeName}(${node.key.name}: $key) { __typename } }`,
+        source: `mutation($key: ${keyType}) { delete${typeName}(${node.key.name}: $key) { nodesDeleted } }`,
         variables: { key },
         isRead: false,
         root: `delete${typeName}`,
+        wrote: (p) => Number(p["nodesDeleted"] ?? 0) > 0,
       };
   }
   const field = node.fields.get(fieldName!);
@@ -335,9 +349,19 @@ function accessOperation(
         : { update: [{ [targetKey]: other, edge: input }] };
   return {
     operation,
-    source: `mutation($key: ${keyType}, $update: ${typeName}UpdateInput!) { update${typeName}(${node.key.name}: $key, update: $update) { __typename } }`,
+    source: `mutation($key: ${keyType}, $update: ${typeName}UpdateInput!) { update${typeName}(${node.key.name}: $key, update: $update) { ${lower} { __typename } info { relationshipsDeleted } } }`,
     variables: { key, update: { [fieldName!]: change } },
     isRead: false,
     root: `update${typeName}`,
+    // A hidden owner answers a null node; a disconnect of a pair the
+    // caller may not touch removes nothing.
+    wrote: (p) =>
+      p[lower] != null &&
+      (operation !== "disconnect" ||
+        Number(
+          (p["info"] as Record<string, unknown> | undefined)?.[
+            "relationshipsDeleted"
+          ] ?? 0,
+        ) > 0),
   };
 }
