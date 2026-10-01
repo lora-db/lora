@@ -259,6 +259,14 @@ export interface SchemaAssertion {
   required: SchemaRequirement[];
   missing: SchemaRequirement[];
   created: SchemaRequirement[];
+  /**
+   * Full-text and vector indexes present under their name but defined
+   * differently (labels, properties, kind): search would keep using the
+   * old definition. Without `create`; with it they are re-created.
+   */
+  mismatched: SchemaRequirement[];
+  /** Indexes `create` dropped and created again with the model's definition. */
+  recreated: SchemaRequirement[];
 }
 
 export interface CheckOptions {
@@ -617,12 +625,35 @@ export class LoraGraphQL {
       ],
       { mode: "read", timeoutMs: this.#timeoutMs },
     );
+    const byName = (r: SchemaRequirement) =>
+      indexes!.rows.find((row) => row["name"] === r.name);
+    // A named index whose definition differs from the model's: matching by
+    // name alone would keep searching the old field list.
+    const differs = (r: SchemaRequirement) => {
+      if (r.kind !== "fulltext" && r.kind !== "vector") return false;
+      const row = byName(r);
+      if (!row) return false;
+      const type = r.kind === "fulltext" ? "FULLTEXT" : "VECTOR";
+      const wantedProps = r.kind === "fulltext" ? r.properties : [r.property];
+      const same = (a: unknown, b: readonly string[]) =>
+        Array.isArray(a) &&
+        a.length === b.length &&
+        [...a].map(String).sort().join("\0") === [...b].sort().join("\0");
+      const analyzer = (
+        row["options"] as Record<string, unknown> | undefined
+      )?.["fulltext.analyzer"];
+      return (
+        row["type"] !== type ||
+        !same(row["labelsOrTypes"], [r.label]) ||
+        !same(row["properties"], wantedProps) ||
+        (r.kind === "fulltext" &&
+          typeof analyzer === "string" &&
+          analyzer.toUpperCase() !== r.analyzer)
+      );
+    };
     const present = (r: SchemaRequirement) => {
       if (r.kind === "fulltext" || r.kind === "vector") {
-        const type = r.kind === "fulltext" ? "FULLTEXT" : "VECTOR";
-        return indexes!.rows.some(
-          (row) => row["name"] === r.name && row["type"] === type,
-        );
+        return byName(r) !== undefined;
       }
       if (r.kind === "constraint") {
         const wanted = {
@@ -642,8 +673,20 @@ export class LoraGraphQL {
       );
     };
     const missing = required.filter((r) => !present(r));
+    const mismatched = required.filter(differs);
     const created: SchemaRequirement[] = [];
+    const recreated: SchemaRequirement[] = [];
     if (options.create) {
+      for (const r of mismatched) {
+        await this.#driver.run(
+          [
+            { text: `DROP INDEX ${quoteName(r.name)}`, params: {} },
+            { text: requirementDdl(r), params: {} },
+          ],
+          { mode: "write", timeoutMs: this.#timeoutMs },
+        );
+        recreated.push(r);
+      }
       for (const r of missing) {
         await this.#driver.run([{ text: requirementDdl(r), params: {} }], {
           mode: "write",
@@ -656,6 +699,8 @@ export class LoraGraphQL {
       required,
       missing: options.create ? [] : missing,
       created,
+      mismatched: options.create ? [] : mismatched,
+      recreated,
     };
   }
 
@@ -708,7 +753,11 @@ export class LoraGraphQL {
       ok: true,
       warnings: this.model.warnings,
       cypher: await checkCypherFields(this.#driver, this.model),
-      missing: (await this.assertSchema()).missing,
+      // An index defined differently from the model is as good as missing.
+      missing: await this.assertSchema().then((a) => [
+        ...a.missing,
+        ...a.mismatched,
+      ]),
       unused: await this.#unusedIndexes(),
       lint: [
         ...lintModel(this.model, { statistics: !!this.#statistics }),
@@ -2094,6 +2143,11 @@ function isDocument(
  * The type of the operation `operationName` selects; undefined when it
  * selects none, which graphql then reports.
  */
+/** An index name as Cypher takes it: backquoted. */
+function quoteName(name: string): string {
+  return "`" + name.replaceAll("`", "``") + "`";
+}
+
 function operationType(
   document: DocumentNode,
   operationName: string | null | undefined,
