@@ -127,7 +127,7 @@ type Doc @node { key: String! @key
   secret: String @authorization(validate: [{ operations: [READ], where: { jwt: { roles: { includes: "auditor" } } } }]) }`,
     );
     expect(found).toContain(
-      "Doc.secret: the schema's bypass skips this field's rules for callers passing it; add @authorization(bypass: false) to the type if they must hold for everyone",
+      "Doc.secret: the schema's bypass skips the rules of Doc.secret for callers passing it; add @authorization(bypass: false) to Doc if they must hold for everyone",
     );
   });
 });

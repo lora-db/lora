@@ -1058,6 +1058,20 @@ export class LoraGraphQL {
       await tx?.rollback();
       throw err;
     }
+    // graphql-js reports bad variables without a code; clients branch on it.
+    if (result.errors?.some(isVariableError)) {
+      result = {
+        ...result,
+        errors: result.errors.map((e) =>
+          isVariableError(e)
+            ? new GraphQLError(e.message, {
+                ...(e.nodes ? { nodes: e.nodes } : {}),
+                extensions: { ...e.extensions, code: "BAD_USER_INPUT" },
+              })
+            : e,
+        ),
+      };
+    }
     if (tx) {
       if (result.errors?.length) {
         // Nothing of the operation was written: say so with the data.
@@ -2143,6 +2157,15 @@ function isDocument(
  * The type of the operation `operationName` selects; undefined when it
  * selects none, which graphql then reports.
  */
+/** A variable graphql-js could not coerce: a request error with no code. */
+function isVariableError(e: GraphQLError): boolean {
+  return (
+    e.extensions?.["code"] === undefined &&
+    e.path === undefined &&
+    e.message.startsWith('Variable "$')
+  );
+}
+
 /** An index name as Cypher takes it: backquoted. */
 function quoteName(name: string): string {
   return "`" + name.replaceAll("`", "``") + "`";

@@ -84,3 +84,18 @@ describe('mutationTransaction: "operation"', () => {
     expect(await cs(t)).toEqual([]);
   });
 });
+
+test("execute(): a variable that does not coerce is BAD_USER_INPUT", async () => {
+  const t = await createTestLoraGraphQL({
+    typeDefs: `type C @node { key: String! @key  n: Int @filterable }`,
+  });
+  t.lora.persist({
+    Q: "query($n: Int!) { cs(where: { n: { eq: $n } }) { key } }",
+  });
+  for (const r of [
+    await t.lora.execute({ id: "Q", variables: { n: "x" } }),
+    await t.lora.execute({ id: "Q", variables: {} }),
+  ]) {
+    expect(codes(r)).toEqual(["BAD_USER_INPUT"]);
+  }
+});

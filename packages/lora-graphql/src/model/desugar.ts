@@ -30,7 +30,15 @@ export interface ViewerMapping {
 export interface NamedRules {
   schema: ReadonlyMap<string, AuthorizationWhere>;
   byType: ReadonlyMap<string, ReadonlyMap<string, AuthorizationWhere>>;
+  /** Cycles reported so far, so each is reported once. */
+  reportedCycles?: Set<string>;
 }
+
+/**
+ * Stands where a rule reference could not expand (an error was reported):
+ * the rule checks skip it rather than report it again as empty.
+ */
+export const UNEXPANDED: Readonly<Record<string, never>> = Object.freeze({});
 
 export interface DesugarContext {
   nodes: ReadonlyMap<string, NodeType>;
@@ -65,7 +73,7 @@ export function desugarRule(
   const keys = Object.keys(where);
   if (keys.length === 1 && keys[0] === "rule") {
     // Alone, the reference is its rule: exactly the hand-written form.
-    return expandRule(ctx, owner, where["rule"]) ?? {};
+    return expandRule(ctx, owner, where["rule"]) ?? UNEXPANDED;
   }
   const out: Where = {};
   const extra: Where[] = [];
@@ -137,7 +145,13 @@ function withinRule(
   const stack = (ctx.expanding ??= []);
   const at = stack.indexOf(id);
   if (at >= 0) {
-    ctx.at(`rule cycle: ${[...stack.slice(at), id].join(" → ")}`);
+    const cycle = stack.slice(at);
+    const reported = (ctx.rules!.reportedCycles ??= new Set());
+    const id_ = [...cycle].sort().join("\0");
+    if (!reported.has(id_)) {
+      reported.add(id_);
+      ctx.at(`rule cycle: ${[...cycle, id].join(" → ")}`);
+    }
     return undefined;
   }
   stack.push(id);
@@ -210,7 +224,7 @@ export function desugarNode(
   if (!isRecord(where)) return where;
   const keys = Object.keys(where);
   if (keys.length === 1 && keys[0] === "rule") {
-    return expandNodeRule(ctx, node, where["rule"]) ?? {};
+    return expandNodeRule(ctx, node, where["rule"]) ?? UNEXPANDED;
   }
   const out: Where = {};
   // Tests that must go under AND, because their key is taken.

@@ -393,8 +393,7 @@ export function accessLints(
           out.push({
             type: node.name,
             field: f.name,
-            message:
-              "the schema's bypass skips this field's rules for callers passing it; add @authorization(bypass: false) to the type if they must hold for everyone",
+            message: `the schema's bypass skips the rules of ${node.name}.${f.name} for callers passing it; add @authorization(bypass: false) to ${node.name} if they must hold for everyone`,
           });
         }
       }

@@ -31,6 +31,7 @@ import { ModelError, type ModelProblem } from "../errors.js";
 import { directiveTypeDefs, PRELUDE_TYPES } from "./directives.js";
 import { checkDirectivePositions } from "./positions.js";
 import {
+  UNEXPANDED,
   checkViewer,
   desugarRule,
   type DesugarContext,
@@ -1005,8 +1006,9 @@ export function buildModel(
   for (const [typeName, own] of typeRules) {
     const node = nodes.get(typeName);
     if (!node) continue;
-    for (const where of own.values()) {
-      const rule = { where };
+    for (const name of own.keys()) {
+      // Expanded by reference, so a cycle's chain starts at this rule.
+      const rule = { where: { rule: name } as AuthorizationWhere };
       desugar(node, typeName, undefined, [rule]);
       checkAuthorizationWhere(
         nodes,
@@ -2280,6 +2282,7 @@ function checkRuleWhere(
     ? "source, target, edge, viewer, jwt, AND, OR or NOT"
     : "node, viewer, jwt, AND, OR or NOT";
   const visit = (w: unknown, path: string) => {
+    if (w === UNEXPANDED) return; // already reported
     if (!isRecord(w)) return at(`${path || "where"} must be an object`);
     for (const [k, value] of Object.entries(w)) {
       const here = path ? `${path}.${k}` : k;
@@ -2346,6 +2349,7 @@ function checkNodeWhere(
   path: string,
   at: (message: string) => void,
 ) {
+  if (where === UNEXPANDED) return; // already reported
   if (!isRecord(where)) return at(`${path} must be an object`);
   // An empty or null test would compile to nothing and grant everyone.
   if (Object.keys(where).length === 0) {
@@ -2455,6 +2459,7 @@ function checkAbstractWhere(
   path: string,
   at: (message: string) => void,
 ) {
+  if (where === UNEXPANDED) return; // already reported
   if (!isRecord(where) || Object.keys(where).length === 0) {
     return at(`${path} is empty: a rule must test something`);
   }

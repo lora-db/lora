@@ -155,9 +155,10 @@ describe("model checks", () => {
       key: String! @key  b: B @relationship(type: "AB", direction: OUT) }
     type B @node @authorizationRule(name: "r", where: { node: { a: { rule: "r" } } }) {
       key: String! @key  a: A @relationship(type: "AB", direction: IN) }`;
-    expect(problems(sdl)).toContain(
+    // Reported once, and nothing else about it.
+    expect(problems(sdl)).toEqual([
       "@authorization: rule cycle: A.r → B.r → A.r",
-    );
+    ]);
   });
 
   test("shadowing and misplaced rules are refused", () => {
