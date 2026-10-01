@@ -1204,6 +1204,7 @@ binding has, so the WASM binding serves reads.
 | `budget`                     |               | Cost limit per request, from the context            |
 | `onCost`                     |               | Each root field's estimate, total and limit         |
 | `onStatementEnd`             |               | Duration, rows and error of every statement call    |
+| `timing`                     | false         | `extensions.timing` in `execute()` results          |
 | `tracer` / `traceStatements` |               | OpenTelemetry-style spans; Cypher text on request   |
 | `metrics`                    |               | Counters and histograms (see below)                 |
 
@@ -1244,6 +1245,28 @@ the library trusts and where each check runs.
 `durationMs`, `rows`, `error`, `mode`, the cost estimate, the operation
 name and the persisted id. Reads report their batch of statements in one
 event; mutations report each statement.
+
+With `timing`, `execute()` also returns the request's timings to the
+client:
+
+```json
+"extensions": {
+  "cost": 51,
+  "timing": {
+    "totalMs": 4.21,
+    "databaseMs": 3.05,
+    "fields": { "all": { "totalMs": 2.9, "databaseMs": 2.4 }, "one": { "totalMs": 0.8, "databaseMs": 0.65 } }
+  }
+}
+```
+
+`totalMs` covers the whole `execute()` call (parse, validation,
+execution); `databaseMs` the statements LoraDB ran; `fields` both per root
+field, by response key. Pass `true`, or a function of the context to
+decide per request (`timing: (ctx) => ctx.jwt?.roles?.includes("admin")`).
+It is off by default: timings sent to clients can act as a timing side
+channel. Servers calling graphql-js on `getSchema()` directly use
+`onStatementEnd` or `tracer` instead.
 
 Pass an OpenTelemetry tracer (`trace.getTracer("lora-graphql")`) as
 `tracer` and each root field gets a `lora.graphql.field` span holding a

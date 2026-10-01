@@ -6,6 +6,7 @@ export {
   type CostEvent,
   type DatabaseErrorEvent,
   type ExecuteArgs,
+  type ExecutionTiming,
   type LoraGraphQLContext,
   type LoraGraphQLOptions,
   type SchemaAssertion,

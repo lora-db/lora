@@ -205,6 +205,25 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
    * putting a `lora.begin()` transaction in the context.
    */
   mutationTransaction?: "field" | "operation";
+  /**
+   * Add `extensions.timing` to `execute()` results: the request's total
+   * time, the time spent in LoraDB, and both per root field, in
+   * milliseconds. `true` for every request, or a function deciding per
+   * request from the GraphQL context (for example only for admins or in
+   * development). Default off: timings sent to clients can act as a
+   * timing side channel.
+   */
+  timing?: boolean | ((context: unknown) => boolean);
+}
+
+/** `extensions.timing` of an `execute()` result (see the `timing` option). */
+export interface ExecutionTiming {
+  /** The whole `execute()` call: parse, validation, execution. */
+  totalMs: number;
+  /** Time spent running statements in LoraDB. */
+  databaseMs: number;
+  /** Per root field, by response key (alias or name). */
+  fields: Record<string, { totalMs: number; databaseMs: number }>;
 }
 
 export interface CostEvent {
@@ -425,6 +444,12 @@ export class LoraGraphQL {
   #statistics: Statistics | undefined;
   #schema: GraphQLSchema | undefined;
   readonly #mutationTransaction: "field" | "operation";
+  readonly #timing: LoraGraphQLOptions["timing"];
+  /** Per-request timing collectors, by GraphQL context (see `timing`). */
+  readonly #timings = new WeakMap<
+    object,
+    Map<string, { totalMs: number; databaseMs: number }>
+  >();
 
   constructor(options: LoraGraphQLOptions) {
     this.model = buildModel(options.typeDefs, options);
@@ -497,6 +522,7 @@ export class LoraGraphQL {
     this.#onCost = options.onCost;
     this.#persistedOnly = options.persistedOnly ?? false;
     this.#mutationTransaction = options.mutationTransaction ?? "field";
+    this.#timing = options.timing;
   }
 
   /** The configured document guards as validation rules. */
@@ -536,14 +562,27 @@ export class LoraGraphQL {
 
   /** The executable schema, for any graphql-js server. */
   getSchema(): GraphQLSchema {
-    const span = <T>(info: GraphQLResolveInfo, fn: () => Promise<T>) =>
-      this.#observer.field(
-        {
-          field: info.fieldName,
-          operationName: info.operation.name?.value,
-        },
-        fn,
-      );
+    const span = <T>(
+      info: GraphQLResolveInfo,
+      context: unknown,
+      fn: () => Promise<T>,
+    ) => {
+      const traced = () =>
+        this.#observer.field(
+          {
+            field: info.fieldName,
+            operationName: info.operation.name?.value,
+          },
+          fn,
+        );
+      const timing = this.#timingOf(context);
+      if (!timing || info.path.prev !== undefined) return traced();
+      const start = performance.now();
+      return traced().finally(() => {
+        timingEntry(timing, String(info.path.key)).totalMs +=
+          performance.now() - start;
+      });
+    };
     if (this.#schema) return this.#schema;
     const schema = buildSchema(this.model, {
       scalars: this.#scalars,
@@ -552,7 +591,7 @@ export class LoraGraphQL {
       resolveChangedNode: (node, event, info, context) =>
         event.operation === "DELETE"
           ? Promise.resolve(null)
-          : span(info, () =>
+          : span(info, context, () =>
               this.#resolveByKey(
                 node,
                 event.key,
@@ -562,7 +601,7 @@ export class LoraGraphQL {
               ),
             ),
       resolveAbstract: (abstract, info, context) =>
-        span(info, () => {
+        span(info, context, () => {
           const compiled = this.#cachedCompile(info, context, (ctx) =>
             compileAbstractRoot(
               ctx,
@@ -574,17 +613,19 @@ export class LoraGraphQL {
           return this.#run(info.fieldName, compiled, context, info);
         }),
       resolveSearch: (node, index, info, context, connection) =>
-        span(info, () =>
+        span(info, context, () =>
           this.#resolveSearch(node, index, info, context, connection),
         ),
       resolveRoot: (kind, node, info, context) =>
-        span(info, () => this.#resolveRoot(kind, node, info, context)),
+        span(info, context, () => this.#resolveRoot(kind, node, info, context)),
       resolveNode: (id, info, context) =>
-        span(info, () => this.#resolveNode(id, info, context)),
+        span(info, context, () => this.#resolveNode(id, info, context)),
       resolveCypher: (field, info, context) =>
-        span(info, () => this.#resolveCypher(field, info, context)),
+        span(info, context, () => this.#resolveCypher(field, info, context)),
       resolveMutation: (op, node, info, context) =>
-        span(info, () => this.#resolveMutation(op, node, info, context)),
+        span(info, context, () =>
+          this.#resolveMutation(op, node, info, context),
+        ),
     });
     checkCustomRequires(this.model, schema);
     // A generated schema graphql-js rejects would fail every request:
@@ -1011,6 +1052,7 @@ export class LoraGraphQL {
    * returns a `WRONG_OPERATION_TYPE` error.
    */
   async execute(args: ExecuteArgs): Promise<ExecutionResult> {
+    const started = performance.now();
     const document = this.#document(args);
     if (!isDocument(document)) return document;
     if (operationType(document, args.operationName) === "subscription") {
@@ -1044,6 +1086,13 @@ export class LoraGraphQL {
         contextValue,
         { transaction: tx },
       );
+    }
+    const timed =
+      typeof this.#timing === "function"
+        ? this.#timing(contextValue)
+        : this.#timing === true;
+    if (timed && contextValue !== null && typeof contextValue === "object") {
+      this.#timings.set(contextValue, new Map());
     }
     let result: ExecutionResult;
     try {
@@ -1103,9 +1152,27 @@ export class LoraGraphQL {
         : undefined;
     if (spent && spent.size > 0) {
       const cost = [...spent.values()].reduce((a, b) => a + b, 0);
-      return {
+      result = {
         ...result,
         extensions: { ...result.extensions, cost: Math.ceil(cost) },
+      };
+    }
+    const timing = this.#timingOf(contextValue);
+    if (timing) {
+      const fields: ExecutionTiming["fields"] = {};
+      let databaseMs = 0;
+      for (const [key, t] of timing) {
+        fields[key] = { totalMs: ms(t.totalMs), databaseMs: ms(t.databaseMs) };
+        databaseMs += t.databaseMs;
+      }
+      const executionTiming: ExecutionTiming = {
+        totalMs: ms(performance.now() - started),
+        databaseMs: ms(databaseMs),
+        fields,
+      };
+      result = {
+        ...result,
+        extensions: { ...result.extensions, timing: executionTiming },
       };
     }
     return result;
@@ -1430,6 +1497,8 @@ export class LoraGraphQL {
     const signal = (context as LoraGraphQLContext | undefined)?.signal;
     const owned = (context as LoraGraphQLContext | undefined)?.transaction;
     let results;
+    const timing = this.#timingOf(context);
+    const dbStart = timing ? performance.now() : 0;
     try {
       results = await this.#observer.statements(
         this.#meta(field, compiled.mode, info, compiled.cost),
@@ -1455,6 +1524,11 @@ export class LoraGraphQL {
       );
     } catch (err) {
       throw this.#databaseError(field, err);
+    } finally {
+      if (timing) {
+        timingEntry(timing, rootKey(info) ?? field).databaseMs +=
+          performance.now() - dbStart;
+      }
     }
     return assertReadable(compiled.shape(results));
   }
@@ -2081,6 +2155,44 @@ export class LoraGraphQL {
     }
   }
 
+  /**
+   * How a mutation's statements are observed: traced and reported when
+   * observability is on, timed when the request collects timings.
+   */
+  #mutationObserve(
+    info: GraphQLResolveInfo,
+    context: unknown,
+  ): MutationEnv["observe"] {
+    const timing = this.#timingOf(context);
+    if (!this.#observer.active && !timing) return undefined;
+    return async (statement, run) => {
+      const start = performance.now();
+      try {
+        return await (this.#observer.active
+          ? this.#observer.statements(
+              this.#meta(info.fieldName, "write", info),
+              [statement],
+              run,
+            )
+          : run());
+      } finally {
+        if (timing) {
+          timingEntry(timing, rootKey(info) ?? info.fieldName).databaseMs +=
+            performance.now() - start;
+        }
+      }
+    };
+  }
+
+  /** The request's timing collector, when `timing` asked for one. */
+  #timingOf(
+    context: unknown,
+  ): Map<string, { totalMs: number; databaseMs: number }> | undefined {
+    return context !== null && typeof context === "object"
+      ? this.#timings.get(context)
+      : undefined;
+  }
+
   #mutationEnv(
     info: GraphQLResolveInfo,
     context: unknown,
@@ -2101,14 +2213,7 @@ export class LoraGraphQL {
         ?.driverTransaction,
       onStatement: (statement) =>
         this.#onStatement?.({ field: info.fieldName, statement }),
-      observe: this.#observer.active
-        ? (statement, run) =>
-            this.#observer.statements(
-              this.#meta(info.fieldName, "write", info),
-              [statement],
-              run,
-            )
-        : undefined,
+      observe: this.#mutationObserve(info, context),
     };
   }
 
@@ -2165,6 +2270,30 @@ function isVariableError(e: GraphQLError): boolean {
     e.message.startsWith('Variable "$')
   );
 }
+
+/** A request's timing entry for a root field, created on first use. */
+function timingEntry(
+  timing: Map<string, { totalMs: number; databaseMs: number }>,
+  key: string,
+): { totalMs: number; databaseMs: number } {
+  let entry = timing.get(key);
+  if (!entry) {
+    entry = { totalMs: 0, databaseMs: 0 };
+    timing.set(key, entry);
+  }
+  return entry;
+}
+
+/** The response key of the root field `info` belongs to. */
+function rootKey(info: GraphQLResolveInfo | undefined): string | undefined {
+  let path = info?.path;
+  if (!path) return undefined;
+  while (path.prev) path = path.prev;
+  return String(path.key);
+}
+
+/** Milliseconds, to a hundredth. */
+const ms = (value: number) => Math.round(value * 100) / 100;
 
 /** An index name as Cypher takes it: backquoted. */
 function quoteName(name: string): string {

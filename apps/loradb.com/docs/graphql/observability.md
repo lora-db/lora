@@ -20,6 +20,7 @@ on by default, and a failing hook never fails a request.
 | [`metrics`](#metrics) | After each statement call | Dashboards and alerts |
 | [`onCost`](#cost) | Before each root field runs | Tuning `maxCost` and budgets |
 | [`onError`](#database-errors) | On each database error | Correlating masked errors |
+| [`timing`](#timing-in-responses) | In each `execute()` result | Showing clients where time went |
 
 ## onStatement
 
@@ -156,6 +157,47 @@ clients can see what their queries cost and tune them.
 To set a sensible `maxCost`, run with a high limit for a while, record
 `onCost`, and set the limit above the largest cost your real clients
 produce.
+
+## Timing in responses
+
+With `timing`, `execute()` returns the request's timings in
+`extensions.timing`, next to `extensions.cost`:
+
+```json
+"extensions": {
+  "cost": 51,
+  "timing": {
+    "totalMs": 4.21,
+    "databaseMs": 3.05,
+    "fields": {
+      "all": { "totalMs": 2.9, "databaseMs": 2.4 },
+      "one": { "totalMs": 0.8, "databaseMs": 0.65 }
+    }
+  }
+}
+```
+
+- `totalMs` covers the whole `execute()` call: parse, validation and
+  execution.
+- `databaseMs` is the time LoraDB spent running statements, reads and
+  mutations alike.
+- `fields` gives both per root field, by response key (the alias when
+  there is one).
+
+```ts
+const lora = new LoraGraphQL({
+  typeDefs,
+  driver,
+  // every request, or decide per request from the GraphQL context:
+  timing: (context) => context.jwt?.roles?.includes("admin") ?? false,
+});
+```
+
+It is off by default: timings sent to clients can act as a timing side
+channel (whether a filter rule hid rows, for example), so enable it for
+trusted callers or in development. Servers that call graphql-js on
+`getSchema()` directly get the same numbers from `onStatementEnd` and
+`tracer`.
 
 ## Database errors
 

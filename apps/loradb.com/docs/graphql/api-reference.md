@@ -54,6 +54,7 @@ options do not supply.
 | `maskErrors` | `NODE_ENV === "production"` | Clients get `DATABASE_ERROR` and an `id` instead of the engine's message |
 | `guards` | see [guards](#documentguards) | Document limits for `execute()` and `persist()`. `false` turns them off |
 | `persistedOnly` | `false` | `execute()` refuses `source` and runs persisted operations only |
+| `timing` | `false` | `true`, or a function of the context: `execute()` adds `extensions.timing` (total, database and per-root-field milliseconds). See [Observability](./observability#timing-in-responses) |
 | `mutationTransaction` | `"field"` | `"operation"`: `execute()` runs every root field of a mutation in one transaction, rolled back (with `data: null`) when any fails |
 
 ### Extensibility
