@@ -176,11 +176,14 @@ RETURN "with \n newline"   // string with a literal newline`} />
 ### Concatenation
 
 <QueryCodeBlock code={String.raw`RETURN 'Hello, ' + 'Ada';         // 'Hello, Ada'
+RETURN 'id=' + 42;               // 'id=42'
 RETURN 'id=' + toString(42)      // 'id=42'`} />
 
-Other types must be converted to `String` via
-[`toString`](../functions/string#type-conversion) — `+` does not
-implicitly stringify numeric operands.
+A string and a number concatenate, in either order, with the number
+printed as [`toString`](../functions/string#type-conversion) prints it.
+Other types (booleans, maps, temporals) must be converted first: `+`
+between a string and one of them is an error, not a silent `null`. A
+`null` operand still gives `null`.
 
 ### Useful functions
 

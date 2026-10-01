@@ -287,14 +287,30 @@ fn int_float_cmp(i: i64, f: f64) -> Option<std::cmp::Ordering> {
 
 fn add_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
     match (lhs, rhs) {
+        (LoraValue::Null, _) | (_, LoraValue::Null) => LoraValue::Null,
         (LoraValue::Int(a), LoraValue::Int(b)) => match a.checked_add(b) {
             Some(out) => LoraValue::Int(out),
             None => arithmetic_overflow("integer addition"),
         },
         (LoraValue::String(a), LoraValue::String(b)) => LoraValue::String(a + &b),
+        // A string and a number concatenate, as toString would print the
+        // number: 'p' + 1 is 'p1' (it was a silent null).
+        (LoraValue::String(a), LoraValue::Int(b)) => LoraValue::String(format!("{a}{b}")),
+        (LoraValue::String(a), LoraValue::Float(b)) => LoraValue::String(format!("{a}{b}")),
+        (LoraValue::Int(a), LoraValue::String(b)) => LoraValue::String(format!("{a}{b}")),
+        (LoraValue::Float(a), LoraValue::String(b)) => LoraValue::String(format!("{a}{b}")),
         (LoraValue::List(mut a), LoraValue::List(b)) => {
             a.extend(b);
             LoraValue::List(a)
+        }
+        // A list and an element: append or prepend it.
+        (LoraValue::List(mut a), b) => {
+            a.push(b);
+            LoraValue::List(a)
+        }
+        (a, LoraValue::List(mut b)) => {
+            b.insert(0, a);
+            LoraValue::List(b)
         }
         // Temporal + Duration
         (LoraValue::Date(d), LoraValue::Duration(dur)) => match d.try_add_duration(&dur) {
@@ -327,8 +343,15 @@ fn add_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
             LoraValue::Null
         }
         (a, b) => match (a.as_f64(), b.as_f64()) {
-            (Some(a), Some(b)) => LoraValue::Float(a + b),
-            _ => LoraValue::Null,
+            (Some(x), Some(y)) => LoraValue::Float(x + y),
+            _ => {
+                set_eval_error(format!(
+                    "Cannot add {} and {}",
+                    crate::errors::value_kind(&a),
+                    crate::errors::value_kind(&b)
+                ));
+                LoraValue::Null
+            }
         },
     }
 }
