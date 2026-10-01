@@ -708,6 +708,11 @@ class Runner {
    * cannot read; see {@link Runner.moveHiddenKeys}.
    */
   hiddenKey: NodeType | undefined;
+  /**
+   * A @unique value this mutation creates that another node holds; see
+   * {@link Runner.moveTakenUniques}.
+   */
+  takenUnique: { node: NodeType; field: ScalarField } | undefined;
 
   constructor(
     readonly env: MutationEnv,
@@ -742,6 +747,7 @@ class Runner {
     assertBatch(plan, this.env.maxBatch);
     assertUniqueKeys(plan);
     await this.moveHiddenKeys(plan);
+    await this.moveTakenUniques(plan);
     await this.applyCreates(plan);
     await this.applyDisconnects(plan);
     await this.applyLinks(plan);
@@ -779,6 +785,47 @@ class Runner {
         ctx,
       );
       if (Number(moved?.["moved"] ?? 0) > 0) this.hiddenKey ??= node;
+    }
+  }
+
+  /**
+   * The G-20 treatment for @unique values: a create under rules whose
+   * unique value another node holds would fail the constraint before the
+   * rules answer, telling a caller who may not create the node that the
+   * value is taken. The holder's value moves aside for the transaction,
+   * so every error is the one a free value gets; when the mutation would
+   * succeed, `executeMutation` fails it with the constraint violation a
+   * permitted caller gets. The transaction rolls back either way. Types
+   * without CREATE rules skip this: there is nothing to leak.
+   */
+  async moveTakenUniques(plan: WritePlan): Promise<void> {
+    for (const [node, rows] of plan.creates) {
+      const ruled = node.authorization?.validate.some((r) =>
+        r.operations.has("CREATE"),
+      );
+      if (!ruled) continue;
+      for (const f of node.fields.values()) {
+        if (f.kind !== "scalar" || !f.unique || f.key) continue;
+        const moves = rows
+          .map((r) => r.props[f.property])
+          .filter((value) => value !== undefined && value !== null)
+          .map((value) => ({
+            value,
+            to: `\u0000taken:${globalThis.crypto.randomUUID()}`,
+          }));
+        if (moves.length === 0) continue;
+        const ctx = this.ctx();
+        const p = `n.${name(f.property)}`;
+        const [moved] = await this.run(
+          `UNWIND ${printExpr(bind(ctx, moves))} AS m\n` +
+            `MATCH (n:${name(node.labels[0]!)}) WHERE ${p} = m.value\n` +
+            `SET ${p} = m.to\nRETURN count(n) AS moved`,
+          ctx,
+        );
+        if (Number(moved?.["moved"] ?? 0) > 0) {
+          this.takenUnique ??= { node, field: f };
+        }
+      }
     }
   }
 
@@ -2243,6 +2290,15 @@ export async function executeMutation(
     }
     // Only now, so that any other error is the one a free key gets.
     if (runner.hiddenKey) throw forbidden(runner.hiddenKey, "CREATE");
+    if (runner.takenUnique) {
+      const { node: taken, field } = runner.takenUnique;
+      throw requestError(
+        "CONSTRAINT_VIOLATION",
+        `${taken.name}.${field.name} must be unique; the value is taken`,
+        undefined,
+        { type: taken.name, field: field.name },
+      );
+    }
     if (!owned) await tx.commit();
     fillChange(change, runner);
     return { payload, change };

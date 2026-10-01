@@ -273,3 +273,34 @@ type Presence @node @mutation(operations: [CREATE])
     ).toBe(true);
   });
 });
+
+test("a refused create answers the same whether a unique value is taken (G-34)", async () => {
+  const t = await createTestLoraGraphQL({
+    typeDefs: `type Claims @jwt { sub: String! @viewer(type: "Person", field: "subject") }
+    type Person @node(plural: "people") @mutation(operations: [CREATE])
+      @authorization(validate: [{ operations: [CREATE], where: { node: { isViewer: true } } }]) {
+      key: String! @key  subject: String! @unique }`,
+    seed: "CREATE (:Person {key: 'juno', subject: 'oidc|8f3a2c'})",
+  });
+  const claim = (subject: string, sub: string) =>
+    t.run(
+      `mutation { createPeople(input: [{ key: "k${subject.length}${sub.length}", subject: "${subject}" }]) { people { key } } }`,
+      {},
+      { jwt: { sub } },
+    );
+  expect(codes(await claim("oidc|nobody", "oidc|other"))).toEqual([
+    "FORBIDDEN",
+  ]);
+  expect(codes(await claim("oidc|8f3a2c", "oidc|other"))).toEqual([
+    "FORBIDDEN",
+  ]);
+  // A permitted create with a taken value is still a constraint violation.
+  expect(codes(await claim("oidc|8f3a2c", "oidc|8f3a2c"))).toEqual([
+    "CONSTRAINT_VIOLATION",
+  ]);
+  // The holder keeps its value.
+  const rows = (await t.db.execute(
+    "MATCH (p:Person) RETURN p.key AS key, p.subject AS subject",
+  )) as { rows: Array<Record<string, unknown>> };
+  expect(rows.rows).toEqual([{ key: "juno", subject: "oidc|8f3a2c" }]);
+});
