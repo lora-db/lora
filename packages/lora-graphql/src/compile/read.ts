@@ -1400,7 +1400,13 @@ export function bindStatement(
   const names = new Map<string, string>();
   for (const p of field.params) {
     if (p === "jwt") noteClaim(ctx, "", ctx.jwt, false);
-    const value = p === "jwt" ? (ctx.jwt ?? null) : (args[p] ?? null);
+    // An explicit null for an argument with an SDL default takes the
+    // default, as the library's own `limit` arguments do.
+    const declared = field.args.find((a) => a.name === p);
+    const value =
+      p === "jwt"
+        ? (ctx.jwt ?? null)
+        : (args[p] ?? declared?.defaultValue ?? null);
     names.set(p, (bind(ctx, value) as { name: string }).name);
   }
   return renameParams(field.statement, (p) => names.get(p) ?? p);

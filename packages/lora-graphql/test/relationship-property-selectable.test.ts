@@ -79,3 +79,26 @@ describe("@selectable on a relationship property", () => {
     );
   });
 });
+
+test("hiding an edge type's only property drops `properties` (G-36)", async () => {
+  const t = await createTestLoraGraphQL({
+    typeDefs: `type Person @node { key: String! @key }
+    type Seen @relationshipProperties { at: String @selectable(onRead: false) }
+    type Room @node @mutation { key: String! @key
+      people: [Person!]! @relationship(type: "IN", direction: IN, properties: "Seen") }`,
+    seed: ["CREATE (:Person {key: 'u'})"],
+  });
+  expect(t.schema.getType("Seen")).toBeUndefined();
+  const edge = t.schema.getType("RoomPeopleEdge") as unknown as {
+    getFields(): Record<string, unknown>;
+  };
+  expect(Object.keys(edge.getFields())).not.toContain("properties");
+  const r = await t.run(
+    'mutation { createRooms(input: [{ key: "r", people: { connect: [{ key: "u", edge: { at: "now" } }] } }]) { rooms { key } } }',
+  );
+  expect(r.errors).toBeUndefined();
+  const rows = (await t.db.execute(
+    "MATCH (:Person)-[s:IN]->(:Room) RETURN s.at AS at",
+  )) as { rows: Array<Record<string, unknown>> };
+  expect(rows.rows).toEqual([{ at: "now" }]);
+});

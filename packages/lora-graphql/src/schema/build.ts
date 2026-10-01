@@ -1309,7 +1309,12 @@ export function buildSchema(
       names.relConnection(node.name, rel.name),
       names.relEdge(node.name, rel.name),
       () => objects.get(rel.target)!,
-      () => propsObject(props),
+      // Every property hidden from reads (@private, @selectable(onRead:
+      // false)): no edge type, and no `properties` on the edge. The
+      // properties stay settable through `edge` inputs.
+      [...props.fields.values()].some((f) => !f.private && f.selectableOn.read)
+        ? () => propsObject(props)
+        : undefined,
       rel.aggregate
         ? () =>
             connectionAggregate(

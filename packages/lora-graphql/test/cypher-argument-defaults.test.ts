@@ -29,10 +29,12 @@ describe("@cypher argument defaults are kept; LIMIT null is an error", () => {
     expect(three.n.peers).toHaveLength(3);
   });
 
-  test("an explicit null reaches the engine, which refuses LIMIT null", async () => {
+  test("an explicit null takes the default (G-41); the engine refuses LIMIT null", async () => {
     const t = await createTestLoraGraphQL({ typeDefs, seed });
-    const r = await t.run(`{ n(key:"n1") { peers(limit: null) { key } } }`);
-    expect(r.errors?.[0]?.message).toMatch(/LIMIT/);
+    const r = await t.data<{ n: { peers: unknown[] } }>(
+      `{ n(key:"n1") { peers(limit: null) { key } } }`,
+    );
+    expect(r.n.peers).toHaveLength(2);
     const db = await createDatabase();
     await expect(
       db.execute("RETURN 1 AS x LIMIT $l", { l: null }),
