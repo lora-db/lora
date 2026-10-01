@@ -369,6 +369,11 @@ export function checkKeyScope(
   ctx: CompileContext,
   node: NodeType,
   key: unknown,
+  /**
+   * The caller's node's `@key`, looked up by the claim when `@viewer` maps
+   * to another field (an opaque subject); null when there is no such node.
+   */
+  viewerKey?: unknown,
 ): void {
   const scope = node.key.keyScope;
   const mapping = ctx.model.viewer;
@@ -379,7 +384,13 @@ export function checkKeyScope(
       `create on ${node.name} needs an authenticated request`,
     );
   }
-  const owner = claim(ctx, mapping.claim);
+  const viewerNode = ctx.model.nodes.get(mapping.type);
+  // The key space is the viewer node's key: the claim itself when @viewer
+  // maps to the key, else the key looked up by the claim.
+  const owner =
+    viewerNode && mapping.field !== viewerNode.key.name
+      ? viewerKey
+      : claim(ctx, mapping.claim);
   const prefix =
     typeof owner === "string" || typeof owner === "number"
       ? `${owner}${scope.separator}`

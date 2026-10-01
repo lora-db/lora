@@ -8,6 +8,7 @@ import {
   authFilter,
   authValidate,
   checkKeyScope,
+  claim,
   relationshipRules,
   checkAuthentication,
   checkFieldAuthentication,
@@ -76,6 +77,8 @@ export type PopulatedByCallback = (args: {
 export interface MutationEnv {
   model: GraphModel;
   driver: LoraDriver;
+  /** The caller's node's @key, for @key(scope: VIEWER) (see executeMutation). */
+  viewerKey?: unknown;
   selection: SelectionContext;
   jwt: Record<string, unknown> | undefined;
   /** The GraphQL context, for `$context` in rules and for callbacks. */
@@ -239,7 +242,7 @@ class WritePlan {
       }
       key = globalThis.crypto.randomUUID();
     }
-    checkKeyScope(this.ctx, node, key);
+    checkKeyScope(this.ctx, node, key, this.env.viewerKey);
     const props: Input = {};
     const written = new Set<string>();
     if (input[node.key.name] !== undefined && input[node.key.name] !== null) {
@@ -2027,6 +2030,37 @@ export interface MutationResult {
   change: WriteChange;
 }
 
+async function lookupViewerKey(
+  env: MutationEnv,
+  tx: DriverTransaction,
+  ctx: CompileContext,
+): Promise<unknown> {
+  const mapping = env.model.viewer;
+  const viewerNode = mapping && env.model.nodes.get(mapping.type);
+  if (
+    !mapping ||
+    !viewerNode ||
+    mapping.field === viewerNode.key.name ||
+    !env.jwt ||
+    ![...env.model.nodes.values()].some((n) => n.key.keyScope)
+  ) {
+    return undefined;
+  }
+  const value = claim(ctx, mapping.claim);
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const field = viewerNode.fields.get(mapping.field);
+  const property = field?.kind === "scalar" ? field.property : mapping.field;
+  const rows = (
+    await runStatement(env, tx, {
+      text:
+        `MATCH (v:${name(viewerNode.labels[0]!)}) WHERE v.${name(property)} = $claim\n` +
+        `RETURN v.${name(viewerNode.key.property)} AS key LIMIT 1`,
+      params: { claim: value },
+    })
+  ).rows;
+  return rows[0]?.["key"] ?? null;
+}
+
 export async function executeMutation(
   env: MutationEnv,
   op: MutationKind,
@@ -2065,6 +2099,11 @@ export async function executeMutation(
       signal: env.signal,
     }));
   const change = emptyChange(op, fieldName);
+  // @key(scope: VIEWER) under a @viewer that maps to a non-key field (an
+  // opaque subject): the key space is the caller's node's key, looked up
+  // once by the claim before anything is written.
+  const viewerKey = await lookupViewerKey(env, tx, planCtx);
+  if (viewerKey !== undefined) env = { ...env, viewerKey };
   const runner = new Runner(env, tx, change);
   const schema = env.selection.schema;
   const payloadFor = async (

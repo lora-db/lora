@@ -98,3 +98,35 @@ describe("@key(scope: VIEWER)", () => {
     ).toContain("@key(scope:) and @key(generate: true) are exclusive");
   });
 });
+
+describe("@key(scope: VIEWER) with an opaque subject (G-33)", () => {
+  const typeDefs = `type Claims @jwt { sub: String! @viewer(type: "Person", field: "subject") }
+    type Person @node { key: String! @key  subject: String! @unique }
+    type Trip @node @mutation(operations: [CREATE]) @authorization(public: [CREATE]) {
+      key: String! @key(scope: VIEWER, separator: ":")
+      owner: Person! @relationship(type: "OWNS", direction: IN) }`;
+  const seed = "CREATE (:Person {key: 'lou', subject: 'auth0|abc'})";
+  const start = (
+    t: Awaited<ReturnType<typeof createTestLoraGraphQL>>,
+    key: string,
+    sub = "auth0|abc",
+  ) =>
+    t.run(
+      `mutation { createTrips(input: [{ key: "${key}", owner: { connect: { key: "lou" } } }]) { trips { key } } }`,
+      {},
+      { jwt: { sub } },
+    );
+
+  test("prefixes with the caller's key, not the subject", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    expect(codes(await start(t, "lou:x"))).toBeUndefined();
+    expect(codes(await start(t, "auth0|abc:x"))).toEqual(["FORBIDDEN"]);
+  });
+
+  test("a token naming no person creates nothing", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    expect(codes(await start(t, "lou:y", "auth0|nobody"))).toEqual([
+      "FORBIDDEN",
+    ]);
+  });
+});
