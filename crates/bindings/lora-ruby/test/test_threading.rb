@@ -35,13 +35,13 @@ class TestThreading < Minitest::Test
   end
 
   # GVL release must let an unrelated Ruby thread make progress while
-  # another thread is running a query. We busy-increment a plain Ruby
-  # counter during a ~2k-node MATCH and assert the counter ticked.
-  # Passes with GVL release; would wedge at 0 on a naive
-  # GVL-held implementation.
+  # another thread is running a query. A ticker busy-increments a plain
+  # Ruby counter; once it is running, a query that takes real time runs,
+  # and the counter must have advanced across it. With the GVL held for
+  # the whole call the ticker could not run in between. (An unfiltered
+  # count is answered from the label count, too fast to tell anything.)
   def test_gvl_released_during_execute
     db = LoraRuby::Database.create
-    2_000.times { db.execute("CREATE (:N)") }
 
     counter = 0
     stop    = false
@@ -50,12 +50,14 @@ class TestThreading < Minitest::Test
         counter += 1
       end
     end
-    # Run a non-trivial query under the GVL-released region. Even on
-    # a very fast machine the counter should tick a handful of times.
-    db.execute("MATCH (n:N) RETURN count(n) AS c")
+    Thread.pass until counter > 0
+
+    before = counter
+    db.execute("UNWIND range(1, 2000000) AS i RETURN sum(i) AS s")
+    during = counter - before
     stop = true
     ticker.join
-    assert_operator counter, :>, 0,
+    assert_operator during, :>, 0,
                     "ticker thread never made progress — GVL may not be released"
   end
 end
