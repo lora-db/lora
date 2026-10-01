@@ -165,14 +165,20 @@ assertSchema(options?: { create?: boolean }): Promise<{
   required: SchemaRequirement[];
   missing: SchemaRequirement[];
   created: SchemaRequirement[];
+  mismatched: SchemaRequirement[];
+  recreated: SchemaRequirement[];
 }>
 ```
 
 Compares `requirements()` with `SHOW INDEXES` and `SHOW CONSTRAINTS`.
-Without options it only reports `missing`. With `create: true` it runs
-one `CREATE ... IF NOT EXISTS` statement per missing requirement (LoraDB
-does not run schema commands in transactions) and reports them as
-`created`. Idempotent. It never drops anything.
+Without options it reports `missing`, and `mismatched`: full-text and
+vector indexes present under their name but defined differently from the
+model (labels, fields, kind, analyzer), which search would keep using.
+With `create: true` it runs one `CREATE ... IF NOT EXISTS` statement per
+missing requirement (LoraDB does not run schema commands in transactions)
+and reports them as `created`, and drops and re-creates each mismatched
+index, reported as `recreated`. Idempotent. It drops nothing else.
+`check()` fails on a missing or mismatched requirement.
 
 ## Analysis
 

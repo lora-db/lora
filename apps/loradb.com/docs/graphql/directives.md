@@ -48,7 +48,7 @@ is the full table.
 | `@private` | field | Stored, never exposed |
 | `@readonly` | field | Exposed, never client-settable |
 | `@settable(onCreate:, onUpdate:)` | field | Which mutations may set it, for example set once on create. On a relationship: whether the inputs offer it. On a relationship property: `onUpdate: false` also refuses a re-connect that would change it |
-| `@selectable(onRead:, onAggregate:)` | field | `onRead: false` makes a field write-only. On a relationship property it leaves the edge type too (`onAggregate: false`: the edge aggregates) |
+| `@selectable(onRead:, onAggregate:)` | field | `onRead: false` makes a field write-only. On a relationship property it leaves the edge type too (`onAggregate: false`: the edge aggregates); with every property hidden, the edge has no `properties` |
 | `@default(value:)` | field | Stored on create when the input leaves the field out |
 | `@timestamp(operations: [CREATE, UPDATE])` | field | Set to the current time; never client-settable. On `DateTime`, `LocalDateTime` or `Date` |
 | `@populatedBy(callback:, operations: [CREATE, UPDATE])` | field | Computed on write by a named callback from the `callbacks` option; never client-settable. See [below](#populatedby) |

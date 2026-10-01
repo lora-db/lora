@@ -124,7 +124,7 @@ Model:
 | `@private`                                                                                                 | field             | Stored, never exposed                                                                                                                                                                                                                      |
 | `@readonly`                                                                                                | field             | Exposed, never client-settable; on a relationship, absent from create and update inputs                                                                                                                                                    |
 | `@settable(onCreate:, onUpdate:)`                                                                          | field             | Which mutations may set it, e.g. set once on create; on a relationship, whether the inputs offer it (an upsert of an existing node keeps it); on a relationship property, `onUpdate: false` also refuses a re-connect that would change it |
-| `@selectable(onRead:, onAggregate:)`                                                                       | field             | `onRead: false` makes a field write-only; on a relationship property, it leaves the edge type too (`onAggregate: false`, the edge aggregates)                                                                                              |
+| `@selectable(onRead:, onAggregate:)`                                                                       | field             | `onRead: false` makes a field write-only; on a relationship property, it leaves the edge type too (`onAggregate: false`, the edge aggregates); with every property hidden, the edge has no `properties`                                    |
 | `@default(value:)`                                                                                         | field             | Stored on create when the input omits it; on a relationship property, when the relationship is created                                                                                                                                     |
 | `@timestamp(operations: [CREATE, UPDATE])`                                                                 | field             | Set to the current time; never client-settable. On a relationship property: CREATE when the relationship is created, UPDATE on edge updates and re-connects that set properties                                                            |
 | `@populatedBy(callback:, operations:)`                                                                     | field             | Computed by a named callback on write                                                                                                                                                                                                      |
@@ -634,7 +634,18 @@ type Post
 { eq: true } }` tests the caller's own node: one seek by the claim. Both
   are unknown without the claim, so `NOT { isViewer: true }` never grants a
   signed-out caller. `isViewer` takes `true` only; use `NOT` for the
-  opposite.
+  opposite. It works through relationships and union members
+  (`author: { Person: { isViewer: true } }`); in a filter over an
+  interface it is a model error, since there is no single type to expand
+  against. In rule strings, `"${viewer.key}"` (any scalar field of the
+  viewer type) is the caller's own value: the claim itself for the field
+  `@viewer` maps to, otherwise read with one seek by the claim. Use it
+  for keys built from the caller's key while the claim is an opaque
+  subject: `key: { endsWith: ":${viewer.key}" }`, `key: { eq:
+  "${viewer.key}" }`. It stands for one value, not inside a list.
+- A whole string starting with `$` must be a placeholder (`$jwt.<claim>`,
+  `$context.<path>`): a misspelt one (`"$jtw.sub"`) is a model error, not
+  a literal. Write a literal `$…` as `"\\$…"`.
 - Inside a longer string, write `${jwt.path}` or `${context.path}`:
   `key: { startsWith: "${jwt.sub}:" }` confines a user to keys that begin
   with their `sub` and `:`. The claim must be a string, number or boolean;
@@ -643,7 +654,11 @@ type Post
   [docs/design/graphql-threat-model.md](../../docs/design/graphql-threat-model.md).
 - **Claim tests run in JavaScript at compile time**, so an admin's
   statement carries no filter at all. Statements stay specialised and
-  index-friendly.
+  index-friendly. A write whose rules the claims alone refuse is refused
+  before any statement runs.
+- A create under CREATE rules answers the same whether a `@unique` value
+  (or the key) is taken by a node the caller may not create: what a free
+  value gets. A create that would succeed answers `CONSTRAINT_VIOLATION`.
 - **A test that needs a claim or context value the request lacks is
   unknown**: false where it stands, and a `NOT` over it is false too, so
   negation can never turn a missing claim into a grant. Node conditions
@@ -690,8 +705,11 @@ type Post
   is checked before any statement runs, so `FORBIDDEN` for `bob:x` reads
   the same whether `bob:x` exists or not. A claim containing the
   separator is refused, so user `a` cannot write into the key space of
-  user `a:b`. It needs `@viewer`; the schema's bypass skips it. Keys shared
-  by two owners (`f1:lou`) stay hand-written rules.
+  user `a:b`. It needs `@viewer`; the schema's bypass skips it. When
+  `@viewer` maps to a non-key field (an opaque subject), the key space is
+  the caller's node's `@key`, looked up once by the claim before anything
+  is written; a token naming no node creates nothing. Keys shared by two
+  owners (`f1:lou`) stay hand-written rules, with `${viewer.key}`.
 - **Masks.** A field-level READ rule fails the row; a mask substitutes a
   value instead:
 
@@ -892,8 +910,12 @@ index the API needs, with the reason for each:
 | `WITHIN_BBOX`, `DISTANCE`              | POINT index                             |
 | `@fulltext`, `@vector`                 | FULLTEXT and VECTOR indexes, by name    |
 
-`assertSchema()` reports what the database lacks;
-`assertSchema({ create: true })` creates it, idempotently.
+`assertSchema()` reports what the database lacks (`missing`), and a
+full-text or vector index present under its name but defined differently
+(labels, fields, analyzer: `mismatched`), since search would keep using the
+old definition. `assertSchema({ create: true })` creates what is missing
+and drops and re-creates what is mismatched (`created`, `recreated`),
+idempotently. `check()` fails on either.
 
 **S2: plans are checked.** Every compiled statement records the access path
 it was written for. `lora.explain(query, variables)` plans each statement and

@@ -200,7 +200,26 @@ Rules can then say:
 Both are resolved from the verified claim, never from anything the client
 sends. Without the claim both are unknown, so a `NOT` over `isViewer`
 never grants a signed-out caller.
-`isViewer` takes `true` only; use `NOT` for the opposite.
+`isViewer` takes `true` only; use `NOT` for the opposite. It works
+through relationships and union members
+(`author: { Person: { isViewer: true } }`). In a filter over an interface
+it is a model error, since there is no single type to expand against.
+
+In rule strings, `"${viewer.key}"` (any scalar field of the viewer type)
+is the caller's own value: the claim itself for the field `@viewer` maps
+to, otherwise read in the statement with one seek by the claim. It lets
+keys built from the caller's key work while the claim is an opaque
+subject:
+
+```graphql
+# one per person
+key: { eq: "${viewer.key}" }
+# a pair key ending in the caller's key
+key: { endsWith: ":${viewer.key}" }
+```
+
+It stands for one value, not inside a list, and is unknown without the
+claim.
 
 ### @authentication
 
@@ -277,6 +296,10 @@ A rule's `where` is `{ node, jwt, viewer, rule, AND, OR, NOT }`:
   number or boolean, otherwise the rule denies. Pick a separator no `sub`
   contains: with `-`, user `a` could take `a-b-...`, the key space of user
   `a-b`. [Owner-scoped keys](#owner-scoped-keys) do this check for you.
+- A whole string starting with `$` must be a placeholder (`$jwt.<claim>`,
+  `$context.<path>`). A misspelt one, such as `"$jtw.sub"`, is a model
+  error rather than a literal that silently stops matching. Write a
+  literal `$...` as `"\\$..."`.
 - `node` reaches relationship properties through
   `<field>Connection: { some: { node, edge } }`, where `node` filters the
   related node and `edge` the relationship's properties:
@@ -600,7 +623,22 @@ whose claim is `lou`.
 - A claim containing the separator is refused, so user `a` cannot write
   into the key space of user `a:b`.
 - It needs `@viewer`. The schema's `bypass` skips it.
-- Keys shared by two owners (`f1:lou`) stay hand-written rules.
+- When `@viewer` maps to a field other than the key (an opaque subject),
+  the key space is the caller's node's `@key`, looked up once by the
+  claim before anything is written. A token naming no node creates
+  nothing.
+- Keys shared by two owners (`f1:lou`) stay hand-written rules, written
+  with `${viewer.key}`.
+
+### What a refused write reveals
+
+- A write whose rules the claims alone settle against (a role check, the
+  `mutations` default) is refused before any statement runs, as
+  `@authentication` is: `FORBIDDEN`, or `UNAUTHENTICATED` without a token.
+- A create under CREATE rules answers the same whether its key or a
+  `@unique` value is taken by a node the caller may not create: it gets
+  the answer a free value gets. A create that would succeed answers
+  `CONSTRAINT_VIOLATION`.
 
 ### Checking access {#checking-access}
 
