@@ -789,6 +789,7 @@ export function buildModel(
         nodes,
         props: relationshipProperties,
         viewer,
+        abstracts,
         rules: namedRules,
         at: (message) =>
           problems.push({
@@ -918,6 +919,7 @@ export function buildModel(
     }
   }
 
+  abstractsOf.set(nodes, abstracts);
   const ruleEnds = (f: RelationshipField): RuleEnds | undefined => {
     const source = nodes.get(f.owner);
     const target = nodes.get(f.target);
@@ -953,6 +955,7 @@ export function buildModel(
       nodes,
       props: relationshipProperties,
       viewer,
+      abstracts,
       rules: namedRules,
       at: (message) =>
         problems.push({
@@ -2393,9 +2396,16 @@ function checkNodeWhere(
       }
     } else {
       const target = nodes.get(field.target);
-      if (!target) continue;
+      const abstract = abstractsOf.get(nodes)?.get(field.target);
+      const check = (w: unknown, path: string) =>
+        target
+          ? checkNodeWhere(nodes, props, target, w, path, at)
+          : abstract
+            ? checkAbstractWhere(nodes, props, abstract, w, path, at)
+            : undefined;
+      if (!target && !abstract) continue;
       if (!field.list) {
-        checkNodeWhere(nodes, props, target, value, here, at);
+        check(value, here);
         continue;
       }
       if (!isRecord(value)) {
@@ -2412,10 +2422,75 @@ function checkNodeWhere(
             }
           }
         } else if (["some", "all", "none", "single"].includes(q)) {
-          checkNodeWhere(nodes, props, target, inner, `${here}.${q}`, at);
+          check(inner, `${here}.${q}`);
         } else {
           at(`${here}: expected some, all, none, single or count`);
         }
+      }
+    }
+  }
+}
+
+/**
+ * Interfaces and unions of a model being built, by its node map: the rule
+ * checks below receive the node map only.
+ */
+const abstractsOf = new WeakMap<
+  ReadonlyMap<string, NodeType>,
+  ReadonlyMap<string, AbstractType>
+>();
+
+/**
+ * A rule's filter through a relationship to an interface or union: a
+ * union's names members, each a node filter of that member; an
+ * interface's tests its own fields and `typename`.
+ */
+function checkAbstractWhere(
+  nodes: ReadonlyMap<string, NodeType>,
+  props: ReadonlyMap<string, RelationshipPropertiesType>,
+  abstract: AbstractType,
+  where: unknown,
+  path: string,
+  at: (message: string) => void,
+) {
+  if (!isRecord(where) || Object.keys(where).length === 0) {
+    return at(`${path} is empty: a rule must test something`);
+  }
+  for (const [k, value] of Object.entries(where)) {
+    const here = `${path}.${k}`;
+    if (value === null) {
+      at(`${here} is null: a rule must test something`);
+      continue;
+    }
+    if (abstract.kind === "union") {
+      const member = abstract.members.includes(k) ? nodes.get(k) : undefined;
+      if (!member) at(`${here}: ${k} is not a member of ${abstract.name}`);
+      else checkNodeWhere(nodes, props, member, value, here, at);
+      continue;
+    }
+    if (k === "AND" || k === "OR") {
+      if (!Array.isArray(value)) at(`${here} must be a list`);
+      else
+        value.forEach((x, i) =>
+          checkAbstractWhere(nodes, props, abstract, x, `${here}[${i}]`, at),
+        );
+    } else if (k === "NOT") {
+      checkAbstractWhere(nodes, props, abstract, value, here, at);
+    } else if (k === "typename") {
+      if (
+        !Array.isArray(value) ||
+        value.some((m) => !abstract.members.includes(m as string))
+      ) {
+        at(`${here}: a list of ${abstract.name}'s implementations`);
+      }
+    } else if (!abstract.fields.has(k)) {
+      at(`${here}: ${abstract.name} has no field ${k}`);
+    } else if (!isRecord(value) || Object.keys(value).length === 0) {
+      at(`${here} must be a non-empty operator object`);
+    } else {
+      for (const [op, operand] of Object.entries(value)) {
+        if (!SCALAR_WHERE_OPS.has(op)) at(`${here}: unknown operator ${op}`);
+        else if (operand === null) at(`${here}.${op} is null`);
       }
     }
   }

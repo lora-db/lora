@@ -190,7 +190,11 @@ function compileWhere(
       if (inner) parts.push(not(inner));
       else if (ctx.inAuth) parts.push(lit(false));
     } else {
-      parts.push(lookup(key)?.(value));
+      const compile = lookup(key);
+      // In a rule, a key that compiles to nothing would silently widen
+      // it: deny instead. The model checks refuse such keys at startup.
+      if (!compile && ctx.inAuth) parts.push(lit(false));
+      else parts.push(compile?.(value));
     }
   }
   return and(...parts);

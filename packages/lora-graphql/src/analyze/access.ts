@@ -418,6 +418,7 @@ function usesClaims(where: unknown): boolean {
   if (Array.isArray(where)) return where.some(usesClaims);
   if (where === null || typeof where !== "object") return false;
   return Object.entries(where).some(
-    ([k, v]) => k === "jwt" || k === "viewer" || usesClaims(v),
+    ([k, v]) =>
+      k === "jwt" || k === "viewer" || k === "isViewer" || usesClaims(v),
   );
 }

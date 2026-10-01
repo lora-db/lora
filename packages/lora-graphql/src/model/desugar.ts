@@ -13,6 +13,7 @@
 
 import type { ModelProblem } from "../errors.js";
 import type {
+  AbstractType,
   AuthorizationWhere,
   NodeType,
   RelationshipPropertiesType,
@@ -35,6 +36,8 @@ export interface DesugarContext {
   nodes: ReadonlyMap<string, NodeType>;
   props: ReadonlyMap<string, RelationshipPropertiesType>;
   viewer: ViewerMapping | undefined;
+  /** Interfaces and unions, for filters through an abstract relationship. */
+  abstracts?: ReadonlyMap<string, AbstractType>;
   rules?: NamedRules;
   /** Named rules being expanded, to report a cycle with its chain. */
   expanding?: string[];
@@ -241,9 +244,14 @@ export function desugarNode(
     const f = node.fields.get(key);
     if (f?.kind === "relationship") {
       const target = ctx.nodes.get(f.target);
-      if (!target) out[key] = value;
-      else if (!f.list) out[key] = desugarNode(ctx, target, value);
-      else out[key] = quantified(value, (w) => desugarNode(ctx, target, w));
+      const abstract = ctx.abstracts?.get(f.target);
+      const inner = (w: unknown) =>
+        target
+          ? desugarNode(ctx, target, w)
+          : abstract
+            ? desugarAbstract(ctx, abstract, w)
+            : w;
+      out[key] = f.list ? quantified(value, inner) : inner(value);
       continue;
     }
     if (!f && key.endsWith("Connection")) {
@@ -265,6 +273,43 @@ export function desugarNode(
     out["AND"] = [...(Array.isArray(out["AND"]) ? out["AND"] : []), ...extra];
   }
   return out;
+}
+
+/**
+ * A filter through a relationship to an interface or union. A union's
+ * filter names members (`{ Person: { isViewer: true } }`): each is a node
+ * filter of that member. An interface's filter tests the interface's own
+ * fields, where node sugar has no single type to expand against.
+ */
+function desugarAbstract(
+  ctx: DesugarContext,
+  abstract: AbstractType,
+  where: unknown,
+): unknown {
+  if (!isRecord(where)) return where;
+  if (abstract.kind === "union") {
+    return Object.fromEntries(
+      Object.entries(where).map(([member, w]) => {
+        const node = abstract.members.includes(member)
+          ? ctx.nodes.get(member)
+          : undefined;
+        return [member, node ? desugarNode(ctx, node, w) : w];
+      }),
+    );
+  }
+  const visit = (w: unknown): void => {
+    if (Array.isArray(w)) return w.forEach(visit);
+    if (!isRecord(w)) return;
+    for (const [k, v] of Object.entries(w)) {
+      if (k === "isViewer" || k === "rule") {
+        ctx.at(
+          `${k} cannot stand in a filter over the interface ${abstract.name}; filter one implementation through a union, or test the viewer field`,
+        );
+      } else if (k === "AND" || k === "OR" || k === "NOT") visit(v);
+    }
+  };
+  visit(where);
+  return where;
 }
 
 function quantified(value: unknown, map: (w: unknown) => unknown): unknown {
