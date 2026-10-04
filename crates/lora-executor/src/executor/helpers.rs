@@ -64,9 +64,19 @@ fn scan_output_capacity(rows: usize, candidates: usize) -> usize {
     rows.saturating_mul(candidates).min(MAX_PRESIZE_ROWS)
 }
 
+/// `check_optional_deadline`, discarding the rows built so far on timeout.
+macro_rules! check_deadline_or_discard {
+    ($deadline:expr, $out:ident) => {
+        if let Err(err) = check_optional_deadline($deadline) {
+            discard_rows(std::mem::take(&mut $out));
+            return Err(err);
+        }
+    };
+}
+
 pub(super) fn check_deadline_at(deadline: Instant) -> ExecResult<()> {
     // Also true when the query was cancelled; see `crate::cancel`.
-    if crate::cancel::deadline_reached(deadline) {
+    if crate::cancel::eval_tripped() || crate::cancel::deadline_reached(deadline) {
         Err(ExecutorError::QueryTimeout)
     } else {
         Ok(())
@@ -87,8 +97,7 @@ pub(crate) fn project_item<S: GraphStorage>(
             return Ok(());
         }
     }
-    let value =
-        eval_expr_result(&item.expr, source, eval_ctx).map_err(ExecutorError::RuntimeError)?;
+    let value = eval_expr_result(&item.expr, source, eval_ctx).map_err(ExecutorError::from_eval)?;
     projected.insert_named(item.output, item.name.clone(), value);
     Ok(())
 }
@@ -105,9 +114,18 @@ pub(crate) fn project_item_in_place<S: GraphStorage>(
             return Ok(());
         }
     }
-    let value = eval_expr_result(&item.expr, row, eval_ctx).map_err(ExecutorError::RuntimeError)?;
+    let value = eval_expr_result(&item.expr, row, eval_ctx).map_err(ExecutorError::from_eval)?;
     row.insert_named(item.output, item.name.clone(), value);
     Ok(())
+}
+
+/// The deadline check for buffered per-row loops that are not handed the
+/// deadline explicitly (filter, projection, unwind): they read the one
+/// the executor made active for this thread. Each row evaluates at least
+/// one expression, so one clock read per row is noise.
+#[inline]
+fn check_active_deadline() -> ExecResult<()> {
+    check_optional_deadline(crate::cancel::active_deadline())
 }
 
 pub(super) fn filter_rows_checked<S: GraphStorage>(
@@ -117,7 +135,8 @@ pub(super) fn filter_rows_checked<S: GraphStorage>(
 ) -> ExecResult<Vec<Row>> {
     let mut out = Vec::with_capacity(input_rows.len());
     for row in input_rows {
-        if eval_truthy_result(predicate, &row, eval_ctx).map_err(ExecutorError::RuntimeError)? {
+        check_active_deadline()?;
+        if eval_truthy_result(predicate, &row, eval_ctx).map_err(ExecutorError::from_eval)? {
             out.push(row);
         }
     }
@@ -132,6 +151,7 @@ pub(super) fn project_rows_checked<S: GraphStorage>(
     let mut out = Vec::with_capacity(input_rows.len());
 
     for row in input_rows {
+        check_active_deadline()?;
         if op.include_existing {
             let mut projected = row;
             for item in &op.items {
@@ -162,9 +182,10 @@ pub(super) fn unwind_rows<S: GraphStorage>(
     let mut out = Vec::with_capacity(input_rows.len());
 
     for row in input_rows {
+        check_active_deadline()?;
         // `eval_expr_result` so a failing list expression (a bad function
         // argument, a missing index) is an error, not an empty UNWIND.
-        match eval_expr_result(&op.expr, &row, eval_ctx).map_err(ExecutorError::RuntimeError)? {
+        match eval_expr_result(&op.expr, &row, eval_ctx).map_err(ExecutorError::from_eval)? {
             LoraValue::List(values) => {
                 let mut values = values.into_iter();
                 let last = values.next_back();
@@ -201,8 +222,7 @@ pub(crate) fn eval_row_count<S: GraphStorage>(
     expr: &ResolvedExpr,
     eval_ctx: &EvalContext<'_, S>,
 ) -> ExecResult<usize> {
-    let value =
-        eval_expr_result(expr, &Row::new(), eval_ctx).map_err(ExecutorError::RuntimeError)?;
+    let value = eval_expr_result(expr, &Row::new(), eval_ctx).map_err(ExecutorError::from_eval)?;
     let n = match value {
         LoraValue::Int(n) => Some(n),
         LoraValue::Float(f) if f.fract() == 0.0 && f.is_finite() => Some(f as i64),
@@ -304,7 +324,7 @@ pub(super) fn node_scan_rows<S: GraphStorage>(
     }
 
     for row in base_rows {
-        check_optional_deadline(deadline)?;
+        check_deadline_or_discard!(deadline, out);
         if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
             if storage.has_node(existing_id) {
                 out.push(row);
@@ -313,7 +333,7 @@ pub(super) fn node_scan_rows<S: GraphStorage>(
         }
 
         for &id in &node_ids {
-            check_optional_deadline(deadline)?;
+            check_deadline_or_discard!(deadline, out);
             let mut new_row = row.clone();
             new_row.insert(op.var, LoraValue::Node(id));
             out.push(new_row);
@@ -365,7 +385,7 @@ pub(super) fn node_by_label_scan_rows<S: GraphStorage>(
     }
 
     for row in base_rows {
-        check_optional_deadline(deadline)?;
+        check_deadline_or_discard!(deadline, out);
         if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
             let labels_ok = storage
                 .with_node(existing_id, |n| {
@@ -379,7 +399,7 @@ pub(super) fn node_by_label_scan_rows<S: GraphStorage>(
         }
 
         for &id in &candidate_ids {
-            check_optional_deadline(deadline)?;
+            check_deadline_or_discard!(deadline, out);
             if !candidates_prefiltered {
                 let labels_ok = storage
                     .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
@@ -408,7 +428,7 @@ pub(super) fn node_by_property_scan_rows<S: GraphStorage>(
     let mut out = Vec::new();
 
     for row in base_rows {
-        check_optional_deadline(deadline)?;
+        check_deadline_or_discard!(deadline, out);
         let expected = eval_expr(&op.value, &row, &eval_ctx);
 
         if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
@@ -428,7 +448,7 @@ pub(super) fn node_by_property_scan_rows<S: GraphStorage>(
         let candidates =
             property_scan_candidates(storage, &op.labels, &op.key, &expected, op.in_list);
         for id in candidates.ids {
-            check_optional_deadline(deadline)?;
+            check_deadline_or_discard!(deadline, out);
             if !candidates.prefiltered
                 && !property_scan_matches(storage, id, &op.labels, &op.key, &expected, op.in_list)
             {
@@ -441,6 +461,43 @@ pub(super) fn node_by_property_scan_rows<S: GraphStorage>(
     }
 
     Ok(out)
+}
+
+/// Release rows a timed-out operator had already built. A scan that ran
+/// for most of its deadline may hold tens of millions of rows, and freeing
+/// them on the query's thread used to take as long again as building them
+/// (a 1 s deadline returned after 2-3 s). Large batches are dropped on the
+/// rayon pool instead, so the timeout reaches the caller at once.
+pub(crate) fn discard_rows(rows: Vec<Row>) {
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    if rows.len() >= 4096 {
+        rayon::spawn(move || drop(rows));
+        return;
+    }
+    drop(rows);
+}
+
+/// Flatten per-input chunks a parallel scan produced, or return the first
+/// error, discarding the chunks already built (see [`discard_rows`]).
+#[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+pub(crate) fn flatten_row_chunks(mut chunks: Vec<ExecResult<Vec<Row>>>) -> ExecResult<Vec<Row>> {
+    // Look for a failure before copying anything: the chunks built before
+    // a timeout can hold millions of rows.
+    if let Some(at) = chunks.iter().position(Result::is_err) {
+        let err = match chunks.swap_remove(at) {
+            Err(err) => err,
+            Ok(_) => unreachable!("position() found an error"),
+        };
+        // Free them off this thread without copying them first.
+        rayon::spawn(move || drop(chunks));
+        return Err(err);
+    }
+    let total = chunks.iter().map(|c| c.as_ref().map_or(0, Vec::len)).sum();
+    let mut rows = Vec::with_capacity(total);
+    for chunk in chunks.into_iter().flatten() {
+        rows.extend(chunk);
+    }
+    Ok(rows)
 }
 
 #[inline]
@@ -1040,7 +1097,7 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                     };
 
                     let percentile = eval_expr_result(&args[1], first, eval_ctx)
-                        .map_err(ExecutorError::RuntimeError)?
+                        .map_err(ExecutorError::from_eval)?
                         .as_f64()
                         .map(normalize_percentile)
                         .unwrap_or(0.5);
@@ -1079,7 +1136,7 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                     };
 
                     let percentile = eval_expr_result(&args[1], first, eval_ctx)
-                        .map_err(ExecutorError::RuntimeError)?
+                        .map_err(ExecutorError::from_eval)?
                         .as_f64()
                         .map(normalize_percentile)
                         .unwrap_or(0.5);
@@ -1113,7 +1170,7 @@ fn eval_aggregate_arg_values<S: GraphStorage>(
     eval_ctx: &EvalContext<'_, S>,
 ) -> ExecResult<Vec<LoraValue>> {
     rows.iter()
-        .map(|row| eval_expr_result(expr, row, eval_ctx).map_err(ExecutorError::RuntimeError))
+        .map(|row| eval_expr_result(expr, row, eval_ctx).map_err(ExecutorError::from_eval))
         .collect()
 }
 
@@ -1131,7 +1188,7 @@ fn eval_first_or_null<S: GraphStorage>(
     eval_ctx: &EvalContext<'_, S>,
 ) -> ExecResult<LoraValue> {
     match rows.first() {
-        Some(row) => eval_expr_result(expr, row, eval_ctx).map_err(ExecutorError::RuntimeError),
+        Some(row) => eval_expr_result(expr, row, eval_ctx).map_err(ExecutorError::from_eval),
         None => Ok(LoraValue::Null),
     }
 }

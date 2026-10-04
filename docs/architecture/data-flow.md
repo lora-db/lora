@@ -221,7 +221,14 @@ write a checkpoint marker.
 
 `execute_with_timeout` and `execute_with_params_timeout` add cooperative
 deadline checks during lock acquisition and executor work; they are cancellation
-points, not preemptive thread interruption.
+points, not preemptive thread interruption. The checks sit at operator
+boundaries, in every per-row loop (scans, filter, projection, unwind, pulls
+through the pipeline) and inside expression evaluation: pattern and list
+comprehensions, `reduce`, `any`/`all`/`none`/`single` and pattern-subquery
+expansion read the clock every 256 iterations, so one `WHERE` that nests
+comprehensions (what `@loradb/lora-graphql` emits for relationship filters)
+stops within about a millisecond of the deadline. An expression that stopped
+early marks the thread, and its incomplete value never reaches a result.
 
 ```mermaid
 sequenceDiagram

@@ -37,7 +37,7 @@ impl<'a, S: GraphStorage> RowSource for FilterSource<'a, S> {
                 Some(row) => {
                     let eval_ctx = self.ctx.eval_ctx();
                     if eval_truthy_result(self.predicate, &row, &eval_ctx)
-                        .map_err(ExecutorError::RuntimeError)?
+                        .map_err(ExecutorError::from_eval)?
                     {
                         return Ok(Some(row));
                     }

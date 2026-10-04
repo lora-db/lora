@@ -185,7 +185,7 @@ where
 {
     for proj in group_by {
         let value =
-            eval_expr_result(&proj.expr, row, eval_ctx).map_err(ExecutorError::RuntimeError)?;
+            eval_expr_result(&proj.expr, row, eval_ctx).map_err(ExecutorError::from_eval)?;
         result.insert_named(proj.output, proj.name.clone(), hydrate_value(value));
     }
 
@@ -203,7 +203,7 @@ where
     let mut key = Vec::with_capacity(group_by.len());
     for proj in group_by {
         let value =
-            eval_expr_result(&proj.expr, row, eval_ctx).map_err(ExecutorError::RuntimeError)?;
+            eval_expr_result(&proj.expr, row, eval_ctx).map_err(ExecutorError::from_eval)?;
         key.push(GroupValueKey::from_value(&value));
     }
     Ok(key)
@@ -220,9 +220,7 @@ where
 {
     for (agg, spec) in aggs.iter_mut().zip(specs) {
         let value = match &spec.arg {
-            Some(arg) => {
-                eval_expr_result(arg, row, eval_ctx).map_err(ExecutorError::RuntimeError)?
-            }
+            Some(arg) => eval_expr_result(arg, row, eval_ctx).map_err(ExecutorError::from_eval)?,
             None => LoraValue::Null,
         };
         agg.fold(spec.kind, value);

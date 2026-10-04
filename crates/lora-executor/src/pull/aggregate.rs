@@ -312,7 +312,7 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
                 let mut key = Vec::with_capacity(group_by.len());
                 for proj in group_by {
                     let value = eval_expr_result(&proj.expr, &row, &eval_ctx)
-                        .map_err(ExecutorError::RuntimeError)?;
+                        .map_err(ExecutorError::from_eval)?;
                     key.push(GroupValueKey::from_value(&value));
                 }
                 groups.entry(key).or_default().push(row);
@@ -325,7 +325,7 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
             if let Some(first) = rows.first() {
                 for proj in group_by {
                     let value = eval_expr_result(&proj.expr, first, &eval_ctx)
-                        .map_err(ExecutorError::RuntimeError)?;
+                        .map_err(ExecutorError::from_eval)?;
                     let value = hydrate_value(value, ctx.storage);
                     result.insert_named(proj.output, proj.name.clone(), value);
                 }
@@ -362,7 +362,7 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
                 for (i, spec) in specs.iter().enumerate() {
                     let value = match &spec.arg {
                         Some(arg) => eval_expr_result(arg, &row, &eval_ctx)
-                            .map_err(ExecutorError::RuntimeError)?,
+                            .map_err(ExecutorError::from_eval)?,
                         None => LoraValue::Null,
                     };
                     aggs[i].fold(spec.kind, value);
@@ -383,7 +383,7 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
             let mut key = Vec::with_capacity(group_by.len());
             for proj in group_by {
                 let value = eval_expr_result(&proj.expr, &row, &eval_ctx)
-                    .map_err(ExecutorError::RuntimeError)?;
+                    .map_err(ExecutorError::from_eval)?;
                 key.push(GroupValueKey::from_value(&value));
             }
 
@@ -396,8 +396,9 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
 
             for (i, spec) in specs.iter().enumerate() {
                 let value = match &spec.arg {
-                    Some(arg) => eval_expr_result(arg, &row, &eval_ctx)
-                        .map_err(ExecutorError::RuntimeError)?,
+                    Some(arg) => {
+                        eval_expr_result(arg, &row, &eval_ctx).map_err(ExecutorError::from_eval)?
+                    }
                     None => LoraValue::Null,
                 };
                 entry.aggs[i].fold(spec.kind, value);
@@ -409,7 +410,7 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
             let mut result = Row::new();
             for proj in group_by {
                 let value = eval_expr_result(&proj.expr, &group.first_row, &eval_ctx)
-                    .map_err(ExecutorError::RuntimeError)?;
+                    .map_err(ExecutorError::from_eval)?;
                 let value = hydrate_value(value, ctx.storage);
                 result.insert_named(proj.output, proj.name.clone(), value);
             }

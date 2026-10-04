@@ -104,6 +104,13 @@ impl RowSource for DeadlineSource<'_> {
         if self.tick.is_multiple_of(64) && crate::cancel::deadline_reached(self.deadline) {
             return Err(crate::errors::ExecutorError::QueryTimeout);
         }
-        self.inner.next_row()
+        let row = self.inner.next_row()?;
+        // An expression evaluated for this row may have stopped early on
+        // the deadline (see `cancel::eval_deadline_hit`); its value is
+        // incomplete, so the row must not escape.
+        if crate::cancel::eval_tripped() {
+            return Err(crate::errors::ExecutorError::QueryTimeout);
+        }
+        Ok(row)
     }
 }
