@@ -480,3 +480,78 @@ describe("@authorizationDefaults(mutations:) per operation", () => {
     expect(codes(del)).toEqual(["FORBIDDEN"]);
   });
 });
+
+describe('mutationTransaction: "operation" on the getSchema() path', () => {
+  const typeDefs = `type C @node @mutation { key: String! @key  p: [P!]! @relationship(type: "IN", direction: IN) }
+    type P @node { key: String! @key }`;
+  const seed = ["CREATE (:P {key: 'u'})"];
+  const failing = `mutation {
+    a: createCs(input: [{ key: "c1", p: { connect: [{ key: "u" }] } }]) { cs { key } }
+    b: createCs(input: [{ key: "c2", p: { connect: [{ key: "nobody" }] } }]) { cs { key } } }`;
+  const keys = async (t: Awaited<ReturnType<typeof createTestLoraGraphQL>>) =>
+    (await rows(t, "MATCH (c:C) RETURN c.key AS k ORDER BY k")).map(
+      (r) => r["k"],
+    );
+
+  /** Runs a document the way Envelop (Yoga) does, through the plugin's hooks. */
+  async function envelopRun(
+    t: Awaited<ReturnType<typeof createTestLoraGraphQL>>,
+    source: string,
+  ): Promise<Result> {
+    const { execute, parse } = await import("graphql");
+    const plugin = t.lora.envelopPlugin();
+    const args = {
+      schema: t.schema,
+      document: parse(source),
+      contextValue: {} as Record<string, unknown>,
+    };
+    let executeFn = execute as (a: typeof args) => unknown;
+    await plugin.onExecute?.({
+      args,
+      executeFn,
+      setExecuteFn: (fn: (a: typeof args) => unknown) => (executeFn = fn),
+    } as never);
+    return (await executeFn(args)) as Result;
+  }
+
+  test("the Envelop plugin makes a multi-root mutation atomic", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs,
+      seed,
+      mutationTransaction: "operation",
+    });
+    const changes: unknown[] = [];
+    t.lora.onWrite((c) => changes.push(c));
+    const r = await envelopRun(t, failing);
+    expect(codes(r)).toEqual(["NOT_FOUND"]);
+    expect(r.data).toBeNull();
+    expect(await keys(t)).toEqual([]);
+    expect(changes).toEqual([]);
+    const ok = await envelopRun(
+      t,
+      `mutation { a: createCs(input: [{ key: "c1" }]) { cs { key } } b: createCs(input: [{ key: "c2" }]) { cs { key } } }`,
+    );
+    expect(ok.errors).toBeUndefined();
+    expect(await keys(t)).toEqual(["c1", "c2"]);
+    expect(changes).toHaveLength(2);
+  });
+
+  test("without the plugin, graphql() on getSchema() warns once", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs,
+      seed,
+      mutationTransaction: "operation",
+    });
+    const warned: string[] = [];
+    const original = console.warn;
+    console.warn = (message: string) => warned.push(message);
+    try {
+      await t.run(failing);
+      await t.run(failing);
+    } finally {
+      console.warn = original;
+    }
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toMatch(/envelopPlugin\(\)/);
+  });
+});

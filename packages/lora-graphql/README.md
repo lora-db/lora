@@ -44,6 +44,7 @@ const lora = new LoraGraphQL({ typeDefs, driver: loraDriver(db) });
 await lora.assertSchema({ create: true }); // the constraints and indexes the API needs
 const yoga = createYoga({
   schema: lora.getSchema(),
+  plugins: [lora.envelopPlugin()], // document guards (and atomic mutations)
   context: ({ request }) => ({
     jwt: verifiedClaims(request),
     signal: request.signal,
@@ -474,8 +475,11 @@ transaction, so a later failure leaves the earlier ones committed. Pass
 `mutationTransaction: "operation"` to run every root field of a mutation
 in one transaction through `execute()` (persisted operations included):
 it commits only when the operation reports no error, and otherwise rolls
-back and returns `data: null`. With another server, put a `lora.begin()`
-transaction in the context (see [Transactions](#transactions)). Engine
+back and returns `data: null`. GraphQL Yoga and other Envelop servers on
+`getSchema()` get the same from `lora.envelopPlugin()`. With another
+server calling graphql-js directly, put a `lora.begin()` transaction in
+the context (see [Transactions](#transactions)); without one, each root
+field commits on its own, and the first such mutation logs a warning. Engine
 constraint errors come
 back as `CONSTRAINT_VIOLATION` naming the type and field. A mutation writes
 at most `maxBatch` nodes (default 1000): created and updated nodes count

@@ -1,5 +1,6 @@
 import {
   execute as graphqlExecute,
+  type ExecutionArgs,
   subscribe as graphqlSubscribe,
   getOperationAST,
   getVariableValues,
@@ -215,9 +216,11 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
    * later failure leaves the earlier ones committed. `"operation"`: every
    * root field in one transaction, committed only when the operation
    * reports no error, rolled back (with `data: null`) otherwise. A
-   * `transaction` in the context takes precedence. Servers that call
-   * graphql-js on `getSchema()` directly get per-operation atomicity by
-   * putting a `lora.begin()` transaction in the context.
+   * `transaction` in the context takes precedence. Envelop / Yoga servers
+   * on `getSchema()` get the same with `lora.envelopPlugin()`; other
+   * servers calling graphql-js directly put a `lora.begin()` transaction
+   * in the context (without one, a one-time warning says each root field
+   * committed on its own).
    */
   mutationTransaction?: "field" | "operation";
   /**
@@ -460,6 +463,7 @@ export class LoraGraphQL {
   #statistics: Statistics | undefined;
   #schema: GraphQLSchema | undefined;
   readonly #mutationTransaction: "field" | "operation";
+  #warnedNotAtomic = false;
   readonly #timing: LoraGraphQLOptions["timing"];
   /** Per-request timing collectors, by GraphQL context (see `timing`). */
   readonly #timings = new WeakMap<
@@ -547,9 +551,19 @@ export class LoraGraphQL {
     return this.#guards === false ? [] : validationRules(this.#guards);
   }
 
-  /** The configured document guards as an Envelop / Yoga plugin. */
-  envelopPlugin(): ReturnType<typeof envelopPlugin> {
-    return envelopPlugin(
+  /**
+   * The configured document guards as an Envelop / Yoga plugin. With
+   * `mutationTransaction: "operation"` it also runs a mutation with
+   * several root fields in one transaction, as `execute()` does.
+   */
+  envelopPlugin(): ReturnType<typeof envelopPlugin> & {
+    onExecute(payload: {
+      args: ExecutionArgs;
+      executeFn: (args: ExecutionArgs) => unknown;
+      setExecuteFn: (fn: (args: ExecutionArgs) => unknown) => void;
+    }): void;
+  } {
+    const guards = envelopPlugin(
       this.#guards === false
         ? {
             maxDepth: Infinity,
@@ -561,6 +575,30 @@ export class LoraGraphQL {
           }
         : this.#guards,
     );
+    return {
+      ...guards,
+      onExecute: ({ args, executeFn, setExecuteFn }) => {
+        const operation = getOperationAST(
+          args.document,
+          args.operationName ?? undefined,
+        );
+        if (!this.#atomic(operation, args.contextValue)) return;
+        setExecuteFn(async (execArgs) => {
+          const { tx, context } = await this.#openAtomic(execArgs.contextValue);
+          let result: ExecutionResult;
+          try {
+            result = (await executeFn({
+              ...execArgs,
+              contextValue: context,
+            })) as ExecutionResult;
+          } catch (err) {
+            await tx.rollback();
+            throw err;
+          }
+          return (await this.#closeAtomic(tx, result)).result;
+        });
+      },
+    };
   }
 
   #parse(source: string): DocumentNode {
@@ -1084,25 +1122,11 @@ export class LoraGraphQL {
     }
     let contextValue = args.context ?? {};
     // One transaction for every root field of the mutation, when asked.
-    const operation = getOperationAST(document, args.operationName);
-    const atomic =
-      this.#mutationTransaction === "operation" &&
-      operation?.operation === "mutation" &&
-      operation.selectionSet.selections.length +
-        (operation.selectionSet.selections.some((s) => s.kind !== Kind.FIELD)
-          ? 1
-          : 0) >
-        1 &&
-      !(contextValue as LoraGraphQLContext).transaction &&
-      this.#driver.begin !== undefined;
     let tx: LoraTransaction | undefined;
-    if (atomic) {
-      tx = await this.begin();
-      contextValue = Object.assign(
-        Object.create(Object.getPrototypeOf(contextValue) as object) as object,
-        contextValue,
-        { transaction: tx },
-      );
+    if (
+      this.#atomic(getOperationAST(document, args.operationName), contextValue)
+    ) {
+      ({ tx, context: contextValue } = await this.#openAtomic(contextValue));
     }
     const timed =
       typeof this.#timing === "function"
@@ -1139,28 +1163,10 @@ export class LoraGraphQL {
       };
     }
     if (tx) {
-      if (result.errors?.length) {
-        // Nothing of the operation was written: say so with the data.
-        await tx.rollback();
-        result = { ...result, data: null };
-      } else {
-        try {
-          await tx.commit();
-        } catch (err) {
-          await tx.rollback().catch(() => undefined);
-          const error = this.#databaseError("commit", err);
-          return {
-            data: null,
-            errors: [
-              error instanceof GraphQLError
-                ? error
-                : new GraphQLError(
-                    error instanceof Error ? error.message : String(error),
-                  ),
-            ],
-          };
-        }
-      }
+      const closed = await this.#closeAtomic(tx, result);
+      // A failed commit answers with its error alone.
+      if (!closed.committed && !result.errors?.length) return closed.result;
+      result = closed.result;
     }
     // The operation's cost estimate, so clients can tune their queries.
     const spent =
@@ -2127,6 +2133,7 @@ export class LoraGraphQL {
       );
       return this.#run(info.fieldName, compiled, context, info);
     }
+    this.#warnNotAtomic(info, context);
     let value: unknown;
     try {
       value = await executeCypherMutation(
@@ -2194,6 +2201,7 @@ export class LoraGraphQL {
     info: GraphQLResolveInfo,
     context: unknown,
   ): Promise<unknown> {
+    this.#warnNotAtomic(info, context);
     const ctx = this.#context(infoContext(info), context);
     const args = this.#args(ctx, info.parentType, info.fieldNodes);
     try {
@@ -2278,6 +2286,94 @@ export class LoraGraphQL {
   }
 
   /**
+   * Whether `operation` runs in one transaction: a mutation with several
+   * root fields (a fragment at the root may hold several) under
+   * `mutationTransaction: "operation"`, with no transaction in the context.
+   */
+  #atomic(
+    operation: OperationDefinitionNode | null | undefined,
+    context: unknown,
+  ): boolean {
+    return (
+      this.#mutationTransaction === "operation" &&
+      operation?.operation === "mutation" &&
+      multiRoot(operation) &&
+      !(context as LoraGraphQLContext | undefined)?.transaction &&
+      this.#driver.begin !== undefined
+    );
+  }
+
+  /** The operation's transaction, and a context carrying it. */
+  async #openAtomic(
+    context: unknown,
+  ): Promise<{ tx: LoraTransaction; context: object }> {
+    const tx = await this.begin();
+    const base = (context ?? {}) as object;
+    return {
+      tx,
+      context: Object.assign(
+        Object.create(Object.getPrototypeOf(base) as object) as object,
+        base,
+        { transaction: tx },
+      ),
+    };
+  }
+
+  /**
+   * Commit the operation's transaction when it reported no error; roll it
+   * back otherwise, with `data: null`: nothing of it was written.
+   */
+  async #closeAtomic(
+    tx: LoraTransaction,
+    result: ExecutionResult,
+  ): Promise<{ result: ExecutionResult; committed: boolean }> {
+    if (result.errors?.length) {
+      await tx.rollback();
+      return { result: { ...result, data: null }, committed: false };
+    }
+    try {
+      await tx.commit();
+      return { result, committed: true };
+    } catch (err) {
+      await tx.rollback().catch(() => undefined);
+      const error = this.#databaseError("commit", err);
+      return {
+        result: {
+          data: null,
+          errors: [
+            error instanceof GraphQLError
+              ? error
+              : new GraphQLError(
+                  error instanceof Error ? error.message : String(error),
+                ),
+          ],
+        },
+        committed: false,
+      };
+    }
+  }
+
+  /**
+   * Warn once when a multi-root mutation runs outside a transaction while
+   * `mutationTransaction: "operation"` asks for one: graphql-js on
+   * `getSchema()` without `envelopPlugin()` commits each root field alone.
+   */
+  #warnNotAtomic(info: GraphQLResolveInfo, context: unknown): void {
+    if (
+      this.#warnedNotAtomic ||
+      this.#mutationTransaction !== "operation" ||
+      !multiRoot(info.operation) ||
+      (context as LoraGraphQLContext | undefined)?.transaction
+    ) {
+      return;
+    }
+    this.#warnedNotAtomic = true;
+    console.warn(
+      'lora-graphql: mutationTransaction: "operation" is set, but a mutation with several root fields ran outside a transaction, so each root field commits on its own. Run operations through lora.execute(), add lora.envelopPlugin() to your Envelop/Yoga server, or put a lora.begin() transaction in the context.',
+    );
+  }
+
+  /**
    * Open a transaction the caller owns. Put it in the GraphQL context as
    * `transaction`: every operation of those requests runs in it, next to
    * the application's own `tx.execute(cypher)`. Nothing is visible to
@@ -2310,6 +2406,19 @@ export class LoraGraphQL {
       }
     }
   }
+}
+
+/**
+ * A mutation with several root fields; a fragment at the root counts as
+ * several, since it may hold more than one.
+ */
+function multiRoot(operation: OperationDefinitionNode): boolean {
+  const selections = operation.selectionSet.selections;
+  return (
+    selections.length +
+      (selections.some((s) => s.kind !== Kind.FIELD) ? 1 : 0) >
+    1
+  );
 }
 
 function isDocument(
