@@ -2796,6 +2796,13 @@ function readSearch(
       // A list of strings indexes each of its strings.
       else if (field.type !== "String" && field.type !== "ID") {
         at(`@fulltext: ${f} is not a String or [String] field`);
+      } else if (guardedRead(field)) {
+        // The index matches on stored values whatever the rules say, so
+        // a search would answer "which rows contain this word" for a
+        // value the reader may not read (or reads masked).
+        at(
+          `@fulltext: ${f} has field-level read rules (${guardedRead(field)}); a search over it would reveal the hidden values. Leave it out of the index`,
+        );
       } else fields.push(field);
     }
     if (raw.fields.length === 0) at("@fulltext: an index needs fields");
@@ -2830,6 +2837,16 @@ function readSearch(
     names.add(x.name);
   }
   return out;
+}
+
+/** What guards reading `field` per request or row, if anything. */
+function guardedRead(field: ScalarField): string | undefined {
+  if (field.authorization?.mask?.length) return "@authorization(mask:)";
+  if (field.authorization?.validate?.some((r) => r.operations.has("READ"))) {
+    return "@authorization(validate:) for READ";
+  }
+  if (field.authentication?.has("READ")) return "@authentication for READ";
+  return undefined;
 }
 
 function upperFirst(s: string): string {

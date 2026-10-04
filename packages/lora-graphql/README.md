@@ -539,6 +539,14 @@ the library asks it for four times the page when a filter is present.
 read back as `[Float!]`. Both indexes are part of S1 and created by
 `assertSchema({ create: true })`; read rules apply to every result.
 
+An index matches and ranks by stored values, whatever the read rules
+say, so search never reaches a value the reader may not read:
+
+- A `@fulltext` index over a field with a mask, a field-level READ
+  `validate` rule or `@authentication` for READ is a model error naming the
+  field: searching it would tell which rows contain a hidden word. Leave
+  the field out of the index (index a public copy if it must be found).
+
 Every search also has a connection: `searchDocsConnection(query:, where:,
 first:, after:)` pages by keyset on (score, key). A vector index returns
 its top candidates before any filter, so vector connections page within
