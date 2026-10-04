@@ -410,3 +410,73 @@ describe("write errors do not reveal nodes the caller cannot read", () => {
     ]);
   });
 });
+
+describe("@authorizationDefaults(mutations:) per operation", () => {
+  const typeDefs = `type Claims @jwt { sub: String  roles: [String!] }
+    extend schema @authorizationDefaults(mutations: { jwt: { roles: { includes: "editor" } } })
+    type Note @node @mutation
+      @authorization(filter: [{ where: { node: { owner: { eq: "$jwt.sub" } } } }]) {
+      key: String! @key
+      owner: String!
+    }
+    type Tag @node @mutation
+      @authorization(validate: [{ operations: [UPDATE], where: { jwt: { roles: { includes: "tagger" } } } }]) {
+      key: String! @key
+      name: String
+    }`;
+  const seed = "CREATE (:Tag {key: 't', name: 'a'})";
+  const user = { jwt: { sub: "lou", roles: [] } };
+  const editor = { jwt: { sub: "lou", roles: ["editor"] } };
+
+  test("a filter rule does not cover CREATE: the default still guards it", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const denied = await t.run(
+      `mutation { createNotes(input: [{ key: "n1", owner: "lou" }]) { notes { key } } }`,
+      {},
+      user,
+    );
+    expect(codes(denied)).toEqual(["FORBIDDEN"]);
+    const allowed = await t.run(
+      `mutation { createNotes(input: [{ key: "n1", owner: "lou" }]) { notes { key } } }`,
+      {},
+      editor,
+    );
+    expect(allowed.errors).toBeUndefined();
+    // UPDATE is the type's own (its filter covers it): no editor needed.
+    expect(
+      (
+        await t.run(
+          `mutation { updateNote(key: "n1", update: { owner: "lou" }) { note { key } } }`,
+          {},
+          user,
+        )
+      ).errors,
+    ).toBeUndefined();
+  });
+
+  test("a validate rule covers only its own operations", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const tagger = { jwt: { sub: "x", roles: ["tagger"] } };
+    expect(
+      (
+        await t.run(
+          `mutation { updateTag(key: "t", update: { name: "b" }) { tag { key } } }`,
+          {},
+          tagger,
+        )
+      ).errors,
+    ).toBeUndefined();
+    const create = await t.run(
+      `mutation { createTags(input: [{ key: "t2" }]) { tags { key } } }`,
+      {},
+      tagger,
+    );
+    expect(codes(create)).toEqual(["FORBIDDEN"]);
+    const del = await t.run(
+      `mutation { deleteTag(key: "t") { nodesDeleted } }`,
+      {},
+      tagger,
+    );
+    expect(codes(del)).toEqual(["FORBIDDEN"]);
+  });
+});

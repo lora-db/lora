@@ -884,17 +884,26 @@ export function buildModel(
     const WRITES: AuthOperation[] = ["CREATE", "UPDATE", "DELETE"];
     for (const node of nodes.values()) {
       if (node.mutations.size === 0) continue;
-      const own = [
-        ...(node.authorization?.filter ?? []),
-        ...(node.authorization?.validate ?? []),
-      ].some((r) => WRITES.some((op) => r.operations.has(op)));
-      if (own) continue;
+      // Per operation: the default guards each write the type's own rules
+      // leave uncovered. A filter rule never covers CREATE (there is no
+      // node to filter before it exists).
+      const uncovered = WRITES.filter(
+        (op) =>
+          !(node.authorization?.validate ?? []).some((r) =>
+            r.operations.has(op),
+          ) &&
+          (op === "CREATE" ||
+            !(node.authorization?.filter ?? []).some((r) =>
+              r.operations.has(op),
+            )),
+      );
+      if (uncovered.length === 0) continue;
       (node as { authorization: Authorization }).authorization = {
         ...(node.authorization ?? { filter: [] }),
         validate: [
           ...(node.authorization?.validate ?? []),
           {
-            operations: new Set<AuthOperation>(WRITES),
+            operations: new Set<AuthOperation>(uncovered),
             when: new Set<"BEFORE" | "AFTER">(["BEFORE", "AFTER"]),
             requireAuthentication: true,
             where: defaults.mutations,

@@ -62,14 +62,15 @@ export function lintModel(
 export function unguardedMutations(model: GraphModel): ModelWarning[] {
   const out: ModelWarning[] = [];
   for (const node of model.nodes.values()) {
-    const rules = [
-      ...(node.authorization?.filter ?? []),
+    // A filter rule never guards CREATE: there is no node to filter yet.
+    const rules = (op: string) => [
+      ...(op === "CREATE" ? [] : (node.authorization?.filter ?? [])),
       ...(node.authorization?.validate ?? []),
     ];
     const open = [...node.mutations].filter(
       (op) =>
         !node.authentication?.has(op) &&
-        !rules.some((r) => r.operations.has(op)) &&
+        !rules(op).some((r) => r.operations.has(op)) &&
         !node.authorization?.public?.has(op),
     );
     if (open.length > 0) {

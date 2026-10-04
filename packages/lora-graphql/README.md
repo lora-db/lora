@@ -952,9 +952,16 @@ deleted: Org.docs has onDelete: RESTRICT`. Replacing a single
   rules for everyone with `@authorization(bypass: false)`;
   `@authorization(bypass: true)` is the default made explicit, and quiets
   `check()`'s note that the bypass skips the type's field rules. `mutations` is
-  the write rule (`CREATE`, `UPDATE`, `DELETE`) of every `@mutation` type
-  that declares no rule for those operations; a type's own rules replace
-  it, never merge with it. `check()` fails on a `@mutation` type whose
+  the write rule (`CREATE`, `UPDATE`, `DELETE`) of every `@mutation` type,
+  per operation: it guards each of those operations that none of the
+  type's own rules covers. A `validate` rule covers the operations it
+  lists; a `filter` rule covers `UPDATE` and `DELETE` when it lists them
+  (by default it does), never `CREATE`, since there is no node to filter
+  before it exists. So a type with only `@authorization(filter: [...])`
+  keeps the default on `CREATE`, and one with a `validate` rule for
+  `UPDATE` only keeps it on `CREATE` and `DELETE`. Where a type's rule
+  covers an operation, it replaces the default for that operation, never
+  merges with it. `check()` fails on a `@mutation` type whose
   writes nothing guards, unless it says `@authorization(public: [...])`.
 
 Relationship and `@cypher` fields take field-level `@authorization`
