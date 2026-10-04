@@ -85,6 +85,7 @@ them off):
 | `searchFestivals(query, where, limit)`                         | Full-text search, with `@fulltext`                                                                        |
 | `similarFestivals(vector or to, where, limit)`                 | Vector similarity, with a `@vector` field                                                                 |
 | `node(id:)`                                                    | Any `@relayId` type by global id                                                                          |
+| `nodes(ids:)`                                                  | Many global ids at once, in order; null where unknown or hidden (at most `maxLimit`)                      |
 | `events(where, sort, limit)`                                   | An interface's or union's members together                                                                |
 | `createFestivals`, `upsertFestivals`                           | With `@mutation(CREATE)` (upsert also needs `UPDATE`)                                                     |
 | `updateFestival`, `updateFestivals(where, limit)`              | With `@mutation(UPDATE)`: by key, or bulk by `where`                                                      |

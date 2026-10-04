@@ -437,6 +437,8 @@ export interface GraphModel {
   viewer: { claim: string; type: string; field: string } | undefined;
   /** Secret cursors are signed with, when configured. */
   cursorSecret: string | undefined;
+  /** The global page-size cap (`maxLimit`); also caps `nodes(ids:)`. */
+  maxLimit?: number | undefined;
 }
 
 export interface ModelWarning {

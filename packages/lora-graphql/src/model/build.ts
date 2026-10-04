@@ -1270,6 +1270,7 @@ export function buildModel(
     viewer,
     bypass: defaults.bypass,
     cursorSecret: options.cursorSecret,
+    maxLimit: globalLimit.max,
   };
   // An update input with nothing in it would break the schema: the
   // mutations that take it are left out, and the model says so.

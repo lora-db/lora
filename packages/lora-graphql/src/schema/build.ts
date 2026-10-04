@@ -34,7 +34,7 @@ import type {
   SearchResult,
 } from "../compile/read.js";
 import { ModelError, requestError } from "../errors.js";
-import { lowerFirst } from "../model/build.js";
+import { lowerFirst, MAX_LIMIT } from "../model/build.js";
 import type {
   AbstractType,
   CustomField,
@@ -1650,6 +1650,25 @@ export function buildSchema(
       args: { id: { type: nonNull(GraphQLID) } },
       resolve: (_src, args, context, info) =>
         resolveNode((args as { id: string }).id, info, context),
+    };
+    const maxIds = model.maxLimit ?? MAX_LIMIT;
+    query["nodes"] = {
+      type: nonNull(listOf(nodeInterface)),
+      description: `Fetch objects by their global ids, at most ${maxIds}: one entry per id, in order, null where an id is unknown or not readable.`,
+      args: { ids: { type: nonNull(listOf(nonNull(GraphQLID))) } },
+      resolve: (_src, args, context, info) => {
+        const ids = (args as { ids: string[] }).ids;
+        if (ids.length > maxIds) {
+          throw requestError(
+            "BAD_USER_INPUT",
+            `nodes: takes at most ${maxIds} ids, got ${ids.length}`,
+          );
+        }
+        // Each id resolves as node(id:) does, its type's READ rules
+        // included: a filtered-out node is null, and an error (a failed
+        // validate rule) nulls its own entry only.
+        return ids.map((id) => resolveNode(id, info, context));
+      },
     };
   }
 

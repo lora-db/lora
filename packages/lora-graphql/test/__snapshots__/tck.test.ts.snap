@@ -877,6 +877,11 @@ type Query {
   """Fetch any object by its global id."""
   node(id: ID!): Node
 
+  """
+  Fetch objects by their global ids, at most 100: one entry per id, in order, null where an id is unknown or not readable.
+  """
+  nodes(ids: [ID!]!): [Node]!
+
   """The User with this key, or null."""
   user(key: String!): User
 
