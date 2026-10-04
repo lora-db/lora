@@ -1395,6 +1395,17 @@ is off unless configured otherwise. See
 [the threat model](../../docs/design/graphql-threat-model.md) for what
 the library trusts and where each check runs.
 
+The plugin also checks, once, that the server runs the library's own
+`graphql` copy. With two copies (a nested `node_modules/graphql`, a
+dual CJS/ESM load) the library's errors are not instances of the
+server's `GraphQLError`, so Yoga masks every `FORBIDDEN` or
+`BAD_USER_INPUT` as "Unexpected error". The first schema or validation
+from a foreign copy logs a `console.error` naming the problem and the
+fix: dedupe `graphql` (`npm dedupe`, or `pnpm.overrides` / yarn
+`resolutions`) until `npm ls graphql` shows one copy. The standalone
+`envelopPlugin(guards, onRealmMismatch)` takes a reporter in place of
+`console.error`.
+
 ### Observability
 
 `onStatement` fires before a statement runs; `onStatementEnd` after, with

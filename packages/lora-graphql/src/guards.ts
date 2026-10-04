@@ -5,12 +5,13 @@
 
 import {
   GraphQLError,
+  GraphQLSchema,
   Kind,
+  ValidationContext,
   type ASTVisitor,
   type FragmentDefinitionNode,
   type ParseOptions,
   type SelectionSetNode,
-  type ValidationContext,
   type ValidationRule,
 } from "graphql";
 
@@ -84,11 +85,33 @@ export function parseOptions(guards: DocumentGuards = {}): ParseOptions {
  * The guards as an Envelop plugin, for GraphQL Yoga and other Envelop
  * servers: the token limit wraps `parse`, the rest are validation rules.
  * Typed structurally, so the package does not depend on Envelop.
+ *
+ * It also checks, once, that the server runs the same `graphql` copy as
+ * this library (see `graphqlRealmProblem`), and reports a mismatch
+ * through `onRealmMismatch` (default: `console.error`).
  */
-export function envelopPlugin(guards: DocumentGuards = {}) {
+export function envelopPlugin(
+  guards: DocumentGuards = {},
+  onRealmMismatch: (message: string) => void = defaultRealmReport,
+) {
   const rules = validationRules(guards);
   const options = parseOptions(guards);
+  let reported = false;
+  const check = (value: unknown, what: RealmProbe) => {
+    if (reported) return;
+    const problem = graphqlRealmProblem(value, what);
+    if (!problem) return;
+    reported = true;
+    onRealmMismatch(problem);
+  };
+  const realmRule: ValidationRule = (context) => {
+    check(context, "validation");
+    return {};
+  };
   return {
+    onSchemaChange({ schema }: { schema: unknown }) {
+      check(schema, "schema");
+    },
     onParse({
       parseFn,
       setParseFn,
@@ -107,9 +130,45 @@ export function envelopPlugin(guards: DocumentGuards = {}) {
     }: {
       addValidationRule: (rule: ValidationRule) => void;
     }) {
+      if (!reported) addValidationRule(realmRule);
       for (const rule of rules) addValidationRule(rule);
     },
   };
+}
+
+type RealmProbe = "schema" | "validation";
+
+/**
+ * When `value` (a schema, or the context a validation rule receives)
+ * comes from a different `graphql` module than the one this library
+ * imports, the message explaining it; otherwise undefined. Two copies
+ * break `instanceof GraphQLError`, so servers such as Yoga mask the
+ * library's errors (FORBIDDEN, BAD_USER_INPUT, ...) as "Unexpected
+ * error".
+ */
+export function graphqlRealmProblem(
+  value: unknown,
+  what: RealmProbe,
+): string | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const expected = what === "schema" ? GraphQLSchema : ValidationContext;
+  if (value instanceof expected) return undefined;
+  const tag = (value as { [Symbol.toStringTag]?: unknown })[Symbol.toStringTag];
+  const name = what === "schema" ? "GraphQLSchema" : "ValidationContext";
+  // Not a graphql object at all (a test double, a proxy): nothing to say.
+  if (tag !== name && value.constructor?.name !== name) return undefined;
+  return (
+    `@loradb/lora-graphql: the server's ${name} comes from a different copy of the "graphql" ` +
+    "package than the one @loradb/lora-graphql imports. With two copies, errors the library " +
+    "raises are not instances of the server's GraphQLError, so they are masked (Yoga reports " +
+    '"Unexpected error") and their extensions.code is lost. Fix: install a single graphql ' +
+    "version (npm dedupe, or pin it with pnpm.overrides / yarn resolutions / npm overrides) " +
+    "and check that `npm ls graphql` shows one copy."
+  );
+}
+
+function defaultRealmReport(message: string): void {
+  console.error(message);
 }
 
 const guardError = (message: string) =>
