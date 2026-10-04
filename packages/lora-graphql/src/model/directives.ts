@@ -107,7 +107,7 @@ export const directiveTypeDefs = /* GraphQL */ `
     onAggregate: Boolean = true
   ) on FIELD_DEFINITION
 
-  "Set by a callback passed to LoraGraphQL({ callbacks }) on these operations; never client-settable."
+  "Set by a callback passed to LoraGraphQL({ callbacks }) on these operations. Client-settable only with an explicit @settable(onCreate: true) or (onUpdate: true) and a field-level @authorization(validate:) rule for that operation."
   directive @populatedBy(
     callback: String!
     operations: [TimestampOperation!]! = [CREATE, UPDATE]
@@ -210,7 +210,7 @@ export const directiveTypeDefs = /* GraphQL */ `
   "Value stored on create when the input leaves the field out."
   directive @default(value: DefaultValue!) on FIELD_DEFINITION
 
-  "Set to the current time by the listed operations; never client-settable."
+  "Set to the current time by the listed operations. Client-settable only with an explicit @settable(onCreate: true) or (onUpdate: true) and a field-level @authorization(validate:) rule for that operation."
   directive @timestamp(
     operations: [TimestampOperation!]! = [CREATE, UPDATE]
   ) on FIELD_DEFINITION

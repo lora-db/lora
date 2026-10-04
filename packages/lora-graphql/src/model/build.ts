@@ -1577,6 +1577,33 @@ function buildScalarField(
     }
   }
 
+  // A computed field (@timestamp, @populatedBy) is never client-settable,
+  // unless `@settable(onCreate: true)` / `onUpdate: true` says so
+  // explicitly and a field-level rule decides who may supply it: then the
+  // input offers it, and the computation fills it when it is omitted.
+  const computed = timestamp !== undefined || !!populatedArgs;
+  const supplied = {
+    create: computed && explicitlyTrue(f, "settable", "onCreate"),
+    update: computed && !key && explicitlyTrue(f, "settable", "onUpdate"),
+  };
+  if ((supplied.create || supplied.update) && !opts.allowKey) {
+    at(
+      "a @timestamp or @populatedBy relationship property cannot be made @settable",
+    );
+    supplied.create = supplied.update = false;
+  }
+  for (const [op, arg] of [
+    ["CREATE", "onCreate"],
+    ["UPDATE", "onUpdate"],
+  ] as const) {
+    if (!supplied[op === "CREATE" ? "create" : "update"]) continue;
+    if (!fieldAuthorization?.validate.some((r) => r.operations.has(op))) {
+      at(
+        `@settable(${arg}: true) on a @timestamp or @populatedBy field needs a field-level @authorization(validate:) rule for ${op}: it decides who may supply the value (the schema's bypass is no such rule)`,
+      );
+    }
+  }
+
   const field: ScalarField = {
     kind: "scalar",
     name: f.name,
@@ -1599,15 +1626,21 @@ function buildScalarField(
     defaultValue,
     timestamp,
     readonly:
-      readonlyFlag || isPrivate || timestamp !== undefined || !!populatedArgs,
+      readonlyFlag ||
+      isPrivate ||
+      (computed && !supplied.create && !supplied.update),
     settableOn: {
       create:
-        !(readonlyFlag || isPrivate || timestamp || populatedArgs) &&
-        ((settableArgs?.["onCreate"] as boolean | undefined) ?? true),
+        !(readonlyFlag || isPrivate) &&
+        (computed
+          ? supplied.create
+          : ((settableArgs?.["onCreate"] as boolean | undefined) ?? true)),
       update:
         !key &&
-        !(readonlyFlag || isPrivate || timestamp || populatedArgs) &&
-        ((settableArgs?.["onUpdate"] as boolean | undefined) ?? true),
+        !(readonlyFlag || isPrivate) &&
+        (computed
+          ? supplied.update
+          : ((settableArgs?.["onUpdate"] as boolean | undefined) ?? true)),
     },
     selectableOn: {
       read:
@@ -1648,6 +1681,19 @@ function buildScalarField(
   }
   if (vectorQuery) vectorQueryNames.set(field, vectorQuery);
   return field;
+}
+
+/** The directive on `f` spells out `arg: true` (a default does not count). */
+function explicitlyTrue(
+  f: GraphQLField<unknown, unknown>,
+  directiveName: string,
+  arg: string,
+): boolean {
+  const dir = f.astNode?.directives?.find(
+    (x) => x.name.value === directiveName,
+  );
+  const value = dir?.arguments?.find((a) => a.name.value === arg)?.value;
+  return value?.kind === Kind.BOOLEAN && value.value;
 }
 
 function keyArgs(

@@ -850,12 +850,14 @@ class Runner {
       for (const [shape, group] of groups) {
         const ctx = this.ctx();
         const p = printExpr(bind(ctx, group));
+        const given = shape ? shape.split("\0") : [];
         const props = [
           `${name(node.key.property)}: row.key`,
-          ...(shape ? shape.split("\0") : []).map(
-            (prop) => `${name(prop)}: row.props.${name(prop)}`,
-          ),
-          ...stamped.map(([prop, now]) => `${name(prop)}: ${now}`),
+          ...given.map((prop) => `${name(prop)}: row.props.${name(prop)}`),
+          // A settable @timestamp the input supplied keeps its value.
+          ...stamped
+            .filter(([prop]) => !given.includes(prop))
+            .map(([prop, now]) => `${name(prop)}: ${now}`),
         ];
         await this.run(
           `UNWIND ${p} AS row\nCREATE (n:${labels} { ${props.join(", ")} })`,
@@ -1416,6 +1418,14 @@ class Runner {
     const actx = this.ctx();
     const adjustments = compileAdjust(actx, node, adjust);
     const stamped = timestamps(node, "UPDATE");
+    const suppliable = new Set(
+      [...node.fields.values()]
+        .filter(
+          (f): f is ScalarField =>
+            f.kind === "scalar" && !!f.timestamp && settable(f, "UPDATE"),
+        )
+        .map((f) => f.property),
+    );
     // One statement per shape: which properties are removed.
     const shapes = new Map<string, typeof prepared>();
     for (const p of prepared) {
@@ -1435,7 +1445,12 @@ class Runner {
       const sets = [
         "n += row.set",
         ...adjustments,
-        ...stamped.map(([p, now]) => `n.${name(p)} = ${now}`),
+        // A @timestamp settable on update keeps a value the input supplied.
+        ...stamped.map(([p, now]) =>
+          suppliable.has(p)
+            ? `n.${name(p)} = coalesce(row.set.${name(p)}, ${now})`
+            : `n.${name(p)} = ${now}`,
+        ),
       ];
       const removes = shape ? shape.split("\0") : [];
       await this.run(
