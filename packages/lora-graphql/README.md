@@ -1358,7 +1358,18 @@ Errors carry `extensions.code`: `BAD_USER_INPUT`, `INVALID_CURSOR`,
 `DATABASE_ERROR` (with an `id`, also given to `onError`),
 `PERSISTED_QUERY_ONLY` (`execute()` or `subscribe()` got a document under
 `persistedOnly`) and `WRONG_OPERATION_TYPE` (`execute()` got a
-subscription, or `subscribe()` a query or mutation). An invalid SDL
+subscription, or `subscribe()` a query or mutation). The same list is
+exported as `LORA_GRAPHQL_ERROR_CODES`, and `isLoraGraphQLError(err)`
+tells a library error (also a serialized one) from anything else:
+
+```ts
+import { isLoraGraphQLError } from "@loradb/lora-graphql";
+
+for (const err of result.errors ?? [])
+  if (isLoraGraphQLError(err) && err.extensions.code === "FORBIDDEN") deny();
+```
+
+An invalid SDL
 throws one `ModelError` listing every problem, each located by type and
 field.
 

@@ -57,6 +57,8 @@ export { LoraTransaction } from "./execute/transaction.js";
 export {
   ModelError,
   formatProblem,
+  isLoraGraphQLError,
+  LORA_GRAPHQL_ERROR_CODES,
   type LoraGraphQLErrorCode,
   type ModelProblem,
 } from "./errors.js";
