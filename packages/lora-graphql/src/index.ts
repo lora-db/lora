@@ -38,7 +38,12 @@ export {
   type PlanReport,
 } from "./analyze/plans.js";
 export type { DegreeStats, Statistics } from "./analyze/statistics.js";
-export type { AccessEntry, AccessVerdict } from "./analyze/access.js";
+export type {
+  AccessEntry,
+  AccessVerdict,
+  OperationAccess,
+  RootFieldAccess,
+} from "./analyze/access.js";
 export type { CypherFinding } from "./analyze/cypher-check.js";
 export {
   diffSchemas,

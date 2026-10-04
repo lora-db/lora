@@ -1265,7 +1265,23 @@ the rules test, such as `roles:admin`), with the verdict (`allowed`,
 `filtered`, `validated`, `masked`, `denied`, `unauthenticated`) and the
 rules that decide it. A `@key(scope: VIEWER)` type's CREATE reads
 `unauthenticated` for anonymous callers and `validated` by `key scope`
-for the rest. `lora.accessMatrix()` returns the same list; its
+for the rest.
+
+`lora.operationAccess(document | persistedId, operationName?)` answers
+the same question for one operation: each root field (fragments
+followed) with its type, the operations it needs (an upsert needs
+`CREATE` and `UPDATE`) and the verdict per caller, plus the most
+restrictive verdict per caller over all root fields. A field over
+several types (`node`, a union) reports the most restrictive member.
+Root fields only: nested selections answer to their own types' rules.
+To keep admin-only operations out of client bundles:
+
+````ts
+const { verdicts } = lora.operationAccess(source);
+const adminOnly = ["anonymous", "authenticated"].every((p) =>
+  ["denied", "unauthenticated"].includes(verdicts[p]!),
+);
+``` `lora.accessMatrix()` returns the same list; its
 order is stable, so a snapshot in CI turns access changes into diffs.
 
 `check` lints authorization too:
@@ -1342,7 +1358,7 @@ await expectSeeks(
   `{ festivals(where: { name: { eq: "Sunland" } }) { key } }`,
 );
 t.close();
-```
+````
 
 `createTestLoraGraphQL` builds an in-memory database with the schema
 asserted, runs the seed, and records every statement in `t.statements`.

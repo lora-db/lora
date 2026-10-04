@@ -37,7 +37,9 @@ import { lintModel, unguardedMutations } from "./analyze/lint.js";
 import {
   accessLints,
   accessMatrix,
+  operationAccess,
   type AccessEntry,
+  type OperationAccess,
 } from "./analyze/access.js";
 import { analyze, type Statistics } from "./analyze/statistics.js";
 import { newContext, type CompileContext } from "./compile/context.js";
@@ -826,6 +828,37 @@ export class LoraGraphQL {
    */
   accessMatrix(): AccessEntry[] {
     return accessMatrix(this.model, this.getSchema());
+  }
+
+  /**
+   * Who may run an operation: per root field, the verdict for each kind
+   * of caller, from the same rules as `accessMatrix()`, plus the most
+   * restrictive verdict per caller. Takes a document (source or parsed)
+   * or the id of a persisted operation; `operationName` picks one of
+   * several operations.
+   */
+  operationAccess(
+    document: string | DocumentNode,
+    operationName?: string,
+  ): OperationAccess {
+    const doc =
+      typeof document !== "string"
+        ? document
+        : (this.#persisted.get(document) ?? parse(document));
+    const operation = getOperationAST(doc, operationName);
+    if (!operation) {
+      throw new Error(
+        operationName
+          ? `operationAccess: no operation named ${operationName}`
+          : "operationAccess: the document has no single operation; pass operationName",
+      );
+    }
+    const fragments = new Map<string, FragmentDefinitionNode>();
+    for (const def of doc.definitions) {
+      if (def.kind === Kind.FRAGMENT_DEFINITION)
+        fragments.set(def.name.value, def);
+    }
+    return operationAccess(this.model, this.getSchema(), operation, fragments);
   }
 
   async check(options: CheckOptions = {}): Promise<CheckReport> {
