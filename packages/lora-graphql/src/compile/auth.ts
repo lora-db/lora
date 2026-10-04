@@ -365,6 +365,30 @@ export function maskSettled(
 }
 
 /**
+ * A masked field's stored `raw` value as the reader may see it, decided by
+ * the claims alone (for values no statement can test, such as a node's
+ * values before a write): the first mask whose `unless` the claims do not
+ * settle true substitutes its value, so a mask that depends on the node
+ * reads as masked.
+ */
+export function claimsMaskedValue(
+  ctx: CompileContext,
+  node: NodeType,
+  field: { authorization?: Authorization | undefined },
+  raw: unknown,
+): unknown {
+  const masks = field.authorization?.mask;
+  if (!masks?.length || ctx.inAuth || bypassed(ctx, node)) return raw;
+  const probe = { ...ctx, params: {}, vars: new Set(ctx.vars) };
+  for (const m of masks) {
+    if (compileRule(probe, node, "probe", m.unless) !== true) {
+      return m.value ?? null;
+    }
+  }
+  return raw;
+}
+
+/**
  * `@key(scope: VIEWER)`: a created key must start with the caller's
  * `@viewer` claim and the separator. Checked in JavaScript before any
  * statement runs, so the answer never depends on whether the key exists.

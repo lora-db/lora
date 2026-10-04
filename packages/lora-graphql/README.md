@@ -1140,8 +1140,11 @@ Every event has a `timestamp` (when the write was committed). With
 `DISCONNECT` events, one per relationship, with `relationship { field type
 relatedType relatedKey }`. With `@subscription(previousState: true)`,
 `UPDATE` and `DELETE` events carry `previousState`: the stored values
-before the write (readable scalar fields without field-level rules), at
-the cost of one read per write. Subscribers whose checks compile to the
+before the write (readable scalar fields without field-level validate
+rules), at the cost of one read per write. Field-level `@authentication`
+applies to it as to any read, and masks are decided by the subscriber's
+claims: a mask whose `unless` depends on the node reads as its `value`,
+since the node as it was cannot be tested after the write. Subscribers whose checks compile to the
 same statement share it: twenty subscribers with the same `where` and
 claims cost one visibility query and one node read per write.
 

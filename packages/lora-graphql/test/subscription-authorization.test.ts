@@ -113,3 +113,59 @@ describe("deletions", () => {
     expect(asLou.events).toEqual([]);
   });
 });
+
+describe("previousState", () => {
+  const typeDefs = `${claims}
+  type Person @node { key: String! @key }
+  type Card @node @mutation @subscription(previousState: true) {
+    key: String! @key
+    title: String!
+    pin: String
+      @authorization(mask: [{ unless: { jwt: { roles: { includes: "admin" } } }, value: "****" }])
+    hint: String
+      @authorization(mask: [{ unless: { node: { owner: { isViewer: true } } }, value: "hidden" }])
+    note: String @authentication(operations: [READ])
+    owner: Person @relationship(type: "OWNS", direction: IN)
+  }`;
+  const seed =
+    "CREATE (:Person {key: 'bo'})-[:OWNS]->(:Card {key: 'c1', title: 'A', pin: '1234', hint: 'red', note: 'n'})";
+  const follow = `subscription { cardChanged(key: "c1") { operation previousState { title pin hint note } } }`;
+
+  test("masks and field authentication apply to the values before the write", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const anonymous = await listen(t, follow);
+    const asAdmin = await listen(t, follow, admin);
+    await t.data(
+      `mutation { updateCard(key: "c1", update: { title: "B" }) { info { nodesUpdated } } }`,
+    );
+    await settle();
+    await anonymous.stop();
+    await asAdmin.stop();
+    expect(anonymous.events).toEqual([
+      {
+        data: {
+          cardChanged: {
+            operation: "UPDATE",
+            // A mask that depends on the node reads as its value: the
+            // node as it was cannot be tested after the write.
+            previousState: {
+              title: "A",
+              pin: "****",
+              hint: "hidden",
+              note: null,
+            },
+          },
+        },
+        errors: ["Card.note needs an authenticated request"],
+      },
+    ]);
+    expect(asAdmin.events).toEqual([
+      {
+        cardChanged: {
+          operation: "UPDATE",
+          previousState: { title: "A", pin: "1234", hint: "hidden", note: "n" },
+        },
+      },
+    ]);
+  });
+});

@@ -144,6 +144,7 @@ function publicSchema(model: GraphModel): GraphQLSchema {
       throw new Error("not connected");
     },
     resolveChangedNode: never,
+    previousValue: () => null,
     resolveRoot: never,
     resolveNode: never,
     resolveCypher: never,

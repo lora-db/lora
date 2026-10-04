@@ -103,6 +103,7 @@ import {
   authValidate,
   checkAuthentication,
   checkFieldAuthentication,
+  claimsMaskedValue,
   rootFieldGuard,
 } from "./compile/auth.js";
 import {
@@ -636,6 +637,14 @@ export class LoraGraphQL {
                 (event as { [CHANGE]?: WriteChange })[CHANGE],
               ),
             ),
+      previousValue: (node, field, value, context) => {
+        const ctx = this.#context(
+          { schema: this.getSchema(), fragments: {}, variables: {} },
+          context,
+        );
+        checkFieldAuthentication(ctx, node.name, field);
+        return claimsMaskedValue(ctx, node, field, value);
+      },
       resolveAbstract: (abstract, info, context) =>
         span(info, context, () => {
           const compiled = this.#cachedCompile(info, context, (ctx) =>
