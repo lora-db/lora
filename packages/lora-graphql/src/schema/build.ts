@@ -543,6 +543,12 @@ export function buildSchema(
                 ? undefined
                 : `Has a related ${f.target} matching the filter.`,
             };
+            if (!f.list) {
+              fields[`${f.name}Exists`] = {
+                type: GraphQLBoolean,
+                description: `true: ${f.name} is set; false: it is not (a related ${f.target} the reader can't see counts as none).`,
+              };
+            }
             if (f.list && f.properties && !polymorphic(f)) {
               fields[names.connectionField(f.name)] = {
                 type: connectionFilter(node, f),

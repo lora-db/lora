@@ -656,6 +656,11 @@ input FestivalWhere {
 
   """Has a related Genre matching the filter."""
   genre: GenreWhere
+
+  """
+  true: genre is set; false: it is not (a related Genre the reader can't see counts as none).
+  """
+  genreExists: Boolean
   key: FestivalKeyFilter
   name: FestivalNameFilter
   startsAt: FestivalStartsAtFilter

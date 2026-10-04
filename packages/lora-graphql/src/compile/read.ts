@@ -14,7 +14,7 @@ import {
 import { RANGE_UNINDEXABLE } from "../analyze/indexes.js";
 import type { QueryResult, Statement } from "../driver.js";
 import { requestError } from "../errors.js";
-import { renameParams } from "../model/cypher-lexer.js";
+import { scanParams } from "../model/cypher-lexer.js";
 import {
   distinctCount,
   listAggregate,
@@ -48,6 +48,7 @@ import {
   propertyAccess,
   refusedEdgeRead,
   relationshipRules,
+  viewerKey,
 } from "./auth.js";
 import { bind, freshVar, noteClaim, type CompileContext } from "./context.js";
 import { decodeCursor } from "./cursor.js";
@@ -60,6 +61,7 @@ import {
   not,
   or,
   printClauses,
+  printExpr,
   prop,
   v,
   type Clause,
@@ -1397,8 +1399,17 @@ export function bindStatement(
   field: CypherField,
   args: Args,
 ): string {
-  const names = new Map<string, string>();
+  checkListArguments(ctx, field, args);
+  const texts = new Map<string, string>();
   for (const p of field.params) {
+    if (p === "viewer") {
+      const expr = viewerKey(ctx);
+      texts.set(
+        p,
+        expr.kind === "param" ? printExpr(expr) : `(${printExpr(expr)})`,
+      );
+      continue;
+    }
     if (p === "jwt") noteClaim(ctx, "", ctx.jwt, false);
     // An explicit null for an argument with an SDL default takes the
     // default, as the library's own `limit` arguments do.
@@ -1407,9 +1418,44 @@ export function bindStatement(
       p === "jwt"
         ? (ctx.jwt ?? null)
         : (args[p] ?? declared?.defaultValue ?? null);
-    names.set(p, (bind(ctx, value) as { name: string }).name);
+    texts.set(p, printExpr(bind(ctx, value)));
   }
-  return renameParams(field.statement, (p) => names.get(p) ?? p);
+  let out = "";
+  let last = 0;
+  for (const ref of scanParams(field.statement)) {
+    out +=
+      field.statement.slice(last, ref.start) +
+      (texts.get(ref.name) ?? `$${ref.name}`);
+    last = ref.end;
+  }
+  return out + field.statement.slice(last);
+}
+
+/** Default `maxListArgument`: the most items a @cypher list argument takes. */
+export const MAX_LIST_ARGUMENT = 1000;
+
+/**
+ * List arguments of a @cypher field hold at most `@size(max:)` items, or
+ * `maxListArgument` without it: the statement sees the input as is, so
+ * the cap is checked before it runs. Every level of a nested list counts.
+ */
+function checkListArguments(
+  ctx: CompileContext,
+  field: CypherField,
+  args: Args,
+): void {
+  for (const a of field.args) {
+    if (!a.type.list) continue;
+    const max = a.maxItems ?? ctx.maxListArgument ?? MAX_LIST_ARGUMENT;
+    const tooLong = (value: unknown): boolean =>
+      Array.isArray(value) && (value.length > max || value.some(tooLong));
+    if (tooLong(args[a.name])) {
+      throw requestError(
+        "BAD_USER_INPUT",
+        `${field.owner}.${field.name}: argument ${a.name} takes at most ${max} items`,
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -199,7 +199,12 @@ function toNodeFilter(
 ): unknown {
   const parts: unknown[] = [];
   for (const [key, value] of Object.entries(where)) {
-    if (key === "node") parts.push(value);
+    if (key === "node" && JSON.stringify(value).includes("${node.")) {
+      // Inside another node's filter, `${node.…}` would read the outer node.
+      ctx.at(
+        `rule ${node.name}.${name} reads \${node.…}; such a rule can't be used inside a node filter, where it would read the outer node`,
+      );
+    } else if (key === "node") parts.push(value);
     else if (key === "AND" || key === "OR") {
       parts.push({
         [key]: (value as Where[]).map((w) => toNodeFilter(ctx, node, name, w)),

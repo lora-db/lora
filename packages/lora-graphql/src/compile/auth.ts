@@ -17,8 +17,8 @@ import type {
   RelationshipOperation,
   RelationshipPropertiesType,
 } from "../model/types.js";
-import { PLACEHOLDER } from "../model/types.js";
-import { and, bin, fn, lit, not, or, type Expr } from "./cypher.js";
+import { PLACEHOLDER, RULE_REFERENCES } from "../model/types.js";
+import { and, bin, fn, lit, not, or, prop, v, type Expr } from "./cypher.js";
 import {
   bind,
   exprValue,
@@ -412,6 +412,82 @@ export function checkKeyScope(
   }
 }
 
+/**
+ * `$viewer` in a @cypher statement: the caller's node's `@key`. The claim
+ * itself when `@viewer` maps to the key; otherwise read in the statement
+ * with one seek by the claim, so a statement matching `{key: $viewer}`
+ * keeps working when `@viewer` moves to an opaque subject. Null signed
+ * out, for a claim that is not a string or number, and for a token
+ * naming no node.
+ */
+export function viewerKey(ctx: CompileContext): Expr {
+  const mapping = ctx.model.viewer;
+  const node = mapping && ctx.model.nodes.get(mapping.type);
+  if (!mapping || !node || !ctx.jwt) return lit(null);
+  const id = claim(ctx, mapping.claim, true);
+  if (typeof id !== "string" && typeof id !== "number") return lit(null);
+  if (mapping.field === node.key.name) return bind(ctx, id);
+  const field = node.fields.get(mapping.field);
+  const property = field?.kind === "scalar" ? field.property : mapping.field;
+  const v = freshVar(ctx, "viewer");
+  return fn("head", {
+    kind: "comprehension",
+    pattern: {
+      start: {
+        variable: v,
+        labels: [node.labels[0]!],
+        properties: [{ key: property, value: bind(ctx, id) }],
+      },
+      hops: [],
+    },
+    where: undefined,
+    projection: {
+      kind: "prop",
+      target: { kind: "var", name: v },
+      key: node.key.property,
+    },
+  });
+}
+
+/**
+ * `@authorization` on a Query or Mutation @cypher field: its validate
+ * rules, over claims and the caller's node. Throws UNAUTHENTICATED or
+ * FORBIDDEN when the claims alone decide against the request; otherwise
+ * the condition left for the database (a `viewer` test), or undefined
+ * when the call is allowed.
+ */
+export function rootFieldGuard(
+  ctx: CompileContext,
+  field: {
+    name: string;
+    owner: string;
+    authorization?: Authorization | undefined;
+  },
+): Expr | undefined {
+  const rules = field.authorization?.validate ?? [];
+  if (ctx.inAuth || rules.length === 0 || bypassed(ctx, undefined)) {
+    return undefined;
+  }
+  const label = `${field.owner}.${field.name}`;
+  if (rules.every((r) => r.requireAuthentication) && !ctx.jwt) {
+    throw requestError(
+      "UNAUTHENTICATED",
+      `${label} needs an authenticated request`,
+    );
+  }
+  const folded = foldOr(
+    rules.map((r) =>
+      r.requireAuthentication && !ctx.jwt
+        ? false
+        : compileRule(ctx, undefined, "", r.where),
+    ),
+  );
+  if (folded === false) {
+    throw requestError("FORBIDDEN", `not allowed to run ${label}`);
+  }
+  return toExpr(folded);
+}
+
 /** A rule needs a claim the request lacks: the whole rule denies. */
 class MissingClaim extends Error {}
 
@@ -477,7 +553,7 @@ function compileRulePart(
     } else if (ends && (key === "source" || key === "target")) {
       const end = ends[key];
       parts.push(
-        inRule(ctx, value, (w) =>
+        inRule(ctx, value, ends, (w) =>
           compileNodeWhere(ctx, end.node, end.variable, w),
         ),
       );
@@ -485,7 +561,7 @@ function compileRulePart(
       const edge = ends.edge;
       parts.push(
         edge
-          ? inRule(ctx, value, (w) =>
+          ? inRule(ctx, value, ends, (w) =>
               compilePropsWhere(ctx, edge.props, edge.variable, w),
             )
           : false,
@@ -493,7 +569,7 @@ function compileRulePart(
     } else if (key === "jwt") {
       parts.push(matchClaims(ctx, value as Where));
     } else if (key === "node" && node) {
-      const bound = substitute(value, ctx);
+      const bound = substitute(value, ctx, { node: { node, variable } });
       if (!bound.ok) throw new MissingClaim();
       const wasInAuth = ctx.inAuth;
       ctx.inAuth = true;
@@ -522,9 +598,10 @@ function compileRulePart(
 function inRule(
   ctx: CompileContext,
   value: unknown,
+  refs: RuleRefs,
   compile: (where: Where) => Expr | undefined,
 ): Folded {
-  const bound = substitute(value, ctx);
+  const bound = substitute(value, ctx, refs);
   if (!bound.ok) throw new MissingClaim();
   const wasInAuth = ctx.inAuth;
   ctx.inAuth = true;
@@ -533,6 +610,14 @@ function inRule(
   } finally {
     ctx.inAuth = wasInAuth;
   }
+}
+
+/** The nodes (and edge) a rule string's `${node.…}`-style placeholders read. */
+interface RuleRefs {
+  node?: { node: NodeType; variable: string };
+  source?: { node: NodeType; variable: string };
+  target?: { node: NodeType; variable: string };
+  edge?: { props: RelationshipPropertiesType; variable: string } | undefined;
 }
 
 /** The statement variables a relationship rule's parts test. */
@@ -809,22 +894,20 @@ export function sameValue(a: unknown, b: unknown): boolean {
  * when a referenced value is absent (or, in a placeholder, not a scalar).
  */
 /**
- * A rule string with `${viewer.field}` placeholders: the caller's node's
- * fields, found by the `@viewer` claim. A placeholder naming the field the
- * claim maps to is the claim itself; another field is read in the
- * statement, with one seek by the claim. Without the claim it is unknown.
+ * A rule string whose placeholders are read in the statement, not bound
+ * from the request: `${viewer.field}` (the caller's node's fields, found by
+ * the `@viewer` claim; the field the claim maps to is the claim itself)
+ * and `${node.path}` / `${source.path}` / `${target.path}` /
+ * `${edge.property}` (the rule's own node, ends or edge: a scalar field,
+ * or one reached through single relationships). `${jwt.…}` and
+ * `${context.…}` parts are bound as usual. Unknown without the claim or
+ * when a reference has nothing to read.
  */
-function viewerString(
+function referenceString(
   ctx: CompileContext,
   value: string,
+  refs: RuleRefs | undefined,
 ): { ok: boolean; value: unknown } {
-  const mapping = ctx.model.viewer;
-  const node = mapping && ctx.model.nodes.get(mapping.type);
-  if (!mapping || !node) return { ok: false, value: undefined };
-  const id = claim(ctx, mapping.claim, true);
-  if (typeof id !== "string" && typeof id !== "number") {
-    return { ok: false, value: undefined };
-  }
   const parts: Expr[] = [];
   let text = "";
   let ok = true;
@@ -838,20 +921,31 @@ function viewerString(
     last = m.index! + m[0].length;
     const [, source, path] = m as unknown as [string, string, string];
     if (source === "viewer") {
+      const mapping = ctx.model.viewer;
+      const node = mapping && ctx.model.nodes.get(mapping.type);
+      const id = mapping && claim(ctx, mapping.claim, true);
+      if (
+        !mapping ||
+        !node ||
+        (typeof id !== "string" && typeof id !== "number")
+      ) {
+        ok = false;
+        continue;
+      }
       if (path === mapping.field) {
         text += String(id);
         continue;
       }
       const field = node.fields.get(path);
       const property = field?.kind === "scalar" ? field.property : path;
-      const v = freshVar(ctx, "viewer");
+      const x = freshVar(ctx, "viewer");
       flush();
       parts.push(
         fn("head", {
           kind: "comprehension",
           pattern: {
             start: {
-              variable: v,
+              variable: x,
               labels: [node.labels[0]!],
               properties: [
                 {
@@ -865,13 +959,19 @@ function viewerString(
             hops: [],
           },
           where: undefined,
-          projection: {
-            kind: "prop",
-            target: { kind: "var", name: v },
-            key: property,
-          },
+          projection: prop(v(x), property),
         }),
       );
+      continue;
+    }
+    if (RULE_REFERENCES.has(source)) {
+      const read = ruleReference(ctx, refs, source, path);
+      if (!read) {
+        ok = false;
+        continue;
+      }
+      flush();
+      parts.push(read);
       continue;
     }
     const resolved =
@@ -893,20 +993,83 @@ function viewerString(
   flush();
   return {
     ok: true,
-    value: exprValue(parts.reduce((a, b) => bin("+", a, b))),
+    value: exprValue(
+      parts.length === 1 ? parts[0]! : parts.reduce((a, b) => bin("+", a, b)),
+    ),
   };
+}
+
+/**
+ * `${node.to.key}`: a value of the rule's own node, read in the statement.
+ * Every step but the last is a single relationship (the model checks it):
+ * `head([(n)-[:REQUESTED]->(x:Person) | x.key])`. The stored value, as
+ * every rule sees it.
+ */
+function ruleReference(
+  ctx: CompileContext,
+  refs: RuleRefs | undefined,
+  source: string,
+  path: string,
+): Expr | undefined {
+  if (source === "edge") {
+    const edge = refs?.edge;
+    const f = edge?.props.fields.get(path);
+    return edge && f ? prop(v(edge.variable), f.property) : undefined;
+  }
+  const start = refs?.[source as "node" | "source" | "target"];
+  if (!start) return undefined;
+  const steps = path.split(".");
+  let node = start.node;
+  const hops: Array<{
+    rel: { type: string; direction: "IN" | "OUT" | "BOTH" };
+    node: { variable: string; labels: string[] };
+  }> = [];
+  let variable = start.variable;
+  for (const [i, step] of steps.entries()) {
+    const f = node.fields.get(step);
+    if (i === steps.length - 1) {
+      if (f?.kind !== "scalar") return undefined;
+      const read = prop(v(variable), f.property);
+      if (hops.length === 0) return read;
+      return fn("head", {
+        kind: "comprehension",
+        pattern: { start: { variable: start.variable, labels: [] }, hops },
+        where: undefined,
+        projection: read,
+      });
+    }
+    if (f?.kind !== "relationship" || f.list) return undefined;
+    const target = ctx.model.nodes.get(f.target);
+    if (!target) return undefined;
+    variable = freshVar(ctx, `${start.variable}_${step}`);
+    hops.push({
+      rel: {
+        type: f.type,
+        direction: f.queryDirection === "UNDIRECTED" ? "BOTH" : f.direction,
+      },
+      node: { variable, labels: [target.labels[0]!] },
+    });
+    node = target;
+  }
+  return undefined;
 }
 
 function substitute(
   value: unknown,
   ctx: CompileContext,
+  refs?: RuleRefs,
 ): { ok: boolean; value: unknown } {
   // "\$…" is the literal string "$…" (an unescaped "$…" is a placeholder).
   if (typeof value === "string" && value.startsWith("\\$")) {
     return { ok: true, value: value.slice(1) };
   }
-  if (typeof value === "string" && value.includes("${viewer.")) {
-    return viewerString(ctx, value);
+  if (
+    typeof value === "string" &&
+    [...value.matchAll(PLACEHOLDER)].some(
+      (m) => m[1] === "viewer" || RULE_REFERENCES.has(m[1]!),
+    )
+  ) {
+    return referenceString(ctx, value, refs);
   }
   if (typeof value === "string" && value.includes("${")) {
     let ok = true;
@@ -949,7 +1112,7 @@ function substitute(
       : { ok: true, value: v };
   }
   if (Array.isArray(value)) {
-    const items = value.map((x) => substitute(x, ctx));
+    const items = value.map((x) => substitute(x, ctx, refs));
     return {
       ok: items.every((i) => i.ok),
       value: items.map((i) => i.value),
@@ -958,7 +1121,7 @@ function substitute(
   if (value !== null && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
-      const r = substitute(v, ctx);
+      const r = substitute(v, ctx, refs);
       if (!r.ok) return { ok: false, value: undefined };
       out[k] = r.value;
     }

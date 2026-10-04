@@ -537,7 +537,7 @@ describe("G-19: claims inside rule strings", () => {
       /\$jwt\.nope is not a claim of the @jwt type/,
     );
     expect(build(`{ node: { key: { startsWith: "\${sub}:" } } }`)).toThrow(
-      /a placeholder is \$\{jwt\.<claim>\} or \$\{context\.<path>\}/,
+      /a placeholder is \$\{jwt\.<claim>\}, \$\{context\.<path>\}, \$\{viewer\.<field>\} or \$\{node\.<path>\}/,
     );
     expect(build(`{ jwt: { sub: { startsWith: "\${context.x}" } } }`)).toThrow(
       /placeholders belong in node parts/,

@@ -47,6 +47,7 @@ import {
   compileCypherRoot,
   compileRoot,
   compileSearch,
+  MAX_LIST_ARGUMENT,
   type CompiledRead,
   type ReadSet,
   type RootKind,
@@ -102,8 +103,16 @@ import {
   authValidate,
   checkAuthentication,
   checkFieldAuthentication,
+  rootFieldGuard,
 } from "./compile/auth.js";
-import { and, bin, printClauses, prop, v } from "./compile/cypher.js";
+import {
+  and,
+  bin,
+  printClauses,
+  printExpr,
+  prop,
+  v,
+} from "./compile/cypher.js";
 import { bind } from "./compile/context.js";
 import { keyOf } from "./compile/read.js";
 import { compileNodeWhere } from "./compile/filter.js";
@@ -144,6 +153,12 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
    * request. Also the default `limit` of bulk updates and deletes.
    */
   maxBatch?: number;
+  /**
+   * Most items a list argument of a `@cypher` field takes, unless its
+   * `@size(max:)` says otherwise. More is BAD_USER_INPUT before the
+   * statement runs. Default 1000.
+   */
+  maxListArgument?: number;
   /**
    * Changes a `changes()` consumer or subscriber may fall behind before it
    * is ended with an error. Default 1000.
@@ -382,6 +397,7 @@ export class LoraGraphQL {
   readonly #timeoutMs: number;
   readonly #maxCost: number;
   readonly #maxBatch: number;
+  readonly #maxListArgument: number;
   readonly #maxQueued: number;
   readonly #callbacks: Record<string, PopulatedByCallback>;
   readonly #resolvers: NonNullable<LoraGraphQLOptions["resolvers"]>;
@@ -457,6 +473,7 @@ export class LoraGraphQL {
     this.#timeoutMs = options.timeoutMs ?? 10_000;
     this.#maxCost = options.maxCost ?? 50_000;
     this.#maxBatch = options.maxBatch ?? 1000;
+    this.#maxListArgument = options.maxListArgument ?? MAX_LIST_ARGUMENT;
     this.#maxQueued = options.maxQueuedChanges ?? 1000;
     this.#callbacks = options.callbacks ?? {};
     const missing = [...this.model.nodes.values()].flatMap((n) =>
@@ -1407,6 +1424,7 @@ export class LoraGraphQL {
       jwt,
       degrees: this.#degrees,
       requestContext: context,
+      maxListArgument: this.#maxListArgument,
     });
   }
 
@@ -2089,8 +2107,16 @@ export class LoraGraphQL {
         ? [...(field.authentication ?? [])][0]
         : ("READ" as const);
     if (op) checkFieldAuthentication(ctx, field.owner, field, op);
+    // @authorization: the claims decide here; a `viewer` test is left for
+    // the database, before the statement runs.
+    const rule = rootFieldGuard(ctx, field);
+    const guard: Statement | undefined = rule && {
+      text: `RETURN coalesce(${printExpr(rule)}, false) AS allowed`,
+      params: ctx.params,
+    };
     const args = this.#args(ctx, info.parentType, info.fieldNodes);
     if (field.owner !== "Mutation") {
+      if (guard) await this.#checkGuard(field, guard, context);
       const compiled = this.#cachedCompile(info, context, (c) =>
         compileCypherRoot(
           c,
@@ -2108,6 +2134,7 @@ export class LoraGraphQL {
         field,
         args,
         info.fieldNodes,
+        guard,
       );
     } catch (err) {
       throw this.#databaseError(info.fieldName, err);
@@ -2127,6 +2154,34 @@ export class LoraGraphQL {
       broad: true,
     });
     return value;
+  }
+
+  /** Run a root @cypher field's `viewer` guard; FORBIDDEN when it fails. */
+  async #checkGuard(
+    field: CypherField,
+    guard: Statement,
+    context: unknown,
+  ): Promise<void> {
+    this.#onStatement?.({ field: field.name, statement: guard });
+    const owned = (context as LoraGraphQLContext | undefined)?.transaction;
+    let result: QueryResult | undefined;
+    try {
+      [result] = owned
+        ? await runInOrder(owned, [guard])
+        : await this.#driver.run([guard], {
+            mode: "read",
+            timeoutMs: this.#timeoutMs,
+            signal: (context as LoraGraphQLContext | undefined)?.signal,
+          });
+    } catch (err) {
+      throw this.#databaseError(field.name, err);
+    }
+    if (result?.rows[0]?.["allowed"] !== true) {
+      throw requestError(
+        "FORBIDDEN",
+        `not allowed to run ${field.owner}.${field.name}`,
+      );
+    }
   }
 
   async #resolveMutation(
@@ -2207,6 +2262,7 @@ export class LoraGraphQL {
       signal: (context as LoraGraphQLContext | undefined)?.signal,
       degrees: this.#degrees,
       maxBatch: this.#maxBatch,
+      maxListArgument: this.#maxListArgument,
       requestContext: context,
       callbacks: this.#callbacks,
       transaction: (context as LoraGraphQLContext | undefined)?.transaction

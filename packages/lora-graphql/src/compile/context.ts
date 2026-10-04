@@ -36,6 +36,8 @@ export interface CompileContext extends SelectionContext {
    * it as a parameter; otherwise the value may shape the statement text.
    */
   claimReads: Map<string, { value: unknown; bound: boolean }>;
+  /** The most items a @cypher list argument takes without `@size(max:)`. */
+  maxListArgument?: number | undefined;
 }
 
 export function newContext(
@@ -45,6 +47,7 @@ export function newContext(
     jwt?: Record<string, unknown> | undefined;
     degrees?: ReadonlyMap<string, number>;
     requestContext?: unknown;
+    maxListArgument?: number | undefined;
   } = {},
 ): CompileContext {
   return {
@@ -61,6 +64,7 @@ export function newContext(
     computed: new Map(),
     contextReads: [],
     claimReads: new Map(),
+    maxListArgument: options.maxListArgument,
   };
 }
 

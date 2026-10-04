@@ -56,6 +56,7 @@ export const DIRECTIVE_POSITIONS: Readonly<
     "authorization",
     "fulltext",
     "limit",
+    "uniqueTogether",
   ],
   "relationship properties type": ["relationshipProperties"],
   "@jwt type": ["jwt"],
@@ -298,6 +299,25 @@ export function checkDirectivePositions(
     check(typeDirectives(t), typePosition, t.name);
     for (const f of Object.values(t.getFields())) {
       check(f.astNode?.directives ?? [], fieldPosition(f), t.name, f.name);
+    }
+  }
+  // Argument directives (`@size`) apply to arguments of @cypher fields:
+  // every other argument is generated, or passed to a resolver as is.
+  for (const t of ctx.userTypes) {
+    if (!isObjectType(t) && !isInterfaceType(t)) continue;
+    for (const f of Object.values(t.getFields())) {
+      const cypher = has(f as GraphQLField<unknown, unknown>, "cypher");
+      for (const a of f.args) {
+        for (const dir of a.astNode?.directives ?? []) {
+          const name = dir.name.value;
+          if (!ours.has(name) || (cypher && name === "size")) continue;
+          problems.push({
+            type: t.name,
+            field: f.name,
+            message: `argument ${a.name}: @${name} applies to arguments of @cypher fields`,
+          });
+        }
+      }
     }
   }
 }

@@ -131,7 +131,10 @@ export type NestedOperation =
   | "CREATE"
   | "CONNECT"
   | "DISCONNECT"
+  /** `update: [{ key, edge, node }]`: the connected node and the properties. */
   | "UPDATE"
+  /** `update: [{ key, edge }]`: the relationship's properties only. */
+  | "UPDATE_EDGE"
   | "DELETE";
 
 export interface RelationshipField extends FieldBase {
@@ -188,6 +191,8 @@ export interface CypherArgument {
   type: TypeShape;
   defaultValue: unknown;
   description: string | undefined;
+  /** `@size(max:)`: the most items a list argument takes. */
+  maxItems?: number | undefined;
 }
 
 export interface CypherField extends FieldBase {
@@ -232,8 +237,17 @@ export interface CustomField extends FieldBase {
 
 export type Field = ScalarField | RelationshipField | CypherField | CustomField;
 
-/** A `${jwt.path}` / `${context.path}` placeholder inside a rule string. */
-export const PLACEHOLDER = /\$\{(jwt|context|viewer)\.([A-Za-z0-9_.]+)\}/g;
+/**
+ * A placeholder inside a rule string: `${jwt.path}`, `${context.path}`,
+ * `${viewer.field}`, or a value of the node the rule is about:
+ * `${node.path}` in a type's rules, `${source.path}` / `${target.path}` /
+ * `${edge.property}` in a relationship field's rules.
+ */
+export const PLACEHOLDER =
+  /\$\{(jwt|context|viewer|node|source|target|edge)\.([A-Za-z0-9_.]+)\}/g;
+
+/** The placeholder sources that name a node (or edge) of the rule itself. */
+export const RULE_REFERENCES = new Set(["node", "source", "target", "edge"]);
 
 /** `{ node, jwt, AND, OR, NOT }`, as written in `@authorization`. */
 export type AuthorizationWhere = Record<string, unknown>;
@@ -258,7 +272,10 @@ export interface AuthorizationValidateRule {
 export interface Authorization {
   filter: readonly AuthorizationFilterRule[];
   validate: readonly AuthorizationValidateRule[];
-  /** `bypass: false`: the schema's bypass does not skip these rules. */
+  /**
+   * `bypass: false`: the schema's bypass does not skip these rules.
+   * `true`: it does, as when left out, and `check()` does not note it.
+   */
   bypass?: boolean;
   /** `public:` operations deliberately open to every caller. */
   public?: ReadonlySet<AuthOperation>;
@@ -300,7 +317,28 @@ export interface NodeType {
   search: readonly SearchIndex[];
   /** Interfaces the type implements. */
   interfaces: readonly string[];
+  /** `@uniqueTogether`: combinations no two nodes of the type may share. */
+  uniqueTogether: readonly UniqueTogether[];
   description: string | undefined;
+}
+
+/**
+ * `@uniqueTogether(fields:, where:)`: no two nodes of the type (among those
+ * matching `where`) hold the same value of every field. A combination
+ * with a null scalar, a missing single relationship or an empty set is
+ * exempt, as a null is in a unique index.
+ */
+export interface UniqueTogether {
+  /** The fields as declared, for messages. */
+  fields: readonly string[];
+  /** Scalar fields, compared by stored value. */
+  scalars: readonly ScalarField[];
+  /** Single relationships, compared by the target's @key. */
+  singles: readonly RelationshipField[];
+  /** At most one list relationship, compared as the set of target keys. */
+  set: RelationshipField | undefined;
+  /** A `<Type>Where`-shaped filter: only nodes matching it are compared. */
+  where: Record<string, unknown> | undefined;
 }
 
 export type SearchIndex =

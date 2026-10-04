@@ -115,6 +115,7 @@ Model:
 | `@node(labels:, plural:)`                                                                                  | type              | A node label set; default: the type name                                                                                                                                                                                                   |
 | `@key(generate:)`                                                                                          | field             | Required, unique and immutable. The sort tie-breaker, cursor anchor and mutation address. `generate: true` fills a UUID on create                                                                                                          |
 | `@unique`                                                                                                  | field             | Uniqueness constraint                                                                                                                                                                                                                      |
+| `@uniqueTogether(fields:, where:)`                                                                         | type              | No two nodes (matching `where`) share these fields: scalars, single relationships, at most one list relationship as a set. Repeatable; see [Mutations](#mutations)                                                                         |
 | `@index(kind: RANGE \| TEXT \| POINT)`                                                                     | field             | An explicit index, usually inferred                                                                                                                                                                                                        |
 | `@storedAs(type:)`                                                                                         | custom scalar     | How a custom scalar is stored (`STRING`, `INT`, `FLOAT`, `BOOLEAN`, `DATETIME`, `DATE`); its SDL description is what clients see, whatever implementation `scalars` passes                                                                 |
 | `@relationship(type:, direction:, properties:, queryDirection:, onDelete:, nestedOperations:, aggregate:)` | field             | An edge to a `@node` type, interface or union. `queryDirection: UNDIRECTED` reads both ways; `onDelete: DETACH \| CASCADE \| RESTRICT`; `nestedOperations` lists the nested writes inputs offer; `aggregate: false` drops its aggregates   |
@@ -145,6 +146,7 @@ API:
 | `@sortable`                                           | field                                        | Sort and paginate by this field (on a relationship property: `sort: [{ edge: { ... } }]`)                     |
 | `@groupBy`                                            | field                                        | A grouping key of `<plural>Grouped(by:)` (needs `@query(aggregate: true)`)                                    |
 | `@limit(default:, max:)`                              | type, interface, union, list relationship    | Page size bounds                                                                                              |
+| `@size(max:)`                                         | list argument of a `@cypher` field           | The most items it takes (default `maxListArgument`)                                                           |
 | `@relayId`                                            | `@key` field                                 | Adds a global `id` and the `Node` interface                                                                   |
 | `@authentication(operations:, jwt:)`                  | type, field                                  | Needs an authenticated request, whose claims satisfy `jwt`                                                    |
 | `@authorization(filter:, validate:)`                  | type (filter and validate), field (validate) | Row-level rules, compiled into statements                                                                     |
@@ -216,7 +218,10 @@ string), `Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`,
   out of the `OR`, and an `OR` or `NOT` with nothing left is left out
   entirely, so an unset variable never widens a filter to every row; a
   literal `OR: []` matches nothing. A relationship quantifier whose filter
-  is empty is left out too: ask `count: { gt: 0 }` for "has any".
+  is empty is left out too: ask `count: { gt: 0 }` for "has any". A single
+  relationship takes `<field>Exists: Boolean` for "is set" (`venueExists:
+false`: festivals without a venue); as in every relationship filter, a
+  related node the reader may not see counts as none.
 - `count` and `single` count related nodes once each, however many
   relationships lead to them. `all` holds on an empty set, and a missing
   property fails it.
@@ -422,7 +427,39 @@ commits:
 - a single relationship stays single and a required one stays set, even
   when written from the other side or when its target is deleted
   (`CONSTRAINT_VIOLATION`);
+- every `@uniqueTogether` holds (`CONSTRAINT_VIOLATION`, below);
 - `@authorization` validate rules, type and field level (`FORBIDDEN`).
+
+`@uniqueTogether` states a uniqueness the engine's per-property constraints
+cannot: over relationship ends.
+
+```graphql
+type ConnectionRequest @node @uniqueTogether(fields: ["from", "to"]) {
+  key: ID! @key(generate: true)
+  from: Person! @relationship(type: "SENT", direction: IN)
+  to: Person! @relationship(type: "TO", direction: OUT)
+}
+type Conversation
+  @node
+  @uniqueTogether(fields: ["participants"], where: { kind: { eq: DIRECT } }) {
+  key: ID! @key
+  kind: ConversationKind!
+  participants: [Person!]! @relationship(type: "IN", direction: IN)
+}
+```
+
+`fields` names scalar fields (compared by value), single relationships (by
+the target's `@key`) and at most one list relationship (by the set of
+target keys, in any order); `where` limits the nodes compared. A
+combination with a null scalar, no target or an empty set is exempt, as a
+null is in a unique index. Every generated mutation checks it after its
+writes — creates, updates, upserts, nested creates, and connects,
+disconnects and deletes from either side — for every caller, the bypass
+included: it is a data invariant, not a rule. Each check seeks the written
+nodes and compares only with nodes sharing their first relationship end
+(or, with scalars only, their first scalar's value). Writes outside
+generated mutations (`@cypher` mutations, Cypher of your own) are not
+checked.
 
 Any failure rolls the whole mutation back. Atomicity is per root field:
 in an operation with several root fields, each runs in its own
@@ -446,7 +483,11 @@ bounded like bulk deletes and following `onDelete`. `limit` defaults to
 `maxBatch`; more matches is `LIMIT_EXCEEDED`.
 `@relationship(nestedOperations: [CONNECT])` keeps only the listed nested
 writes in the inputs, and `aggregate: false` removes the relationship's
-aggregates and aggregate filter.
+aggregates and aggregate filter. A nested `update: [{ key, edge, node }]`
+(`UPDATE`) changes the connected node and the relationship's properties;
+`UPDATE_EDGE` offers `update: [{ key, edge }]` alone, so an input can keep
+"set my RSVP" without advertising "edit the festival" (it needs
+relationship properties).
 
 An input left with no field is left out, with what would take it: a
 relationship without settable properties has no `edge` input, and a type
@@ -533,22 +574,90 @@ type Mutation {
 ```
 
 `this` is the parent node; arguments are `$parameters`; `$jwt` holds the
-request's claims. `columnName` is inferred when the statement's last
-top-level `RETURN` has one item, `RETURN x` or `RETURN … AS x` (commas
-inside calls, lists, maps and `CALL { }` do not count); with several
-items, set it.
+request's claims; `$viewer` is the caller (below). `columnName` is
+inferred when the statement's last top-level `RETURN` has one item,
+`RETURN x` or `RETURN … AS x` (commas inside calls, lists, maps and
+`CALL { }` do not count); with several items, set it.
 Fields returning `@node` types are projected with the selection like any
 other node, and read filters apply to them.
 
 Statements are checked, not trusted:
 
-- at startup: every `$parameter` must be an argument or `$jwt`, Query and
-  object fields may not contain write clauses, and unused arguments,
-  `OPTIONAL MATCH` and statements that never use `this` are warnings
-  (`lora.model.warnings`);
+- at startup: every `$parameter` must be an argument, `$jwt` or
+  `$viewer`, Query and object fields may not contain write clauses, and
+  unused arguments, `OPTIONAL MATCH` and statements that never use
+  `this` are warnings (`lora.model.warnings`);
 - in `check()`: every statement is planned with `explain()`, so a syntax
   error, an unknown function or a missing column fails CI with the engine's
   message, not the first request.
+
+### The caller: `$viewer`
+
+With a `@viewer` claim, `$viewer` is the caller's node's `@key`, in field
+and mutation statements alike, so a statement names the viewer, not the
+claim:
+
+```graphql
+type Mutation {
+  createPost(key: String!, caption: String!): Post
+    @authentication
+    @cypher(
+      statement: """
+      MATCH (a:Person) WHERE a.key = $viewer
+      CREATE (a)-[:POSTED]->(p:Post {key: $key, caption: $caption})
+      RETURN p
+      """
+    )
+}
+```
+
+When `@viewer` maps to the key, `$viewer` is the claim itself. When it
+maps to another field (an opaque `subject`), it is read in the statement
+with one seek by the claim (`head([(v:Person {subject: $claim}) |
+v.key])`), so the statement above keeps working, and keeps seeking, when
+`@viewer` moves from `Person.key` to `Person.subject`. `$viewer` is null
+signed out, for a claim that is not a string or number, and for a token
+naming no node. A statement using it without a `@viewer` claim is a
+model error, and `viewer` is reserved as an argument name, like `jwt`.
+
+### Guarding root fields
+
+`@authentication` and `@authorization(validate:)` guard a Query or
+Mutation `@cypher` field before its statement runs. With no node, a rule
+tests claims (`jwt`) and the caller's own node (`viewer`); `node` and
+filter rules are model errors, and `operations` / `when` do not matter:
+each rule guards the call.
+
+```graphql
+type Mutation {
+  verify: Person
+    @authentication
+    @authorization(
+      validate: [{ where: { viewer: { verified: { eq: true } } } }]
+    )
+    @cypher(
+      statement: "MATCH (p:Person) WHERE p.key = $viewer SET p.verified = true RETURN p"
+    )
+}
+```
+
+As anywhere, any passing rule grants, and the schema's bypass skips them.
+Claim tests are decided in JavaScript: a refusal (`FORBIDDEN`, or
+`UNAUTHENTICATED` without a token) runs no statement. A `viewer` test is
+one seek, in the mutation's transaction, before the statement. Every root
+`@cypher` field is in the access matrix, guarded or not (Mutation fields
+under the operation `EXECUTE`).
+
+### List arguments
+
+The statement sees its arguments as sent, so list arguments are capped:
+at most `@size(max:)` items, or `maxListArgument` (default 1000) without
+it. More is `BAD_USER_INPUT` before any statement runs; each level of a
+nested list counts.
+
+```graphql
+createPost(key: String!, hashtags: [String!] = [] @size(max: 30)): Post
+```
 
 ### Filters, sorts and richer results
 
@@ -643,6 +752,19 @@ type Post
   for keys built from the caller's key while the claim is an opaque
   subject: `key: { endsWith: ":${viewer.key}" }`, `key: { eq:
   "${viewer.key}" }`. It stands for one value, not inside a list.
+- **The rule's own node.** `"${node.path}"` in a node part reads the node
+  the rule is about, so a rule can relate two of its paths: "the request's
+  recipient is in the conversation it gates" is
+  `{ node: { conversation: { participants: { some: { key: { eq:
+"${node.to.key}" } } } } } }`. The path ends on a scalar field and steps
+  only through single relationships; the value is read in the statement
+  (the stored one, as rules see it) and stands for one value, not inside a
+  list. In a relationship field's rules, `${source.path}`, `${target.path}`
+  and `${edge.property}` read its ends and properties: "the payer is on the
+  expense's trip" is `{ source: { trip: { members: { some: { key: { eq:
+"${target.key}" } } } } } }` on `Expense.paidBy`'s CONNECT. A named rule
+  that reads `${node.…}` can't stand inside another node's filter, where it
+  would read the outer node.
 - A whole string starting with `$` must be a placeholder (`$jwt.<claim>`,
   `$context.<path>`): a misspelt one (`"$jtw.sub"`) is a model error, not
   a literal. Write a literal `$…` as `"\\$…"`.
@@ -801,7 +923,9 @@ type Post
   and relationship rules included; `@authentication` still applies.
   `bypass` tests claims only, so it is decided before the statement is
   built: an admin's statement carries no rule predicate. A type keeps its
-  rules for everyone with `@authorization(bypass: false)`. `mutations` is
+  rules for everyone with `@authorization(bypass: false)`;
+  `@authorization(bypass: true)` is the default made explicit, and quiets
+  `check()`'s note that the bypass skips the type's field rules. `mutations` is
   the write rule (`CREATE`, `UPDATE`, `DELETE`) of every `@mutation` type
   that declares no rule for those operations; a type's own rules replace
   it, never merge with it. `check()` fails on a `@mutation` type whose
@@ -1084,17 +1208,37 @@ files, and exits non-zero on any finding. It is the CI gate. Options:
 - `--database dir [--name app]`: check an existing database as it is, and
   report indexes it has that the API does not use.
 
-`access` prints who may do what: for every type and guarded field, each
-operation as each kind of caller (anonymous, authenticated, and each role
+`access` prints who may do what: for every type, guarded field and root
+`@cypher` field, each operation as each kind of caller (anonymous, authenticated, and each role
 the rules test, such as `roles:admin`), with the verdict (`allowed`,
 `filtered`, `validated`, `masked`, `denied`, `unauthenticated`) and the
 rules that decide it. `lora.accessMatrix()` returns the same list; its
 order is stable, so a snapshot in CI turns access changes into diffs.
 
-`check` lints authorization too: a filter rule every signed-in caller
-passes, a rule whose default `requireAuthentication` refuses anonymous
-callers a branch that needs no claims, and field rules the schema's
-bypass skips.
+`check` lints authorization too:
+
+- a filter rule every signed-in caller passes;
+- a rule whose default `requireAuthentication` refuses anonymous callers
+  a branch that needs no claims;
+- field rules the schema's bypass skips, on a type that says neither
+  `@authorization(bypass: false)` nor `bypass: true`;
+- an UPDATE rule testing a single relationship the update input can
+  re-point (`connect`, `disconnect`, `create`): the rule sees the node
+  before (and, validated `AFTER`, after) the write, so a caller passing it
+  on two targets moves the node. Tests that name the caller's own node
+  (`isViewer`) are skipped. Fix:
+  `@settable(onCreate: true, onUpdate: false)`;
+- a CREATE validate rule testing a field UPDATE can change while no UPDATE
+  rule (or field-level UPDATE rule) tests it: created as the rule demands,
+  then changed;
+- a validate rule (not `READ` or `CREATE`) or relationship rule testing a
+  masked field the claims do not settle: rules see the stored value, so
+  success versus `FORBIDDEN` tells the caller what the mask hides;
+- nested `create`, `update` or `delete` into a type whose rules for that
+  write refuse every signed-in caller without a role (an admin-only type,
+  or the `@authorizationDefaults(mutations:)` default), offered by an input
+  that caller can use: surface only admins can use. Fix:
+  `nestedOperations: [CONNECT, DISCONNECT]`.
 
 A `@mutation` type with a generated write no rule guards (no
 `@authentication` or `@authorization` rule for it, and no
@@ -1225,14 +1369,15 @@ the document before that. `execute()`, `subscribe()` and `persist()` apply them,
 `lora.validationRules()` / `lora.envelopPlugin()` bring them to any other
 server (GraphQL Yoga takes the plugin as is):
 
-| Guard                   | Default    | Limit                                    |
-| ----------------------- | ---------- | ---------------------------------------- |
-| `maxDepth`              | 12         | Field nesting, through fragments         |
-| `maxIntrospectionDepth` | 20         | Nesting under `__schema` / `__type`      |
-| `maxAliases`            | 30         | Aliased fields per document              |
-| `maxRootFields`         | 20         | Root fields per operation                |
-| `maxTokens`             | 5000       | Lexer tokens per document, while parsing |
-| `introspection`         | production | Off when `NODE_ENV` is `production`      |
+| Guard                   | Default    | Limit                                                                  |
+| ----------------------- | ---------- | ---------------------------------------------------------------------- |
+| `maxDepth`              | 12         | Field nesting, through fragments                                       |
+| `maxIntrospectionDepth` | 20         | Nesting under `__schema` / `__type`                                    |
+| `maxAliases`            | 30         | Aliased fields per document                                            |
+| `maxRootFields`         | 20         | Root fields per operation                                              |
+| `maxTokens`             | 5000       | Lexer tokens per document, while parsing                               |
+| `maxListArgument`       | 1000       | Items per list argument of a `@cypher` field (`@size(max:)` overrides) |
+| `introspection`         | production | Off when `NODE_ENV` is `production`                                    |
 
 With `NODE_ENV=production`, database errors are masked and introspection
 is off unless configured otherwise. See

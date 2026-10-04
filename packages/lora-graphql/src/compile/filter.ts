@@ -122,6 +122,21 @@ function nodeKeys(
         return pred && and(rule, pred);
       };
     }
+    // `<field>Exists`: whether a single relationship is set. A related node
+    // the reader may not see counts as none, as in every relationship
+    // filter (a rule sees every node).
+    if (key.endsWith("Exists")) {
+      const rel = node.fields.get(key.slice(0, -"Exists".length));
+      if (rel?.kind === "relationship" && !rel.list) {
+        checkFieldAuthentication(ctx, node.name, rel);
+        const rule = fieldValidate(ctx, node, rel, variable, "READ");
+        return (value) => {
+          if (typeof value !== "boolean") return undefined;
+          const pred = relationshipExists(ctx, variable, rel, value);
+          return and(rule, pred);
+        };
+      }
+    }
     // `<field>Connection`: quantifiers over { node, edge } of a list
     // relationship with properties.
     if (key.endsWith("Connection")) {
@@ -475,6 +490,34 @@ function relationshipPredicate(
     }
   }
   return and(...parts);
+}
+
+/** `size([(this)-[:T]->(x:Target) | 1]) > 0` (or `= 0`), over every member. */
+function relationshipExists(
+  ctx: CompileContext,
+  variable: string,
+  rel: RelationshipField,
+  exists: boolean,
+): Expr {
+  const counts = memberFields(ctx.model, rel).map((field) => {
+    const node = ctx.model.nodes.get(field.target)!;
+    checkAuthentication(ctx, node, "READ");
+    ctx.reads.labels.add(node.labels[0]!);
+    return fn(
+      "size",
+      related(
+        ctx,
+        variable,
+        field,
+        () => undefined,
+        () => lit(1),
+      ),
+    );
+  });
+  ctx.reads.relationships.add(rel.type);
+  const total =
+    counts.length === 0 ? lit(0) : counts.reduce((a, b) => bin("+", a, b));
+  return bin(exists ? ">" : "=", total, lit(0));
 }
 
 function compareCount(

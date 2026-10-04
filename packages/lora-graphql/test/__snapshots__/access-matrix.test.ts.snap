@@ -1,5 +1,22 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`accessMatrix > root @cypher fields, guarded or not 1`] = `
+[
+  "Query.count READ anonymous: allowed (no rule)",
+  "Query.count READ authenticated: allowed (no rule)",
+  "Query.count READ roles:admin: allowed (no rule)",
+  "Mutation.touch EXECUTE anonymous: allowed (no rule)",
+  "Mutation.touch EXECUTE authenticated: allowed (no rule)",
+  "Mutation.touch EXECUTE roles:admin: allowed (no rule)",
+  "Mutation.verify EXECUTE anonymous: unauthenticated (@authentication, validate[0])",
+  "Mutation.verify EXECUTE authenticated: validated (@authentication, validate[0])",
+  "Mutation.verify EXECUTE roles:admin: validated (@authentication, validate[0])",
+  "Mutation.wipe EXECUTE anonymous: unauthenticated (validate[0])",
+  "Mutation.wipe EXECUTE authenticated: denied (validate[0])",
+  "Mutation.wipe EXECUTE roles:admin: allowed (validate[0])",
+]
+`;
+
 exports[`accessMatrix > the README's Post example 1`] = `
 [
   "Post READ anonymous: filtered (filter[0], filter[1], filter[2], filter[3])",

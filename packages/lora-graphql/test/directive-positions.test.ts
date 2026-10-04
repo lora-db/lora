@@ -16,6 +16,7 @@ const USE: Record<string, string> = {
   groupBy: "@groupBy",
   customResolver: "@customResolver",
   unique: "@unique",
+  uniqueTogether: '@uniqueTogether(fields: ["key", "name"])',
   index: "@index(kind: RANGE)",
   relationship: '@relationship(type: "X", direction: OUT)',
   settable: "@settable(onCreate: true)",
@@ -184,8 +185,10 @@ describe("no directive is silently ignored", () => {
 
   test("every library directive has a sample use", () => {
     // @storedAs (on scalars) and @authorizationDefaults (on the schema)
-    // have one place each, which graphql-js enforces.
+    // have one place each, which graphql-js enforces; @size (on arguments
+    // of @cypher fields) is tested in cypher-mutation-hardening.test.ts.
     const elsewhere = new Set([
+      "size",
       "storedAs",
       "authorizationDefaults",
       "authorizationRules",

@@ -185,6 +185,7 @@ export function buildMutations(
     }));
 
   // `update: [{ key, edge, node }]`: change a connected pair in place.
+  // With UPDATE_EDGE alone, `node` is left out: the properties only.
   const nestedUpdateInput = (owner: NodeType, rel: RelationshipField) => {
     const target = model.nodes.get(rel.target)!;
     const props = rel.properties
@@ -192,7 +193,9 @@ export function buildMutations(
       : undefined;
     const edge = props ? propsUpdate(props) : undefined;
     const node =
-      target.mutations.has("UPDATE") && isUpdatable(model, target)
+      rel.nestedOperations.has("UPDATE") &&
+      target.mutations.has("UPDATE") &&
+      isUpdatable(model, target)
         ? updateInput(target)
         : undefined;
     if (!edge && !node) return undefined;
@@ -320,7 +323,7 @@ export function buildMutations(
             description: `true deletes the connected ${target.name}.`,
           };
     }
-    if (update && allows("UPDATE")) {
+    if (update && (allows("UPDATE") || allows("UPDATE_EDGE"))) {
       const nested = nestedUpdateInput(owner, rel);
       if (nested) {
         fields["update"] = {

@@ -50,6 +50,7 @@ import type {
   NodeType,
   RelationshipField,
   ScalarField,
+  UniqueTogether,
 } from "../model/types.js";
 import { assertReadable } from "../schema/guard.js";
 import {
@@ -88,6 +89,8 @@ export interface MutationEnv {
   degrees: ReadonlyMap<string, number>;
   /** Most nodes one mutation may create or delete, nested ones included. */
   maxBatch: number;
+  /** Most items a @cypher list argument takes without `@size(max:)`. */
+  maxListArgument?: number | undefined;
   callbacks: Readonly<Record<string, PopulatedByCallback>>;
   /**
    * A caller-owned transaction: run inside it and leave the commit to the
@@ -1515,6 +1518,78 @@ class Runner {
   }
 
   /**
+   * `@uniqueTogether`: after every write of the mutation, no two nodes of
+   * a constrained type share a combination. Checks the nodes it created
+   * or updated and the nodes whose constrained relationships it connected
+   * or disconnected, from either side, against the nodes reachable
+   * through the same ends. For every caller: a data invariant, not a
+   * rule, so the bypass does not skip it.
+   */
+  async checkUniqueTogether(): Promise<void> {
+    const model = this.env.model;
+    const touched = new Map<NodeType, Map<string, unknown>>();
+    const touch = (type: string, key: unknown) => {
+      const node = model.nodes.get(type);
+      if (!node?.uniqueTogether.length) return;
+      const keys = touched.get(node) ?? new Map<string, unknown>();
+      keys.set(keyOf(key), key);
+      touched.set(node, keys);
+    };
+    for (const e of this.change.created) touch(e.type, e.key);
+    for (const [node, { keys }] of this.updated) {
+      for (const key of keys) touch(node.name, key);
+    }
+    // An edge (start)-[:T]->(end) changes the combination of `start` when
+    // its type constrains an OUT field of T reaching `end`'s type, and of
+    // `end` for an IN field reaching `start`'s.
+    const end = (
+      at: EntityRef,
+      direction: "IN" | "OUT",
+      other: string,
+      type: string,
+    ) => {
+      const node = model.nodes.get(at.type);
+      const hit = node?.uniqueTogether.some((u) =>
+        [...u.singles, ...(u.set ? [u.set] : [])].some(
+          (f) =>
+            f.type === type &&
+            f.direction === direction &&
+            f.members.includes(other),
+        ),
+      );
+      if (hit) touch(at.type, at.key);
+    };
+    for (const ref of [...this.connected, ...this.disconnected]) {
+      const [ownerName, fieldName] = ref.field.split(".") as [string, string];
+      const field = model.nodes.get(ownerName)?.fields.get(fieldName);
+      if (field?.kind !== "relationship") continue;
+      const [start, finish] =
+        field.direction === "OUT" ? [ref.from, ref.to] : [ref.to, ref.from];
+      end(start, "OUT", finish.type, ref.type);
+      end(finish, "IN", start.type, ref.type);
+    }
+    for (const [node, keys] of touched) {
+      for (const u of node.uniqueTogether) {
+        const ctx = this.ctx();
+        // The constraint's filter is the data's, not the caller's view.
+        ctx.inAuth = true;
+        const rows = await this.run(
+          uniqueTogetherStatement(ctx, model, node, u, [...keys.values()]),
+          ctx,
+        );
+        if (rows.length > 0) {
+          throw requestError(
+            "CONSTRAINT_VIOLATION",
+            `${node.name} must be unique by (${u.fields.join(", ")}); ${node.name} ${JSON.stringify(rows[0]!["key"])} would share it with another`,
+            undefined,
+            { type: node.name, fields: [...u.fields] },
+          );
+        }
+      }
+    }
+  }
+
+  /**
    * A required single relationship stays set: disconnecting from the other
    * side must not leave the owner without one.
    */
@@ -1892,6 +1967,79 @@ class Runner {
       return true;
     });
   }
+}
+
+/**
+ * The first node among `keys` whose `@uniqueTogether` combination another
+ * node of its type shares: seeks each by key, binds its combination, then
+ * compares it with the nodes that share its first relationship end (or,
+ * with scalars only, its first scalar's value) — never a scan of the type.
+ */
+function uniqueTogetherStatement(
+  ctx: CompileContext,
+  model: GraphModel,
+  node: NodeType,
+  u: UniqueTogether,
+  keys: unknown[],
+): string {
+  const label = name(node.labels[0]!);
+  const key = name(node.key.property);
+  const rels = [...u.singles, ...(u.set ? [u.set] : [])];
+  // Target keys through each relationship, from `at`.
+  const ends = (at: string) =>
+    rels.map((f) => {
+      const target = model.nodes.get(f.target)!;
+      return `[(${at})${arrow(f, "", "x", undefined)} WHERE (${labelTest("x", target)}) | x.${name(target.key.property)}]`;
+    });
+  const nWhere = u.where
+    ? compileNodeWhere(ctx, node, "n", u.where)
+    : undefined;
+  const mWhere = u.where
+    ? compileNodeWhere(ctx, node, "m", u.where)
+    : undefined;
+  const mine = rels.map((_, i) => `u${i}`);
+  const theirs = rels.map((_, i) => `v${i}`);
+  // Exempt: a null scalar, a missing single relationship, an empty set.
+  const present = [
+    ...(nWhere ? [`(${printExpr(nWhere)})`] : []),
+    ...u.scalars.map((f) => `n.${name(f.property)} IS NOT NULL`),
+    ...rels.map((f, i) => (f.list ? `size(u${i}) > 0` : `size(u${i}) = 1`)),
+  ];
+  const anchor = rels[0];
+  let candidates: string;
+  if (anchor) {
+    const target = model.nodes.get(anchor.target)!;
+    const back =
+      anchor.direction === "OUT"
+        ? `<-[:${name(anchor.type)}]-(m)`
+        : `-[:${name(anchor.type)}]->(m)`;
+    candidates =
+      `MATCH (n)${arrow(anchor, "", "t", undefined)} WHERE ${labelTest("t", target)}\n` +
+      `MATCH (t)${back} WHERE ${labelTest("m", node)} AND m.${key} <> n.${key}\n`;
+  } else {
+    const first = u.scalars[0]!;
+    candidates = `MATCH (m:${label}) WHERE m.${name(first.property)} = n.${name(first.property)} AND m.${key} <> n.${key}\n`;
+  }
+  const same = [
+    ...u.scalars.map((f) => `m.${name(f.property)} = n.${name(f.property)}`),
+    ...rels.map((f, i) =>
+      f.list
+        ? `size(v${i}) = size(u${i}) AND all(y IN v${i} WHERE y IN u${i})`
+        : `v${i} = u${i}`,
+    ),
+    ...(mWhere ? [`(${printExpr(mWhere)})`] : []),
+  ];
+  return (
+    `UNWIND ${printExpr(bind(ctx, dedupe(keys)))} AS k\n` +
+    `MATCH (n:${label}) WHERE n.${key} = k\n` +
+    `WITH ${["n", ...ends("n").map((e, i) => `${e} AS ${mine[i]!}`)].join(", ")}` +
+    (present.length > 0 ? ` WHERE ${present.join(" AND ")}` : "") +
+    "\n" +
+    candidates +
+    `WITH ${["n", "m", ...mine, ...ends("m").map((e, i) => `${e} AS ${theirs[i]!}`)].join(", ")}` +
+    (same.length > 0 ? ` WHERE ${same.join(" AND ")}` : "") +
+    `\nRETURN n.${key} AS key LIMIT 1`
+  );
 }
 
 /** Fields on the other side of `rel`'s relationship type, pointing back. */
@@ -2288,6 +2436,7 @@ export async function executeMutation(
         break;
       }
     }
+    await runner.checkUniqueTogether();
     // Only now, so that any other error is the one a free key gets.
     if (runner.hiddenKey) throw forbidden(runner.hiddenKey, "CREATE");
     if (runner.takenUnique) {

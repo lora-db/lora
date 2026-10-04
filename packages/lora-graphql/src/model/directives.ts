@@ -43,6 +43,12 @@ export const directiveTypeDefs = /* GraphQL */ `
   "A uniqueness constraint."
   directive @unique on FIELD_DEFINITION
 
+  "No two nodes of this type (among those matching where) share the values of fields: scalar fields, single relationships (by the target's @key) and at most one list relationship (by the set of target keys). Enforced by every generated mutation, for every caller."
+  directive @uniqueTogether(
+    fields: [String!]!
+    where: NodeWhere
+  ) repeatable on OBJECT
+
   "An explicit index. Usually unnecessary: inferred from @filterable and @sortable."
   directive @index(kind: IndexKind!) on FIELD_DEFINITION
 
@@ -67,11 +73,13 @@ export const directiveTypeDefs = /* GraphQL */ `
     aggregate: Boolean = true
   ) on FIELD_DEFINITION
 
+  "UPDATE changes a connected node and its relationship properties in place; UPDATE_EDGE only the properties."
   enum NestedOperation {
     CREATE
     CONNECT
     DISCONNECT
     UPDATE
+    UPDATE_EDGE
     DELETE
   }
 
@@ -125,6 +133,9 @@ export const directiveTypeDefs = /* GraphQL */ `
 
   "Declared upper bound on a relationship's fan-out, used by cost estimates."
   directive @cardinality(max: Int!) on FIELD_DEFINITION
+
+  "The most items a list argument of a @cypher field takes; more is BAD_USER_INPUT before the statement runs. Without it, maxListArgument applies."
+  directive @size(max: Int!) on ARGUMENT_DEFINITION
 
   "Generated read operations for a node type. Reads are on by default."
   directive @query(
@@ -204,7 +215,7 @@ export const directiveTypeDefs = /* GraphQL */ `
   "Readable but never client-settable."
   directive @readonly on FIELD_DEFINITION
 
-  "A field backed by a Cypher statement. \`this\` is the parent node; arguments are $parameters, and $jwt holds the request's claims."
+  "A field backed by a Cypher statement. \`this\` is the parent node; arguments are $parameters, $jwt holds the request's claims, and $viewer the caller's @viewer node key."
   directive @cypher(statement: String!, columnName: String) on FIELD_DEFINITION
 
   "Require an authenticated request (a jwt in the context) for these operations."
@@ -226,7 +237,7 @@ export const directiveTypeDefs = /* GraphQL */ `
   directive @authorization(
     filter: [AuthorizationFilterRule!]
     validate: [AuthorizationValidateRule!]
-    "On a type: false keeps the schema's bypass (see @authorizationDefaults) from skipping this type's rules."
+    "On a type: false keeps the schema's bypass (see @authorizationDefaults) from skipping this type's rules; true lets it skip them, as without the argument, and tells check() that was meant."
     bypass: Boolean
     "On a @mutation type: operations deliberately open to every caller, so check() does not report them as unguarded."
     public: [AuthOperation!]
@@ -318,6 +329,9 @@ export const directiveTypeDefs = /* GraphQL */ `
   "{ node: <Type>Where-shaped filter, jwt: claim filter, AND, OR, NOT }. String values starting with $jwt. are replaced by claims."
   scalar AuthorizationWhere
 
+  "A <Type>Where-shaped filter over the type the directive is on."
+  scalar NodeWhere
+
   enum IndexKind {
     RANGE
     TEXT
@@ -389,6 +403,7 @@ export const PRELUDE_TYPES = new Set([
   "AuthorizationValidateRule",
   "DefaultValue",
   "AuthorizationWhere",
+  "NodeWhere",
   "IndexKind",
   "RelationshipDirection",
   "FilterOperator",

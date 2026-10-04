@@ -64,8 +64,13 @@ import type {
   RelationshipPropertiesType,
   ScalarField,
   ScalarType,
+  UniqueTogether,
 } from "./types.js";
-import { PLACEHOLDER, RELATIONSHIP_OPERATIONS } from "./types.js";
+import {
+  PLACEHOLDER,
+  RELATIONSHIP_OPERATIONS,
+  RULE_REFERENCES,
+} from "./types.js";
 import { isUpdatable } from "./inputs.js";
 
 export interface ModelOptions {
@@ -451,6 +456,7 @@ export function buildModel(
           plainNames,
           schema,
           root: undefined,
+          viewer: viewer !== undefined,
         });
         if (cypher) fields.set(cypher.name, cypher);
         continue;
@@ -491,6 +497,20 @@ export function buildModel(
       (f): f is ScalarField => f.kind === "scalar",
     );
     checkPropertyCollisions(t.name, scalars, problems);
+    // A single relationship's `<field>Exists` filter takes that name.
+    for (const f of fields.values()) {
+      if (
+        f.kind === "relationship" &&
+        !f.list &&
+        fields.has(`${f.name}Exists`)
+      ) {
+        problems.push({
+          type: t.name,
+          field: `${f.name}Exists`,
+          message: `collides with the ${f.name}Exists filter of the single relationship ${f.name}; rename one`,
+        });
+      }
+    }
 
     const keys = scalars.filter((f) => f.key);
     if (keys.length !== 1) {
@@ -589,6 +609,7 @@ export function buildModel(
       authorization,
       search,
       interfaces: t.getInterfaces().map((i) => i.name),
+      uniqueTogether: [],
       subscriptions: new Set<MutationOperation>(
         (subscription?.["operations"] as MutationOperation[] | undefined) ?? [],
       ),
@@ -724,6 +745,14 @@ export function buildModel(
             "a required relationship needs CONNECT or CREATE in nestedOperations, or creates could never set it",
         });
       }
+      if (f.nestedOperations.has("UPDATE_EDGE") && !f.properties) {
+        problems.push({
+          type: node.name,
+          field: f.name,
+          message:
+            "UPDATE_EDGE updates relationship properties, and this relationship has none",
+        });
+      }
     }
   }
 
@@ -744,6 +773,7 @@ export function buildModel(
         plainNames,
         schema,
         root: t.name as "Query" | "Mutation",
+        viewer: viewer !== undefined,
       });
       if (!field) continue;
       const other = rootFieldOwners.get(field.name);
@@ -921,6 +951,12 @@ export function buildModel(
   }
 
   abstractsOf.set(nodes, abstracts);
+  for (const t of nodeTypes) {
+    const node = nodes.get(t.name);
+    if (!node) continue;
+    (node as { uniqueTogether: readonly UniqueTogether[] }).uniqueTogether =
+      readUniqueTogether(t, node, nodes, relationshipProperties, d, problems);
+  }
   const ruleEnds = (f: RelationshipField): RuleEnds | undefined => {
     const source = nodes.get(f.owner);
     const target = nodes.get(f.target);
@@ -1122,6 +1158,27 @@ export function buildModel(
           jwtShape,
         );
       }
+    }
+  }
+
+  // Rules on root @cypher fields: claims and the caller's node, no node.
+  for (const f of [...queries, ...mutationFields]) {
+    if (!f.authorization) continue;
+    desugar(undefined, f.owner, f.name, f.authorization.validate);
+    for (const rule of f.authorization.validate) {
+      checkRuleWhere(
+        nodes,
+        relationshipProperties,
+        undefined,
+        f.owner,
+        f.name,
+        rule.where,
+        problems,
+        jwtShape,
+        viewerNode,
+        undefined,
+        "a root @cypher field has no node: its rules test jwt and viewer",
+      );
     }
   }
 
@@ -1750,6 +1807,72 @@ function resolveLimit(
   };
 }
 
+/** Every `@uniqueTogether` of a node type (repeatable), checked. */
+function readUniqueTogether(
+  t: GraphQLObjectType,
+  node: NodeType,
+  nodes: ReadonlyMap<string, NodeType>,
+  props: ReadonlyMap<string, RelationshipPropertiesType>,
+  d: (name: string) => GraphQLDirective,
+  problems: ModelProblem[],
+): UniqueTogether[] {
+  const out: UniqueTogether[] = [];
+  const dirs = [
+    ...(t.astNode?.directives ?? []),
+    ...t.extensionASTNodes.flatMap((n) => n.directives ?? []),
+  ].filter((x) => x.name.value === "uniqueTogether");
+  for (const dir of dirs) {
+    let ok = true;
+    const at = (message: string) => {
+      ok = false;
+      problems.push({ type: t.name, message: `@uniqueTogether: ${message}` });
+    };
+    const args = directive(
+      d("uniqueTogether"),
+      { astNode: { directives: [dir] } },
+      at,
+    );
+    if (!args) continue;
+    const names = args["fields"] as string[];
+    const where = (args["where"] ?? undefined) as
+      | Record<string, unknown>
+      | undefined;
+    if (names.length === 0) at("fields is empty");
+    if (new Set(names).size < names.length) at("fields names a field twice");
+    const scalars: ScalarField[] = [];
+    const singles: RelationshipField[] = [];
+    const sets: RelationshipField[] = [];
+    for (const n of names) {
+      const f = node.fields.get(n);
+      if (!f) at(`${t.name} has no field ${n}`);
+      else if (f.kind === "cypher" || f.kind === "custom") {
+        at(
+          `${n} is ${f.kind === "cypher" ? "a @cypher" : "a @customResolver"} field; only stored fields and relationships can be unique`,
+        );
+      } else if (f.kind === "scalar") {
+        if (f.list) at(`${n} is a list; list scalar fields cannot be unique`);
+        else scalars.push(f);
+      } else if (!nodes.has(f.target)) {
+        at(
+          `${n} reaches an interface or union; only relationships to a @node type can be unique`,
+        );
+      } else if (f.list) sets.push(f);
+      else singles.push(f);
+    }
+    if (sets.length > 1) {
+      at(
+        `fields names ${sets.length} list relationships (${sets.map((f) => f.name).join(", ")}); at most one is compared as a set`,
+      );
+    }
+    if (where !== undefined) {
+      checkNodeWhere(nodes, props, node, where, "where", at);
+    }
+    if (!ok) continue;
+    out.push({ fields: names, scalars, singles, set: sets[0], where });
+  }
+  return out;
+}
+
 function directive(
   def: GraphQLDirective,
   node: { astNode?: unknown },
@@ -1845,6 +1968,8 @@ function buildCypherField(
     plainNames: Set<string>;
     schema: GraphQLSchema;
     root: "Query" | "Mutation" | undefined;
+    /** Whether the @jwt type has a @viewer claim (enables `$viewer`). */
+    viewer: boolean;
   },
 ): CypherField | undefined {
   const at = (message: string) =>
@@ -1853,7 +1978,9 @@ function buildCypherField(
     warnings.push({ type: owner, field: f.name, message });
   const args = directive(d("cypher"), f, at);
   if (!args) return undefined;
-  const authorization = readOnlyRules(directive(d("authorization"), f, at), at);
+  const authorization = ctx.root
+    ? rootFieldRules(directive(d("authorization"), f, at), at)
+    : readOnlyRules(directive(d("authorization"), f, at), at);
   const statement = args["statement"] as string;
   for (const other of [
     "relationship",
@@ -1905,19 +2032,32 @@ function buildCypherField(
     }
     if (a.name === "jwt")
       at("argument `jwt` is reserved for the request's claims");
+    if (a.name === "viewer")
+      at("argument `viewer` is reserved for the caller's @viewer key");
     const argShape = unwrapInput(a.type);
+    const size = directive(d("size"), a, at)?.["max"] as number | undefined;
+    if (size !== undefined && !argShape.list) {
+      at(`argument ${a.name}: @size applies to list arguments`);
+    } else if (size !== undefined && size < 1) {
+      at(`argument ${a.name}: @size(max:) must be at least 1`);
+    }
     cypherArgs.push({
       name: a.name,
       type: { named: argNamed, ...argShape },
       defaultValue: argumentDefault(a),
       description: a.description ?? undefined,
+      ...(size !== undefined ? { maxItems: size } : {}),
     });
   }
 
   const params = [...new Set(scanParams(statement).map((p) => p.name))];
-  const known = new Set([...cypherArgs.map((a) => a.name), "jwt"]);
+  const known = new Set([...cypherArgs.map((a) => a.name), "jwt", "viewer"]);
   for (const p of params) {
-    if (!known.has(p)) {
+    if (p === "viewer" && !ctx.viewer) {
+      at(
+        "the statement uses $viewer, which needs a @viewer claim on the @jwt type",
+      );
+    } else if (!known.has(p)) {
       at(`the statement uses $${p}, which is neither an argument nor $jwt`);
     }
   }
@@ -2120,6 +2260,29 @@ function readOnlyRules(
   return rules;
 }
 
+/**
+ * `@authorization` on a Query or Mutation @cypher field: validate rules
+ * guarding the call, tested before the statement runs. There is no node,
+ * so they test claims (`jwt`) and the caller's node (`viewer`); their
+ * `operations` and `when` do not matter.
+ */
+function rootFieldRules(
+  args: Record<string, unknown> | undefined,
+  at: (message: string) => void,
+): Authorization | undefined {
+  const rules = readAuthorization(args);
+  if (!rules) return undefined;
+  if (rules.filter.length > 0) {
+    at(
+      "a root @cypher field takes validate rules: there are no rows to filter",
+    );
+  }
+  if (rules.mask?.length) {
+    at("a root @cypher field takes validate rules: there is no row to mask");
+  }
+  return rules;
+}
+
 function readAuthorization(
   args: Record<string, unknown> | undefined,
 ): Authorization | undefined {
@@ -2258,6 +2421,7 @@ function checkRuleWhere(
   jwtShape?: ReadonlyMap<string, string>,
   viewerNode?: NodeType,
   ends?: RuleEnds,
+  nodeless = "rules on relationship properties test claims (jwt) only; node rules belong on the node types",
 ) {
   const at = (message: string) =>
     problems.push({
@@ -2265,10 +2429,24 @@ function checkRuleWhere(
       ...(field ? { field } : {}),
       message: `@authorization: ${message}`,
     });
+  // What `${node.…}`-style placeholders may read here: the rule's own
+  // node, or a relationship rule's ends and edge.
+  const references: RuleReferences = ends
+    ? { source: ends.source, target: ends.target, edge: ends.edge }
+    : node
+      ? { node }
+      : {};
   // A filter over a node type, with the strings and claims it uses.
-  const nodePart = (t: NodeType, value: unknown, here: string) => {
+  const nodePart = (
+    t: NodeType,
+    value: unknown,
+    here: string,
+    refs: RuleReferences = references,
+  ) => {
     checkNodeWhere(nodes, props, t, value, here, at);
     for (const problem of ruleStringProblems(value)) at(`${here}: ${problem}`);
+    for (const problem of ruleReferenceProblems(value, refs, nodes))
+      at(`${here}: ${problem}`);
     for (const problem of viewerRefProblems(value, viewerNode))
       at(`${here}: ${problem}`);
     if (jwtShape) {
@@ -2299,18 +2477,19 @@ function checkRuleWhere(
           checkEdgeWhere(ends.edge, value, here, at);
           for (const problem of ruleStringProblems(value))
             at(`${here}: ${problem}`);
+          for (const problem of ruleReferenceProblems(value, references, nodes))
+            at(`${here}: ${problem}`);
         }
       } else if (k === "node" && ends) {
         at(`${here}: a relationship rule tests source, target and edge`);
       } else if (k === "node" && !node) {
-        at(
-          `${here}: rules on relationship properties test claims (jwt) only; node rules belong on the node types`,
-        );
+        at(`${here}: ${nodeless}`);
       } else if (k === "node" && node) {
         nodePart(node, value, here);
       } else if (k === "viewer") {
-        // Desugaring already reported a missing @viewer.
-        if (viewerNode) nodePart(viewerNode, value, here);
+        // Desugaring already reported a missing @viewer. The caller's node
+        // is found by the claim alone: nothing of the rule's node to read.
+        if (viewerNode) nodePart(viewerNode, value, here, {});
       } else if (k === "jwt") {
         if (!isRecord(value)) at(`${here} must be an object`);
         else {
@@ -2377,7 +2556,13 @@ function checkNodeWhere(
     const connection = k.endsWith("Connection")
       ? node.fields.get(k.slice(0, -"Connection".length))
       : undefined;
-    if (
+    const exists = k.endsWith("Exists")
+      ? node.fields.get(k.slice(0, -"Exists".length))
+      : undefined;
+    if (!field && exists?.kind === "relationship" && !exists.list) {
+      // `<field>Exists: Boolean`: whether the single relationship is set.
+      if (typeof value !== "boolean") at(`${here} must be true or false`);
+    } else if (
       !field &&
       connection?.kind === "relationship" &&
       connection.list &&
@@ -2725,6 +2910,94 @@ function viewerRefProblems(
   return [];
 }
 
+/** What a rule's `${node.…}`, `${source.…}`, `${target.…}`, `${edge.…}` may read. */
+interface RuleReferences {
+  node?: NodeType;
+  source?: NodeType;
+  target?: NodeType;
+  edge?: RelationshipPropertiesType | undefined;
+}
+
+/**
+ * `${node.path}`-style placeholders: the source must be available where
+ * the string stands (`node` in a type's rules, `source` / `target` /
+ * `edge` in a relationship field's), the path must reach a scalar through
+ * single relationships to node types, and it stands for one value.
+ */
+function ruleReferenceProblems(
+  value: unknown,
+  refs: RuleReferences,
+  nodes: ReadonlyMap<string, NodeType>,
+  inList = false,
+): string[] {
+  if (typeof value === "string") {
+    const out: string[] = [];
+    for (const m of value.matchAll(PLACEHOLDER)) {
+      const [ref, source, path] = m as unknown as [string, string, string];
+      if (!RULE_REFERENCES.has(source)) continue;
+      if (inList) {
+        out.push(`"${value}": ${ref} stands for one value, not inside a list`);
+        continue;
+      }
+      if (source === "edge") {
+        if (!refs.edge) {
+          out.push(
+            `"${value}": \${edge.…} reads a relationship rule's properties; there are none here`,
+          );
+        } else if (!refs.edge.fields.has(path)) {
+          out.push(`"${value}": ${refs.edge.name} has no property ${path}`);
+        }
+        continue;
+      }
+      const start = refs[source as "node" | "source" | "target"];
+      if (!start) {
+        out.push(
+          source === "node" && refs.source
+            ? `"${value}": a relationship rule reads its ends: \${source.…} or \${target.…}`
+            : source === "node"
+              ? `"${value}": viewer: { … } tests the caller's node alone; read the rule's node in a node part`
+              : refs.node
+                ? `"${value}": \${${source}.…} reads a relationship rule's ends; here the rule's node is \${node.…}`
+                : `"${value}": viewer: { … } tests the caller's node alone; read the rule's node in a node part`,
+        );
+        continue;
+      }
+      let node: NodeType = start;
+      const steps = path.split(".");
+      for (const [i, step] of steps.entries()) {
+        const f: Field | undefined = node.fields.get(step);
+        if (i === steps.length - 1) {
+          if (f?.kind !== "scalar") {
+            out.push(
+              `"${value}": ${node.name}.${step} is not a scalar field: a reference ends on one`,
+            );
+          }
+          break;
+        }
+        const target: NodeType | undefined =
+          f?.kind === "relationship" ? nodes.get(f.target) : undefined;
+        if (f?.kind !== "relationship" || f.list || !target) {
+          out.push(
+            `"${value}": ${node.name}.${step} is not a single relationship to a node type: a reference steps through those only`,
+          );
+          break;
+        }
+        node = target;
+      }
+    }
+    return out;
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((v) => ruleReferenceProblems(v, refs, nodes, true));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.values(value).flatMap((v) =>
+      ruleReferenceProblems(v, refs, nodes, inList),
+    );
+  }
+  return [];
+}
+
 function ruleStringProblems(value: unknown): string[] {
   if (typeof value === "string") {
     if (value.includes("${")) {
@@ -2732,7 +3005,9 @@ function ruleStringProblems(value: unknown): string[] {
         REFERENCE_PATH.test(path) ? "" : m,
       );
       return rest.includes("${")
-        ? [`"${value}": a placeholder is \${jwt.<claim>} or \${context.<path>}`]
+        ? [
+            `"${value}": a placeholder is \${jwt.<claim>}, \${context.<path>}, \${viewer.<field>} or \${node.<path>}`,
+          ]
         : [];
     }
     for (const prefix of ["$jwt.", "$context."]) {

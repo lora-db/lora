@@ -8,6 +8,7 @@ import { bindStatement, compileByKeys } from "../compile/read.js";
 import { subSelections } from "../compile/selection.js";
 import { requestError } from "../errors.js";
 import { assertReadable } from "../schema/guard.js";
+import type { Statement } from "../driver.js";
 import type { CypherField } from "../model/types.js";
 import { runStatement, type MutationEnv } from "./mutate.js";
 
@@ -16,6 +17,8 @@ export async function executeCypherMutation(
   field: CypherField,
   args: Record<string, unknown>,
   fieldNodes: readonly FieldNode[],
+  /** The field's `viewer` rules, checked in the transaction first. */
+  guard?: Statement,
 ): Promise<unknown> {
   if (!env.driver.begin) {
     throw requestError(
@@ -23,7 +26,11 @@ export async function executeCypherMutation(
       "mutations need a driver with interactive transactions (@loradb/lora-node)",
     );
   }
-  const options = { jwt: env.jwt, degrees: env.degrees };
+  const options = {
+    jwt: env.jwt,
+    degrees: env.degrees,
+    maxListArgument: env.maxListArgument,
+  };
   const ctx = newContext(env.selection, env.model, options);
   const statement = {
     text: bindStatement(ctx, field, args),
@@ -35,6 +42,15 @@ export async function executeCypherMutation(
     signal: env.signal,
   });
   try {
+    if (guard) {
+      const check = await runStatement(env, tx, guard);
+      if (check.rows[0]?.["allowed"] !== true) {
+        throw requestError(
+          "FORBIDDEN",
+          `not allowed to run ${field.owner}.${field.name}`,
+        );
+      }
+    }
     const result = await runStatement(env, tx, statement);
     const values = result.rows.map((row) => row[field.columnName]);
     let value: unknown[] = values;
