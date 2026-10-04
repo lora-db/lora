@@ -1454,7 +1454,9 @@ object with `counter(name, value, attributes)` and
 
 `budget(context)` sets the cost limit per request (a plan, a user), and
 `onCost` sees every estimate. `execute()` also returns the operation's
-estimate as `extensions.cost`, so clients can tune their queries.
+estimate as `extensions.cost`, so clients can tune their queries. The
+limit holds per execution: a context reused across requests (one per
+graphql-ws connection) does not add their costs up.
 
 ### Compile cache
 

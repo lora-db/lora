@@ -446,8 +446,14 @@ export class LoraGraphQL {
   readonly #callbacks: Record<string, PopulatedByCallback>;
   readonly #resolvers: NonNullable<LoraGraphQLOptions["resolvers"]>;
   readonly #scalars: LoraGraphQLOptions["scalars"];
-  /** Estimated cost spent per request context and operation. */
-  readonly #spent = new WeakMap<object, Map<unknown, number>>();
+  /**
+   * Estimated cost spent per execution: keyed by `execute()`'s root value,
+   * else by graphql-js's per-execution variable values, never by the
+   * context, which a server may reuse across requests.
+   */
+  readonly #spent = new WeakMap<object, number>();
+  /** Root values `execute()` made, one per execution. */
+  readonly #executions = new WeakSet<object>();
   /**
    * Cost spent per subscription event (its root value). A subscription
    * reuses one context and operation for every event, so each event is
@@ -1178,11 +1184,15 @@ export class LoraGraphQL {
     if (timed && contextValue !== null && typeof contextValue === "object") {
       this.#timings.set(contextValue, new Map());
     }
+    // This execution's own root value: cost is charged to it.
+    const execution = {};
+    this.#executions.add(execution);
     let result: ExecutionResult;
     try {
       result = (await graphqlExecute({
         schema: this.getSchema(),
         document,
+        rootValue: execution,
         variableValues: args.variables,
         operationName: args.operationName,
         contextValue,
@@ -1230,12 +1240,8 @@ export class LoraGraphQL {
       }
     }
     // The operation's cost estimate, so clients can tune their queries.
-    const spent =
-      contextValue !== null && typeof contextValue === "object"
-        ? this.#spent.get(contextValue)
-        : undefined;
-    if (spent && spent.size > 0) {
-      const cost = [...spent.values()].reduce((a, b) => a + b, 0);
+    const cost = this.#spent.get(execution);
+    if (cost !== undefined) {
       result = {
         ...result,
         extensions: { ...result.extensions, cost: Math.ceil(cost) },
@@ -1512,12 +1518,16 @@ export class LoraGraphQL {
     if (event !== null && typeof event === "object") {
       total = (this.#eventSpent.get(event) ?? 0) + cost;
       this.#eventSpent.set(event, total);
-    } else if (info && context !== null && typeof context === "object") {
-      const byOperation =
-        this.#spent.get(context) ?? new Map<unknown, number>();
-      total = (byOperation.get(info.operation) ?? 0) + cost;
-      byOperation.set(info.operation, total);
-      this.#spent.set(context, byOperation);
+    } else if (info) {
+      const root: unknown = info.rootValue;
+      const execution: unknown =
+        root !== null && typeof root === "object" && this.#executions.has(root)
+          ? root
+          : info.variableValues;
+      if (execution !== null && typeof execution === "object") {
+        total = (this.#spent.get(execution) ?? 0) + cost;
+        this.#spent.set(execution, total);
+      }
     }
     const limit = this.#budget?.(context) ?? this.#maxCost;
     try {

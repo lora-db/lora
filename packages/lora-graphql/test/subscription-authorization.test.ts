@@ -3,7 +3,7 @@
 // a subscription's own cost is bounded.
 
 import { createDatabase } from "@loradb/lora-node";
-import { parse, subscribe, type ExecutionResult } from "graphql";
+import { execute, parse, subscribe, type ExecutionResult } from "graphql";
 import { describe, expect, test } from "vitest";
 import { LoraGraphQL, loraDriver, type LoraDriver } from "../src/index.js";
 import { createTestLoraGraphQL, type TestLoraGraphQL } from "../src/testing.js";
@@ -344,5 +344,34 @@ describe("limits", () => {
     });
     await it.return!();
     expect(timeouts).toEqual([250]);
+  });
+});
+
+describe("cost per request", () => {
+  test("a reused context is charged per execution, not across them", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: `type Board @node { key: String! @key }`,
+      seed: "UNWIND range(1, 5) AS i CREATE (:Board {key: toString(i)})",
+      maxCost: 50,
+    });
+    const context = {};
+    const source = "{ boards(limit: 20) { key } }";
+    const costs: unknown[] = [];
+    for (let i = 0; i < 6; i++) {
+      const r = await t.lora.execute({ source, context });
+      expect(r.errors).toBeUndefined();
+      costs.push(r.extensions?.["cost"]);
+    }
+    expect(new Set(costs).size).toBe(1);
+    // A server that caches the document and reuses the context.
+    const document = parse(source);
+    for (let i = 0; i < 6; i++) {
+      const r = await execute({
+        schema: t.schema,
+        document,
+        contextValue: context,
+      });
+      expect(r.errors).toBeUndefined();
+    }
   });
 });
