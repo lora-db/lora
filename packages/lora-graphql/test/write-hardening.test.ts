@@ -285,3 +285,128 @@ describe("maxBatch bounds every write of a mutation", () => {
     expect(u.errors).toBeUndefined();
   });
 });
+
+describe("write errors do not reveal nodes the caller cannot read", () => {
+  const typeDefs = `type Claims @jwt { sub: String }
+    type User @node @mutation { key: String! @key }
+    type Secret @node @mutation
+      @authorization(filter: [{ where: { node: { owner: { eq: "$jwt.sub" } } } }]) {
+      key: String! @key
+      owner: String!
+      holder: User! @relationship(type: "HOLDS", direction: IN)
+    }
+    type Org @node @mutation {
+      key: String! @key
+      docs: [Doc!]! @relationship(type: "OWNS", direction: OUT, onDelete: RESTRICT)
+    }
+    type Doc @node @mutation
+      @authorization(filter: [{ where: { node: { owner: { eq: "$jwt.sub" } } } }]) {
+      key: String! @key
+      owner: String!
+    }
+    type F @node @mutation {
+      key: String! @key
+      genre: G @relationship(type: "IS", direction: OUT)
+    }
+    type G @node @mutation
+      @authorization(filter: [{ where: { node: { owner: { eq: "$jwt.sub" } } } }]) {
+      key: String! @key
+      owner: String!
+    }
+    type Note @node @mutation
+      @authorization(
+        filter: [{ operations: [READ], where: { node: { owner: { eq: "$jwt.sub" } } } }]
+        validate: [{ operations: [UPDATE, DELETE], where: { node: { owner: { eq: "$jwt.sub" } } } }]
+      ) {
+      key: String! @key
+      owner: String!
+      text: String
+    }`;
+  const seed = [
+    "CREATE (bo:User {key: 'bo'})-[:HOLDS]->(:Secret {key: 'bo-secret-plan', owner: 'bo'})",
+    "CREATE (:Org {key: 'o'})-[:OWNS]->(:Doc {key: 'd', owner: 'bo'})",
+    "CREATE (:F {key: 'f'})-[:IS]->(:G {key: 'hidden', owner: 'bo'}), (:G {key: 'jazz', owner: 'lou'})",
+    "CREATE (:Note {key: 'n', owner: 'bo', text: 'x'})",
+  ];
+  const lou = { jwt: { sub: "lou" } };
+  const bo = { jwt: { sub: "bo" } };
+
+  test("a required relationship names a hidden node's key only to those who can read it", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const hidden = await t.run(
+      `mutation { deleteUser(key: "bo") { nodesDeleted } }`,
+      {},
+      lou,
+    );
+    expect(codes(hidden)).toEqual(["CONSTRAINT_VIOLATION"]);
+    expect(hidden.errors?.[0]?.message).toBe(
+      "a Secret the caller can't read requires a User (Secret.holder)",
+    );
+    const seen = await t.run(
+      `mutation { deleteUser(key: "bo") { nodesDeleted } }`,
+      {},
+      bo,
+    );
+    expect(seen.errors?.[0]?.message).toBe(
+      'Secret "bo-secret-plan" requires a User (Secret.holder)',
+    );
+  });
+
+  test("RESTRICT blocked by a hidden node gives a generic message", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const hidden = await t.run(
+      `mutation { deleteOrg(key: "o") { nodesDeleted } }`,
+      {},
+      lou,
+    );
+    expect(codes(hidden)).toEqual(["CONSTRAINT_VIOLATION"]);
+    expect(hidden.errors?.[0]?.message).toBe(
+      'Org "o" cannot be deleted: Org.docs has onDelete: RESTRICT',
+    );
+    const seen = await t.run(
+      `mutation { deleteOrg(key: "o") { nodesDeleted } }`,
+      {},
+      bo,
+    );
+    expect(seen.errors?.[0]?.message).toBe(
+      'Org "o" still has docs (onDelete: RESTRICT); remove them first',
+    );
+  });
+
+  test("replacing a single relationship whose current target is hidden is refused generically", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const r = await t.run(
+      `mutation { updateF(key: "f", update: { genre: { connect: { key: "jazz" } } }) { f { key } } }`,
+      {},
+      lou,
+    );
+    expect(codes(r)).toEqual(["FORBIDDEN"]);
+    expect(r.errors?.[0]?.message).toBe("not allowed to replace F.genre");
+    expect(
+      await rows(t, "MATCH (:F {key: 'f'})-[:IS]->(g) RETURN g.key AS k"),
+    ).toEqual([{ k: "hidden" }]);
+  });
+
+  test("update and delete treat a hidden key as a missing one", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    for (const key of ["n", "missing"]) {
+      const u = await t.run(
+        `mutation($key: String!) { updateNote(key: $key, update: { text: "y" }) { note { key } } }`,
+        { key },
+        lou,
+      );
+      expect(u.errors).toBeUndefined();
+      expect(u.data).toEqual({ updateNote: { note: null } });
+      const d = await t.run(
+        `mutation($key: String!) { deleteNote(key: $key) { nodesDeleted } }`,
+        { key },
+        lou,
+      );
+      expect(d.errors).toBeUndefined();
+      expect(d.data).toEqual({ deleteNote: { nodesDeleted: 0 } });
+    }
+    expect(await rows(t, "MATCH (n:Note) RETURN n.text AS t")).toEqual([
+      { t: "x" },
+    ]);
+  });
+});

@@ -805,6 +805,19 @@ type Post
   own connects, so a filter that depends on the new relationship (a
   request visible to its sender) does not block a nested create. Filter rules for `CREATE_RELATIONSHIP` and
   `DELETE_RELATIONSHIP` guard both ends of connects and disconnects.
+  Update and delete targets (by key, bulk and nested) must pass the
+  type's `READ` filter as well as its `UPDATE` / `DELETE` filter: a key
+  the caller cannot read answers like a missing one (`null`,
+  `nodesDeleted: 0`), never `FORBIDDEN` from a `validate` rule.
+- **Write errors never name a node the caller cannot read.** A delete
+  that would leave such a node without a required relationship fails
+  with `a Secret the caller can't read requires a Person (Secret.holder)`;
+  `onDelete: RESTRICT` held by such nodes fails with `Org "o" cannot be
+deleted: Org.docs has onDelete: RESTRICT`. Replacing a single
+  relationship whose current target the caller cannot read is refused
+  with `FORBIDDEN` (`not allowed to replace F.genre`), and leaves it in
+  place: the caller cannot remove a relationship of a node they cannot
+  see.
 - `validate` rules fail the request with `FORBIDDEN`: `BEFORE` an update or
   delete, `AFTER` a create or update (rolling it back), and for `READ`: on
   any returned node, and on cursors, counts and aggregates that cover one.

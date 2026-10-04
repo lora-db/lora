@@ -1373,6 +1373,8 @@ class Runner {
         ),
       )} AS k\n` +
         `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = k` +
+        // A node the caller cannot read is missing, not forbidden.
+        andText(authFilter(ctx, node, "n", "READ")) +
         andText(authFilter(ctx, node, "n", "UPDATE")) +
         `\nRETURN n.${name(node.key.property)} AS key, ${before ? printExpr(before) : "true"} AS ok` +
         (node.subscriptionOptions.previousState
@@ -1536,11 +1538,26 @@ class Runner {
         `UNWIND ${printExpr(bind(ctx, dedupe(keys)))} AS k\n` +
         `MATCH (a:${name(owner.labels[0]!)}) WHERE a.${name(owner.key.property)} = k\n` +
         `WITH a, size([(a)${arrow(field, "", "x", undefined)} WHERE ${memberTest(model, "x", field)} | 1]) AS c WHERE c > 1\n` +
-        `RETURN a.${name(owner.key.property)} AS key, c AS count`;
+        `RETURN a.${name(owner.key.property)} AS key, c AS count` +
+        `, size([(a)${arrow(field, "", "x", undefined)} WHERE ${field.members
+          .map((m) => {
+            const member = model.nodes.get(m)!;
+            return `(${labelTest("x", member)} AND ${readable(ctx, member, "x")})`;
+          })
+          .join(" OR ")} | 1]) AS seen`;
       const target = { name: field.target } as NodeType;
       const rows = await this.run(text, ctx);
       if (rows.length > 0) {
         const row = rows[0]!;
+        // Held by a node the caller cannot read: replacing it would write
+        // a relationship of a node they cannot see, and the count would
+        // reveal it. Refused like a rule would refuse it.
+        if (Number(row["seen"]) < Number(row["count"])) {
+          throw requestError(
+            "FORBIDDEN",
+            `not allowed to replace ${owner.name}.${field.name}`,
+          );
+        }
         throw requestError(
           "CONSTRAINT_VIOLATION",
           `${owner.name}.${field.name} holds one ${target.name}, but ${owner.name} ${JSON.stringify(row["key"])} would have ${String(row["count"])}`,
@@ -1650,11 +1667,17 @@ class Runner {
           // The count is bound in the WITH and tested after it: the form
           // every LoraDB release plans as a seek (G-11).
           `WITH a, size([(a)${arrow(field, "", "x", undefined)} WHERE ${memberTest(model, "x", field)} | 1]) AS related WHERE related = 0\n` +
-          `RETURN a.${name(owner.key.property)} AS key`,
+          `RETURN a.${name(owner.key.property)} AS key, ${readable(ctx, owner, "a")} AS visible`,
         ctx,
       );
       if (rows.length > 0) {
-        throw requiredMissing(owner, field, field.target, rows[0]!["key"]);
+        const row = rows.find((r) => r["visible"] === true) ?? rows[0]!;
+        throw requiredMissing(
+          owner,
+          field,
+          field.target,
+          row["visible"] === true ? row["key"] : HIDDEN,
+        );
       }
     }
   }
@@ -1750,6 +1773,7 @@ class Runner {
     }
     const rows = await this.run(
       `MATCH (this:${name(node.labels[0]!)}) WHERE ${printExpr(pred)}` +
+        andText(authFilter(ctx, node, "this", "READ")) +
         andText(authFilter(ctx, node, "this", op)) +
         `\nRETURN this.${name(node.key.property)} AS key ORDER BY key LIMIT ${printExpr(bind(ctx, limit + 1))}`,
       ctx,
@@ -1848,14 +1872,28 @@ class Runner {
           `UNWIND ${printExpr(bind(ctx, nodeKeys))} AS k\n` +
             seekThenExpand("n", node, "k", f, "", "m", target) +
             "\n" +
-            `RETURN n.${name(node.key.property)} AS key, m.${name(target.key.property)} AS related`,
+            `RETURN n.${name(node.key.property)} AS key, m.${name(target.key.property)} AS related` +
+            `, ${readable(ctx, target, "m")} AS visible`,
           ctx,
         );
-        const blocking = rows.find((r) => !isDoomed(target.name, r["related"]));
-        if (blocking) {
+        const blocking = rows.filter(
+          (r) => !isDoomed(target.name, r["related"]),
+        );
+        // A blocker the caller can read may be named; one they cannot
+        // must not be revealed by the message.
+        const seen = blocking.find((r) => r["visible"] === true);
+        if (seen) {
           throw requestError(
             "CONSTRAINT_VIOLATION",
-            `${node.name} ${JSON.stringify(blocking["key"])} still has ${f.name} (onDelete: RESTRICT); remove them first`,
+            `${node.name} ${JSON.stringify(seen["key"])} still has ${f.name} (onDelete: RESTRICT); remove them first`,
+            undefined,
+            { type: node.name, field: f.name },
+          );
+        }
+        if (blocking.length > 0) {
+          throw requestError(
+            "CONSTRAINT_VIOLATION",
+            `${node.name} ${JSON.stringify(blocking[0]!["key"])} cannot be deleted: ${node.name}.${f.name} has onDelete: RESTRICT`,
             undefined,
             { type: node.name, field: f.name },
           );
@@ -1875,11 +1913,21 @@ class Runner {
             `UNWIND ${printExpr(bind(ctx, nodeKeys))} AS k\n` +
               seekThenExpand("n", node, "k", back, "", "o", owner) +
               "\n" +
-              `RETURN DISTINCT o.${name(owner.key.property)} AS key`,
+              `RETURN DISTINCT o.${name(owner.key.property)} AS key` +
+              `, ${readable(ctx, owner, "o")} AS visible`,
             ctx,
           );
-          const orphan = rows.find((r) => !isDoomed(owner.name, r["key"]));
-          if (orphan) throw requiredMissing(owner, f, f.target, orphan["key"]);
+          const orphans = rows.filter((r) => !isDoomed(owner.name, r["key"]));
+          const orphan =
+            orphans.find((r) => r["visible"] === true) ?? orphans[0];
+          if (orphan) {
+            throw requiredMissing(
+              owner,
+              f,
+              f.target,
+              orphan["visible"] === true ? orphan["key"] : HIDDEN,
+            );
+          }
         }
       }
     }
@@ -2123,6 +2171,16 @@ function inverseFields(
   );
 }
 
+/** Whether the caller can read `variable` (a `node`): a boolean expression. */
+function readable(
+  ctx: CompileContext,
+  node: NodeType,
+  variable: string,
+): string {
+  const filter = authFilter(ctx, node, variable, "READ");
+  return filter ? `coalesce(${printExpr(filter)}, false)` : "true";
+}
+
 /** `x:A OR x:B`: the field's target types (one, or an abstract's members). */
 function memberTest(
   model: GraphModel,
@@ -2223,15 +2281,22 @@ function notConnected(
   );
 }
 
+/** In place of the key of a node the caller cannot read, in messages. */
+const HIDDEN = Symbol("hidden");
+
 function requiredMissing(
   owner: NodeType,
   field: RelationshipField,
   target: string,
   key: unknown,
 ) {
+  const who =
+    key === HIDDEN
+      ? `a ${owner.name} the caller can't read`
+      : `${owner.name} ${JSON.stringify(key)}`;
   return requestError(
     "CONSTRAINT_VIOLATION",
-    `${owner.name} ${JSON.stringify(key)} requires a ${target} (${owner.name}.${field.name})`,
+    `${who} requires a ${target} (${owner.name}.${field.name})`,
     undefined,
     { type: owner.name, field: field.name },
   );
@@ -2479,6 +2544,7 @@ export async function executeMutation(
         const ctx = runner.ctx();
         const visible = await runner.run(
           `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = ${printExpr(bind(ctx, args[node.key.name]))}` +
+            andText(authFilter(ctx, node, "n", "READ")) +
             andText(authFilter(ctx, node, "n", "DELETE")) +
             `\nRETURN n.${name(node.key.property)} AS key`,
           ctx,

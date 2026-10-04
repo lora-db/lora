@@ -6,10 +6,6 @@ import { describe, expect, test } from "vitest";
 import { buildModel, ModelError } from "../src/index.js";
 import { createTestLoraGraphQL } from "../src/testing.js";
 
-const codes = (r: { errors?: ReadonlyArray<{ extensions?: unknown }> }) =>
-  r.errors?.map(
-    (e) => (e.extensions as Record<string, unknown> | undefined)?.["code"],
-  );
 const typeDefs = (
   test: string,
 ) => `type Claims @jwt { sub: String! @viewer(type: "Person", field: "key") }
@@ -34,15 +30,14 @@ describe("isViewer under a union member", () => {
   test("tests the viewer, so another person neither reads nor deletes", async () => {
     const t = await createTestLoraGraphQL({ typeDefs: sugared, seed });
     expect(await t.data("{ posts { key } }", {}, eve)).toEqual({ posts: [] });
+    // A post eve cannot read is missing to her, not forbidden.
     expect(
-      codes(
-        await t.run(
-          'mutation { deletePost(key: "p1") { nodesDeleted } }',
-          {},
-          eve,
-        ),
+      await t.data(
+        'mutation { deletePost(key: "p1") { nodesDeleted } }',
+        {},
+        eve,
       ),
-    ).toEqual(["FORBIDDEN"]);
+    ).toEqual({ deletePost: { nodesDeleted: 0 } });
     expect(await t.data("{ posts { key } }", {}, lou)).toEqual({
       posts: [{ key: "p1" }],
     });
