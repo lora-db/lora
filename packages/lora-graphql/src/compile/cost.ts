@@ -22,6 +22,10 @@ type Where = Record<string, unknown>;
 
 /** Default `maxFilterDepth`: relationship levels one `where` may nest. */
 export const MAX_FILTER_DEPTH = 2;
+/** Default `maxListFilter`: items an `in` filter operand may hold. */
+export const MAX_LIST_FILTER = 1000;
+/** Default `maxStringFilter`: characters a string filter operand may hold. */
+export const MAX_STRING_FILTER = 10_000;
 
 const SEEK_OPS = new Set(["eq", "in", "startsWith", "withinBBox", "distance"]);
 const RANGE_OPS = new Set(["lt", "lte", "gt", "gte"]);

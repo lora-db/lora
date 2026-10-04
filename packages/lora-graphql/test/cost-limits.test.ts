@@ -330,3 +330,57 @@ describe("analyze() fan-out", () => {
     expect(returned).toBeLessThanOrEqual(1 + 30 + 30 * 30);
   });
 });
+
+describe("filter operand caps", () => {
+  const q = `query ($keys: [String!], $name: String) {
+    users(where: { key: { in: $keys }, name: { contains: $name } }) { key }
+  }`;
+  const run = (lora: LoraGraphQL, variables: Record<string, unknown>) =>
+    lora.execute({ source: q, variables });
+
+  test("in lists hold at most maxListFilter items, strings maxStringFilter characters", async () => {
+    const ok = await run(h.lora, {
+      keys: Array.from({ length: 1000 }, (_, i) => `k${i}`),
+    });
+    expect(ok.errors).toBeUndefined();
+    h.statements.length = 0;
+    const long = await run(h.lora, {
+      keys: Array.from({ length: 1001 }, (_, i) => `k${i}`),
+    });
+    expect(long.errors?.[0]?.extensions).toMatchObject({
+      code: "BAD_USER_INPUT",
+      maxListFilter: 1000,
+    });
+    const wide = await run(h.lora, { name: "x".repeat(10_001) });
+    expect(wide.errors?.[0]?.extensions).toMatchObject({
+      code: "BAD_USER_INPUT",
+      maxStringFilter: 10_000,
+    });
+    const item = await run(h.lora, { keys: ["x".repeat(10_001)] });
+    expect(item.errors?.[0]?.extensions?.["code"]).toBe("BAD_USER_INPUT");
+    const ci = await h.lora.execute({
+      source: `query ($n: [String!]) { users(where: { name: { caseInsensitive: { in: $n } } }) { key } }`,
+      variables: { n: Array.from({ length: 1001 }, (_, i) => `n${i}`) },
+    });
+    expect(ci.errors?.[0]?.extensions?.["code"]).toBe("BAD_USER_INPUT");
+    expect(h.statements).toEqual([]);
+  });
+
+  test("the caps are configurable", async () => {
+    const lora = new LoraGraphQL({
+      typeDefs,
+      driver: loraDriver(h.db),
+      maxListFilter: 2,
+      maxStringFilter: 3,
+    });
+    expect(
+      (await run(lora, { keys: ["a", "b", "c"] })).errors?.[0]?.message,
+    ).toMatch(/at most 2 items/);
+    expect((await run(lora, { name: "abcd" })).errors?.[0]?.message).toMatch(
+      /at most 3 characters/,
+    );
+    expect(
+      (await run(lora, { keys: ["a", "b"], name: "Ann" })).errors,
+    ).toBeUndefined();
+  });
+});

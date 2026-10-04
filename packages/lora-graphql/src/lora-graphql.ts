@@ -204,6 +204,16 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
    */
   maxFilterDepth?: number;
   /**
+   * Items an `in` filter operand may hold. More is BAD_USER_INPUT before
+   * anything runs. Default 1000.
+   */
+  maxListFilter?: number;
+  /**
+   * Characters a string filter operand (`eq`, `contains`, an `in` item, …)
+   * may hold. More is BAD_USER_INPUT before anything runs. Default 10 000.
+   */
+  maxStringFilter?: number;
+  /**
    * Changes a `changes()` consumer or subscriber may fall behind before it
    * is ended with an error. Default 1000.
    */
@@ -455,6 +465,8 @@ export class LoraGraphQL {
   readonly #maxBatch: number;
   readonly #maxListArgument: number;
   readonly #maxFilterDepth: number;
+  readonly #maxListFilter: number | undefined;
+  readonly #maxStringFilter: number | undefined;
   readonly #maxQueued: number;
   readonly #callbacks: Record<string, PopulatedByCallback>;
   readonly #resolvers: NonNullable<LoraGraphQLOptions["resolvers"]>;
@@ -541,6 +553,8 @@ export class LoraGraphQL {
     this.#maxBatch = options.maxBatch ?? 1000;
     this.#maxListArgument = options.maxListArgument ?? MAX_LIST_ARGUMENT;
     this.#maxFilterDepth = options.maxFilterDepth ?? MAX_FILTER_DEPTH;
+    this.#maxListFilter = options.maxListFilter;
+    this.#maxStringFilter = options.maxStringFilter;
     this.#maxQueued = options.maxQueuedChanges ?? 1000;
     this.#callbacks = options.callbacks ?? {};
     const missing = [...this.model.nodes.values()].flatMap((n) =>
@@ -1507,6 +1521,8 @@ export class LoraGraphQL {
       requestContext: context,
       maxListArgument: this.#maxListArgument,
       maxFilterDepth: this.#maxFilterDepth,
+      maxListFilter: this.#maxListFilter,
+      maxStringFilter: this.#maxStringFilter,
     });
   }
 
@@ -2404,6 +2420,8 @@ export class LoraGraphQL {
       maxBatch: this.#maxBatch,
       maxListArgument: this.#maxListArgument,
       maxFilterDepth: this.#maxFilterDepth,
+      maxListFilter: this.#maxListFilter,
+      maxStringFilter: this.#maxStringFilter,
       statistics: this.#statistics,
       requestContext: context,
       callbacks: this.#callbacks,

@@ -22,6 +22,10 @@ export interface CompileContext extends SelectionContext {
   statistics?: Statistics | undefined;
   /** Relationship levels one `where` may nest (`maxFilterDepth`). */
   maxFilterDepth?: number | undefined;
+  /** Items an `in` filter operand may hold (`maxListFilter`). */
+  maxListFilter?: number | undefined;
+  /** Characters a string filter operand may hold (`maxStringFilter`). */
+  maxStringFilter?: number | undefined;
   /** Relationship levels of the `where` being compiled, so far. */
   filterDepth?: number | undefined;
   /** The GraphQL context, for `"$context.path"` values in rules. */
@@ -57,6 +61,8 @@ export function newContext(
     requestContext?: unknown;
     maxListArgument?: number | undefined;
     maxFilterDepth?: number | undefined;
+    maxListFilter?: number | undefined;
+    maxStringFilter?: number | undefined;
   } = {},
 ): CompileContext {
   return {
@@ -71,6 +77,8 @@ export function newContext(
     degrees: options.degrees ?? new Map(),
     statistics: options.statistics,
     maxFilterDepth: options.maxFilterDepth,
+    maxListFilter: options.maxListFilter,
+    maxStringFilter: options.maxStringFilter,
     requestContext: options.requestContext,
     computed: new Map(),
     contextReads: [],

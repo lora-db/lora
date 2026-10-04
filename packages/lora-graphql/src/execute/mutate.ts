@@ -94,6 +94,10 @@ export interface MutationEnv {
   maxListArgument?: number | undefined;
   /** Relationship levels one `where` may nest. */
   maxFilterDepth?: number | undefined;
+  /** Items an `in` filter operand may hold. */
+  maxListFilter?: number | undefined;
+  /** Characters a string filter operand may hold. */
+  maxStringFilter?: number | undefined;
   /** Statistics from `analyze()`, for filter costs. */
   statistics?: Statistics | undefined;
   callbacks: Readonly<Record<string, PopulatedByCallback>>;
@@ -735,6 +739,8 @@ class Runner {
       statistics: this.env.statistics,
       requestContext: this.env.requestContext,
       maxFilterDepth: this.env.maxFilterDepth,
+      maxListFilter: this.env.maxListFilter,
+      maxStringFilter: this.env.maxStringFilter,
     });
   }
 
@@ -2300,6 +2306,8 @@ export async function executeMutation(
     statistics: env.statistics,
     requestContext: env.requestContext,
     maxFilterDepth: env.maxFilterDepth,
+    maxListFilter: env.maxListFilter,
+    maxStringFilter: env.maxStringFilter,
   });
   const authOp =
     op === "UPSERT"

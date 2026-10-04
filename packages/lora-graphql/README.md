@@ -1406,6 +1406,8 @@ server (GraphQL Yoga takes the plugin as is):
 | `maxTokens`             | 5000       | Lexer tokens per document, while parsing                               |
 | `maxListArgument`       | 1000       | Items per list argument of a `@cypher` field (`@size(max:)` overrides) |
 | `maxFilterDepth`        | 2          | Relationship levels one `where` nests                                  |
+| `maxListFilter`         | 1000       | Items in an `in` filter operand                                        |
+| `maxStringFilter`       | 10 000     | Characters in a string filter operand (`eq`, `contains`, `in` items…)  |
 | `introspection`         | production | Off when `NODE_ENV` is `production`                                    |
 
 One query also has a time budget and a share of the engine: its root

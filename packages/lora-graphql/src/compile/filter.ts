@@ -28,7 +28,11 @@ import {
   refuseEdgeRowRules,
 } from "./auth.js";
 import { bind, freshVar, type CompileContext } from "./context.js";
-import { MAX_FILTER_DEPTH } from "./cost.js";
+import {
+  MAX_FILTER_DEPTH,
+  MAX_LIST_FILTER,
+  MAX_STRING_FILTER,
+} from "./cost.js";
 import {
   and,
   bin,
@@ -254,6 +258,42 @@ function compileWhere(
   return and(...parts);
 }
 
+/**
+ * Filter operands are capped: an `in` list at `maxListFilter` items, a
+ * string at `maxStringFilter` characters. Each is bound as a parameter
+ * and kept with the cached compile, and an `in` list seeks once per
+ * value. Authorization rules are the schema's own, and are not capped.
+ */
+function checkOperand(ctx: CompileContext, op: string, value: unknown): void {
+  if (ctx.inAuth) return;
+  const maxList = ctx.maxListFilter ?? MAX_LIST_FILTER;
+  const maxString = ctx.maxStringFilter ?? MAX_STRING_FILTER;
+  const tooLong = (v: unknown) => typeof v === "string" && v.length > maxString;
+  if (Array.isArray(value)) {
+    if (value.length > maxList) {
+      throw requestError(
+        "BAD_USER_INPUT",
+        `the ${op} filter takes at most ${maxList} items`,
+        undefined,
+        { maxListFilter: maxList },
+      );
+    }
+    if (value.some(tooLong)) {
+      throw stringTooLong(op, maxString);
+    }
+  } else if (tooLong(value)) {
+    throw stringTooLong(op, maxString);
+  }
+}
+
+const stringTooLong = (op: string, max: number) =>
+  requestError(
+    "BAD_USER_INPUT",
+    `the ${op} filter takes strings of at most ${max} characters`,
+    undefined,
+    { maxStringFilter: max },
+  );
+
 function scalarPredicate(
   ctx: CompileContext,
   target: Expr,
@@ -262,6 +302,13 @@ function scalarPredicate(
   const parts: Expr[] = [];
   for (const [op, value] of Object.entries(ops)) {
     if (value === null || value === undefined) continue;
+    if (op === "caseInsensitive") {
+      for (const [ciOp, ciValue] of Object.entries(value as Where)) {
+        if (ciValue !== null && ciValue !== undefined) {
+          checkOperand(ctx, ciOp, ciValue);
+        }
+      }
+    } else checkOperand(ctx, op, value);
     switch (op) {
       case "withinBBox": {
         const box = value as { lowerLeft: unknown; upperRight: unknown };
