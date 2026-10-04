@@ -104,15 +104,19 @@ import {
   checkAuthentication,
   checkFieldAuthentication,
   claimsMaskedValue,
+  fieldReadGuard,
   rootFieldGuard,
 } from "./compile/auth.js";
 import {
   and,
   bin,
+  fn,
+  lit,
   printClauses,
   printExpr,
   prop,
   v,
+  type Expr,
 } from "./compile/cypher.js";
 import { bind } from "./compile/context.js";
 import { keyOf } from "./compile/read.js";
@@ -1780,6 +1784,8 @@ export class LoraGraphQL {
       : undefined;
     // Only changes to this type (and this key, when one is followed)
     // arrive, with their events already built.
+    const related = (events: ChangeEvent[]) =>
+      this.#relatedVisible(node, events, base, context, signal);
     // A deleted node cannot be checked after the fact: a follower of its
     // key without a `where` is checked inside the deleting transaction,
     // on the node as it was; other checked subscribers get no deletions.
@@ -1815,6 +1821,14 @@ export class LoraGraphQL {
             change,
           )
         : undefined;
+      const relationships = live.filter(
+        (e) =>
+          e.relationship !== undefined && (!seen || seen.has(keyOf(e.key))),
+      );
+      const named =
+        relationships.length > 0
+          ? await related(relationships)
+          : new Set<ChangeEvent>();
       for (const event of [...live, ...deletions]) {
         if (
           event.operation !== "DELETE" &&
@@ -1823,6 +1837,7 @@ export class LoraGraphQL {
         ) {
           continue;
         }
+        if (event.relationship && !named.has(event)) continue;
         // Events are built once per change and type: each subscriber gets
         // its own copy, since per-event cost is charged by root value.
         const own = { ...event };
@@ -2035,6 +2050,151 @@ export class LoraGraphQL {
         );
         return new Set(result!.rows.map((r) => keyOf(r["key"])));
       },
+    };
+  }
+
+  /**
+   * The CONNECT / DISCONNECT events whose related node the subscriber may
+   * read (its type's READ rules) through a field it may read (the
+   * declaring field's READ rules), checked after the write. The others are
+   * dropped, so an event never names a node the subscriber could not
+   * read; a related node that is gone, which cannot be checked, drops the
+   * event unless the claims alone settle every rule.
+   */
+  async #relatedVisible(
+    node: NodeType,
+    events: ChangeEvent[],
+    base: SelectionContext,
+    context: unknown,
+    signal: AbortSignal,
+  ): Promise<Set<ChangeEvent>> {
+    type Group =
+      | { kind: "deny" }
+      | { kind: "allow"; events: ChangeEvent[] }
+      | {
+          kind: "check";
+          statement: Statement;
+          slot: string;
+          events: ChangeEvent[];
+        };
+    const groups = new Map<string, Group>();
+    for (const event of events) {
+      const rel = event.relationship!;
+      const selfOwns = (event as { [SELF_OWNS]?: boolean })[SELF_OWNS] ?? true;
+      const id = `${rel.field}\0${rel.relatedType}\0${selfOwns}`;
+      const known = groups.get(id);
+      if (known) {
+        if (known.kind !== "deny") known.events.push(event);
+        continue;
+      }
+      groups.set(
+        id,
+        this.#relatedGroup(node, rel, selfOwns, base, context, event),
+      );
+    }
+    const out = new Set<ChangeEvent>();
+    const checks: Array<Extract<Group, { kind: "check" }>> = [];
+    for (const g of groups.values()) {
+      if (g.kind === "allow") for (const e of g.events) out.add(e);
+      else if (g.kind === "check") checks.push(g);
+    }
+    if (checks.length === 0) return out;
+    const results = await this.#driver.run(
+      checks.map((g) => ({
+        text: g.statement.text,
+        params: {
+          ...g.statement.params,
+          [g.slot]: g.events.map((e) => ({
+            i: events.indexOf(e),
+            s: e.key,
+            r: e.relationship!.relatedKey,
+          })),
+        },
+      })),
+      { mode: "read", timeoutMs: this.#timeoutMs, signal, verified: true },
+    );
+    for (const result of results) {
+      for (const row of result.rows) {
+        const event = events[row["i"] as number];
+        if (event) out.add(event);
+      }
+    }
+    return out;
+  }
+
+  /** How one field and related type's relationship events are checked. */
+  #relatedGroup(
+    node: NodeType,
+    rel: NonNullable<ChangeEvent["relationship"]>,
+    selfOwns: boolean,
+    base: SelectionContext,
+    context: unknown,
+    first: ChangeEvent,
+  ):
+    | { kind: "deny" }
+    | { kind: "allow"; events: ChangeEvent[] }
+    | {
+        kind: "check";
+        statement: Statement;
+        slot: string;
+        events: ChangeEvent[];
+      } {
+    const related = this.model.nodes.get(rel.relatedType);
+    if (!related) return { kind: "deny" };
+    const [ownerName, fieldName] = rel.field.split(".");
+    const owner = ownerName ? this.model.nodes.get(ownerName) : undefined;
+    const field = fieldName ? owner?.fields.get(fieldName) : undefined;
+    const ctx = this.#context(base, context);
+    let condition: Expr | undefined;
+    let selfGuard: Expr | undefined;
+    try {
+      checkAuthentication(ctx, related, "READ");
+      condition = and(
+        authFilter(ctx, related, "m", "READ"),
+        authValidate(ctx, related, "m", "READ", "BEFORE"),
+      );
+      if (owner && field?.kind === "relationship") {
+        checkFieldAuthentication(ctx, owner.name, field);
+        const guard = fieldReadGuard(ctx, owner, field, selfOwns ? "n" : "m");
+        const when = guard && fn("coalesce", guard.when, lit(false));
+        if (selfOwns) selfGuard = when;
+        else condition = and(condition, when);
+      }
+    } catch {
+      // The claims alone refuse: the events are not sent.
+      return { kind: "deny" };
+    }
+    if (condition === undefined && selfGuard === undefined) {
+      // Nothing depends on the nodes: no check needed.
+      return { kind: "allow", events: [first] };
+    }
+    const slot: unknown[] = [];
+    const pairs = bind(ctx, slot);
+    const match = (
+      variable: string,
+      type: NodeType,
+      end: "r" | "s",
+      where: Expr | undefined,
+    ) => ({
+      kind: "match" as const,
+      pattern: { start: { variable, labels: [type.labels[0]!] }, hops: [] },
+      where: and(
+        bin("=", prop(v(variable), type.key.property), prop(v("p"), end)),
+        where,
+      ),
+    });
+    const text = printClauses([
+      { kind: "unwind", expr: pairs, alias: "p" },
+      match("m", related, "r", condition),
+      ...(selfGuard ? [match("n", node, "s", selfGuard)] : []),
+      { kind: "return", items: [{ expr: prop(v("p"), "i"), alias: "i" }] },
+    ]);
+    const param = Object.keys(ctx.params).find((k) => ctx.params[k] === slot)!;
+    return {
+      kind: "check",
+      statement: { text, params: ctx.params },
+      slot: param,
+      events: [first],
     };
   }
 
@@ -2506,6 +2666,8 @@ function operationType(
 
 /** The write an event came from, for reads shared across its subscribers. */
 const CHANGE = Symbol("change");
+/** On a CONNECT / DISCONNECT event: whether its node owns the field. */
+const SELF_OWNS = Symbol("selfOwns");
 
 /** A write's events for one node type, one per node, most specific first. */
 function changeEvents(change: WriteChange, node: NodeType): ChangeEvent[] {
@@ -2554,16 +2716,17 @@ function changeEvents(change: WriteChange, node: NodeType): ChangeEvent[] {
           [r.to, r.from],
         ] as const) {
           if (self.type !== node.name) continue;
-          events.push(
-            make(operation, self.key, {
-              relationship: {
-                field: r.field,
-                type: r.type,
-                relatedType: other.type,
-                relatedKey: other.key,
-              },
-            }),
-          );
+          const event = make(operation, self.key, {
+            relationship: {
+              field: r.field,
+              type: r.type,
+              relatedType: other.type,
+              relatedKey: other.key,
+            },
+          });
+          // The declaring field's owner is `from`: whose rules guard it.
+          Object.defineProperty(event, SELF_OWNS, { value: self === r.from });
+          events.push(event);
         }
       }
     }

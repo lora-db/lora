@@ -169,3 +169,78 @@ describe("previousState", () => {
     ]);
   });
 });
+
+describe("relationship events", () => {
+  const typeDefs = `${claims}
+  type Person @node { key: String! @key }
+  type Board @node @mutation @subscription(relationships: true) {
+    key: String! @key
+    items: [Item!]! @relationship(type: "HAS", direction: OUT)
+    notes: [Note!]! @relationship(type: "PINNED", direction: OUT)
+      @authorization(validate: [{
+        operations: [READ]
+        where: { jwt: { roles: { includes: "admin" } } }
+      }])
+  }
+  type Item @node @mutation
+    @authorization(filter: [{
+      operations: [READ]
+      where: { node: { owner: { isViewer: true } } }
+    }]) {
+    key: String! @key
+    owner: Person @relationship(type: "OWNS", direction: IN)
+  }
+  type Note @node @mutation { key: String! @key }`;
+  const seed =
+    "CREATE (:Board {key: 'b1'}), (:Person {key: 'bo'})-[:OWNS]->(:Item {key: 'i1'}), (:Note {key: 'n1'})";
+  const follow = `subscription { boardChanged(key: "b1", operations: [CONNECT, DISCONNECT]) {
+    operation relationship { field relatedType relatedKey }
+  } }`;
+
+  test("name a related node only to subscribers who may read it and the field", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const asLou = await listen(t, follow, lou);
+    const asBo = await listen(t, follow, bo);
+    const asAdmin = await listen(t, follow, admin);
+    await t.data(
+      `mutation { updateBoard(key: "b1", update: { items: { connect: [{ key: "i1" }] } }) { info { relationshipsCreated } } }`,
+      {},
+      bo,
+    );
+    await t.data(
+      `mutation { updateBoard(key: "b1", update: { notes: { connect: [{ key: "n1" }] } }) { info { relationshipsCreated } } }`,
+      {},
+      admin,
+    );
+    await settle();
+    // A deleted related node cannot be checked: the event is dropped.
+    await t.data(`mutation { deleteItem(key: "i1") { nodesDeleted } }`, {}, bo);
+    await settle();
+    await asLou.stop();
+    await asBo.stop();
+    await asAdmin.stop();
+    const item = {
+      boardChanged: {
+        operation: "CONNECT",
+        relationship: {
+          field: "Board.items",
+          relatedType: "Item",
+          relatedKey: "i1",
+        },
+      },
+    };
+    const note = {
+      boardChanged: {
+        operation: "CONNECT",
+        relationship: {
+          field: "Board.notes",
+          relatedType: "Note",
+          relatedKey: "n1",
+        },
+      },
+    };
+    expect(asLou.events).toEqual([]);
+    expect(asBo.events).toEqual([item]);
+    expect(asAdmin.events).toEqual([note]);
+  });
+});

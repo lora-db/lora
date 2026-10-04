@@ -1138,7 +1138,12 @@ itself. Pass a `signal` in the context to end the stream with the request.
 Every event has a `timestamp` (when the write was committed). With
 `@subscription(relationships: true)` a type also gets `CONNECT` and
 `DISCONNECT` events, one per relationship, with `relationship { field type
-relatedType relatedKey }`. With `@subscription(previousState: true)`,
+relatedType relatedKey }`. Such an event is sent only when the
+subscriber may read the related node (its type's READ rules) through the
+declaring field (that field's READ rules and `@authentication`), checked
+after the write; otherwise it is dropped, not sent with the key left out.
+A related node that is gone (a DISCONNECT by deletion) cannot be checked,
+so its event reaches only subscribers whose claims settle those rules. With `@subscription(previousState: true)`,
 `UPDATE` and `DELETE` events carry `previousState`: the stored values
 before the write (readable scalar fields without field-level validate
 rules), at the cost of one read per write. Field-level `@authentication`
