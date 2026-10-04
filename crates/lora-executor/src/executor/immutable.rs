@@ -32,8 +32,9 @@ use super::helpers::{
 };
 #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
 use super::helpers::{
-    dedup_rows_by_vars, indexed_node_property_candidates, label_group_candidates_prefiltered,
-    node_matches_label_groups, node_matches_property_filter, scan_node_ids_for_label_groups,
+    dedup_rows_by_vars, flatten_row_chunks, indexed_node_property_candidates,
+    label_group_candidates_prefiltered, node_matches_label_groups, node_matches_property_filter,
+    scan_node_ids_for_label_groups,
 };
 use super::{merge_optional_rows, optional_match_rows};
 use super::{project_item, project_item_in_place};
@@ -331,7 +332,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                 .collect();
         }
 
-        let chunks: ExecResult<Vec<Vec<Row>>> = base_rows
+        let chunks: Vec<ExecResult<Vec<Row>>> = base_rows
             .into_par_iter()
             .map(|row| {
                 if let Some(deadline) = self.deadline {
@@ -357,7 +358,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                 Ok(out)
             })
             .collect();
-        Ok(chunks?.into_iter().flatten().collect())
+        flatten_row_chunks(chunks)
     }
 
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
@@ -422,7 +423,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                 .collect();
         }
 
-        let chunks: ExecResult<Vec<Vec<Row>>> = base_rows
+        let chunks: Vec<ExecResult<Vec<Row>>> = base_rows
             .into_par_iter()
             .map(|row| {
                 if let Some(deadline) = self.deadline {
@@ -461,7 +462,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                 Ok(out)
             })
             .collect();
-        Ok(chunks?.into_iter().flatten().collect())
+        flatten_row_chunks(chunks)
     }
 
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
@@ -580,7 +581,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             );
         }
 
-        let chunks: ExecResult<Vec<Vec<Row>>> = base_rows
+        let chunks: Vec<ExecResult<Vec<Row>>> = base_rows
             .into_par_iter()
             .map(|row| {
                 if let Some(deadline) = self.deadline {
@@ -633,7 +634,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                 Ok(out)
             })
             .collect();
-        Ok(chunks?.into_iter().flatten().collect())
+        flatten_row_chunks(chunks)
     }
 
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
@@ -662,11 +663,14 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         let filtered: ExecResult<Vec<Option<Row>>> = input_rows
             .into_par_iter()
             .map(|row| {
+                // Rayon workers do not inherit the caller's thread-local
+                // deadline; expression-level checks need it.
+                let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
                 if let Some(deadline) = self.deadline {
                     check_deadline_at(deadline)?;
                 }
                 let keep = eval_truthy_result(&op.predicate, &row, &eval_ctx)
-                    .map_err(ExecutorError::RuntimeError)?;
+                    .map_err(ExecutorError::from_eval)?;
                 Ok(if keep { Some(row) } else { None })
             })
             .collect();
@@ -699,6 +703,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         let projected: ExecResult<Vec<Row>> = input_rows
             .into_par_iter()
             .map(|row| {
+                let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
                 if let Some(deadline) = self.deadline {
                     check_deadline_at(deadline)?;
                 }

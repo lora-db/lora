@@ -125,7 +125,7 @@ impl<'a, S: GraphStorage> RowSource for UnwindSource<'a, S> {
                 Some(row) => {
                     let eval_ctx = self.ctx.eval_ctx();
                     let value = eval_expr_result(self.expr, &row, &eval_ctx)
-                        .map_err(ExecutorError::RuntimeError)?;
+                        .map_err(ExecutorError::from_eval)?;
                     match value {
                         LoraValue::List(values) => {
                             self.cur_row = Some(row);

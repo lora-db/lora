@@ -167,3 +167,50 @@ describe("query timeouts and cancellation", () => {
     expect(rows[0].x).toBe(2);
   }, 60_000);
 });
+
+// `@loradb/lora-graphql` compiles relationship filters to nested pattern
+// comprehensions. Their loops run inside one expression evaluation, below
+// every operator boundary, and once ignored both timeoutMs and the signal.
+describe("deadlines inside pattern comprehensions", () => {
+  const NESTED =
+    "MATCH (f:Festival) WHERE size([(f)<-[:FOLLOWS]-(u:User) " +
+    "WHERE size([(u)-[:FOLLOWS]->(g:Festival) " +
+    "WHERE size([(g)<-[:FOLLOWS]-(w:User) WHERE w.name CONTAINS 'zz' | 1]) > 0 " +
+    "| 1]) > 0 | 1]) > 0 RETURN f.key AS key ORDER BY key";
+  let db: Database;
+  beforeAll(async () => {
+    db = await createDatabase();
+    const run = (q: string) => db.execute(q, {}, { timeoutMs: 0 });
+    await run("CREATE INDEX FOR (n:Festival) ON (n.i)");
+    await run("CREATE INDEX FOR (n:User) ON (n.i)");
+    await run(
+      "UNWIND range(0, 4999) AS i CREATE (:Festival {i: i, key: 'f' + toString(i)})",
+    );
+    await run(
+      "UNWIND range(0, 1999) AS i CREATE (:User {i: i, name: 'user ' + toString(i)})",
+    );
+    await run(
+      "UNWIND range(0, 22999) AS i " +
+        "MATCH (u:User {i: (i * 7919) % 2000}), (f:Festival {i: (i * 104729) % 5000}) " +
+        "CREATE (u)-[:FOLLOWS]->(f)",
+    );
+  }, 60_000);
+
+  it("rejects with LORA_TIMEOUT near timeoutMs", async () => {
+    const { ms, err } = await elapsed(
+      db.execute(NESTED, {}, { timeoutMs: 100 }),
+    );
+    expect((err as LoraError).code).toBe("LORA_TIMEOUT");
+    expect(ms).toBeLessThan(300);
+  });
+
+  it("stops promptly when the signal aborts", async () => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 50);
+    const { ms, err } = await elapsed(
+      db.execute(NESTED, {}, { signal: controller.signal }),
+    );
+    expect((err as Error).name).toBe("AbortError");
+    expect(ms).toBeLessThan(250);
+  });
+});

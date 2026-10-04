@@ -108,7 +108,19 @@ pub(crate) fn is_cancelled(deadline: Instant) -> bool {
 
 thread_local! {
     static ACTIVE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+    /// Iterations of expression-level loops since the last clock read.
+    static EVAL_TICK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Set once an expression-level check saw the active deadline pass
+    /// (or its query cancelled). Sticky for the rest of the query on this
+    /// thread so every enclosing loop unwinds at its next iteration.
+    static EVAL_TRIPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
+
+/// Expression-level loop iterations between two clock reads. One
+/// iteration is at least a row clone plus a storage lookup, so 256 of them
+/// cost tens of microseconds: the check stays far below 1% of the work
+/// while a deadline is still noticed within a millisecond or so.
+const EVAL_CHECK_STRIDE: u32 = 256;
 
 /// Makes a query's deadline visible to everything that runs on this
 /// thread while the query executes, including pull pipelines that
@@ -123,6 +135,10 @@ pub(crate) struct DeadlineScope {
 impl DeadlineScope {
     pub(crate) fn enter(deadline: Option<Instant>) -> Self {
         let prev = ACTIVE.with(|a| a.get());
+        if prev.is_none() {
+            // A new query on this thread: forget a trip left by the last.
+            EVAL_TRIPPED.with(|t| t.set(false));
+        }
         ACTIVE.with(|a| a.set(deadline.or(prev)));
         Self { prev }
     }
@@ -132,7 +148,46 @@ impl Drop for DeadlineScope {
     fn drop(&mut self) {
         let prev = self.prev;
         ACTIVE.with(|a| a.set(prev));
+        if prev.is_none() {
+            EVAL_TRIPPED.with(|t| t.set(false));
+        }
     }
+}
+
+/// Cheap per-iteration check for loops that run inside one expression
+/// evaluation (pattern and list comprehensions, `reduce`, list
+/// quantifiers, pattern expansion). Those loops sit below every operator
+/// boundary the pipeline checks, so without this a single `WHERE` could
+/// run arbitrarily far past the query's deadline. Reads the clock every
+/// [`EVAL_CHECK_STRIDE`] calls; once it fires it stays fired for the rest
+/// of the query, and `eval_expr_result` then reports the timeout.
+#[inline]
+pub(crate) fn eval_deadline_hit() -> bool {
+    if EVAL_TRIPPED.with(|t| t.get()) {
+        return true;
+    }
+    let tick = EVAL_TICK.with(|t| {
+        let n = t.get().wrapping_add(1);
+        t.set(n);
+        n
+    });
+    if !tick.is_multiple_of(EVAL_CHECK_STRIDE) {
+        return false;
+    }
+    match active_deadline() {
+        Some(deadline) if deadline_reached(deadline) => {
+            EVAL_TRIPPED.with(|t| t.set(true));
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Whether an expression on this thread stopped early because the active
+/// query's deadline passed: its value is incomplete and must not be used.
+#[inline]
+pub(crate) fn eval_tripped() -> bool {
+    EVAL_TRIPPED.with(|t| t.get())
 }
 
 /// The deadline of the query currently executing on this thread, if any.

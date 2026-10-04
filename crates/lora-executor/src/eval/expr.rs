@@ -25,6 +25,13 @@ use super::binops::{eval_binary, eval_in, eval_unary, value_eq};
 use super::errors::{clear_eval_error, take_eval_error};
 use super::functions::eval_function;
 
+/// The message [`eval_expr_result`] fails with when an expression stopped
+/// because the query's deadline passed or the query was cancelled.
+/// [`crate::ExecutorError`] maps it back to `QueryTimeout`.
+pub const DEADLINE_EXCEEDED: &str = "query deadline exceeded";
+
+use crate::cancel::eval_deadline_hit;
+
 pub struct EvalContext<'a, S: GraphStorage> {
     pub storage: &'a S,
     pub params: &'a BTreeMap<String, LoraValue>,
@@ -125,6 +132,9 @@ pub fn eval_expr<S: GraphStorage>(
                     let mut inner_row = row.clone();
                     let mut count = 0usize;
                     for item in items {
+                        if eval_deadline_hit() {
+                            return LoraValue::Null;
+                        }
                         inner_row.insert_inline(*variable, item);
                         if eval_expr(predicate, &inner_row, ctx).is_truthy() {
                             count += 1;
@@ -154,6 +164,9 @@ pub fn eval_expr<S: GraphStorage>(
                     let mut result = Vec::with_capacity(items.len());
                     let mut inner_row = row.clone();
                     for item in items {
+                        if eval_deadline_hit() {
+                            return LoraValue::Null;
+                        }
                         // When no map_expr, we need the item after filter —
                         // stash it in the row binding and read it back if kept.
                         inner_row.insert_inline(*variable, item);
@@ -194,6 +207,9 @@ pub fn eval_expr<S: GraphStorage>(
                     let mut inner_row = row.clone();
                     let mut acc = init_val;
                     for item in items {
+                        if eval_deadline_hit() {
+                            return LoraValue::Null;
+                        }
                         inner_row.insert_inline(*accumulator, acc);
                         inner_row.insert_inline(*variable, item);
                         acc = eval_expr(expr, &inner_row, ctx);
@@ -409,6 +425,9 @@ fn eval_exists_subquery<S: GraphStorage>(
         let is_last_part = part_idx + 1 == pattern.parts.len();
         let mut next_rows = Vec::new();
         for current_row in &candidate_rows {
+            if eval_deadline_hit() {
+                return LoraValue::Null;
+            }
             match &part.element {
                 ResolvedPatternElement::Node {
                     var,
@@ -470,6 +489,9 @@ fn eval_exists_subquery<S: GraphStorage>(
                                         step.rel.direction,
                                         &step.rel.types,
                                         |rel_id, dst_id| {
+                                            if eval_deadline_hit() {
+                                                return Err(());
+                                            }
                                             if let Some(bound) = dst_bound {
                                                 if dst_id != bound {
                                                     return Ok::<(), ()>(());
@@ -544,7 +566,7 @@ fn exists_candidate_matches<S: GraphStorage>(
     ctx: &EvalContext<'_, S>,
 ) -> bool {
     where_
-        .map(|where_expr| eval_expr(where_expr, row, ctx).is_truthy())
+        .map(|where_expr| !eval_deadline_hit() && eval_expr(where_expr, row, ctx).is_truthy())
         .unwrap_or(true)
 }
 
@@ -565,6 +587,9 @@ fn eval_pattern_comprehension<S: GraphStorage>(
     for part in &pattern.parts {
         let mut next_rows = Vec::new();
         for current_row in &candidate_rows {
+            if eval_deadline_hit() {
+                return LoraValue::Null;
+            }
             match &part.element {
                 lora_analyzer::ResolvedPatternElement::Node {
                     var,
@@ -617,6 +642,9 @@ fn eval_pattern_comprehension<S: GraphStorage>(
                                         step.rel.direction,
                                         &step.rel.types,
                                         |rel_id, dst_id| {
+                                            if eval_deadline_hit() {
+                                                return Err(());
+                                            }
                                             if dst_bound.is_some_and(|bound| bound != dst_id)
                                                 || rel_bound.is_some_and(|bound| bound != rel_id)
                                             {
@@ -671,16 +699,22 @@ fn eval_pattern_comprehension<S: GraphStorage>(
     }
 
     if let Some(where_expr) = where_ {
-        candidate_rows.retain(|r| eval_expr(where_expr, r, ctx).is_truthy());
+        candidate_rows
+            .retain(|r| !eval_deadline_hit() && eval_expr(where_expr, r, ctx).is_truthy());
+    }
+    if crate::cancel::eval_tripped() {
+        return LoraValue::Null;
     }
 
     // Map each matched row through the map expression
-    LoraValue::List(
-        candidate_rows
-            .iter()
-            .map(|r| eval_expr(map_expr, r, ctx))
-            .collect(),
-    )
+    let mut out = Vec::with_capacity(candidate_rows.len());
+    for r in &candidate_rows {
+        if eval_deadline_hit() {
+            return LoraValue::Null;
+        }
+        out.push(eval_expr(map_expr, r, ctx));
+    }
+    LoraValue::List(out)
 }
 
 /// A copy of `row` holding only `reads`, the variables a pattern subquery
@@ -754,6 +788,9 @@ fn match_node_pattern<S: GraphStorage>(
 
     let mut out = Vec::new();
     for id in candidate_ids {
+        if eval_deadline_hit() {
+            break;
+        }
         let matched = ctx
             .storage
             .with_node(id, |n| {
@@ -833,7 +870,7 @@ impl<S: GraphStorage> VarLengthWalk<'_, '_, S> {
         if hops >= self.min_hops {
             self.emit(node, path, out);
         }
-        if hops >= self.max_hops {
+        if hops >= self.max_hops || eval_deadline_hit() {
             return;
         }
         let mut next = Vec::new();
@@ -976,6 +1013,10 @@ pub fn eval_expr_result<S: GraphStorage>(
 ) -> Result<LoraValue, String> {
     clear_eval_error();
     let value = eval_expr(expr, row, ctx);
+    if crate::cancel::eval_tripped() {
+        clear_eval_error();
+        return Err(DEADLINE_EXCEEDED.to_string());
+    }
     match take_eval_error() {
         Some(err) => Err(err),
         None => Ok(value),

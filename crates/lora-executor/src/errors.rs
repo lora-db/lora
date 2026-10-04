@@ -106,6 +106,19 @@ pub enum ExecutorError {
 
 pub type ExecResult<T> = Result<T, ExecutorError>;
 
+impl ExecutorError {
+    /// The error for a failed expression evaluation: the query timeout
+    /// when the expression stopped on the deadline, a runtime error
+    /// carrying its message otherwise.
+    pub(crate) fn from_eval(message: String) -> Self {
+        if message == crate::eval::DEADLINE_EXCEEDED {
+            ExecutorError::QueryTimeout
+        } else {
+            ExecutorError::RuntimeError(message)
+        }
+    }
+}
+
 pub fn value_kind(value: &LoraValue) -> String {
     match value {
         LoraValue::Null => "null".into(),
