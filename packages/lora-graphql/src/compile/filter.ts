@@ -95,7 +95,7 @@ function nodeKeys(
           maskedValue(ctx, node, f, variable, prop(v(variable), f.property)),
           value as Where,
         );
-        return pred && and(rule, pred);
+        return pred && guarded(rule, pred);
       };
     }
     if (f?.kind === "relationship") {
@@ -104,7 +104,7 @@ function nodeKeys(
       const rule = fieldValidate(ctx, node, f, variable, "READ");
       return (value) => {
         const pred = relationshipPredicate(ctx, variable, f, value as Where);
-        return pred && and(rule, pred);
+        return pred && guarded(rule, pred);
       };
     }
     if (f?.kind === "cypher" && f.computed) {
@@ -119,7 +119,7 @@ function nodeKeys(
       const rule = fieldValidate(ctx, node, f, variable, "READ");
       return (value) => {
         const pred = scalarPredicate(ctx, v(bound), value as Where);
-        return pred && and(rule, pred);
+        return pred && guarded(rule, pred);
       };
     }
     // `<field>Exists`: whether a single relationship is set. A related node
@@ -133,7 +133,7 @@ function nodeKeys(
         return (value) => {
           if (typeof value !== "boolean") return undefined;
           const pred = relationshipExists(ctx, variable, rel, value);
-          return and(rule, pred);
+          return guarded(rule, pred);
         };
       }
     }
@@ -146,12 +146,24 @@ function nodeKeys(
         const rule = fieldValidate(ctx, node, rel, variable, "READ");
         return (value) => {
           const pred = connectionPredicate(ctx, variable, rel, value as Where);
-          return pred && and(rule, pred);
+          return pred && guarded(rule, pred);
         };
       }
     }
     return undefined;
   };
+}
+
+/**
+ * A filter on a field with field-level READ rules: it matches only rows
+ * passing the rule. The rule is read as false where it is unknown (a null
+ * property), so the guarded predicate is never NULL on a row failing it:
+ * `NOT` over it is then true on every such row, whatever the hidden value,
+ * instead of true exactly where the value fails the predicate. Under no
+ * `NOT` the coalesce changes nothing (NULL and false both drop the row).
+ */
+function guarded(rule: Expr | undefined, pred: Expr): Expr {
+  return rule ? and(fn("coalesce", rule, lit(false)), pred)! : pred;
 }
 
 export function compilePropsWhere(

@@ -799,7 +799,12 @@ type Post
 - Field-level `@authorization(validate:)` guards one field: reading it on a
   row that fails is `FORBIDDEN`, filtering by it only matches rows that
   pass, sorting or aggregating by it is refused, and writing it checks the
-  rule. A write is what the input sets: a create that leaves the field out
+  rule. On a row failing the rule (or where it is unknown, a null
+  property) the filter is false, never null, so `NOT` over it matches
+  every such row whatever the hidden value: a negated filter reveals no
+  more than the filter itself. The same holds for relationship and
+  `@cypher` fields with READ rules, `<field>Exists` and
+  `<field>Connection`. A write is what the input sets: a create that leaves the field out
   is not checked against it, even when `@default` or `@populatedBy` fills
   it, so a CREATE rule can keep a `verified: Boolean! @default(value: false)`
   settable by admins only while anyone creates the node. Field-level
