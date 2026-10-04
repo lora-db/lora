@@ -186,9 +186,14 @@ impl Planner {
     }
 
     fn plan_match(&mut self, input: Option<PlanNodeId>, m: &ResolvedMatch) -> PlanNodeId {
-        if let (true, Some(upstream)) = (m.optional, input) {
+        if m.optional {
             // OPTIONAL MATCH: build the inner sub-plan that reads from Argument,
             // then wrap it in an OptionalMatch node that provides null-extension.
+            //
+            // A leading OPTIONAL MATCH has no upstream clause; openCypher
+            // drives it from the single empty unit row, so an empty match
+            // still yields one row with the pattern's variables null.
+            let upstream = input.unwrap_or_else(|| self.plan_unit_input());
 
             // Collect variables introduced by this pattern (for null-extension).
             let new_vars = pattern_binders(&m.pattern);

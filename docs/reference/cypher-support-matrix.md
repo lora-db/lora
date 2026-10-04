@@ -20,7 +20,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | Clause | Status | Notes |
 |--------|--------|-------|
 | `MATCH` | **Supported** | Node, label, property, relationship, multi-hop, cross-product |
-| `OPTIONAL MATCH` | **Supported** | Returns null rows for missing patterns. A pattern anchored on already-bound variables expands from them per row, like `MATCH`, instead of matching the pattern across the whole graph and joining |
+| `OPTIONAL MATCH` | **Supported** | Returns null rows for missing patterns, including as the query's first clause (`OPTIONAL MATCH (u:Missing) RETURN u` returns one row with `u` null). A pattern anchored on already-bound variables expands from them per row, like `MATCH`, instead of matching the pattern across the whole graph and joining |
 | `WHERE` | **Supported** | All comparison, boolean, string, null, list, regex operators |
 | `RETURN` | **Supported** | Projection, aliases, star, computed expressions |
 | `CREATE` | **Supported** | Nodes, relationships, patterns, batch via UNWIND. A bound variable in a node position must hold a node (and in a relationship position a relationship); a map, `null` or scalar there is an error, never a new blank entity |
