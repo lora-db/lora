@@ -1225,7 +1225,8 @@ lora-graphql requirements schema.graphql --ddl # constraints and indexes, as DDL
 lora-graphql check schema.graphql --operations src/operations
 lora-graphql compile schema.graphql --operations src/operations --out generated
 lora-graphql analyze schema.graphql --database ./data   # statistics JSON
-lora-graphql diff old.graphql new.graphql      # exit 1 on breaking changes
+lora-graphql diff old.graphql new.graphql      # exit 1 on breaking or destructive changes
+lora-graphql diff --base origin/main schema/   # the same, against a git ref
 lora-graphql directives                        # directive SDL for editors
 ```
 
@@ -1245,6 +1246,16 @@ files, and exits non-zero on any finding. It is the CI gate. Options:
 - `--row-budget n`: fail statements the engine estimates to scan more rows.
 - `--database dir [--name app]`: check an existing database as it is, and
   report indexes it has that the API does not use.
+
+`diff` exits 1 when the change breaks clients or needs a destructive
+database statement (a dropped constraint or index, a relabel, a moved
+property); `--allow-breaking` accepts both, e.g. when a PR is labelled
+for it. `--base <ref>` takes the schema as files or directories (searched
+recursively for `.graphql` / `.gql`), concatenates each side in path
+order, and compares the files at that git ref with the working tree, so
+a schema split over many files needs no script. A ref that has none of
+the paths has nothing to compare (exit 0); a ref that is not a commit is
+an error.
 
 `access` prints who may do what: for every type, guarded field and root
 `@cypher` field, each operation as each kind of caller (anonymous, authenticated, and each role

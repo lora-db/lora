@@ -10,9 +10,11 @@
 //   lora-graphql analyze <schema.graphql> --database <dir> [--name <db>] [--sample <n>]
 //   lora-graphql migrate neo4j <schema.graphql> [--operations <file|dir>]...
 //   lora-graphql diff <old.graphql> <new.graphql> [--allow-breaking] [--json]
+//   lora-graphql diff --base <git-ref> <file|dir>... [--allow-breaking] [--json]
 
+import { execFileSync } from "node:child_process";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import {
   getNamedType,
   isEnumType,
@@ -67,7 +69,11 @@ const USAGE = `lora-graphql <command>
                                             rewrite an @neo4j/graphql SDL; TODOs for
                                             what has no equivalent
   diff <old.graphql> <new.graphql> [--allow-breaking] [--json]
-                                            database statements and API changes`;
+  diff --base <git-ref> <file|dir>... [--allow-breaking] [--json]
+                                            database statements and API changes; exit 1
+                                            on a breaking change or a destructive statement
+                                            (--base: the SDL files at a git ref against the
+                                            working tree, each side concatenated)`;
 
 interface Io {
   out: (line: string) => void;
@@ -121,8 +127,21 @@ export async function main(
         return 0;
       }
       case "diff": {
+        const base = values.get("--base");
+        if (base !== undefined) {
+          if (!base) throw new UsageError("--base takes a git ref");
+          const paths = need(positional, 1);
+          const before = await atGitRef(base, paths);
+          if (before === undefined) {
+            io.out(
+              `${base} has none of ${paths.join(", ")}; nothing to compare`,
+            );
+            return 0;
+          }
+          return diff(before, await sdlFiles(paths), flags, io);
+        }
         const [before, after] = need(positional, 2);
-        return await diff(before!, after!, flags, io);
+        return diff(await read(before!), await read(after!), flags, io);
       }
       default:
         io.err(USAGE);
@@ -145,6 +164,7 @@ export async function main(
 class UsageError extends Error {}
 
 const VALUE_FLAGS = new Set([
+  "--base",
   "--out",
   "--variables",
   "--context",
@@ -579,15 +599,92 @@ function sample(type: GraphQLInputType): unknown {
   return SAMPLES[named.name] ?? "x";
 }
 
-async function diff(
+const SDL_FILE = /\.(graphql|gql)$/;
+
+/** The SDL in `paths` (files, or directories searched recursively), joined. */
+async function sdlFiles(paths: string[]): Promise<string> {
+  const parts: string[] = [];
+  for (const path of paths) {
+    const files = await graphqlFiles(path);
+    files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    parts.push(...files.map((f) => f.source));
+  }
+  return parts.join("\n");
+}
+
+/**
+ * The SDL in `paths` as of git `ref`, joined in the same order as
+ * `sdlFiles`, or undefined when the ref has none of them (a base from
+ * before the schema existed). A ref that is not a commit is an error: a
+ * gate that silently compared nothing would pass without looking.
+ */
+async function atGitRef(
+  ref: string,
+  paths: string[],
+): Promise<string | undefined> {
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  const parts: string[] = [];
+  let found = false;
+  for (const path of paths) {
+    // Run git next to the path and name it `./…`, so relative and
+    // absolute paths both resolve, from any directory of the repository.
+    const isDir = await stat(path).then(
+      (s) => s.isDirectory(),
+      () => !SDL_FILE.test(path),
+    );
+    const cwd = isDir ? path : dirname(path);
+    try {
+      git(cwd, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`);
+    } catch {
+      throw new Error(
+        `diff: ${ref} is not a commit (fetch it, or pass another ref)`,
+      );
+    }
+    if (!isDir) {
+      try {
+        parts.push(git(cwd, "show", `${ref}:./${basename(path)}`));
+        found = true;
+      } catch {
+        // Not in the base: a new file.
+      }
+      continue;
+    }
+    // Paths come back relative to `cwd`; none when the directory is not
+    // in the base.
+    const files = git(cwd, "ls-tree", "-r", "--name-only", ref, "--", ".")
+      .split("\n")
+      .filter((f) => SDL_FILE.test(f));
+    // Same order as sdlFiles: by path.
+    files.sort((a, b) => {
+      const pa = join(path, a);
+      const pb = join(path, b);
+      return pa < pb ? -1 : pa > pb ? 1 : 0;
+    });
+    for (const f of files) {
+      parts.push(git(cwd, "show", `${ref}:./${f}`));
+      found = true;
+    }
+  }
+  return found ? parts.join("\n") : undefined;
+}
+
+function diff(
   before: string,
   after: string,
   flags: Set<string>,
   io: Io,
-): Promise<number> {
-  const result = diffSchemas(await read(before), await read(after));
+): number {
+  const result = diffSchemas(before, after);
   const breaking = result.api.breaking.length > 0;
-  const code = breaking && !flags.has("--allow-breaking") ? 1 : 0;
+  const destructive = result.database.statements.some((s) => s.destructive);
+  const code =
+    (breaking || destructive) && !flags.has("--allow-breaking") ? 1 : 0;
   if (flags.has("--json")) {
     io.out(JSON.stringify(result, null, 2));
     return code;
