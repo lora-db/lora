@@ -1361,6 +1361,7 @@ binding has, so the WASM binding serves reads.
 | `maxConcurrentStatements`    | 2             | Statements one operation runs at once               |
 | `maxCost`                    | 50 000        | Estimated rows per operation                        |
 | `maxBatch`                   | 1000          | Nodes created or deleted per mutation; bulk `limit` |
+| `compileCacheBytes`          | 64 MiB        | Compile cache and document cache, each              |
 | `maxQueuedChanges`           | 1000          | How far a change consumer may fall behind           |
 | `defaultLimit` / `maxLimit`  | 25 / 100      | Global page sizes; `@limit` may only lower `max`    |
 | `callbacks`                  |               | Named callbacks for `@populatedBy`                  |
@@ -1472,6 +1473,13 @@ each distinct set gets its own compile). A repeated `festivals(limit: 20)`
 drops from 0.14 ms to 0.06 ms end to end. Servers that parse every request
 themselves get new field nodes each time and do not benefit; use
 `execute()` or persisted operations.
+
+Both caches are bounded by size as well as by count: `compileCacheBytes`
+(default 64 MiB, approximate) caps the compile cache and, separately, the
+parsed documents (about 100 bytes per source character), evicting the
+oldest first. A request whose variables for the field exceed 16 KiB (a
+long `in:` list, an embedding vector) is compiled but not cached, and an
+entry does not keep its document alive once the document cache drops it.
 
 `check({ rowBudget })` flags statements whose largest engine row estimate
 exceeds the budget; every plan report carries `estimatedRows` either way.

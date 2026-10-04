@@ -41,7 +41,12 @@ import {
 } from "./analyze/access.js";
 import { analyze, type Statistics } from "./analyze/statistics.js";
 import { newContext, type CompileContext } from "./compile/context.js";
-import { CompileCache, stableKey } from "./compile/cache.js";
+import {
+  COMPILE_CACHE_BYTES,
+  COMPILED_TOTAL,
+  CompileCache,
+  stableKey,
+} from "./compile/cache.js";
 import {
   compileAbstractRoot,
   compileCypherRoot,
@@ -148,6 +153,14 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
    * starve the others. Default 2.
    */
   maxConcurrentStatements?: number;
+  /**
+   * Approximate bytes the compile cache may hold, and again the parsed
+   * document cache: entries are evicted oldest first past it, besides the
+   * entry caps. Requests with more than 16 KiB of variables a field uses
+   * (long `in:` lists, embedding vectors) are compiled but not cached.
+   * Default 64 MiB.
+   */
+  compileCacheBytes?: number;
   /**
    * Reject a root field whose estimated rows touched exceed this, before
    * it runs. The estimate multiplies page sizes through nested lists,
@@ -394,6 +407,11 @@ export interface ExecuteArgs {
 }
 
 const DOCUMENT_CACHE_SIZE = 500;
+/**
+ * A parsed document's approximate size: measured at about 100 bytes of
+ * AST, locations and tokens per source character.
+ */
+const documentBytes = (source: string) => 100 * source.length;
 /** A subscriber's share of one change: the events of its node type. */
 interface SubscriberDelivery {
   change: WriteChange;
@@ -486,7 +504,9 @@ export class LoraGraphQL {
    * Compiled reads by root field node (documents are cached, so a field
    * node repeats across requests), then by what each compile read.
    */
-  readonly #compiled = new CompileCache();
+  readonly #compiled: CompileCache;
+  readonly #documentBytesMax: number;
+  #documentBytes = 0;
   /**
    * Reads made for subscribers of one change, by statement text and
    * parameters: subscribers whose checks or node reads compile to the same
@@ -510,6 +530,9 @@ export class LoraGraphQL {
     this.model = buildModel(options.typeDefs, options);
     this.#driver = options.driver;
     this.#timeoutMs = options.timeoutMs ?? 10_000;
+    const cacheBytes = options.compileCacheBytes ?? COMPILE_CACHE_BYTES;
+    this.#compiled = new CompileCache(COMPILED_TOTAL, cacheBytes);
+    this.#documentBytesMax = cacheBytes;
     this.#operationTimeoutMs =
       options.operationTimeoutMs ?? this.#timeoutMs * OPERATION_TIMEOUT_FACTOR;
     this.#maxConcurrentStatements =
@@ -1310,10 +1333,20 @@ export class LoraGraphQL {
         }
         const errors = this.#validate(document);
         if (errors.length > 0) return { errors };
-        if (this.#documents.size >= DOCUMENT_CACHE_SIZE) {
-          this.#documents.delete(this.#documents.keys().next().value!);
+        const bytes = documentBytes(args.source);
+        if (bytes <= this.#documentBytesMax) {
+          while (
+            this.#documents.size > 0 &&
+            (this.#documents.size >= DOCUMENT_CACHE_SIZE ||
+              this.#documentBytes + bytes > this.#documentBytesMax)
+          ) {
+            const oldest = this.#documents.keys().next().value!;
+            this.#documents.delete(oldest);
+            this.#documentBytes -= documentBytes(oldest);
+          }
+          this.#documents.set(args.source, document);
+          this.#documentBytes += bytes;
         }
-        this.#documents.set(args.source, document);
       }
     } else {
       return {

@@ -23,6 +23,16 @@ import { lookupPath } from "./auth.js";
 export const COMPILED_PER_FIELD = 16;
 /** Compiled root fields kept in total, across field nodes. */
 export const COMPILED_TOTAL = 4096;
+/** Default `compileCacheBytes`: the approximate size the cache may reach. */
+export const COMPILE_CACHE_BYTES = 64 * 1024 * 1024;
+/**
+ * Requests whose variables key is longer than this are compiled but not
+ * cached: a 10 000-item `in:` list or an embedding vector rarely repeats,
+ * and would hold its statement's parameters for nothing.
+ */
+export const MAX_CACHED_VARIABLES = 16 * 1024;
+/** What an entry costs beyond its strings: the shape closure, maps. */
+const ENTRY_OVERHEAD = 1024;
 
 /** A claim a rule binds as a filter value: rebound per request. */
 interface Slot {
@@ -43,6 +53,8 @@ interface Entry {
   slotPaths: string[];
   contextReads: Array<[string, unknown]>;
   compiled: CompiledRead;
+  /** Approximate bytes the entry holds. */
+  bytes: number;
 }
 
 type Compile = (jwt: Record<string, unknown> | undefined) => {
@@ -62,19 +74,43 @@ export interface CacheRequest {
 
 export class CompileCache {
   readonly #byField = new WeakMap<FieldNode, Entry[]>();
-  /** Every live entry, oldest first, for the total cap. */
-  readonly #live = new Map<Entry, FieldNode>();
+  /**
+   * Every live entry, oldest first, with its field's entry list, for the
+   * caps. The list, not the field node: a field node's location pins its
+   * whole document (source and tokens), which must be free to go once
+   * the document cache drops it.
+   */
+  readonly #live = new Map<Entry, Entry[]>();
   readonly #variableNames = new WeakMap<FieldNode, string[] | null>();
   /** Claims a field's compile bound into rule filters, to try as slots. */
   readonly #bindHints = new WeakMap<FieldNode, string[]>();
+  /** Drops the entries of a field node that was garbage collected. */
+  readonly #collected =
+    typeof FinalizationRegistry === "function"
+      ? new FinalizationRegistry<Entry[]>((entries) => {
+          for (const e of entries.splice(0)) this.#drop(e);
+        })
+      : undefined;
   readonly #total: number;
+  readonly #maxBytes: number;
+  #bytes = 0;
 
-  constructor(total = COMPILED_TOTAL) {
+  constructor(total = COMPILED_TOTAL, maxBytes = COMPILE_CACHE_BYTES) {
     this.#total = total;
+    this.#maxBytes = maxBytes;
   }
 
   get size(): number {
     return this.#live.size;
+  }
+
+  /** Approximate bytes the cached entries hold. */
+  get bytes(): number {
+    return this.#bytes;
+  }
+
+  #drop(entry: Entry): void {
+    if (this.#live.delete(entry)) this.#bytes -= entry.bytes;
   }
 
   /**
@@ -84,7 +120,9 @@ export class CompileCache {
   get(request: CacheRequest, compile: Compile): CompiledRead {
     const field = request.fieldNodes[0]!;
     const variables = this.#variablesKey(request);
-    if (variables === undefined) return compile(request.jwt).compiled;
+    if (variables === undefined || variables.length > MAX_CACHED_VARIABLES) {
+      return compile(request.jwt).compiled;
+    }
     const authenticated = !!request.jwt;
     const entries = this.#byField.get(field) ?? [];
     for (const e of entries) {
@@ -124,19 +162,24 @@ export class CompileCache {
       slotPaths: [...new Set(slots.map((s) => s.path))],
       contextReads: ctx.contextReads,
       compiled,
+      bytes: entryBytes(variables, claims, compiled),
     };
-    entries.unshift(entry);
-    this.#live.set(entry, field);
-    for (const dropped of entries.splice(COMPILED_PER_FIELD)) {
-      this.#live.delete(dropped);
+    if (entry.bytes > this.#maxBytes) return compiled;
+    if (!this.#byField.has(field)) {
+      this.#byField.set(field, entries);
+      this.#collected?.register(field, entries);
     }
-    this.#byField.set(field, entries);
-    if (this.#live.size > this.#total) {
-      const [oldest, owner] = this.#live.entries().next().value!;
-      this.#live.delete(oldest);
-      const list = this.#byField.get(owner);
-      const at = list?.indexOf(oldest) ?? -1;
-      if (at >= 0) list!.splice(at, 1);
+    entries.unshift(entry);
+    this.#live.set(entry, entries);
+    this.#bytes += entry.bytes;
+    for (const dropped of entries.splice(COMPILED_PER_FIELD)) {
+      this.#drop(dropped);
+    }
+    while (this.#live.size > this.#total || this.#bytes > this.#maxBytes) {
+      const [oldest, list] = this.#live.entries().next().value!;
+      this.#drop(oldest);
+      const at = list.indexOf(oldest);
+      if (at >= 0) list.splice(at, 1);
     }
     return compiled;
   }
@@ -213,6 +256,22 @@ export class CompileCache {
     }
     return stableKey(picked);
   }
+}
+
+/**
+ * An entry's approximate size: its strings at two bytes a character, the
+ * parameters as large as the variables they mostly come from, and a fixed
+ * overhead.
+ */
+function entryBytes(
+  variables: string,
+  claims: Array<[string, string]>,
+  compiled: CompiledRead,
+): number {
+  let chars = 2 * variables.length;
+  for (const [path, key] of claims) chars += path.length + key.length;
+  for (const s of compiled.statements) chars += s.text.length;
+  return 2 * chars + ENTRY_OVERHEAD;
 }
 
 /** A claim value a cached compile may rebind: a non-empty string. */
