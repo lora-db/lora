@@ -12,7 +12,9 @@ import {
   checkAuthentication,
   checkFieldAuthentication,
   fieldReadGuard,
+  fieldValidate,
   maskSettled,
+  propertyAccess,
   relationshipRules,
   rootFieldGuard,
 } from "../compile/auth.js";
@@ -122,15 +124,47 @@ export function accessMatrix(
         (f.authentication?.has("READ") ||
           f.authorization?.validate.some((r) => r.operations.has("READ")) ||
           (f.authorization?.mask?.length ?? 0) > 0);
-      if (!guarded) continue;
-      for (const p of principals) {
-        out.push({
-          type: node.name,
-          field: f.name,
-          operation: "READ",
-          principal: p.name,
-          ...fieldVerdict(context(p), node, f),
-        });
+      if (guarded) {
+        for (const p of principals) {
+          out.push({
+            type: node.name,
+            field: f.name,
+            operation: "READ",
+            principal: p.name,
+            ...fieldVerdict(context(p), node, f),
+          });
+        }
+      }
+      // Field-level CREATE / UPDATE rules: who may write this field.
+      if (f.kind !== "scalar") continue;
+      for (const op of ["CREATE", "UPDATE"] as const) {
+        if (!node.mutations.has(op) || !fieldWriteGuarded(f, op)) continue;
+        for (const p of principals) {
+          out.push({
+            type: node.name,
+            field: f.name,
+            operation: op,
+            principal: p.name,
+            ...fieldWriteVerdict(context(p), node, f, op),
+          });
+        }
+      }
+    }
+  }
+  // Rules on relationship properties, per property and operation.
+  for (const props of [...model.relationshipProperties.values()].sort(byName)) {
+    for (const f of [...props.fields.values()].sort(byName)) {
+      for (const op of PROPERTY_OPS) {
+        if (!fieldWriteGuarded(f, op)) continue;
+        for (const p of principals) {
+          out.push({
+            type: props.name,
+            field: f.name,
+            operation: op,
+            principal: p.name,
+            ...propertyVerdict(context(p), f, op),
+          });
+        }
       }
     }
   }
@@ -179,7 +213,110 @@ function rootFieldVerdict(
   }
 }
 
+const PROPERTY_OPS = ["READ", "CREATE", "UPDATE"] as const;
+
+/** `field` has rules (or `@authentication`) for `op`. */
+function fieldWriteGuarded(
+  field: {
+    authentication?: ReadonlySet<AuthOperation> | undefined;
+    authorization?: NodeType["authorization"];
+  },
+  op: AuthOperation,
+): boolean {
+  return (
+    (field.authentication?.has(op) ?? false) ||
+    (field.authorization?.validate.some((r) => r.operations.has(op)) ?? false)
+  );
+}
+
+function ruleLabels(
+  field: {
+    authentication?: ReadonlySet<AuthOperation> | undefined;
+    authorization?: NodeType["authorization"];
+  },
+  op: AuthOperation,
+): string[] {
+  return [
+    ...(field.authentication?.has(op) ? ["@authentication"] : []),
+    ...(field.authorization?.validate ?? []).flatMap((r, i) =>
+      r.operations.has(op) ? [`validate[${i}]`] : [],
+    ),
+  ];
+}
+
+function fieldWriteVerdict(
+  ctx: CompileContext,
+  node: NodeType,
+  field: Field & { kind: "scalar" },
+  op: "CREATE" | "UPDATE",
+): Pick<AccessEntry, "verdict" | "by"> {
+  const by = ruleLabels(field, op);
+  try {
+    checkFieldAuthentication(ctx, node.name, field, op);
+    if (
+      field.authorization?.validate.some((r) => r.operations.has(op)) &&
+      bypassed(ctx, node)
+    ) {
+      return { verdict: "allowed", by: ["bypass"] };
+    }
+    const rule =
+      fieldValidate(ctx, node, field, "n", op, "BEFORE") ??
+      fieldValidate(ctx, node, field, "n", op, "AFTER");
+    return rule ? { verdict: "validated", by } : { verdict: "allowed", by };
+  } catch (err) {
+    return failed(err, by);
+  }
+}
+
+function propertyVerdict(
+  ctx: CompileContext,
+  field: Parameters<typeof propertyAccess>[1],
+  op: AuthOperation,
+): Pick<AccessEntry, "verdict" | "by"> {
+  const by = ruleLabels(field, op);
+  if (
+    field.authorization?.validate.some((r) => r.operations.has(op)) &&
+    bypassed(ctx, undefined) &&
+    !field.authentication?.has(op)
+  ) {
+    return { verdict: "allowed", by: ["bypass"] };
+  }
+  const access: string = propertyAccess(ctx, field, op);
+  const verdict: AccessVerdict =
+    access === "allowed"
+      ? "allowed"
+      : access === "unauthenticated"
+        ? "unauthenticated"
+        : access === "forbidden"
+          ? "denied"
+          : "validated";
+  return { verdict, by };
+}
+
 function typeVerdict(
+  ctx: CompileContext,
+  node: NodeType,
+  op: AuthOperation,
+): Pick<AccessEntry, "verdict" | "by"> {
+  const verdict = typeRuleVerdict(ctx, node, op);
+  // `@key(scope: VIEWER)`: a create is checked against the caller's key
+  // space before any statement runs, so it needs a token, and then it is
+  // decided per key. The schema's bypass skips it.
+  if (
+    op !== "CREATE" ||
+    !node.key.keyScope ||
+    !ctx.model.viewer ||
+    verdict.verdict === "denied" ||
+    verdict.verdict === "unauthenticated" ||
+    bypassed(ctx, node)
+  ) {
+    return verdict;
+  }
+  const by = [...verdict.by.filter((b) => b !== "no rule"), "key scope"];
+  return { verdict: ctx.jwt ? "validated" : "unauthenticated", by };
+}
+
+function typeRuleVerdict(
   ctx: CompileContext,
   node: NodeType,
   op: AuthOperation,

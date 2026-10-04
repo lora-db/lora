@@ -1257,11 +1257,15 @@ a schema split over many files needs no script. A ref that has none of
 the paths has nothing to compare (exit 0); a ref that is not a commit is
 an error.
 
-`access` prints who may do what: for every type, guarded field and root
-`@cypher` field, each operation as each kind of caller (anonymous, authenticated, and each role
+`access` prints who may do what: for every type, guarded field (READ,
+and CREATE / UPDATE where field-level rules guard the write), rule on a
+relationship property (READ, CREATE, UPDATE) and root `@cypher` field,
+each operation as each kind of caller (anonymous, authenticated, and each role
 the rules test, such as `roles:admin`), with the verdict (`allowed`,
 `filtered`, `validated`, `masked`, `denied`, `unauthenticated`) and the
-rules that decide it. `lora.accessMatrix()` returns the same list; its
+rules that decide it. A `@key(scope: VIEWER)` type's CREATE reads
+`unauthenticated` for anonymous callers and `validated` by `key scope`
+for the rest. `lora.accessMatrix()` returns the same list; its
 order is stable, so a snapshot in CI turns access changes into diffs.
 
 `check` lints authorization too:
