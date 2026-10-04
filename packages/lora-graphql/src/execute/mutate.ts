@@ -1577,14 +1577,7 @@ class Runner {
           uniqueTogetherStatement(ctx, model, node, u, [...keys.values()]),
           ctx,
         );
-        if (rows.length > 0) {
-          throw requestError(
-            "CONSTRAINT_VIOLATION",
-            `${node.name} must be unique by (${u.fields.join(", ")}); ${node.name} ${JSON.stringify(rows[0]!["key"])} would share it with another`,
-            undefined,
-            { type: node.name, fields: [...u.fields] },
-          );
-        }
+        if (rows.length > 0) throw notUniqueTogether(node, u, rows[0]!["key"]);
       }
     }
   }
@@ -1969,18 +1962,55 @@ class Runner {
   }
 }
 
+function notUniqueTogether(node: NodeType, u: UniqueTogether, key: unknown) {
+  return requestError(
+    "CONSTRAINT_VIOLATION",
+    `${node.name} must be unique by (${u.fields.join(", ")}); ${node.name} ${JSON.stringify(key)} would share it with another`,
+    undefined,
+    { type: node.name, fields: [...u.fields] },
+  );
+}
+
+/**
+ * `@uniqueTogether` after a write whose write-set is unknown (a `@cypher`
+ * mutation): every node of each type in `nodes` is compared, in `tx`.
+ */
+export async function checkUniqueTogetherOf(
+  env: MutationEnv,
+  tx: DriverTransaction,
+  nodes: readonly NodeType[],
+): Promise<void> {
+  for (const node of nodes) {
+    for (const u of node.uniqueTogether) {
+      const ctx = newContext(env.selection, env.model, {
+        jwt: env.jwt,
+        degrees: env.degrees,
+        requestContext: env.requestContext,
+      });
+      ctx.inAuth = true;
+      const text = uniqueTogetherStatement(ctx, env.model, node, u, undefined);
+      const { rows } = await runStatement(env, tx, {
+        text,
+        params: ctx.params,
+      });
+      if (rows.length > 0) throw notUniqueTogether(node, u, rows[0]!["key"]);
+    }
+  }
+}
+
 /**
  * The first node among `keys` whose `@uniqueTogether` combination another
  * node of its type shares: seeks each by key, binds its combination, then
  * compares it with the nodes that share its first relationship end (or,
  * with scalars only, its first scalar's value) — never a scan of the type.
+ * Without `keys`, every node of the type is compared (a scan).
  */
 function uniqueTogetherStatement(
   ctx: CompileContext,
   model: GraphModel,
   node: NodeType,
   u: UniqueTogether,
-  keys: unknown[],
+  keys: unknown[] | undefined,
 ): string {
   const label = name(node.labels[0]!);
   const key = name(node.key.property);
@@ -2030,8 +2060,10 @@ function uniqueTogetherStatement(
     ...(mWhere ? [`(${printExpr(mWhere)})`] : []),
   ];
   return (
-    `UNWIND ${printExpr(bind(ctx, dedupe(keys)))} AS k\n` +
-    `MATCH (n:${label}) WHERE n.${key} = k\n` +
+    (keys
+      ? `UNWIND ${printExpr(bind(ctx, dedupe(keys)))} AS k\n` +
+        `MATCH (n:${label}) WHERE n.${key} = k\n`
+      : `MATCH (n:${label})\n`) +
     `WITH ${["n", ...ends("n").map((e, i) => `${e} AS ${mine[i]!}`)].join(", ")}` +
     (present.length > 0 ? ` WHERE ${present.join(" AND ")}` : "") +
     "\n" +

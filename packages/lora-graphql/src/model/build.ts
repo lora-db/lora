@@ -39,6 +39,7 @@ import {
   type ViewerMapping,
 } from "./desugar.js";
 import { codeOnly, maskLiterals, scanParams } from "./cypher-lexer.js";
+import { uniqueTogetherTouched } from "./unique-together.js";
 import type {
   AbstractType,
   SearchIndex,
@@ -1271,6 +1272,17 @@ export function buildModel(
     bypass: defaults.bypass,
     cursorSecret: options.cursorSecret,
   };
+  // A @cypher mutation's write-set is unknown: @uniqueTogether types it
+  // may write are checked by comparing every node of the type.
+  for (const field of model.mutations) {
+    const touched = uniqueTogetherTouched(model, field.statement);
+    if (touched.length === 0) continue;
+    warnings.push({
+      type: "Mutation",
+      field: field.name,
+      message: `the statement may write ${touched.map((n) => n.name).join(", ")} (@uniqueTogether): each call compares every node of ${touched.length === 1 ? "that type" : "those types"} after the statement (a scan); a generated mutation checks only the nodes it writes`,
+    });
+  }
   // An update input with nothing in it would break the schema: the
   // mutations that take it are left out, and the model says so.
   for (const node of nodes.values()) {

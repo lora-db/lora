@@ -13,7 +13,12 @@ import { requestError } from "../errors.js";
 import { assertReadable } from "../schema/guard.js";
 import type { Statement } from "../driver.js";
 import type { CypherField } from "../model/types.js";
-import { runStatement, type MutationEnv } from "./mutate.js";
+import { uniqueTogetherTouched } from "../model/unique-together.js";
+import {
+  checkUniqueTogetherOf,
+  runStatement,
+  type MutationEnv,
+} from "./mutate.js";
 
 export async function executeCypherMutation(
   env: MutationEnv,
@@ -58,6 +63,13 @@ export async function executeCypherMutation(
       }
     }
     const result = await runStatement(env, tx, statement);
+    // The write-set is unknown: every node of each @uniqueTogether type
+    // the statement may write is checked (a scan; the model warns).
+    await checkUniqueTogetherOf(
+      env,
+      tx,
+      uniqueTogetherTouched(env.model, field.statement),
+    );
     const values = result.rows.map((row) => row[field.columnName]);
     let value: unknown[] = values;
     if (field.node) {

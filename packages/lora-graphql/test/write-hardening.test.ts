@@ -139,3 +139,78 @@ describe("@cypher mutations in a shared transaction", () => {
     expect(await keys(t)).toEqual(["c3"]);
   });
 });
+
+describe("@uniqueTogether under @cypher mutations", () => {
+  const typeDefs = `type Person @node { key: String! @key }
+    type Pair @node @mutation @uniqueTogether(fields: ["a", "b"]) {
+      key: String! @key  a: String  b: String
+    }
+    type Follow @node @uniqueTogether(fields: ["from", "to"]) {
+      key: String! @key
+      from: Person! @relationship(type: "FROM", direction: OUT)
+      to: Person! @relationship(type: "TO", direction: OUT)
+    }
+    type Mutation {
+      makePair(key: String!, a: String!, b: String!): Pair
+        @cypher(statement: "CREATE (p:Pair {key: $key, a: $a, b: $b}) RETURN p", columnName: "p")
+      setB(key: String!, b: String!): Pair
+        @cypher(statement: "MATCH (p) WHERE p.key = $key SET p.b = $b RETURN p", columnName: "p")
+      follow(key: String!, from: String!, to: String!): Follow
+        @cypher(statement: """
+          MATCH (x {key: $from}), (y {key: $to})
+          CREATE (f:Follow {key: $key}), (f)-[:FROM]->(x), (f)-[:TO]->(y)
+          RETURN f
+        """, columnName: "f")
+    }`;
+  const seed = "CREATE (:Person {key: 'lou'}), (:Person {key: 'bo'})";
+
+  test("a combination a @cypher mutation duplicates is refused and rolled back", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    expect(
+      (await t.run(`mutation { makePair(key: "p1", a: "x", b: "y") { key } }`))
+        .errors,
+    ).toBeUndefined();
+    const dup = await t.run(
+      `mutation { makePair(key: "p2", a: "x", b: "y") { key } }`,
+    );
+    expect(codes(dup)).toEqual(["CONSTRAINT_VIOLATION"]);
+    expect(dup.errors?.[0]?.message).toMatch(/Pair must be unique by \(a, b\)/);
+    expect(await rows(t, "MATCH (p:Pair) RETURN p.key AS k")).toEqual([
+      { k: "p1" },
+    ]);
+    // A write that names no label still reaches the constrained property.
+    await t.data(`mutation { makePair(key: "p3", a: "x", b: "z") { key } }`);
+    const set = await t.run(`mutation { setB(key: "p3", b: "y") { key } }`);
+    expect(codes(set)).toEqual(["CONSTRAINT_VIOLATION"]);
+  });
+
+  test("relationship ends written by a @cypher mutation are checked", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    await t.data(
+      `mutation { follow(key: "f1", from: "lou", to: "bo") { key } }`,
+    );
+    const dup = await t.run(
+      `mutation { follow(key: "f2", from: "lou", to: "bo") { key } }`,
+    );
+    expect(codes(dup)).toEqual(["CONSTRAINT_VIOLATION"]);
+    expect(
+      (
+        await t.run(
+          `mutation { follow(key: "f3", from: "bo", to: "lou") { key } }`,
+        )
+      ).errors,
+    ).toBeUndefined();
+  });
+
+  test("the model warns that such a mutation checks every node of the type", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const warnings = t.lora.model.warnings.filter((w) =>
+      w.message.includes("@uniqueTogether"),
+    );
+    expect(warnings.map((w) => `${w.type}.${w.field}`).sort()).toEqual([
+      "Mutation.follow",
+      "Mutation.makePair",
+      "Mutation.setB",
+    ]);
+  });
+});

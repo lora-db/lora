@@ -457,9 +457,16 @@ writes — creates, updates, upserts, nested creates, and connects,
 disconnects and deletes from either side — for every caller, the bypass
 included: it is a data invariant, not a rule. Each check seeks the written
 nodes and compares only with nodes sharing their first relationship end
-(or, with scalars only, their first scalar's value). Writes outside
-generated mutations (`@cypher` mutations, Cypher of your own) are not
-checked.
+(or, with scalars only, their first scalar's value).
+
+A `@cypher` mutation's write-set is unknown, so after its statement it
+checks every `@uniqueTogether` type the statement may write: one whose
+label, constrained relationship type or constrained scalar property
+(`.prop`) the statement text names. That check compares every node of the
+type (a scan, in the same transaction), and the model warns about each such
+mutation (`check()` reports it under `warnings`); prefer a generated
+mutation for a constrained type. Cypher of your own (`tx.execute()`, other
+clients) is not checked.
 
 Any failure rolls the whole mutation back. Atomicity is per root field:
 in an operation with several root fields, each runs in its own
