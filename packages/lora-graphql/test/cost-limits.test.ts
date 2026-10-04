@@ -302,3 +302,31 @@ describe("operation budget", () => {
     expect(off.seen.timeouts[0]).toBe(500);
   });
 });
+
+describe("analyze() fan-out", () => {
+  test("nested lists use the maximum degree, measured over every node", async () => {
+    // 40 users; the last one follows 30, the others one each.
+    const hub = await festivalHarness({
+      typeDefs,
+      seed: [
+        `UNWIND range(0, 39) AS i CREATE (:User {key: 'u' + toString(i)})`,
+        `MATCH (a:User), (b:User) WHERE a.key <> 'u39' AND b.key = 'u0' AND a <> b CREATE (a)-[:FOLLOWS]->(b)`,
+        `MATCH (a:User {key: 'u39'}), (b:User) WHERE b.key <> 'u39' WITH a, b LIMIT 30 CREATE (a)-[:FOLLOWS]->(b)`,
+      ],
+    });
+    // The sample (the first 10 users) never sees the hub.
+    const stats = await hub.lora.analyze({ sample: 10 });
+    expect(stats.degrees["User.follows"]).toMatchObject({ p99: 1, max: 30 });
+    const q = `{ user(key: "u39") { follows(limit: 50) { key follows(limit: 50) { key } } } }`;
+    // 1 + 30 + 30 x 30: each level at the hub's degree, under the limit.
+    expect(cost(q, hub.lora)).toBe(1 + 30 + 30 * 30);
+    const r = await hub.data<{
+      user: { follows: Array<{ follows: unknown[] }> };
+    }>(q);
+    const returned =
+      1 +
+      r.user.follows.length +
+      r.user.follows.reduce((n, f) => n + f.follows.length, 0);
+    expect(returned).toBeLessThanOrEqual(1 + 30 + 30 * 30);
+  });
+});

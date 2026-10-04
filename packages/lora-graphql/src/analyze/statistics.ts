@@ -2,6 +2,14 @@
 // degree of each list relationship to estimate how many rows an
 // operation touches; until `analyze()` runs, `@cardinality(max:)` and
 // page limits stand in.
+//
+// The estimate uses the maximum degree, measured over every node, not a
+// percentile of the sample: callers pick the parents of a nested list
+// (by key, or by traversing into a hub), so any lower percentile is a
+// bound they can exceed at will. A hub-rooted four-level query estimated
+// from the p99 came to 22 621 rows and returned 537 790 objects. The
+// page limit still caps each level, so the maximum only lowers an
+// estimate where every node stays under the limit.
 
 import type { LoraDriver } from "../driver.js";
 import { name } from "../compile/cypher.js";
@@ -12,6 +20,7 @@ export interface DegreeStats {
   mean: number;
   median: number;
   p99: number;
+  /** The largest degree of any node, not only of the sample. */
   max: number;
 }
 
@@ -48,10 +57,17 @@ export async function analyze(
       const arrow =
         (f.direction === "OUT" ? `-${inner}->(x)` : `<-${inner}-(x)`) +
         ` WHERE ${labels}`;
-      statements.push({
-        text: `MATCH (n:${label}) WITH n LIMIT $sample RETURN size([(n)${arrow} | 1]) AS d`,
-        params: { sample } as never,
-      });
+      statements.push(
+        {
+          text: `MATCH (n:${label}) WITH n LIMIT $sample RETURN size([(n)${arrow} | 1]) AS d`,
+          params: { sample } as never,
+        },
+        // The hub a sample may miss: one pass over every relationship.
+        {
+          text: `MATCH (n:${label}) RETURN max(size([(n)${arrow} | 1])) AS m`,
+          params: {},
+        },
+      );
     }
     const [count, ...degrees] = await driver.run(statements, {
       mode: "read",
@@ -59,10 +75,13 @@ export async function analyze(
     });
     stats.nodes[node.name] = Number(count!.rows[0]?.["c"] ?? 0);
     rels.forEach((f, i) => {
-      const values = degrees[i]!.rows.map((r) => Number(r["d"])).sort(
+      const values = degrees[2 * i]!.rows.map((r) => Number(r["d"])).sort(
         (a, b) => a - b,
       );
-      stats.degrees[`${node.name}.${f.name}`] = summarize(values);
+      const summary = summarize(values);
+      const max = Number(degrees[2 * i + 1]!.rows[0]?.["m"] ?? 0);
+      summary.max = Math.max(summary.max, max);
+      stats.degrees[`${node.name}.${f.name}`] = summary;
     });
   }
   return stats;

@@ -811,8 +811,10 @@ export class LoraGraphQL {
   // -------------------------------------------------------------------------
 
   /**
-   * Sample node counts and relationship degrees (S6). Cost estimates then
-   * use each relationship's p99 degree instead of its page limit.
+   * Count nodes and measure relationship degrees (S6). Cost estimates then
+   * use each relationship's maximum degree, capped by its page limit,
+   * instead of the page limit alone; filters use node counts and mean
+   * degrees (see `src/compile/cost.ts`).
    */
   async analyze(options: { sample?: number } = {}): Promise<Statistics> {
     const stats = await analyze(this.#driver, this.model, {
@@ -827,7 +829,8 @@ export class LoraGraphQL {
   useStatistics(stats: Statistics): void {
     this.#statistics = stats;
     this.#degrees = new Map(
-      Object.entries(stats.degrees).map(([k, d]) => [k, d.p99]),
+      // The maximum: the caller chooses the parents (see statistics.ts).
+      Object.entries(stats.degrees).map(([k, d]) => [k, d.max]),
     );
     this.#statisticsVersion++;
   }

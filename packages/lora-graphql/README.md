@@ -1067,9 +1067,12 @@ by key starts from that node and expands, instead of scanning the label.
 Every operation has a cost estimate (rows touched, multiplying page sizes
 through nested lists, capped by `@cardinality`), summed across its root
 fields, and an operation over `maxCost` (default 50 000) fails with
-`COST_EXCEEDED` before it runs. `lora.analyze()` samples node counts and
-relationship degrees so estimates use measured degrees instead of the
-page size.
+`COST_EXCEEDED` before it runs. `lora.analyze()` counts nodes and
+measures relationship degrees: a nested list is then estimated at its
+relationship's maximum degree, measured over every node and capped by the
+page size, instead of the page size alone. Not a percentile: the caller
+picks the parents (by key, or by following a hub), so any lower bound is
+one it can exceed at will.
 
 Filters are charged the rows they examine, not only the rows they return:
 
