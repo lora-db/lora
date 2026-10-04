@@ -1,6 +1,9 @@
 // A `@cypher` field on Mutation. The statement runs as written, not inside
 // a `CALL { }`: LoraDB 0.15 rejects writes in subqueries as read-only.
-// Returned nodes are then projected by @key in the same transaction.
+// Returned nodes are then projected by @key in the same transaction. Inside
+// a shared transaction (a caller-owned `lora.begin()`, or every root field
+// of an operation under `mutationTransaction: "operation"`) it runs there
+// and leaves the commit to its owner, as generated mutations do.
 
 import type { FieldNode } from "graphql";
 import { newContext } from "../compile/context.js";
@@ -20,7 +23,8 @@ export async function executeCypherMutation(
   /** The field's `viewer` rules, checked in the transaction first. */
   guard?: Statement,
 ): Promise<unknown> {
-  if (!env.driver.begin) {
+  const owned = env.transaction;
+  if (!owned && !env.driver.begin) {
     throw requestError(
       "DATABASE_ERROR",
       "mutations need a driver with interactive transactions (@loradb/lora-node)",
@@ -36,11 +40,13 @@ export async function executeCypherMutation(
     text: bindStatement(ctx, field, args),
     params: ctx.params,
   };
-  const tx = await env.driver.begin({
-    mode: "write",
-    timeoutMs: env.timeoutMs,
-    signal: env.signal,
-  });
+  const tx =
+    owned ??
+    (await env.driver.begin!({
+      mode: "write",
+      timeoutMs: env.timeoutMs,
+      signal: env.signal,
+    }));
   try {
     if (guard) {
       const check = await runStatement(env, tx, guard);
@@ -82,7 +88,7 @@ export async function executeCypherMutation(
         ]) as unknown[],
       );
     }
-    await tx.commit();
+    if (!owned) await tx.commit();
     return field.type.list ? value : (value[0] ?? null);
   } catch (err) {
     if (tx.isOpen) await tx.rollback();

@@ -2139,8 +2139,9 @@ export class LoraGraphQL {
     } catch (err) {
       throw this.#databaseError(info.fieldName, err);
     }
-    // A hand-written write has no known write-set: report it broadly.
-    this.#emit({
+    // A hand-written write has no known write-set: report it broadly,
+    // when the transaction it ran in commits.
+    const change: WriteChange = {
       operation: "CYPHER",
       field: field.name,
       created: [],
@@ -2152,7 +2153,10 @@ export class LoraGraphQL {
       types: [],
       relationshipTypes: [],
       broad: true,
-    });
+    };
+    const owned = (context as LoraGraphQLContext | undefined)?.transaction;
+    if (owned) owned.record(change);
+    else this.#emit(change);
     return value;
   }
 

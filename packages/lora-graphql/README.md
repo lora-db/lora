@@ -1177,7 +1177,15 @@ try {
 With `transaction` in the context, every operation of the request runs in
 it, next to the application's own `tx.execute(cypher)`: they commit or roll
 back together, reads see the transaction's writes, and change events wait
-for the commit. A failed mutation rolls the transaction back.
+for the commit. A failed mutation rolls the transaction back. `@cypher`
+mutations run in it too, like generated ones: their statement shares the
+transaction, and their (broad) change event waits for the commit.
+
+A write transaction holds LoraDB's writer lock until it ends, and other
+writes wait for it. That wait is bounded by `timeoutMs` (and a `signal`
+in the context): a mutation that cannot get the lock in time fails with
+`DATABASE_ERROR` instead of queueing forever. Keep `lora.begin()`
+transactions short.
 
 ## CLI
 
@@ -1332,7 +1340,7 @@ binding has, so the WASM binding serves reads.
 
 | Option                       | Default       | Meaning                                             |
 | ---------------------------- | ------------- | --------------------------------------------------- |
-| `timeoutMs`                  | 10 000        | Per statement; a `signal` in the context cancels    |
+| `timeoutMs`                  | 10 000        | Per statement and lock wait; a `signal` cancels     |
 | `maxCost`                    | 50 000        | Estimated rows per operation                        |
 | `maxBatch`                   | 1000          | Nodes created or deleted per mutation; bulk `limit` |
 | `maxQueuedChanges`           | 1000          | How far a change consumer may fall behind           |
