@@ -34,6 +34,7 @@ import {
   UNEXPANDED,
   checkViewer,
   desugarRule,
+  testsRelationshipEnds,
   type DesugarContext,
   type NamedRules,
   type ViewerMapping,
@@ -1031,10 +1032,45 @@ export function buildModel(
       if (ends) desugar(undefined, node.name, f.name, rel, ends);
     }
   }
+  // A relationship property's rules may test the relationship's ends
+  // when every relationship field using its type declares the same ones.
+  const propertyEnds = new Map<string, RuleEnds | string>();
+  for (const props of relationshipProperties.values()) {
+    const users: RelationshipField[] = [];
+    for (const node of nodes.values()) {
+      for (const f of node.fields.values()) {
+        if (f.kind === "relationship" && f.properties === props.name) {
+          users.push(f);
+        }
+      }
+    }
+    const pairs = [...new Set(users.map((f) => `${f.owner} → ${f.target}`))];
+    const first = users[0] && ruleEnds(users[0]);
+    propertyEnds.set(
+      props.name,
+      users.length === 0
+        ? `no relationship field uses ${props.name}`
+        : pairs.length > 1
+          ? `the relationship fields using ${props.name} declare different ends (${users.map((f) => `${f.owner}.${f.name}: ${f.owner} → ${f.target}`).join(", ")})`
+          : (first ??
+            `${pairs[0]} has an interface or union end; source and target need @node types`),
+    );
+  }
   for (const props of relationshipProperties.values()) {
     for (const f of props.fields.values()) {
-      if (f.authorization) {
-        desugar(undefined, props.name, f.name, f.authorization.validate);
+      if (!f.authorization) continue;
+      const ends = propertyEnds.get(props.name);
+      const row = f.authorization.validate.filter((r) =>
+        testsRelationshipEnds(r.where),
+      );
+      desugar(
+        undefined,
+        props.name,
+        f.name,
+        f.authorization.validate.filter((r) => !row.includes(r)),
+      );
+      if (typeof ends === "object") {
+        desugar(undefined, props.name, f.name, row, ends);
       }
     }
   }
@@ -1210,6 +1246,21 @@ export function buildModel(
         );
       }
       for (const rule of f.authorization?.validate ?? []) {
+        const ends = testsRelationshipEnds(rule.where)
+          ? propertyEnds.get(props.name)
+          : undefined;
+        if (typeof ends === "string") {
+          at(
+            `@authorization: source, target and edge need every relationship field using ${props.name} to declare the same ends, but ${ends}`,
+          );
+          continue;
+        }
+        if (ends && [...rule.operations].some((op) => op !== "READ")) {
+          at(
+            "@authorization: source, target and edge decide per relationship, so they take READ rules only; CREATE and UPDATE rules on a relationship property test claims",
+          );
+          continue;
+        }
         checkRuleWhere(
           nodes,
           relationshipProperties,
@@ -1219,6 +1270,8 @@ export function buildModel(
           rule.where,
           problems,
           jwtShape,
+          ends ? viewerNode : undefined,
+          ends,
         );
       }
       if (f.authenticationJwt) {

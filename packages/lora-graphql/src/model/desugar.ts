@@ -386,3 +386,32 @@ export function checkViewer(
   }
   if (f.list) at(`@viewer: ${viewer.type}.${viewer.field} cannot be a list`);
 }
+
+/**
+ * The parts a rule tests at its top level, through AND, OR and NOT:
+ * `node`, `jwt`, `viewer`, `source`, `target`, `edge`.
+ */
+export function ruleParts(
+  where: unknown,
+  out = new Set<string>(),
+): Set<string> {
+  if (Array.isArray(where)) {
+    for (const w of where) ruleParts(w, out);
+    return out;
+  }
+  if (where === null || typeof where !== "object") return out;
+  for (const [key, value] of Object.entries(where)) {
+    if (key === "AND" || key === "OR" || key === "NOT") ruleParts(value, out);
+    else out.add(key);
+  }
+  return out;
+}
+
+/**
+ * A relationship property's rule that tests the relationship's ends or
+ * edge (`source`, `target`, `edge`): decided per relationship.
+ */
+export function testsRelationshipEnds(where: unknown): boolean {
+  const parts = ruleParts(where);
+  return parts.has("source") || parts.has("target") || parts.has("edge");
+}

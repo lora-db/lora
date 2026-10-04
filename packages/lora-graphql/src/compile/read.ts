@@ -41,11 +41,12 @@ import {
   checkAuthentication,
   checkFieldAuthentication,
   checkPropertyAccess,
+  propertyReadAccess,
+  propertyReadGuard,
   fieldReadGuard,
   fieldValidate,
   maskedValue,
   maskSettled,
-  propertyAccess,
   refusedEdgeRead,
   relationshipRules,
   viewerKey,
@@ -2341,7 +2342,11 @@ function projectRelationshipConnection(
   if (props && sel.properties.length > 0) {
     edgeEntries.push({
       key: "properties",
-      value: projectProperties(ctx, props.name, r, sel.properties, edgeRead),
+      value: projectProperties(ctx, props.name, r, sel.properties, edgeRead, {
+        rel,
+        owner: parent,
+        target: x,
+      }),
     });
   }
 
@@ -2669,6 +2674,8 @@ function projectProperties(
   variable: string,
   sets: SelectionSetNode[],
   guard?: Expr | false,
+  /** The relationship being read, for rules over its ends. */
+  ends?: { rel: RelationshipField; owner: string; target: string },
 ): Expr {
   const props = ctx.model.relationshipProperties.get(propsType)!;
   const objType = ctx.schema.getType(propsType) as GraphQLObjectType;
@@ -2676,9 +2683,37 @@ function projectProperties(
   for (const [key, nodes] of collectFields(ctx, objType, sets)) {
     const field = props.fields.get(nodes[0]!.name.value);
     if (!field) continue;
-    // Rules on a relationship property test claims only: a request they
-    // refuse reads it as FORBIDDEN, on every row that has it.
-    if (propertyAccess(ctx, field, "READ") !== "allowed") {
+    // Rules over the relationship's ends (or the caller's node) decide
+    // per relationship: a failing one reads the property as FORBIDDEN.
+    const access = propertyReadAccess(ctx, field);
+    const own =
+      access === "row" && ends
+        ? propertyReadGuard(ctx, ends.rel, field, {
+            owner: ends.owner,
+            target: ends.target,
+            rel: variable,
+          })
+        : undefined;
+    if (access === "row" && own !== undefined) {
+      const when =
+        guard === false || own === false
+          ? lit(false)
+          : guard === undefined
+            ? own
+            : and(guard, own)!;
+      entries.push({
+        kind: "entry",
+        key,
+        value: guardedValue(
+          { when, code: "FORBIDDEN" },
+          prop(v(variable), field.property),
+        ),
+      });
+      continue;
+    }
+    // Rules testing claims only: a request they refuse reads the property
+    // as FORBIDDEN, on every row that has it.
+    if (access !== "allowed" && !(access === "row" && ends)) {
       entries.push({
         kind: "entry",
         key,

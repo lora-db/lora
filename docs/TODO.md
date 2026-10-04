@@ -70,7 +70,6 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P2 `check` warning listing every type the schema's bypass reaches.
 - [ ] P2 Access matrix: a viewer-related principal; `expectAccess` `update-edge` on single relationships.
 - [ ] P2 FULLTEXT: say when an index skips a value type (non-string list elements and properties are skipped silently).
-- [ ] P2 Property-level rules on relationship properties that name `source` / `target` (G-42): today they test claims only, and READ_EDGE covers all of an edge's properties at once.
 - [ ] P3 `$viewer` (the caller's node) in `@cypher` statements, null when signed out (G-33's last part); `.subject = $jwt.sub` works meanwhile.
 - [ ] P1 Mutations make several JS round trips under the writer lock — use `tx.executeMany`, fold validation and read-back into the last write (no `executeMany` in `src/`).
 - [ ] P1 Bounded write queue: fail fast with `OVERLOADED`/503.

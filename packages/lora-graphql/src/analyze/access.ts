@@ -21,6 +21,7 @@ import {
   fieldValidate,
   maskSettled,
   propertyAccess,
+  propertyReadAccess,
   relationshipRules,
   rootFieldGuard,
 } from "../compile/auth.js";
@@ -529,7 +530,11 @@ function propertyVerdict(
   ) {
     return { verdict: "allowed", by: ["bypass"] };
   }
-  const access: string = propertyAccess(ctx, field, op);
+  // READ rules over the relationship's ends decide per relationship.
+  const access: string =
+    op === "READ"
+      ? propertyReadAccess(ctx, field)
+      : propertyAccess(ctx, field, op);
   const verdict: AccessVerdict =
     access === "allowed"
       ? "allowed"

@@ -947,13 +947,32 @@ with READ validate rules: a row failing the rule reads the field as
 `FORBIDDEN`, and filtering through the field applies the rule too.
 
 Relationship properties take field-level `@authentication` and
-`@authorization(validate:)` for `READ`, `CREATE` and `UPDATE`. One
-`@relationshipProperties` type can serve fields on both ends, so these
-rules test claims (`jwt`) only; a `node` part is a model error. Setting
+`@authorization(validate:)` for `READ`, `CREATE` and `UPDATE`. They test
+claims (`jwt`); a `node` part is a model error. Setting
 the property on connect or nested create checks `CREATE` for a new
 relationship and `UPDATE` for one that already exists; `update: { edge }`
 checks `UPDATE`. A request the READ rules refuse reads the property as
 `FORBIDDEN` and cannot filter, sort or aggregate by it.
+
+When every relationship field using the properties type declares the
+same ends (owner and target `@node` types), READ rules may also test the
+relationship's `source`, `target` and `edge`, as a relationship rule
+does, and `viewer`. They decide per relationship: one edge can carry an
+`rsvp` every member reads and a marker only its member reads. A
+relationship failing them reads that property as `FORBIDDEN` (the
+others still read), and nothing may filter, sort or aggregate by it.
+Writes stay claims-only: such a part in a `CREATE` or `UPDATE` rule, or
+on a type whose fields disagree on the ends, is a model error.
+
+```graphql
+type Membership @relationshipProperties {
+  rsvp: String
+  lastReadAt: String
+    @authorization(
+      validate: [{ operations: [READ], where: { target: { isViewer: true } } }]
+    )
+}
+```
 
 ### Rules on relationships
 

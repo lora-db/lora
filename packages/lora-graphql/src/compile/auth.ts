@@ -18,6 +18,7 @@ import type {
   RelationshipPropertiesType,
 } from "../model/types.js";
 import { PLACEHOLDER, RULE_REFERENCES } from "../model/types.js";
+import { ruleParts, testsRelationshipEnds } from "../model/desugar.js";
 import { and, bin, fn, lit, not, or, prop, v, type Expr } from "./cypher.js";
 import {
   bind,
@@ -253,12 +254,80 @@ export function propertyAccess(
   if (rules.every((r) => r.requireAuthentication) && !ctx.jwt) {
     return "unauthenticated";
   }
+  // A rule over the relationship's ends never grants here: it is decided
+  // per relationship, where they are known (`propertyReadGuard`).
   const granted = rules.some(
     (r) =>
       !(r.requireAuthentication && !ctx.jwt) &&
+      !testsRelationshipEnds(r.where) &&
       compileRule(ctx, undefined, "", r.where) === true,
   );
   return granted ? "allowed" : "forbidden";
+}
+
+/**
+ * Reading a relationship property: as `propertyAccess`, and `"row"` when
+ * the claims do not grant it but a rule over the relationship's ends (or
+ * the caller's node) may, per relationship: see `propertyReadGuard`.
+ */
+export function propertyReadAccess(
+  ctx: CompileContext,
+  field: Parameters<typeof propertyAccess>[1],
+): ReturnType<typeof propertyAccess> | "row" {
+  const access = propertyAccess(ctx, field, "READ");
+  if (access !== "forbidden") return access;
+  const row = (field.authorization?.validate ?? []).some(
+    (r) =>
+      r.operations.has("READ") &&
+      !(r.requireAuthentication && !ctx.jwt) &&
+      (testsRelationshipEnds(r.where) || rulePartsHaveViewer(r.where)),
+  );
+  return row ? "row" : "forbidden";
+}
+
+const rulePartsHaveViewer = (where: unknown): boolean =>
+  ruleParts(where).has("viewer");
+
+/**
+ * The per-relationship condition for reading a relationship property
+ * whose READ rules test `source`, `target`, `edge` or `viewer`, with the
+ * statement's owner-side, target-side and relationship variables of
+ * `rel`. Any rule grants. Undefined when the claims alone grant; false
+ * when nothing can.
+ */
+export function propertyReadGuard(
+  ctx: CompileContext,
+  rel: RelationshipField,
+  field: Parameters<typeof propertyAccess>[1],
+  vars: { owner: string; target: string; rel: string },
+): Expr | false | undefined {
+  if (ctx.inAuth || bypassed(ctx, undefined)) return undefined;
+  const rules = (field.authorization?.validate ?? []).filter((r) =>
+    r.operations.has("READ"),
+  );
+  if (rules.length === 0) return undefined;
+  const source = ctx.model.nodes.get(rel.owner);
+  const target = ctx.model.nodes.get(rel.target);
+  const props = rel.properties
+    ? ctx.model.relationshipProperties.get(rel.properties)
+    : undefined;
+  const ends: RuleEnds | undefined =
+    source && target
+      ? {
+          source: { node: source, variable: vars.owner },
+          target: { node: target, variable: vars.target },
+          edge: props ? { props, variable: vars.rel } : undefined,
+        }
+      : undefined;
+  const folded = foldOr(
+    rules.map((r) =>
+      (r.requireAuthentication && !ctx.jwt) ||
+      (!ends && testsRelationshipEnds(r.where))
+        ? false
+        : compileRule(ctx, undefined, "", r.where, ends),
+    ),
+  );
+  return folded === true ? undefined : folded === false ? false : folded;
 }
 
 /** Throws unless `op` may write (or filter by) the relationship property. */
@@ -268,6 +337,12 @@ export function checkPropertyAccess(
   field: Parameters<typeof propertyAccess>[1] & { name: string },
   op: AuthOperation,
 ): void {
+  if (op === "READ" && propertyReadAccess(ctx, field) === "row") {
+    throw requestError(
+      "FORBIDDEN",
+      `${type}.${field.name}: its READ rules decide per relationship, so it cannot be filtered, sorted or aggregated by`,
+    );
+  }
   const access = propertyAccess(ctx, field, op);
   if (access === "unauthenticated") {
     throw requestError(
