@@ -2,8 +2,10 @@
 // previous values and relationship events are checked like any read, and
 // a subscription's own cost is bounded.
 
+import { createDatabase } from "@loradb/lora-node";
 import { parse, subscribe, type ExecutionResult } from "graphql";
 import { describe, expect, test } from "vitest";
+import { LoraGraphQL, loraDriver, type LoraDriver } from "../src/index.js";
 import { createTestLoraGraphQL, type TestLoraGraphQL } from "../src/testing.js";
 
 const settle = () => new Promise((r) => setTimeout(r, 30));
@@ -242,5 +244,105 @@ describe("relationship events", () => {
     expect(asLou.events).toEqual([]);
     expect(asBo.events).toEqual([item]);
     expect(asAdmin.events).toEqual([note]);
+  });
+});
+
+describe("limits", () => {
+  const typeDefs = `
+  type Board @node @mutation @subscription {
+    key: String! @key
+    title: String @filterable
+    items: [Item!]! @relationship(type: "HAS", direction: OUT) @filterable
+  }
+  type Item @node @mutation {
+    key: String! @key
+    label: String @filterable
+    parts: [Item!]! @relationship(type: "PART", direction: OUT) @filterable
+  }`;
+  const code = (r: unknown) =>
+    (r as ExecutionResult).errors?.[0]?.extensions?.["code"];
+
+  test("a context holds at most maxSubscriptions subscriptions", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, maxSubscriptions: 2 });
+    const context = {};
+    const source = "subscription { boardChanged { key } }";
+    const a = await t.lora.subscribe({ source, context });
+    const b = await t.lora.subscribe({ source, context });
+    expect(Symbol.asyncIterator in a && Symbol.asyncIterator in b).toBe(true);
+    const c = await t.lora.subscribe({ source, context });
+    expect(code(c)).toBe("LIMIT_EXCEEDED");
+    // Another connection has its own allowance.
+    const other = await t.lora.subscribe({ source, context: {} });
+    expect(Symbol.asyncIterator in other).toBe(true);
+    // Ending one frees its place.
+    await (a as AsyncIterableIterator<ExecutionResult>).return!();
+    const d = await t.lora.subscribe({ source, context });
+    expect(Symbol.asyncIterator in d).toBe(true);
+    for (const it of [b, other, d]) {
+      await (it as AsyncIterableIterator<ExecutionResult>).return!();
+    }
+  });
+
+  test("where is charged at subscribe time and nests one relationship deep", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, maxCost: 50 });
+    const ok = await t.lora.subscribe({
+      source: `subscription { boardChanged(where: { title: { eq: "x" } }) { key } }`,
+    });
+    expect(Symbol.asyncIterator in ok).toBe(true);
+    await (ok as AsyncIterableIterator<ExecutionResult>).return!();
+    // Every Board change would scan up to a page of items.
+    const costly = await t.lora.subscribe({
+      source: `subscription { boardChanged(where: { items: { some: { label: { eq: "x" } } } }) { key } }`,
+    });
+    expect(code(costly)).toBe("COST_EXCEEDED");
+    const t2 = await createTestLoraGraphQL({ typeDefs });
+    const nested = await t2.lora.subscribe({
+      source: `subscription { boardChanged(where: { items: { some: { parts: { some: { label: { eq: "x" } } } } } }) { key } }`,
+    });
+    expect(code(nested)).toBe("LIMIT_EXCEEDED");
+    const t3 = await createTestLoraGraphQL({
+      typeDefs,
+      maxSubscriptionFilterDepth: 2,
+    });
+    const allowed = await t3.lora.subscribe({
+      source: `subscription { boardChanged(where: { items: { some: { parts: { some: { label: { eq: "x" } } } } } }) { key } }`,
+    });
+    expect(Symbol.asyncIterator in allowed).toBe(true);
+    await (allowed as AsyncIterableIterator<ExecutionResult>).return!();
+  });
+
+  test("visibility checks run under subscriptionTimeoutMs", async () => {
+    const db = await createDatabase();
+    const base = loraDriver(db);
+    const timeouts: Array<number | undefined> = [];
+    const driver: LoraDriver = {
+      ...base,
+      run: (statements, options) => {
+        if (statements[0]!.text.startsWith("UNWIND")) {
+          timeouts.push(options.timeoutMs);
+        }
+        return base.run(statements, options);
+      },
+    };
+    const lora = new LoraGraphQL({
+      typeDefs,
+      driver,
+      subscriptionTimeoutMs: 250,
+    });
+    await lora.assertSchema({ create: true });
+    const sub = await lora.subscribe({
+      source: `subscription { boardChanged(where: { title: { eq: "x" } }) { key } }`,
+    });
+    const it = sub as AsyncIterableIterator<ExecutionResult>;
+    const next = it.next();
+    await new Promise((r) => setTimeout(r, 10));
+    await lora.execute({
+      source: `mutation { createBoards(input: [{ key: "b", title: "x" }]) { info { nodesCreated } } }`,
+    });
+    expect((await next).value).toEqual({
+      data: { boardChanged: { key: "b" } },
+    });
+    await it.return!();
+    expect(timeouts).toEqual([250]);
   });
 });

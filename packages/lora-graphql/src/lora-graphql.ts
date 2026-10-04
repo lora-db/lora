@@ -169,6 +169,27 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
    * is ended with an error. Default 1000.
    */
   maxQueuedChanges?: number;
+  /**
+   * Live subscriptions one scope (see `subscriptionScope`) may hold; one
+   * more is LIMIT_EXCEEDED. Default 100.
+   */
+  maxSubscriptions?: number;
+  /**
+   * What `maxSubscriptions` counts per: by default the context object, so
+   * a server that reuses one context per connection (graphql-ws) limits
+   * each connection. Return the connection (or user) otherwise.
+   */
+  subscriptionScope?: (context: unknown) => object | undefined;
+  /**
+   * How deep relationship filters may nest in a subscription's `where`,
+   * which runs on every change. Deeper is LIMIT_EXCEEDED. Default 1.
+   */
+  maxSubscriptionFilterDepth?: number;
+  /**
+   * Per statement a subscription runs to check a change (visibility,
+   * `where`, related nodes). Default 2000, or `timeoutMs` when lower.
+   */
+  subscriptionTimeoutMs?: number;
   /** Named callbacks for `@populatedBy(callback:)`. */
   callbacks?: Record<string, PopulatedByCallback>;
   /**
@@ -416,6 +437,12 @@ export class LoraGraphQL {
   readonly #maxBatch: number;
   readonly #maxListArgument: number;
   readonly #maxQueued: number;
+  readonly #maxSubscriptions: number;
+  readonly #subscriptionScope: (context: unknown) => object | undefined;
+  readonly #maxFilterDepth: number;
+  readonly #subscriptionTimeoutMs: number;
+  /** Live subscriptions per scope. */
+  readonly #subscriptionCounts = new WeakMap<object, number>();
   readonly #callbacks: Record<string, PopulatedByCallback>;
   readonly #resolvers: NonNullable<LoraGraphQLOptions["resolvers"]>;
   readonly #scalars: LoraGraphQLOptions["scalars"];
@@ -499,6 +526,14 @@ export class LoraGraphQL {
     this.#maxBatch = options.maxBatch ?? 1000;
     this.#maxListArgument = options.maxListArgument ?? MAX_LIST_ARGUMENT;
     this.#maxQueued = options.maxQueuedChanges ?? 1000;
+    this.#maxSubscriptions = options.maxSubscriptions ?? 100;
+    this.#subscriptionScope =
+      options.subscriptionScope ??
+      ((context) =>
+        context !== null && typeof context === "object" ? context : undefined);
+    this.#maxFilterDepth = options.maxSubscriptionFilterDepth ?? 1;
+    this.#subscriptionTimeoutMs =
+      options.subscriptionTimeoutMs ?? Math.min(2000, this.#timeoutMs);
     this.#callbacks = options.callbacks ?? {};
     const missing = [...this.model.nodes.values()].flatMap((n) =>
       [...n.fields.values()].flatMap((f) =>
@@ -1720,6 +1755,27 @@ export class LoraGraphQL {
       authFilter(ctx, node, "n", op);
       authValidate(ctx, node, "n", op, "BEFORE");
     }
+    // `where` runs on every change: bound its nesting, charge it once.
+    const field = `${node.name[0]!.toLowerCase()}${node.name.slice(1)}Changed`;
+    const where = args["where"] as Record<string, unknown> | null | undefined;
+    this.#charge(field, 1 + this.#filterCost(node, where, 0), context);
+    const scope = this.#subscriptionScope(context);
+    const live = scope ? (this.#subscriptionCounts.get(scope) ?? 0) : 0;
+    if (scope && live >= this.#maxSubscriptions) {
+      throw requestError(
+        "LIMIT_EXCEEDED",
+        `at most ${this.#maxSubscriptions} subscriptions at a time`,
+      );
+    }
+    if (scope) this.#subscriptionCounts.set(scope, live + 1);
+    let counted = !!scope;
+    const release = () => {
+      if (!counted || !scope) return;
+      counted = false;
+      const n = (this.#subscriptionCounts.get(scope) ?? 1) - 1;
+      if (n > 0) this.#subscriptionCounts.set(scope, n);
+      else this.#subscriptionCounts.delete(scope);
+    };
     // The stream's own signal: ended by `context.signal` or by return().
     // An async generator runs return() only once its pending next()
     // yields, and a quiet or filtered stream may never yield again, so
@@ -1729,6 +1785,7 @@ export class LoraGraphQL {
     const end = () => {
       outer?.removeEventListener("abort", end);
       stop.abort();
+      release();
     };
     if (outer?.aborted) end();
     else outer?.addEventListener("abort", end, { once: true });
@@ -1750,6 +1807,107 @@ export class LoraGraphQL {
       },
     };
     return iterator;
+  }
+
+  /**
+   * Estimated rows one changed node's `where` check touches: each
+   * relationship filter scans the relationship (its measured degree, else
+   * its cardinality, else a page of the target), times what it nests.
+   * Nesting deeper than `maxSubscriptionFilterDepth` is LIMIT_EXCEEDED.
+   */
+  #filterCost(
+    node: NodeType,
+    where: Record<string, unknown> | null | undefined,
+    depth: number,
+  ): number {
+    let cost = 0;
+    for (const [key, value] of Object.entries(where ?? {})) {
+      if (value === null || value === undefined) continue;
+      if (key === "AND" || key === "OR") {
+        for (const w of value as Array<Record<string, unknown>>) {
+          cost += this.#filterCost(node, w, depth);
+        }
+        continue;
+      }
+      if (key === "NOT") {
+        cost += this.#filterCost(node, value as Record<string, unknown>, depth);
+        continue;
+      }
+      let field = node.fields.get(key);
+      let shape: "direct" | "connection" | "flat" = "direct";
+      if (!field) {
+        for (const [suffix, s] of [
+          ["Connection", "connection"],
+          ["Aggregate", "flat"],
+          ["Exists", "flat"],
+        ] as const) {
+          if (key.endsWith(suffix)) {
+            field = node.fields.get(key.slice(0, -suffix.length));
+            shape = s;
+            break;
+          }
+        }
+      }
+      if (field?.kind !== "relationship") continue;
+      if (depth + 1 > this.#maxFilterDepth) {
+        throw requestError(
+          "LIMIT_EXCEEDED",
+          `a subscription's where may nest relationship filters ${this.#maxFilterDepth} deep (${node.name}.${key})`,
+        );
+      }
+      const target = this.model.nodes.get(field.target);
+      const fan = field.list
+        ? Math.max(
+            1,
+            this.#degrees.get(`${field.owner}.${field.name}`) ??
+              field.cardinality ??
+              target?.limit.max ??
+              100,
+          )
+        : 1;
+      let inner = 0;
+      if (target && shape !== "flat" && typeof value === "object") {
+        const parts: unknown[] = field.list
+          ? Object.values(value as Record<string, unknown>)
+          : [value];
+        for (const part of parts) {
+          if (part === null || typeof part !== "object") continue;
+          const w =
+            shape === "connection"
+              ? (part as Record<string, unknown>)["node"]
+              : part;
+          inner += this.#filterCost(
+            target,
+            w as Record<string, unknown> | null | undefined,
+            depth + 1,
+          );
+        }
+      } else if (!target && shape !== "flat" && typeof value === "object") {
+        // An abstract target: a filter by member (`{ Person: {...} }`) or
+        // on the shared fields; the costliest member counts.
+        const parts: unknown[] = field.list
+          ? Object.values(value as Record<string, unknown>)
+          : [value];
+        for (const part of parts) {
+          if (part === null || typeof part !== "object") continue;
+          let worst = 0;
+          for (const member of field.members) {
+            const m = this.model.nodes.get(member);
+            const p = part as Record<string, unknown>;
+            const w = (shape === "connection" ? p["node"] : p) as
+              | Record<string, unknown>
+              | null
+              | undefined;
+            if (!m || !w || typeof w !== "object") continue;
+            const own = (w[member] ?? w) as Record<string, unknown>;
+            worst = Math.max(worst, this.#filterCost(m, own, depth + 1));
+          }
+          inner += worst;
+        }
+      }
+      cost += fan * (1 + inner);
+    }
+    return cost;
   }
 
   async *#events(
@@ -2043,7 +2201,7 @@ export class LoraGraphQL {
           () =>
             this.#driver.run(statements, {
               mode: "read",
-              timeoutMs: this.#timeoutMs,
+              timeoutMs: this.#subscriptionTimeoutMs,
               verified: true,
             }),
           share,
@@ -2111,7 +2269,12 @@ export class LoraGraphQL {
           })),
         },
       })),
-      { mode: "read", timeoutMs: this.#timeoutMs, signal, verified: true },
+      {
+        mode: "read",
+        timeoutMs: this.#subscriptionTimeoutMs,
+        signal,
+        verified: true,
+      },
     );
     for (const result of results) {
       for (const row of result.rows) {

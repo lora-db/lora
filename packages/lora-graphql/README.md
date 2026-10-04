@@ -1135,6 +1135,19 @@ distinct check; claims that settle the rules need none). Under
 followers whose claims settle the rules. `@authentication(operations: [SUBSCRIBE])` guards the subscription
 itself. Pass a `signal` in the context to end the stream with the request.
 
+A subscription's `where` runs on every change, so it is bounded when the
+subscription starts: relationship filters may nest
+`maxSubscriptionFilterDepth` (default 1) deep, and its estimated rows per
+changed node (each relationship filter's degree, from `analyze()`, else
+its cardinality, else a page of the target) are charged against
+`maxCost` / `budget` (`COST_EXCEEDED`). One scope, by default the context
+object (one per graphql-ws connection when the server reuses it; set
+`subscriptionScope` to count per connection or user otherwise), holds at
+most `maxSubscriptions` (default 100) live subscriptions; one more is
+`LIMIT_EXCEEDED`. The statements that check a change run under
+`subscriptionTimeoutMs` (default 2000, or `timeoutMs` when lower); one
+that fails or times out ends that subscription with the error.
+
 Every event has a `timestamp` (when the write was committed). With
 `@subscription(relationships: true)` a type also gets `CONNECT` and
 `DISCONNECT` events, one per relationship, with `relationship { field type
@@ -1348,6 +1361,10 @@ binding has, so the WASM binding serves reads.
 | `maxCost`                    | 50 000        | Estimated rows per operation                        |
 | `maxBatch`                   | 1000          | Nodes created or deleted per mutation; bulk `limit` |
 | `maxQueuedChanges`           | 1000          | How far a change consumer may fall behind           |
+| `maxSubscriptions`           | 100           | Live subscriptions per `subscriptionScope`          |
+| `subscriptionScope`          | the context   | What `maxSubscriptions` counts per                  |
+| `maxSubscriptionFilterDepth` | 1             | Relationship filter nesting in a subscription where |
+| `subscriptionTimeoutMs`      | 2000          | Per statement checking a change for a subscriber    |
 | `defaultLimit` / `maxLimit`  | 25 / 100      | Global page sizes; `@limit` may only lower `max`    |
 | `callbacks`                  |               | Named callbacks for `@populatedBy`                  |
 | `jwt`                        | `context.jwt` | Where the claims are                                |
