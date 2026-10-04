@@ -12,6 +12,12 @@ import {
   type SelectionSetNode,
 } from "graphql";
 import { RANGE_UNINDEXABLE } from "../analyze/indexes.js";
+import {
+  filterDegree,
+  memberWhere,
+  perRowCost,
+  rootFilterCost,
+} from "./cost.js";
 import type { QueryResult, Statement } from "../driver.js";
 import { requestError } from "../errors.js";
 import { scanParams } from "../model/cypher-lexer.js";
@@ -231,7 +237,9 @@ function compileList(
 ): CompiledRead {
   const limit = resolveLimit(args["limit"], node.limit, "limit");
   const sort = resolveSort(ctx, node, args["sort"], false);
-  const root = rootMatch(ctx, node, args["where"] as Where | undefined, sort);
+  const where = args["where"] as Where | undefined;
+  const root = rootMatch(ctx, node, where, sort);
+  ctx.cost += rootFilterCost(ctx, node, where, limit);
   const projection = projectNode(ctx, node, "this", sets, limit);
   const clauses: Clause[] = [
     ...root.clauses,
@@ -348,6 +356,7 @@ function compileConnection(
   // The page, unless only counts or aggregates were asked for.
   if (sel.page) {
     const root = rootMatch(ctx, node, where, sort, cursor);
+    ctx.cost += rootFilterCost(ctx, node, where, first + 1);
     expectation = root.expectation;
     const projection = projectNode(ctx, node, "this", sel.node, first + 1);
     statements.push({
@@ -416,7 +425,12 @@ function compileConnection(
     columns,
     reads: readSet(ctx),
     expectations: expectation ? [{ statement: 0, ...expectation }] : [],
-    cost: ctx.cost + (stats ? 1 : 0),
+    // Counting reads every match, not a page.
+    cost:
+      ctx.cost +
+      (stats
+        ? Math.max(1, rootFilterCost(ctx, node, where, first + 1, true))
+        : 0),
     mode: "read",
     shape: (results): RawConnection => {
       const page = sel.page ? results[0] : undefined;
@@ -584,7 +598,9 @@ function compileAggregate(
   const aggType = ctx.schema.getType(
     names.aggregate(node.name),
   ) as GraphQLObjectType;
-  const root = rootMatch(ctx, node, args["where"] as Where | undefined, []);
+  const where = args["where"] as Where | undefined;
+  const root = rootMatch(ctx, node, where, []);
+  ctx.cost += rootFilterCost(ctx, node, where, node.limit.default, true);
   const items: Array<{ expr: Expr; alias: string }> = [
     { expr: fn("count", v("this")), alias: "count" },
     ...deniedItem(ctx, node, "this"),
@@ -641,7 +657,9 @@ function compileGrouped(
     }
   }
   const wanted = aggregateWanted(ctx, node, aggType, aggSets);
-  const root = rootMatch(ctx, node, args["where"] as Where | undefined, []);
+  const where = args["where"] as Where | undefined;
+  const root = rootMatch(ctx, node, where, []);
+  ctx.cost += rootFilterCost(ctx, node, where, limit, true);
   const keys = fields.map((f, i) => ({
     expr: prop(v("this"), f.property),
     alias: `by_${i}`,
@@ -943,6 +961,12 @@ export function compileAbstractRoot(
       limitValue,
     );
     if (!slice) continue;
+    ctx.cost += rootFilterCost(
+      ctx,
+      member,
+      memberWhere(abstract, member.name, args["where"] as Where | undefined),
+      limitValue,
+    );
     calls.push({ kind: "call", imports: [], body: slice.body });
     lists.push(slice.list);
   }
@@ -2224,6 +2248,11 @@ function projectRelationship(
   const limit = resolveLimit(args["limit"], rel.limit ?? target.limit, "limit");
   const userSort = args["sort"] as unknown[] | null | undefined;
   const limitParam = bind(ctx, limit);
+  // A filter examines every related node, not only the page it returns.
+  ctx.cost +=
+    rows *
+    filterDegree(ctx, rel, true) *
+    perRowCost(ctx, target, args["where"] as Where | undefined);
   const nested = projectNode(
     ctx,
     target,
@@ -2335,6 +2364,8 @@ function projectRelationshipConnection(
     throw refusedEdgeRead(rel);
   }
   const filter = filterFor(x, r);
+  ctx.cost +=
+    rows * filterDegree(ctx, rel, true) * perRowCost(ctx, target, nodeWhere);
   const keyset = cursor ? keysetPredicate(ctx, x, sort, cursor, r) : undefined;
 
   const nested = projectNode(

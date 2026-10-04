@@ -1,3 +1,4 @@
+import type { Statistics } from "../analyze/statistics.js";
 import type { GraphModel } from "../model/types.js";
 import { param, type Expr } from "./cypher.js";
 import type { SelectionContext } from "./selection.js";
@@ -22,6 +23,16 @@ export interface CompileContext extends SelectionContext {
   cost: number;
   /** Degree statistics from `analyze()`, by `Owner.field`. */
   degrees: ReadonlyMap<string, number>;
+  /** Node counts and degrees from `analyze()`, for filter costs. */
+  statistics?: Statistics | undefined;
+  /** Relationship levels one `where` may nest (`maxFilterDepth`). */
+  maxFilterDepth?: number | undefined;
+  /** Items an `in` filter operand may hold (`maxListFilter`). */
+  maxListFilter?: number | undefined;
+  /** Characters a string filter operand may hold (`maxStringFilter`). */
+  maxStringFilter?: number | undefined;
+  /** Relationship levels of the `where` being compiled, so far. */
+  filterDepth?: number | undefined;
   /** The GraphQL context, for `"$context.path"` values in rules. */
   requestContext: unknown;
   /**
@@ -51,8 +62,12 @@ export function newContext(
   options: {
     jwt?: Record<string, unknown> | undefined;
     degrees?: ReadonlyMap<string, number>;
+    statistics?: Statistics | undefined;
     requestContext?: unknown;
     maxListArgument?: number | undefined;
+    maxFilterDepth?: number | undefined;
+    maxListFilter?: number | undefined;
+    maxStringFilter?: number | undefined;
   } = {},
 ): CompileContext {
   return {
@@ -65,6 +80,10 @@ export function newContext(
     inAuth: false,
     cost: 0,
     degrees: options.degrees ?? new Map(),
+    statistics: options.statistics,
+    maxFilterDepth: options.maxFilterDepth,
+    maxListFilter: options.maxListFilter,
+    maxStringFilter: options.maxStringFilter,
     requestContext: options.requestContext,
     computed: new Map(),
     contextReads: [],

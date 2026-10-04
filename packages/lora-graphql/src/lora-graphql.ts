@@ -44,7 +44,12 @@ import {
 } from "./analyze/access.js";
 import { analyze, type Statistics } from "./analyze/statistics.js";
 import { newContext, type CompileContext } from "./compile/context.js";
-import { CompileCache, stableKey } from "./compile/cache.js";
+import {
+  COMPILE_CACHE_BYTES,
+  COMPILED_TOTAL,
+  CompileCache,
+  stableKey,
+} from "./compile/cache.js";
 import {
   compileAbstractRoot,
   compileCypherRoot,
@@ -66,6 +71,12 @@ import { affects, type WriteChange } from "./execute/changes.js";
 import { executeCypherMutation } from "./execute/cypher-mutation.js";
 import { LoraTransaction } from "./execute/transaction.js";
 import { EngineFeed } from "./execute/feed.js";
+import {
+  anySignal,
+  MAX_CONCURRENT_STATEMENTS,
+  OPERATION_TIMEOUT_FACTOR,
+  OperationBudget,
+} from "./execute/budget.js";
 import type { MutationKind } from "./schema/mutations.js";
 import {
   executeMutation,
@@ -73,7 +84,7 @@ import {
   type MutationEnv,
   type PopulatedByCallback,
 } from "./execute/mutate.js";
-import { ModelError, requestError } from "./errors.js";
+import { collapseErrors, ModelError, requestError } from "./errors.js";
 import {
   buildManifest,
   generateTypes,
@@ -123,6 +134,7 @@ import {
 } from "./compile/cypher.js";
 import { bind } from "./compile/context.js";
 import { keyOf } from "./compile/read.js";
+import { MAX_FILTER_DEPTH } from "./compile/cost.js";
 import { compileNodeWhere } from "./compile/filter.js";
 import { lookupPath } from "./compile/auth.js";
 import { fromGlobalId } from "./schema/global-id.js";
@@ -136,9 +148,33 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
   /** Timeout for every statement, in milliseconds. Default 10 000; 0 disables. */
   timeoutMs?: number;
   /**
+   * Time budget for all root fields of one query, in milliseconds: past
+   * it, the operation's statements are aborted and its unfinished fields
+   * fail with TIMEOUT. Default twice `timeoutMs` (20 000); 0 disables.
+   * Subscriptions are not bounded by it; mutations keep `timeoutMs` per
+   * statement.
+   */
+  operationTimeoutMs?: number;
+  /**
+   * Statements one operation runs at once: aliased root fields queue for
+   * a slot instead of taking every libuv worker, so one request cannot
+   * starve the others. Default 2.
+   */
+  maxConcurrentStatements?: number;
+  /**
+   * Approximate bytes the compile cache may hold, and again the parsed
+   * document cache: entries are evicted oldest first past it, besides the
+   * entry caps. Requests with more than 16 KiB of variables a field uses
+   * (long `in:` lists, embedding vectors) are compiled but not cached.
+   * Default 64 MiB.
+   */
+  compileCacheBytes?: number;
+  /**
    * Reject a root field whose estimated rows touched exceed this, before
    * it runs. The estimate multiplies page sizes through nested lists,
-   * capped by relationship degrees from `analyze()` or `@cardinality`.
+   * capped by relationship degrees from `analyze()` or `@cardinality`,
+   * and charges each filter the rows it examines: a label scan when no
+   * index answers it, the related nodes of every relationship it follows.
    * Default 50 000; `Infinity` disables.
    */
   maxCost?: number;
@@ -167,6 +203,24 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
    * statement runs. Default 1000.
    */
   maxListArgument?: number;
+  /**
+   * Relationship levels one `where` may nest: quantifiers (`some`,
+   * `none`, `all`, `single`, `count`, `aggregate`), connection filters,
+   * `<field>Exists` and filters through a single relationship each count
+   * one. Deeper is BAD_USER_INPUT before anything runs: each level
+   * multiplies the work by the relationship's degree. Default 2.
+   */
+  maxFilterDepth?: number;
+  /**
+   * Items an `in` filter operand may hold. More is BAD_USER_INPUT before
+   * anything runs. Default 1000.
+   */
+  maxListFilter?: number;
+  /**
+   * Characters a string filter operand (`eq`, `contains`, an `in` item, …)
+   * may hold. More is BAD_USER_INPUT before anything runs. Default 10 000.
+   */
+  maxStringFilter?: number;
   /**
    * Changes a `changes()` consumer or subscriber may fall behind before it
    * is ended with an error. Default 1000.
@@ -414,6 +468,11 @@ interface ReadCollector {
 }
 
 const DOCUMENT_CACHE_SIZE = 500;
+/**
+ * A parsed document's approximate size: measured at about 100 bytes of
+ * AST, locations and tokens per source character.
+ */
+const documentBytes = (source: string) => 100 * source.length;
 /** A subscriber's share of one change: the events of its node type. */
 interface SubscriberDelivery {
   change: WriteChange;
@@ -458,13 +517,23 @@ export class LoraGraphQL {
   readonly model: GraphModel;
   readonly #driver: LoraDriver;
   readonly #timeoutMs: number;
+  readonly #operationTimeoutMs: number;
+  readonly #maxConcurrentStatements: number;
+  /** Deadline and statement slots per request context and operation. */
+  readonly #operations = new WeakMap<
+    object,
+    Map<OperationDefinitionNode, OperationBudget>
+  >();
   readonly #maxCost: number;
   readonly #maxBatch: number;
   readonly #maxListArgument: number;
+  readonly #maxFilterDepth: number;
+  readonly #maxListFilter: number | undefined;
+  readonly #maxStringFilter: number | undefined;
   readonly #maxQueued: number;
   readonly #maxSubscriptions: number;
   readonly #subscriptionScope: (context: unknown) => object | undefined;
-  readonly #maxFilterDepth: number;
+  readonly #maxSubscriptionFilterDepth: number;
   readonly #subscriptionTimeoutMs: number;
   /** Live subscriptions per scope. */
   readonly #subscriptionCounts = new WeakMap<object, number>();
@@ -529,7 +598,9 @@ export class LoraGraphQL {
    * Compiled reads by root field node (documents are cached, so a field
    * node repeats across requests), then by what each compile read.
    */
-  readonly #compiled = new CompileCache();
+  readonly #compiled: CompileCache;
+  readonly #documentBytesMax: number;
+  #documentBytes = 0;
   /**
    * Reads made for subscribers of one change, by statement text and
    * parameters: subscribers whose checks or node reads compile to the same
@@ -556,16 +627,26 @@ export class LoraGraphQL {
     this.model = buildModel(options.typeDefs, options);
     this.#driver = options.driver;
     this.#timeoutMs = options.timeoutMs ?? 10_000;
+    const cacheBytes = options.compileCacheBytes ?? COMPILE_CACHE_BYTES;
+    this.#compiled = new CompileCache(COMPILED_TOTAL, cacheBytes);
+    this.#documentBytesMax = cacheBytes;
+    this.#operationTimeoutMs =
+      options.operationTimeoutMs ?? this.#timeoutMs * OPERATION_TIMEOUT_FACTOR;
+    this.#maxConcurrentStatements =
+      options.maxConcurrentStatements ?? MAX_CONCURRENT_STATEMENTS;
     this.#maxCost = options.maxCost ?? 50_000;
     this.#maxBatch = options.maxBatch ?? 1000;
     this.#maxListArgument = options.maxListArgument ?? MAX_LIST_ARGUMENT;
+    this.#maxFilterDepth = options.maxFilterDepth ?? MAX_FILTER_DEPTH;
+    this.#maxListFilter = options.maxListFilter;
+    this.#maxStringFilter = options.maxStringFilter;
     this.#maxQueued = options.maxQueuedChanges ?? 1000;
     this.#maxSubscriptions = options.maxSubscriptions ?? 100;
     this.#subscriptionScope =
       options.subscriptionScope ??
       ((context) =>
         context !== null && typeof context === "object" ? context : undefined);
-    this.#maxFilterDepth = options.maxSubscriptionFilterDepth ?? 1;
+    this.#maxSubscriptionFilterDepth = options.maxSubscriptionFilterDepth ?? 1;
     this.#subscriptionTimeoutMs =
       options.subscriptionTimeoutMs ?? Math.min(2000, this.#timeoutMs);
     this.#callbacks = options.callbacks ?? {};
@@ -643,14 +724,20 @@ export class LoraGraphQL {
   /**
    * The configured document guards as an Envelop / Yoga plugin. With
    * `mutationTransaction: "operation"` it also runs a mutation with
-   * several root fields in one transaction, as `execute()` does.
+   * several root fields in one transaction, and it collapses identical
+   * errors across list indices, as `execute()` does.
    */
   envelopPlugin(): ReturnType<typeof envelopPlugin> & {
     onExecute(payload: {
       args: ExecutionArgs;
       executeFn: (args: ExecutionArgs) => unknown;
       setExecuteFn: (fn: (args: ExecutionArgs) => unknown) => void;
-    }): void;
+    }): {
+      onExecuteDone(payload: {
+        result: unknown;
+        setResult: (result: ExecutionResult) => void;
+      }): void;
+    };
   } {
     const guards = envelopPlugin(
       this.#guards === false
@@ -671,21 +758,40 @@ export class LoraGraphQL {
           args.document,
           args.operationName ?? undefined,
         );
-        if (!this.#atomic(operation, args.contextValue)) return;
-        setExecuteFn(async (execArgs) => {
-          const { tx, context } = await this.#openAtomic(execArgs.contextValue);
-          let result: ExecutionResult;
-          try {
-            result = (await executeFn({
-              ...execArgs,
-              contextValue: context,
-            })) as ExecutionResult;
-          } catch (err) {
-            await tx.rollback();
-            throw err;
-          }
-          return (await this.#closeAtomic(tx, result)).result;
-        });
+        if (this.#atomic(operation, args.contextValue)) {
+          setExecuteFn(async (execArgs) => {
+            const { tx, context } = await this.#openAtomic(
+              execArgs.contextValue,
+            );
+            let result: ExecutionResult;
+            try {
+              result = (await executeFn({
+                ...execArgs,
+                contextValue: context,
+              })) as ExecutionResult;
+            } catch (err) {
+              await tx.rollback();
+              throw err;
+            }
+            return (await this.#closeAtomic(tx, result)).result;
+          });
+        }
+        return {
+          onExecuteDone({ result, setResult }) {
+            // A streamed (incremental) result is left as it is.
+            if (
+              result === null ||
+              typeof result !== "object" ||
+              Symbol.asyncIterator in result
+            ) {
+              return;
+            }
+            const plain = result as ExecutionResult;
+            if (plain.errors && plain.errors.length > 1) {
+              setResult({ ...plain, errors: collapseErrors(plain.errors) });
+            }
+          },
+        };
       },
     };
   }
@@ -902,8 +1008,10 @@ export class LoraGraphQL {
   // -------------------------------------------------------------------------
 
   /**
-   * Sample node counts and relationship degrees (S6). Cost estimates then
-   * use each relationship's p99 degree instead of its page limit.
+   * Count nodes and measure relationship degrees (S6). Cost estimates then
+   * use each relationship's maximum degree, capped by its page limit,
+   * instead of the page limit alone; filters use node counts and mean
+   * degrees (see `src/compile/cost.ts`).
    */
   async analyze(options: { sample?: number } = {}): Promise<Statistics> {
     const stats = await analyze(this.#driver, this.model, {
@@ -918,7 +1026,8 @@ export class LoraGraphQL {
   useStatistics(stats: Statistics): void {
     this.#statistics = stats;
     this.#degrees = new Map(
-      Object.entries(stats.degrees).map(([k, d]) => [k, d.p99]),
+      // The maximum: the caller chooses the parents (see statistics.ts).
+      Object.entries(stats.degrees).map(([k, d]) => [k, d.max]),
     );
     this.#statisticsVersion++;
   }
@@ -1323,6 +1432,10 @@ export class LoraGraphQL {
       await tx?.rollback();
       throw err;
     }
+    // One error per path pattern, not one per row of every list.
+    if (result.errors && result.errors.length > 1) {
+      result = { ...result, errors: collapseErrors(result.errors) };
+    }
     // graphql-js reports bad variables without a code; clients branch on it.
     if (result.errors?.some(isVariableError)) {
       result = {
@@ -1440,10 +1553,20 @@ export class LoraGraphQL {
         }
         const errors = this.#validate(document);
         if (errors.length > 0) return { errors };
-        if (this.#documents.size >= DOCUMENT_CACHE_SIZE) {
-          this.#documents.delete(this.#documents.keys().next().value!);
+        const bytes = documentBytes(args.source);
+        if (bytes <= this.#documentBytesMax) {
+          while (
+            this.#documents.size > 0 &&
+            (this.#documents.size >= DOCUMENT_CACHE_SIZE ||
+              this.#documentBytes + bytes > this.#documentBytesMax)
+          ) {
+            const oldest = this.#documents.keys().next().value!;
+            this.#documents.delete(oldest);
+            this.#documentBytes -= documentBytes(oldest);
+          }
+          this.#documents.set(args.source, document);
+          this.#documentBytes += bytes;
         }
-        this.#documents.set(args.source, document);
       }
     } else {
       return {
@@ -1600,8 +1723,12 @@ export class LoraGraphQL {
     return newContext(base, this.model, {
       jwt,
       degrees: this.#degrees,
+      statistics: this.#statistics,
       requestContext: context,
       maxListArgument: this.#maxListArgument,
+      maxFilterDepth: this.#maxFilterDepth,
+      maxListFilter: this.#maxListFilter,
+      maxStringFilter: this.#maxStringFilter,
     });
   }
 
@@ -1705,10 +1832,24 @@ export class LoraGraphQL {
     }
     const signal = (context as LoraGraphQLContext | undefined)?.signal;
     const owned = (context as LoraGraphQLContext | undefined)?.transaction;
+    const budget = this.#operationBudget(context, info);
     let results;
     const timing = this.#timingOf(context);
     const dbStart = timing ? performance.now() : 0;
     try {
+      const run = (opSignal?: AbortSignal) =>
+        this.#driver.run(compiled.statements, {
+          mode: compiled.mode,
+          timeoutMs:
+            budget && this.#timeoutMs > 0
+              ? Math.max(1, Math.min(this.#timeoutMs, budget.remaining()))
+              : this.#timeoutMs,
+          signal: opSignal ? anySignal(signal, opSignal) : signal,
+          // Queries and object @cypher fields are checked read-only
+          // when the model is built; writes never reach this path.
+          verified: compiled.mode === "read",
+          ...(compiled.bounded && { bounded: true }),
+        });
       results = await this.#observer.statements(
         this.#meta(field, compiled.mode, info, compiled.cost),
         compiled.statements,
@@ -1718,28 +1859,72 @@ export class LoraGraphQL {
             : this.#shared(
                 change,
                 compiled.statements,
-                () =>
-                  this.#driver.run(compiled.statements, {
-                    mode: compiled.mode,
-                    timeoutMs: this.#timeoutMs,
-                    signal,
-                    // Queries and object @cypher fields are checked read-only
-                    // when the model is built; writes never reach this path.
-                    verified: compiled.mode === "read",
-                    ...(compiled.bounded && { bounded: true }),
-                  }),
+                // A bounded lookup streams synchronously: no slot needed.
+                () => (budget && !compiled.bounded ? budget.run(run) : run()),
                 shareKey,
               ),
       );
     } catch (err) {
       throw this.#databaseError(field, err);
     } finally {
+      if (budget) this.#leaveOperation(context as object, info!, budget);
       if (timing) {
         timingEntry(timing, rootKey(info) ?? field).databaseMs +=
           performance.now() - dbStart;
       }
     }
     return assertReadable(compiled.shape(results));
+  }
+
+  /**
+   * The deadline and statement slots of the query `info` belongs to,
+   * started by its first root field. Subscriptions run indefinitely and
+   * are bounded per statement only.
+   */
+  #operationBudget(
+    context: unknown,
+    info: GraphQLResolveInfo | undefined,
+  ): OperationBudget | undefined {
+    if (!info || info.operation.operation === "subscription") return undefined;
+    if (context === null || typeof context !== "object") return undefined;
+    let byOperation = this.#operations.get(context);
+    if (!byOperation) {
+      byOperation = new Map();
+      this.#operations.set(context, byOperation);
+    }
+    let budget = byOperation.get(info.operation);
+    if (!budget) {
+      budget = new OperationBudget(
+        this.#operationTimeoutMs,
+        this.#maxConcurrentStatements,
+      );
+      byOperation.set(info.operation, budget);
+    }
+    budget.active++;
+    return budget;
+  }
+
+  /**
+   * A root field is done. When none is left in flight after the current
+   * turn (graphql-js starts a query's root fields together, and the next
+   * root field of a mutation in a microtask), the operation is over: a
+   * context reused for another request starts a fresh budget.
+   */
+  #leaveOperation(
+    context: object,
+    info: GraphQLResolveInfo,
+    budget: OperationBudget,
+  ): void {
+    budget.active--;
+    if (budget.active > 0) return;
+    setTimeout(() => {
+      if (budget.active > 0) return;
+      budget.dispose();
+      const byOperation = this.#operations.get(context);
+      if (byOperation?.get(info.operation) === budget) {
+        byOperation.delete(info.operation);
+      }
+    }, 0);
   }
 
   #meta(
@@ -1973,10 +2158,10 @@ export class LoraGraphQL {
         }
       }
       if (field?.kind !== "relationship") continue;
-      if (depth + 1 > this.#maxFilterDepth) {
+      if (depth + 1 > this.#maxSubscriptionFilterDepth) {
         throw requestError(
           "LIMIT_EXCEEDED",
-          `a subscription's where may nest relationship filters ${this.#maxFilterDepth} deep (${node.name}.${key})`,
+          `a subscription's where may nest relationship filters ${this.#maxSubscriptionFilterDepth} deep (${node.name}.${key})`,
         );
       }
       const target = this.model.nodes.get(field.target);
@@ -2851,6 +3036,10 @@ export class LoraGraphQL {
       degrees: this.#degrees,
       maxBatch: this.#maxBatch,
       maxListArgument: this.#maxListArgument,
+      maxFilterDepth: this.#maxFilterDepth,
+      maxListFilter: this.#maxListFilter,
+      maxStringFilter: this.#maxStringFilter,
+      statistics: this.#statistics,
       requestContext: context,
       callbacks: this.#callbacks,
       transaction: (context as LoraGraphQLContext | undefined)?.transaction

@@ -1183,9 +1183,33 @@ by key starts from that node and expands, instead of scanning the label.
 Every operation has a cost estimate (rows touched, multiplying page sizes
 through nested lists, capped by `@cardinality`), summed across its root
 fields, and an operation over `maxCost` (default 50 000) fails with
-`COST_EXCEEDED` before it runs. `lora.analyze()` samples node counts and
-relationship degrees so estimates use the measured p99 degree instead of
-the page size.
+`COST_EXCEEDED` before it runs. `lora.analyze()` counts nodes and
+measures relationship degrees: a nested list is then estimated at its
+relationship's maximum degree, measured over every node and capped by the
+page size, instead of the page size alone. Not a percentile: the caller
+picks the parents (by key, or by following a hub), so any lower bound is
+one it can exceed at will.
+
+Filters are charged the rows they examine, not only the rows they return:
+
+- a root filter no index answers (`contains`, `endsWith`,
+  `caseInsensitive`, `NOT`, `OR`, a computed field) costs the label's
+  node count, or the page size without statistics; an equality, range,
+  prefix or point predicate seeks and costs nothing extra;
+- each relationship a filter follows (`some`, `none`, `all`, `single`,
+  `count`, `aggregate`, connection filters, single relationships) costs
+  the related nodes it visits per candidate, multiplied per level: the
+  mean degree over a scanned label, the maximum degree from parents the
+  caller picked (by key, or the parents of a nested list), the default
+  page size without statistics;
+- `totalCount` and aggregates read every match: the label's node count
+  when no key narrows them.
+
+`maxFilterDepth` (default 2) refuses a `where` nesting more relationship
+levels with `BAD_USER_INPUT`, counted through single relationships,
+`<field>Exists` and connection filters too. Without `analyze()` a two-level
+filter over a large label still passes, priced at the page size: run it
+in production so estimates use real counts.
 
 **S7: one SDL, two diffs.** `diffSchemas(before, after)` reports the
 database statements a change needs (index and constraint changes, relabels,
@@ -1540,8 +1564,11 @@ binding has, so the WASM binding serves reads.
 | Option                       | Default       | Meaning                                             |
 | ---------------------------- | ------------- | --------------------------------------------------- |
 | `timeoutMs`                  | 10 000        | Per statement and lock wait; a `signal` cancels     |
+| `operationTimeoutMs`         | 2 × timeout   | All root fields of one query; then `TIMEOUT`        |
+| `maxConcurrentStatements`    | 2             | Statements one operation runs at once               |
 | `maxCost`                    | 50 000        | Estimated rows per operation                        |
 | `maxBatch`                   | 1000          | Nodes written per mutation; bulk `limit` by default |
+| `compileCacheBytes`          | 64 MiB        | Compile cache and document cache, each              |
 | `maxQueuedChanges`           | 1000          | How far a change consumer may fall behind           |
 | `maxSubscriptions`           | 100           | Live subscriptions per `subscriptionScope`          |
 | `subscriptionScope`          | the context   | What `maxSubscriptions` counts per                  |
@@ -1564,14 +1591,20 @@ binding has, so the WASM binding serves reads.
 | `metrics`                    |               | Counters and histograms (see below)                 |
 
 Errors carry `extensions.code`: `BAD_USER_INPUT`, `INVALID_CURSOR`,
-`LIMIT_EXCEEDED`, `COST_EXCEEDED`, `UNAUTHENTICATED`, `FORBIDDEN`,
+`LIMIT_EXCEEDED`, `COST_EXCEEDED`, `TIMEOUT` (with `operationTimeoutMs`),
+`UNAUTHENTICATED`, `FORBIDDEN`,
 `NOT_FOUND`, `CONSTRAINT_VIOLATION` (with `type` and `field`),
 `DATABASE_ERROR` (with an `id`, also given to `onError`),
 `PERSISTED_QUERY_ONLY` (`execute()` or `subscribe()` got a document under
 `persistedOnly`) and `WRONG_OPERATION_TYPE` (`execute()` got a
-subscription, or `subscribe()` a query or mutation). The same list is
-exported as `LORA_GRAPHQL_ERROR_CODES`, and `isLoraGraphQLError(err)`
-tells a library error (also a serialized one) from anything else:
+subscription, or `subscribe()` a query or mutation). Identical errors at
+paths that differ only in list indices (an `@authentication` field read
+anonymously on every row of a page) come back once, at the first path,
+with `extensions.count` and `extensions.pathPattern` (indices as `"*"`);
+`execute()` and `lora.envelopPlugin()` both do this. The same list of
+codes is exported as `LORA_GRAPHQL_ERROR_CODES`, and
+`isLoraGraphQLError(err)` tells a library error (also a serialized one)
+from anything else:
 
 ```ts
 import { isLoraGraphQLError } from "@loradb/lora-graphql";
@@ -1599,7 +1632,18 @@ server (GraphQL Yoga takes the plugin as is):
 | `maxRootFields`         | 20         | Root fields per operation                                              |
 | `maxTokens`             | 5000       | Lexer tokens per document, while parsing                               |
 | `maxListArgument`       | 1000       | Items per list argument of a `@cypher` field (`@size(max:)` overrides) |
+| `maxFilterDepth`        | 2          | Relationship levels one `where` nests                                  |
+| `maxListFilter`         | 1000       | Items in an `in` filter operand                                        |
+| `maxStringFilter`       | 10 000     | Characters in a string filter operand (`eq`, `contains`, `in` items…)  |
 | `introspection`         | production | Off when `NODE_ENV` is `production`                                    |
+
+One query also has a time budget and a share of the engine: its root
+fields (aliases included) run at most `maxConcurrentStatements` (default 2) statements at once, so one request cannot take every libuv worker
+from the others, and after `operationTimeoutMs` (default twice
+`timeoutMs`, 20 s) its statements are aborted and its unfinished fields
+fail with `TIMEOUT`. Each statement also gets no more than the time the
+operation has left. Mutations keep `timeoutMs` per statement, and
+subscriptions are not bounded by the operation budget.
 
 With `NODE_ENV=production`, database errors are masked and introspection
 is off unless configured otherwise. See
@@ -1671,6 +1715,13 @@ each distinct set gets its own compile). A repeated `festivals(limit: 20)`
 drops from 0.14 ms to 0.06 ms end to end. Servers that parse every request
 themselves get new field nodes each time and do not benefit; use
 `execute()` or persisted operations.
+
+Both caches are bounded by size as well as by count: `compileCacheBytes`
+(default 64 MiB, approximate) caps the compile cache and, separately, the
+parsed documents (about 100 bytes per source character), evicting the
+oldest first. A request whose variables for the field exceed 16 KiB (a
+long `in:` list, an embedding vector) is compiled but not cached, and an
+entry does not keep its document alive once the document cache drops it.
 
 `check({ rowBudget })` flags statements whose largest engine row estimate
 exceeds the budget; every plan report carries `estimatedRows` either way.

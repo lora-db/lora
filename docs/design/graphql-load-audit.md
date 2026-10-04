@@ -161,7 +161,7 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
   - **Engine:** done (above), with internal types only: no `imbl`, for the MPL license.
   - **Library:** `lora-graphql lint` or `analyze` could warn when an inferred index covers an enum, a boolean or a `@default` field. It could also let such filters run unindexed when the engine is not fixed.
 
-### 6. Scans the cost limit does not charge for
+### 6. Scans the cost limit does not charge for (addressed in the library)
 
 - **Classification:** Observed.
 - **What happens:** at scale ×5 (100k festivals), keyed lookups and traversals stayed flat (21.7k and 12.5k req/s), but three shapes lost about 6× throughput:
@@ -179,8 +179,11 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
     - choosing the index-ordered scan when the filter is non-selective;
     - counting a range from the index without visiting nodes.
   - **Library:**
-    - charge `maxCost` from `explain()` estimates, or from `analyze()` statistics, for scans, `totalCount` and aggregates;
-    - an opt-in `totalCount` cap;
+    - done: filters are charged the rows they examine (`src/compile/cost.ts`). A root filter no index answers (CONTAINS, ENDS_WITH, case-insensitive, NOT, OR, a computed field) costs the label's node count from `analyze()`, or the page size without statistics; each relationship a filter follows costs its degree per candidate and per level (the mean over a scanned label, the maximum from parents the caller picked); `totalCount`, aggregates and grouped reads cost every match. `maxFilterDepth` (default 2) refuses deeper relationship nesting. Measured on 5k festivals, 2k users, 18k FOLLOWS with five hubs, after `analyze()`: CONTAINS went from cost 25 to 2,025, `some` from 25 to 21,529, a two-level `some` (528-736 ms) from 25 to 211,733 (refused), and three levels (18-23 s) are refused by depth;
+    - done: `operationTimeoutMs` (default twice `timeoutMs`) bounds all root fields of a query and `maxConcurrentStatements` (default 2) the statements it runs at once. Eight aliases of a heavy filter made a concurrent cheap query wait 28.6 s; it now waits 2 ms, and the heavy operation fails with `TIMEOUT` at 20 s (the engine's own deadline inside comprehensions is a separate fix);
+    - done: after `analyze()`, nested lists are estimated at the maximum degree, measured over every node, not the sampled p99: a hub-rooted four-level query estimated 22,621 and returned 537,790 objects; it is now estimated at its upper bound and refused;
+    - done: `maxListFilter` (1000) and `maxStringFilter` (10,000) cap filter operands; 100k-item `in:` lists were accepted;
+    - still open: range seeks (a range matching most of the label is charged nothing beyond its page), and an opt-in `totalCount` cap;
     - `persistedOnly` in production, so only reviewed operations run.
 
 ### 7. `@cypher` fields run per row, with no cost
@@ -244,7 +247,7 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
   - `timeoutMs` defaults to 10 s;
   - document guards cap depth, aliases, root fields and tokens;
   - introspection is off in production.
-- **Bounded caches and queues:** documents 500, compiles 16 per field and 4,096 in total, change-feed ids 50k, subscriber queues 1,000.
+- **Bounded caches and queues:** documents 500, compiles 16 per field and 4,096 in total, each cache also at most `compileCacheBytes` (64 MiB, approximate; requests with more than 16 KiB of variables are not cached), change-feed ids 50k, subscriber queues 1,000.
 - **Plan-cache friendly statements:** every value is a parameter, so statement text is stable.
 - **Snapshot reads:** writers never block readers.
 - **Early failure:** an over-limit request fails before it touches the database.
@@ -255,7 +258,7 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
 2. Done: reads run off the JS thread, except a bounded `@key` lookup, which streams its one row (finding 2). Still to do: document `UV_THREADPOOL_SIZE` (finding 3), and make `db.stream()` asynchronous in the binding.
 3. Done: the posting-list copy in the engine (finding 5).
 4. Shorten the write lock hold with `executeMany`, and add a bounded write queue with load shedding (finding 4).
-5. Charge scans in `maxCost`. Add top-k sort and ordered-index selection to the engine (findings 6 and 7).
+5. Done in the library: scans, filter traversals, `totalCount` and aggregates are charged in `maxCost`, with an operation deadline and bounded statement concurrency (finding 6). Still to do: ordered-index selection in the engine, and a cost for `@cypher` fields (finding 7).
 6. Done: the compile-cache key (finding 8) and the feed pump's unhandled rejection (finding 9).
 7. Worker threads sharing one engine are benchmarked (about 2x for keyed reads with 2 workers); document them as the scaling story past one JS thread (finding 3).
 

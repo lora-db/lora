@@ -87,10 +87,16 @@ each check runs. The user-facing rules are in the package
   with row rules is refused. With `cursorSecret`, cursors carry an
   HMAC-SHA-256 signature and any other cursor is rejected.
 - **Exhaust the server.** `maxCost` bounds the rows an operation touches
-  before it runs. The document guards bound the work before that: depth,
-  aliases, root fields, lexer tokens. `persistedOnly` removes ad-hoc
-  documents altogether. `timeoutMs` bounds every statement, and a
-  mutation's size is bounded by `maxBatch`.
+  before it runs, filters included (the rows they examine, per
+  relationship level), and `maxFilterDepth`, `maxListFilter` and
+  `maxStringFilter` bound a `where`'s shape and operands. The document
+  guards bound the work before that: depth, aliases, root fields, lexer
+  tokens. `persistedOnly` removes ad-hoc documents altogether.
+  `timeoutMs` bounds every statement, `operationTimeoutMs` all root fields
+  of a query, and `maxConcurrentStatements` how many of its statements
+  run at once; a mutation's size is bounded by `maxBatch`. Identical
+  errors across list indices are returned once, with a count, so a page
+  of refused fields cannot amplify into thousands of errors.
 - **Learn the schema.** Introspection is off by default when `NODE_ENV`
   is `production` (`guards.introspection`). The public schema is still
   whatever the SDL exposes; hiding introspection is not access control.
@@ -171,7 +177,8 @@ each check runs. The user-facing rules are in the package
 | `@authentication`, claim-only rule parts          | Compile time, per request                   |
 | Relationship property rules (claims only)         | Compile time; a connect's after its `MERGE` |
 | Node rules (filter, validate)                     | In the database, in the statement           |
-| Cost limit                                        | Compile time, before the statement          |
+| Cost limit, filter depth and operand caps         | Compile time, before the statement          |
+| Operation deadline, statement concurrency         | Per operation, around the driver            |
 | Timeouts, cancellation                            | In the database                             |
 
 ## Operator checklist

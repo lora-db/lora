@@ -215,3 +215,27 @@ test("the cache keys on the variables the field uses, and caps its size", () => 
   }
   expect(cache.size).toBe(3);
 });
+
+test("the cache is bounded by bytes, and skips requests with large variables", () => {
+  const cache = new CompileCache(4096, 8 * 1024);
+  const field = fieldOf(
+    `query($a: [String!]) { docs(where: { key: { in: $a } }) { key } }`,
+  );
+  const { compile, calls } = fakeCompile(false);
+  for (let i = 0; i < 50; i++) {
+    cache.get(request(field, undefined, { a: [`key${i}`] }), compile);
+  }
+  // Each entry is about 1 KiB (its overhead): eight fit, at most.
+  expect(cache.size).toBeLessThanOrEqual(8);
+  expect(cache.size).toBeGreaterThan(0);
+  expect(cache.bytes).toBeLessThanOrEqual(8 * 1024);
+
+  // A 10 000-item list is compiled every time and never kept.
+  const big = new CompileCache();
+  const list = Array.from({ length: 10_000 }, (_, i) => `key${i}`);
+  const before = calls();
+  big.get(request(field, undefined, { a: list }), compile);
+  big.get(request(field, undefined, { a: list }), compile);
+  expect(calls() - before).toBe(2);
+  expect(big.size).toBe(0);
+});
