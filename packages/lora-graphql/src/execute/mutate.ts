@@ -106,6 +106,18 @@ export interface MutationEnv {
         run: () => Promise<QueryResult>,
       ) => Promise<QueryResult>)
     | undefined;
+  /**
+   * Called inside the transaction once a delete knows every node it
+   * removes, before any is removed: subscribers' checks of the nodes as
+   * they were (a deleted node cannot be checked after the commit).
+   */
+  beforeDelete?:
+    | ((
+        change: WriteChange,
+        doomed: ReadonlyArray<{ node: NodeType; keys: unknown[] }>,
+        run: (statement: Statement) => Promise<QueryResult>,
+      ) => Promise<void>)
+    | undefined;
 }
 
 /** Run `statement` in `tx`, reporting it before and observing it during. */
@@ -1856,6 +1868,15 @@ class Runner {
         }
       }
     }
+
+    await this.env.beforeDelete?.(
+      this.change,
+      [...doomed].map(([node, keysByNode]) => ({
+        node,
+        keys: [...keysByNode.values()],
+      })),
+      (statement) => runStatement(this.env, this.tx, statement),
+    );
 
     const relIds = new Set<number>();
     for (const [node, keysByNode] of doomed) {

@@ -1126,9 +1126,13 @@ writes made elsewhere are not seen). A node that gained or lost a
 relationship is an `UPDATE`. `where` tests the node as it is after the
 write; `node` is read when the event is delivered, through the normal read
 path. Events for nodes the subscriber cannot read are dropped (checked in
-one query per write, not per event), and deletions, which cannot be checked
-after the fact, go only to subscribers following that `key` without a
-`where`. `@authentication(operations: [SUBSCRIBE])` guards the subscription
+one query per write, not per event). A deletion cannot be checked after
+the fact: it goes only to subscribers following that `key` without a
+`where`, and when read rules apply, only to those who could read the node
+as it was, checked inside the deleting transaction (one statement per
+distinct check; claims that settle the rules need none). Under
+`changeFeed` there is no such transaction, so a deletion reaches only
+followers whose claims settle the rules. `@authentication(operations: [SUBSCRIBE])` guards the subscription
 itself. Pass a `signal` in the context to end the stream with the request.
 
 Every event has a `timestamp` (when the write was committed). With

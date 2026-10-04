@@ -370,6 +370,18 @@ interface SubscriberDelivery {
 }
 type SubscriberSink = (delivery: SubscriberDelivery) => void;
 
+/** A subscription's visibility check (see `#visibleCheck`). */
+interface VisibilityCheck {
+  statement(keys: unknown[]): Statement;
+  settled(): boolean;
+  run(keys: unknown[], change: object): Promise<Set<string>>;
+}
+
+/** A subscriber whose DELETE events are checked inside the transaction. */
+interface DeleteProbe {
+  check: VisibilityCheck;
+}
+
 interface SubscriberGroup {
   node: NodeType;
   all: Set<SubscriberSink>;
@@ -430,6 +442,13 @@ export class LoraGraphQL {
    * once per type.
    */
   readonly #subscribers = new Map<string, SubscriberGroup>();
+  /** Subscribers following a key whose deletions need a check. */
+  readonly #probes = new WeakMap<SubscriberSink, DeleteProbe>();
+  /** Per change: the doomed keys each probed subscriber could read. */
+  readonly #deleteSeen = new WeakMap<
+    WriteChange,
+    Map<DeleteProbe, Set<string>>
+  >();
   #undispatch: (() => unknown) | undefined;
   /** Changed-node reads compiled per subscription context and field node. */
   readonly #byKeyCompiles = new WeakMap<
@@ -1665,7 +1684,8 @@ export class LoraGraphQL {
    * Events for one node type, from the exact write-sets of mutations made
    * through this instance. Nodes the subscriber may not read are skipped;
    * deletions of rule-protected types are only sent to subscribers that
-   * follow that key (they cannot be checked after the fact).
+   * follow that key and could read the node before it went (checked in
+   * the deleting transaction).
    */
   #subscribe(
     node: NodeType,
@@ -1751,22 +1771,37 @@ export class LoraGraphQL {
       : undefined;
     // Only changes to this type (and this key, when one is followed)
     // arrive, with their events already built.
+    // A deleted node cannot be checked after the fact: a follower of its
+    // key without a `where` is checked inside the deleting transaction,
+    // on the node as it was; other checked subscribers get no deletions.
+    const probe: DeleteProbe | undefined =
+      visible && key != null && !where && wanted.has("DELETE")
+        ? { check: visible }
+        : undefined;
     const deliveries = this.#queue<SubscriberDelivery>(
       (sink) =>
-        this.#addSubscriber(node, key == null ? undefined : keyOf(key), sink),
+        this.#addSubscriber(
+          node,
+          key == null ? undefined : keyOf(key),
+          sink,
+          probe,
+        ),
       { signal },
     );
     for await (const { change, events: all } of deliveries) {
       const events = all.filter((e) => wanted.has(e.operation));
       if (events.length === 0) continue;
-      // A deleted node cannot be checked: its deletion reaches only
-      // subscribers that follow its key, and only unfiltered ones.
+      const probed = probe && this.#deleteSeen.get(change)?.get(probe);
       const deletions = events.filter(
-        (e) => e.operation === "DELETE" && (!check || (key != null && !where)),
+        (e) =>
+          e.operation === "DELETE" &&
+          (!check ||
+            (probe !== undefined &&
+              (probed?.has(keyOf(e.key)) ?? probe.check.settled()))),
       );
       const live = events.filter((e) => e.operation !== "DELETE");
       const seen = visible
-        ? await visible(
+        ? await visible.run(
             live.map((e) => e.key),
             change,
           )
@@ -1793,7 +1828,9 @@ export class LoraGraphQL {
     node: NodeType,
     key: string | undefined,
     sink: SubscriberSink,
+    probe?: DeleteProbe,
   ): () => void {
+    if (probe) this.#probes.set(sink, probe);
     // One listener serves every subscriber, registered while any exist.
     if (!this.#undispatch) {
       const dispatch = (change: WriteChange) => this.#dispatch(change);
@@ -1885,17 +1922,20 @@ export class LoraGraphQL {
    * Whether a subscription may see nodes: which of `keys` it may read
    * (and its `where` matches), in one query per change. The statement is
    * compiled once per subscription, again only when its claims or the
-   * `$context` values it read change.
+   * `$context` values it read change. `statement` gives the check for
+   * other uses (a deletion is checked inside its transaction); `settled`
+   * says whether the claims alone grant reading every node of the type.
    */
   #visibleCheck(
     node: NodeType,
     where: Record<string, unknown> | null | undefined,
     base: SelectionContext,
     context: unknown,
-  ): (keys: unknown[], change: object) => Promise<Set<string>> {
-    let cached: SubscriptionCompile<Statement> | undefined;
-    return async (keys, change) => {
-      if (keys.length === 0) return new Set();
+  ): VisibilityCheck {
+    let cached:
+      | (SubscriptionCompile<Statement> & { settled: boolean })
+      | undefined;
+    const compile = () => {
       const claims = stableKey(this.#jwt(context) ?? null);
       let entry = cached;
       if (
@@ -1906,6 +1946,12 @@ export class LoraGraphQL {
       ) {
         const ctx = this.#context(base, context);
         const slot: unknown[] = [];
+        const rules = and(
+          authFilter(ctx, node, "n", "READ"),
+          authValidate(ctx, node, "n", "READ", "BEFORE"),
+          authFilter(ctx, node, "n", "SUBSCRIBE"),
+          authValidate(ctx, node, "n", "SUBSCRIBE", "BEFORE"),
+        );
         const text = printClauses([
           { kind: "unwind", expr: bind(ctx, slot), alias: "k" },
           {
@@ -1917,10 +1963,7 @@ export class LoraGraphQL {
             where: and(
               bin("=", prop(v("n"), node.key.property), v("k")),
               compileNodeWhere(ctx, node, "n", where),
-              authFilter(ctx, node, "n", "READ"),
-              authValidate(ctx, node, "n", "READ", "BEFORE"),
-              authFilter(ctx, node, "n", "SUBSCRIBE"),
-              authValidate(ctx, node, "n", "SUBSCRIBE", "BEFORE"),
+              rules,
             ),
           },
           {
@@ -1929,39 +1972,122 @@ export class LoraGraphQL {
           },
         ]);
         // The key list is bound directly, so the slot is always found.
-        entry = slotCompile(
-          { text, params: ctx.params },
-          slot,
-          claims,
-          0,
-          undefined,
-          ctx.contextReads,
-        )!;
+        entry = {
+          ...slotCompile(
+            { text, params: ctx.params },
+            slot,
+            claims,
+            0,
+            undefined,
+            ctx.contextReads,
+          )!,
+          settled: rules === undefined,
+        };
         cached = claims === undefined ? undefined : entry;
       }
-      const statements = [
-        {
+      return entry;
+    };
+    const statement = (keys: unknown[]) => {
+      const entry = compile();
+      return {
+        statement: {
           text: entry.compiled.text,
           params: { ...entry.compiled.params, [entry.param]: keys },
         },
-      ];
-      const share =
-        entry.share === undefined
-          ? undefined
-          : `${entry.share}\0${keys.map(keyOf).join("\0")}`;
-      const [result] = await this.#shared(
-        change,
-        statements,
-        () =>
-          this.#driver.run(statements, {
-            mode: "read",
-            timeoutMs: this.#timeoutMs,
-            verified: true,
-          }),
-        share,
-      );
-      return new Set(result!.rows.map((r) => keyOf(r["key"])));
+        share:
+          entry.share === undefined
+            ? undefined
+            : `${entry.share}\0${keys.map(keyOf).join("\0")}`,
+      };
     };
+    return {
+      statement: (keys) => statement(keys).statement,
+      settled: () => {
+        try {
+          return compile().settled;
+        } catch {
+          return false;
+        }
+      },
+      run: async (keys, change) => {
+        if (keys.length === 0) return new Set();
+        const { statement: s, share } = statement(keys);
+        const statements = [s];
+        const [result] = await this.#shared(
+          change,
+          statements,
+          () =>
+            this.#driver.run(statements, {
+              mode: "read",
+              timeoutMs: this.#timeoutMs,
+              verified: true,
+            }),
+          share,
+        );
+        return new Set(result!.rows.map((r) => keyOf(r["key"])));
+      },
+    };
+  }
+
+  /**
+   * Inside a deleting transaction, before anything is deleted: which of
+   * the doomed nodes each subscriber following one of their keys may
+   * read, kept for the change's DELETE events. A node cannot be checked
+   * once it is gone, so a deletion nobody checked reaches nobody whose
+   * rules depend on the node.
+   */
+  async #probeDeletes(
+    change: WriteChange,
+    doomed: ReadonlyArray<{ node: NodeType; keys: unknown[] }>,
+    run: (statement: Statement) => Promise<QueryResult>,
+  ): Promise<void> {
+    const wanted = new Map<DeleteProbe, unknown[]>();
+    for (const { node, keys } of doomed) {
+      const group = this.#subscribers.get(node.name);
+      if (!group || group.byKey.size === 0) continue;
+      for (const key of keys) {
+        for (const sink of group.byKey.get(keyOf(key)) ?? []) {
+          const probe = this.#probes.get(sink);
+          if (!probe) continue;
+          const list = wanted.get(probe);
+          if (list) list.push(key);
+          else wanted.set(probe, [key]);
+        }
+      }
+    }
+    if (wanted.size === 0) return;
+    let seen = this.#deleteSeen.get(change);
+    if (!seen) {
+      seen = new Map();
+      this.#deleteSeen.set(change, seen);
+    }
+    // Subscribers whose checks compile to the same statement share it.
+    const results = new Map<string, Promise<Set<string>>>();
+    for (const [probe, keys] of wanted) {
+      let visible: Promise<Set<string>>;
+      if (probe.check.settled()) {
+        visible = Promise.resolve(new Set(keys.map(keyOf)));
+      } else {
+        let statement: Statement;
+        try {
+          statement = probe.check.statement(keys);
+        } catch {
+          // The claims alone decide against reading: nothing is visible.
+          continue;
+        }
+        const id = stableKey(statement);
+        const shared = id === undefined ? undefined : results.get(id);
+        visible =
+          shared ??
+          run(statement).then(
+            (r) => new Set(r.rows.map((row) => keyOf(row["key"]))),
+          );
+        if (id !== undefined && !shared) results.set(id, visible);
+      }
+      const own = seen.get(probe) ?? new Set<string>();
+      for (const k of await visible) own.add(k);
+      seen.set(probe, own);
+    }
   }
 
   /**
@@ -2270,6 +2396,8 @@ export class LoraGraphQL {
       onStatement: (statement) =>
         this.#onStatement?.({ field: info.fieldName, statement }),
       observe: this.#mutationObserve(info, context),
+      beforeDelete: (change, doomed, run) =>
+        this.#probeDeletes(change, doomed, run),
     };
   }
 
