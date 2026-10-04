@@ -522,11 +522,8 @@ function relationshipPredicate(
       lists.reduce((a, b) => bin("+", a, b)),
     );
   };
-  // A quantifier whose filter is empty, written `{}` or left empty by null
-  // and absent operands, matches any related node: `some` is "has one",
-  // `none` "has none". Leaving it out instead would widen the filter to
-  // every row whenever a variable is unset. Only an absent or null
-  // quantifier is left out, like any absent filter.
+  // A quantifier over an empty (or all-null) filter is left out, like any
+  // absent filter; `count: { gt: 0 }` asks for "has any".
   const nonEmpty = (where: Where): boolean =>
     members.some(({ node }) => {
       const probe = { ...ctx, params: {}, vars: new Set(ctx.vars) };
@@ -536,7 +533,7 @@ function relationshipPredicate(
 
   if (!rel.list) {
     // A single relationship filters by its target directly.
-    return bin(">", count(value), lit(0));
+    return nonEmpty(value) ? bin(">", count(value), lit(0)) : undefined;
   }
 
   const parts: Array<Expr | undefined> = [];
@@ -545,20 +542,19 @@ function relationshipPredicate(
     const w = inner as Where;
     switch (quantifier) {
       case "some":
-        parts.push(bin(">", count(w), lit(0)));
+        if (nonEmpty(w)) parts.push(bin(">", count(w), lit(0)));
         break;
       case "none":
-        parts.push(bin("=", count(w), lit(0)));
+        if (nonEmpty(w)) parts.push(bin("=", count(w), lit(0)));
         break;
       case "single":
-        parts.push(bin("=", distinct(w), lit(1)));
+        if (nonEmpty(w)) parts.push(bin("=", distinct(w), lit(1)));
         break;
       case "all": {
         // Every related node matches: none fails. Unknown (null) counts
         // as failing, so `all` never holds on missing properties. An
         // empty set satisfies `all`, as in logic and Cypher's all(). A
-        // member a union's where leaves out fails. Over an empty filter
-        // every related node matches, so `all` holds on every row.
+        // member a union's where leaves out fails.
         if (!nonEmpty(w)) break;
         const failing = sum(
           members.map(({ field, node }) =>
@@ -672,8 +668,8 @@ function connectionPredicate(
         variable,
         rel,
         (x, r) => {
-          const p = pairWhere(w)(x, r);
-          return negate && p ? not(fn("coalesce", p, lit(false))) : p;
+          const p = pairWhere(w)(x, r)!;
+          return negate ? not(fn("coalesce", p, lit(false))) : p;
         },
         () => lit(1),
       ),
@@ -682,6 +678,7 @@ function connectionPredicate(
   for (const [quantifier, inner] of Object.entries(value)) {
     if (inner === null || inner === undefined) continue;
     const w = inner as Where;
+    if (!nonEmptyPair(ctx, target, props, w)) continue;
     if (w["edge"] != null) refuseEdgeRowRules(ctx, rel);
     switch (quantifier) {
       case "some":
@@ -694,10 +691,7 @@ function connectionPredicate(
         parts.push(bin("=", count(w, false), lit(1)));
         break;
       case "all":
-        // An empty filter holds for every pair: so does `all`.
-        if (nonEmptyPair(ctx, target, props, w)) {
-          parts.push(bin("=", count(w, true), lit(0)));
-        }
+        parts.push(bin("=", count(w, true), lit(0)));
         break;
     }
   }

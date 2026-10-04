@@ -218,13 +218,11 @@ test("9. a nullable @unique sort still pages through every row", async () => {
   expect(keys).toEqual(["alice", "bob", "u3", "u4", "u5", "u6"]);
 });
 
-test("10. a relationship filter whose inner filter is all null matches any related node", async () => {
-  // Not left out (that widened the filter to every user): `some` over an
-  // emptied filter is "has a post the reader may see".
+test("10. a relationship filter whose inner filter is all null is left out", async () => {
   const d = await h.data<{ users: unknown[] }>(
     `{ users(limit: 50, where: { posts: { some: { key: { eq: null } } } }) { key } }`,
   );
-  expect(d.users).toEqual([{ key: "alice" }]);
+  expect(d.users).toHaveLength(6);
 });
 
 test("11. rules that test nothing are refused at startup", () => {
