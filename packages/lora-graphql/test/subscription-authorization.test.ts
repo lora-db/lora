@@ -71,11 +71,13 @@ describe("deletions", () => {
     const t = await createTestLoraGraphQL({ typeDefs, seed });
     const asLou = await listen(t, follow, lou);
     const asBo = await listen(t, follow, bo);
-    await t.data(
+    // Deleted by its owner: a node the deleter can't read is never deleted.
+    const r = await t.data<{ deleteSecret: { nodesDeleted: number } }>(
       `mutation { deleteSecret(key: "s1") { nodesDeleted } }`,
       {},
-      admin,
+      bo,
     );
+    expect(r.deleteSecret.nodesDeleted).toBe(1);
     await settle();
     await asLou.stop();
     await asBo.stop();
