@@ -1068,8 +1068,29 @@ Every operation has a cost estimate (rows touched, multiplying page sizes
 through nested lists, capped by `@cardinality`), summed across its root
 fields, and an operation over `maxCost` (default 50 000) fails with
 `COST_EXCEEDED` before it runs. `lora.analyze()` samples node counts and
-relationship degrees so estimates use the measured p99 degree instead of
-the page size.
+relationship degrees so estimates use measured degrees instead of the
+page size.
+
+Filters are charged the rows they examine, not only the rows they return:
+
+- a root filter no index answers (`contains`, `endsWith`,
+  `caseInsensitive`, `NOT`, `OR`, a computed field) costs the label's
+  node count, or the page size without statistics; an equality, range,
+  prefix or point predicate seeks and costs nothing extra;
+- each relationship a filter follows (`some`, `none`, `all`, `single`,
+  `count`, `aggregate`, connection filters, single relationships) costs
+  the related nodes it visits per candidate, multiplied per level: the
+  mean degree over a scanned label, the maximum degree from parents the
+  caller picked (by key, or the parents of a nested list), the default
+  page size without statistics;
+- `totalCount` and aggregates read every match: the label's node count
+  when no key narrows them.
+
+`maxFilterDepth` (default 2) refuses a `where` nesting more relationship
+levels with `BAD_USER_INPUT`, counted through single relationships,
+`<field>Exists` and connection filters too. Without `analyze()` a two-level
+filter over a large label still passes, priced at the page size: run it
+in production so estimates use real counts.
 
 **S7: one SDL, two diffs.** `diffSchemas(before, after)` reports the
 database statements a change needs (index and constraint changes, relabels,
@@ -1377,6 +1398,7 @@ server (GraphQL Yoga takes the plugin as is):
 | `maxRootFields`         | 20         | Root fields per operation                                              |
 | `maxTokens`             | 5000       | Lexer tokens per document, while parsing                               |
 | `maxListArgument`       | 1000       | Items per list argument of a `@cypher` field (`@size(max:)` overrides) |
+| `maxFilterDepth`        | 2          | Relationship levels one `where` nests                                  |
 | `introspection`         | production | Off when `NODE_ENV` is `production`                                    |
 
 With `NODE_ENV=production`, database errors are masked and introspection

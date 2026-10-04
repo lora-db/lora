@@ -28,6 +28,7 @@ import {
   refuseEdgeRowRules,
 } from "./auth.js";
 import { bind, freshVar, type CompileContext } from "./context.js";
+import { MAX_FILTER_DEPTH } from "./cost.js";
 import {
   and,
   bin,
@@ -102,10 +103,11 @@ function nodeKeys(
       checkFieldAuthentication(ctx, node.name, f);
       // Filtering through the field reveals it, as reading it does.
       const rule = fieldValidate(ctx, node, f, variable, "READ");
-      return (value) => {
-        const pred = relationshipPredicate(ctx, variable, f, value as Where);
-        return pred && and(rule, pred);
-      };
+      return (value) =>
+        descend(ctx, f, () => {
+          const pred = relationshipPredicate(ctx, variable, f, value as Where);
+          return pred && and(rule, pred);
+        });
     }
     if (f?.kind === "cypher" && f.computed) {
       checkFieldAuthentication(ctx, node.name, f);
@@ -132,7 +134,9 @@ function nodeKeys(
         const rule = fieldValidate(ctx, node, rel, variable, "READ");
         return (value) => {
           if (typeof value !== "boolean") return undefined;
-          const pred = relationshipExists(ctx, variable, rel, value);
+          const pred = descend(ctx, rel, () =>
+            relationshipExists(ctx, variable, rel, value),
+          );
           return and(rule, pred);
         };
       }
@@ -144,14 +148,49 @@ function nodeKeys(
       if (rel?.kind === "relationship" && rel.list && rel.properties) {
         checkFieldAuthentication(ctx, node.name, rel);
         const rule = fieldValidate(ctx, node, rel, variable, "READ");
-        return (value) => {
-          const pred = connectionPredicate(ctx, variable, rel, value as Where);
-          return pred && and(rule, pred);
-        };
+        return (value) =>
+          descend(ctx, rel, () => {
+            const pred = connectionPredicate(
+              ctx,
+              variable,
+              rel,
+              value as Where,
+            );
+            return pred && and(rule, pred);
+          });
       }
     }
     return undefined;
   };
+}
+
+/**
+ * Compile one relationship level of a filter: deeper than
+ * `maxFilterDepth` is refused, since each level multiplies the work by
+ * the relationship's degree. Authorization rules are the schema's own,
+ * and are not counted.
+ */
+function descend<T>(
+  ctx: CompileContext,
+  rel: RelationshipField,
+  f: () => T,
+): T {
+  if (ctx.inAuth) return f();
+  const depth = (ctx.filterDepth ?? 0) + 1;
+  const max = ctx.maxFilterDepth ?? MAX_FILTER_DEPTH;
+  if (depth > max) {
+    throw requestError(
+      "BAD_USER_INPUT",
+      `the filter nests relationships deeper than ${max} levels (at ${rel.owner}.${rel.name})`,
+    );
+  }
+  const outer = ctx.filterDepth;
+  ctx.filterDepth = depth;
+  try {
+    return f();
+  } finally {
+    ctx.filterDepth = outer;
+  }
 }
 
 export function compilePropsWhere(

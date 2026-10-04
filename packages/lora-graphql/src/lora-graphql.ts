@@ -115,6 +115,7 @@ import {
 } from "./compile/cypher.js";
 import { bind } from "./compile/context.js";
 import { keyOf } from "./compile/read.js";
+import { MAX_FILTER_DEPTH } from "./compile/cost.js";
 import { compileNodeWhere } from "./compile/filter.js";
 import { lookupPath } from "./compile/auth.js";
 import { fromGlobalId } from "./schema/global-id.js";
@@ -130,7 +131,9 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
   /**
    * Reject a root field whose estimated rows touched exceed this, before
    * it runs. The estimate multiplies page sizes through nested lists,
-   * capped by relationship degrees from `analyze()` or `@cardinality`.
+   * capped by relationship degrees from `analyze()` or `@cardinality`,
+   * and charges each filter the rows it examines: a label scan when no
+   * index answers it, the related nodes of every relationship it follows.
    * Default 50 000; `Infinity` disables.
    */
   maxCost?: number;
@@ -159,6 +162,14 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
    * statement runs. Default 1000.
    */
   maxListArgument?: number;
+  /**
+   * Relationship levels one `where` may nest: quantifiers (`some`,
+   * `none`, `all`, `single`, `count`, `aggregate`), connection filters,
+   * `<field>Exists` and filters through a single relationship each count
+   * one. Deeper is BAD_USER_INPUT before anything runs: each level
+   * multiplies the work by the relationship's degree. Default 2.
+   */
+  maxFilterDepth?: number;
   /**
    * Changes a `changes()` consumer or subscriber may fall behind before it
    * is ended with an error. Default 1000.
@@ -398,6 +409,7 @@ export class LoraGraphQL {
   readonly #maxCost: number;
   readonly #maxBatch: number;
   readonly #maxListArgument: number;
+  readonly #maxFilterDepth: number;
   readonly #maxQueued: number;
   readonly #callbacks: Record<string, PopulatedByCallback>;
   readonly #resolvers: NonNullable<LoraGraphQLOptions["resolvers"]>;
@@ -474,6 +486,7 @@ export class LoraGraphQL {
     this.#maxCost = options.maxCost ?? 50_000;
     this.#maxBatch = options.maxBatch ?? 1000;
     this.#maxListArgument = options.maxListArgument ?? MAX_LIST_ARGUMENT;
+    this.#maxFilterDepth = options.maxFilterDepth ?? MAX_FILTER_DEPTH;
     this.#maxQueued = options.maxQueuedChanges ?? 1000;
     this.#callbacks = options.callbacks ?? {};
     const missing = [...this.model.nodes.values()].flatMap((n) =>
@@ -1423,8 +1436,10 @@ export class LoraGraphQL {
     return newContext(base, this.model, {
       jwt,
       degrees: this.#degrees,
+      statistics: this.#statistics,
       requestContext: context,
       maxListArgument: this.#maxListArgument,
+      maxFilterDepth: this.#maxFilterDepth,
     });
   }
 
@@ -2263,6 +2278,8 @@ export class LoraGraphQL {
       degrees: this.#degrees,
       maxBatch: this.#maxBatch,
       maxListArgument: this.#maxListArgument,
+      maxFilterDepth: this.#maxFilterDepth,
+      statistics: this.#statistics,
       requestContext: context,
       callbacks: this.#callbacks,
       transaction: (context as LoraGraphQLContext | undefined)?.transaction

@@ -17,6 +17,7 @@ import {
   forbidden,
   propertyAccess,
 } from "../compile/auth.js";
+import type { Statistics } from "../analyze/statistics.js";
 import { bind, newContext, type CompileContext } from "../compile/context.js";
 import {
   and,
@@ -91,6 +92,10 @@ export interface MutationEnv {
   maxBatch: number;
   /** Most items a @cypher list argument takes without `@size(max:)`. */
   maxListArgument?: number | undefined;
+  /** Relationship levels one `where` may nest. */
+  maxFilterDepth?: number | undefined;
+  /** Statistics from `analyze()`, for filter costs. */
+  statistics?: Statistics | undefined;
   callbacks: Readonly<Record<string, PopulatedByCallback>>;
   /**
    * A caller-owned transaction: run inside it and leave the commit to the
@@ -727,7 +732,9 @@ class Runner {
     return newContext(this.env.selection, this.env.model, {
       jwt: this.env.jwt,
       degrees: this.env.degrees,
+      statistics: this.env.statistics,
       requestContext: this.env.requestContext,
+      maxFilterDepth: this.env.maxFilterDepth,
     });
   }
 
@@ -2290,7 +2297,9 @@ export async function executeMutation(
   const planCtx = newContext(env.selection, env.model, {
     jwt: env.jwt,
     degrees: env.degrees,
+    statistics: env.statistics,
     requestContext: env.requestContext,
+    maxFilterDepth: env.maxFilterDepth,
   });
   const authOp =
     op === "UPSERT"
