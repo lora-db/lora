@@ -63,6 +63,8 @@ export interface LoraDriver {
    * Open an interactive transaction. Needed for mutations, which check
    * their writes (connect targets, cardinality, authorization) before
    * committing. Optional: the WASM binding has none, so it serves reads.
+   * A write transaction waits for the writer lock: the wait must honour
+   * `timeoutMs` and `signal` (`loraDriver` bounds it).
    */
   begin?(options: RunOptions): Promise<DriverTransaction>;
   /** Plan a statement without running it. Optional: the WASM binding has no `explain()`. */
@@ -187,10 +189,12 @@ export function loraDriver(db: LoraDatabaseLike): LoraDriver {
   if (typeof db.begin === "function") {
     const begin = db.begin.bind(db);
     driver.begin = async (options) => {
-      const tx = await begin(
-        options.mode === "read" ? "read_only" : "read_write",
-      );
       const limits = runLimits(options);
+      // The engine's begin() waits for the writer lock without a timeout.
+      const tx = await bounded(
+        begin(options.mode === "read" ? "read_only" : "read_write"),
+        limits,
+      );
       return {
         execute: (s) => tx.execute(s.text, s.params as never, limits),
         commit: () => tx.commit(),
@@ -209,6 +213,67 @@ export function loraDriver(db: LoraDatabaseLike): LoraDriver {
     driver.changes = db.changes.bind(db);
   }
   return driver;
+}
+
+/**
+ * `begin()` bounded by `timeoutMs` and `signal`: a transaction that opens
+ * after the caller gave up is rolled back at once, so it never holds the
+ * writer lock.
+ */
+function bounded<T extends { rollback(): Promise<void> }>(
+  start: Promise<T>,
+  limits: { timeoutMs?: number; signal?: AbortSignal },
+): Promise<T> {
+  const { timeoutMs, signal } = limits;
+  if (!(timeoutMs !== undefined && timeoutMs > 0) && !signal) return start;
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const abandon = (err: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      void start.then(
+        (tx) => tx.rollback().catch(() => undefined),
+        () => undefined,
+      );
+      reject(err);
+    };
+    const onAbort = () => abandon(signal!.reason);
+    if (signal?.aborted) return onAbort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (timeoutMs !== undefined && timeoutMs > 0) {
+      timer = setTimeout(
+        () =>
+          abandon(
+            Object.assign(
+              new Error(
+                `timed out after ${timeoutMs} ms waiting for the writer lock`,
+              ),
+              { code: "LORA_TIMEOUT" },
+            ),
+          ),
+        timeoutMs,
+      );
+    }
+    start.then(
+      (tx) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        resolve(tx);
+      },
+      (err: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
 }
 
 function runLimits(options: RunOptions): {

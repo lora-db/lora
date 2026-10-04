@@ -44,6 +44,7 @@ const lora = new LoraGraphQL({ typeDefs, driver: loraDriver(db) });
 await lora.assertSchema({ create: true }); // the constraints and indexes the API needs
 const yoga = createYoga({
   schema: lora.getSchema(),
+  plugins: [lora.envelopPlugin()], // document guards (and atomic mutations)
   context: ({ request }) => ({
     jwt: verifiedClaims(request),
     signal: request.signal,
@@ -474,9 +475,16 @@ writes — creates, updates, upserts, nested creates, and connects,
 disconnects and deletes from either side — for every caller, the bypass
 included: it is a data invariant, not a rule. Each check seeks the written
 nodes and compares only with nodes sharing their first relationship end
-(or, with scalars only, their first scalar's value). Writes outside
-generated mutations (`@cypher` mutations, Cypher of your own) are not
-checked.
+(or, with scalars only, their first scalar's value).
+
+A `@cypher` mutation's write-set is unknown, so after its statement it
+checks every `@uniqueTogether` type the statement may write: one whose
+label, constrained relationship type or constrained scalar property
+(`.prop`) the statement text names. That check compares every node of the
+type (a scan, in the same transaction), and the model warns about each such
+mutation (`check()` reports it under `warnings`); prefer a generated
+mutation for a constrained type. Cypher of your own (`tx.execute()`, other
+clients) is not checked.
 
 Any failure rolls the whole mutation back. Atomicity is per root field:
 in an operation with several root fields, each runs in its own
@@ -484,11 +492,20 @@ transaction, so a later failure leaves the earlier ones committed. Pass
 `mutationTransaction: "operation"` to run every root field of a mutation
 in one transaction through `execute()` (persisted operations included):
 it commits only when the operation reports no error, and otherwise rolls
-back and returns `data: null`. With another server, put a `lora.begin()`
-transaction in the context (see [Transactions](#transactions)). Engine
+back and returns `data: null`. GraphQL Yoga and other Envelop servers on
+`getSchema()` get the same from `lora.envelopPlugin()`. With another
+server calling graphql-js directly, put a `lora.begin()` transaction in
+the context (see [Transactions](#transactions)); without one, each root
+field commits on its own, and the first such mutation logs a warning. Engine
 constraint errors come
-back as `CONSTRAINT_VIOLATION` naming the type and field. A mutation creates
-or deletes at most `maxBatch` nodes (default 1000). `@key` is not updatable.
+back as `CONSTRAINT_VIOLATION` naming the type and field. A mutation writes
+at most `maxBatch` nodes (default 1000): created and updated nodes count
+together (every `upsert` input, nested creates, each nested `update`
+entry), and a delete reaches at most `maxBatch` nodes through
+`onDelete: CASCADE`. Relationships written (connects, each key of a
+`disconnect` list, nested `update` entries) count up to ten times
+`maxBatch`. Going over is `LIMIT_EXCEEDED`, before the writes that
+would exceed it. `@key` is not updatable.
 `info` reports `nodesCreated`, `nodesUpdated`, `nodesDeleted`,
 `relationshipsCreated` and `relationshipsDeleted`.
 
@@ -821,6 +838,19 @@ type Post
   own connects, so a filter that depends on the new relationship (a
   request visible to its sender) does not block a nested create. Filter rules for `CREATE_RELATIONSHIP` and
   `DELETE_RELATIONSHIP` guard both ends of connects and disconnects.
+  Update and delete targets (by key, bulk and nested) must pass the
+  type's `READ` filter as well as its `UPDATE` / `DELETE` filter: a key
+  the caller cannot read answers like a missing one (`null`,
+  `nodesDeleted: 0`), never `FORBIDDEN` from a `validate` rule.
+- **Write errors never name a node the caller cannot read.** A delete
+  that would leave such a node without a required relationship fails
+  with `a Secret the caller can't read requires a Person (Secret.holder)`;
+  `onDelete: RESTRICT` held by such nodes fails with `Org "o" cannot be
+deleted: Org.docs has onDelete: RESTRICT`. Replacing a single
+  relationship whose current target the caller cannot read is refused
+  with `FORBIDDEN` (`not allowed to replace F.genre`), and leaves it in
+  place: the caller cannot remove a relationship of a node they cannot
+  see.
 - `validate` rules fail the request with `FORBIDDEN`: `BEFORE` an update or
   delete, `AFTER` a create or update (rolling it back), and for `READ`: on
   any returned node, and on cursors, counts and aggregates that cover one.
@@ -960,9 +990,16 @@ type Post
   rules for everyone with `@authorization(bypass: false)`;
   `@authorization(bypass: true)` is the default made explicit, and quiets
   `check()`'s note that the bypass skips the type's field rules. `mutations` is
-  the write rule (`CREATE`, `UPDATE`, `DELETE`) of every `@mutation` type
-  that declares no rule for those operations; a type's own rules replace
-  it, never merge with it. `check()` fails on a `@mutation` type whose
+  the write rule (`CREATE`, `UPDATE`, `DELETE`) of every `@mutation` type,
+  per operation: it guards each of those operations that none of the
+  type's own rules covers. A `validate` rule covers the operations it
+  lists; a `filter` rule covers `UPDATE` and `DELETE` when it lists them
+  (by default it does), never `CREATE`, since there is no node to filter
+  before it exists. So a type with only `@authorization(filter: [...])`
+  keeps the default on `CREATE`, and one with a `validate` rule for
+  `UPDATE` only keeps it on `CREATE` and `DELETE`. Where a type's rule
+  covers an operation, it replaces the default for that operation, never
+  merges with it. `check()` fails on a `@mutation` type whose
   writes nothing guards, unless it says `@authorization(public: [...])`.
 
 Relationship and `@cypher` fields take field-level `@authorization`
@@ -1236,7 +1273,15 @@ try {
 With `transaction` in the context, every operation of the request runs in
 it, next to the application's own `tx.execute(cypher)`: they commit or roll
 back together, reads see the transaction's writes, and change events wait
-for the commit. A failed mutation rolls the transaction back.
+for the commit. A failed mutation rolls the transaction back. `@cypher`
+mutations run in it too, like generated ones: their statement shares the
+transaction, and their (broad) change event waits for the commit.
+
+A write transaction holds LoraDB's writer lock until it ends, and other
+writes wait for it. That wait is bounded by `timeoutMs` (and a `signal`
+in the context): a mutation that cannot get the lock in time fails with
+`DATABASE_ERROR` instead of queueing forever. Keep `lora.begin()`
+transactions short.
 
 ## CLI
 
@@ -1391,9 +1436,9 @@ binding has, so the WASM binding serves reads.
 
 | Option                       | Default       | Meaning                                             |
 | ---------------------------- | ------------- | --------------------------------------------------- |
-| `timeoutMs`                  | 10 000        | Per statement; a `signal` in the context cancels    |
+| `timeoutMs`                  | 10 000        | Per statement and lock wait; a `signal` cancels     |
 | `maxCost`                    | 50 000        | Estimated rows per operation                        |
-| `maxBatch`                   | 1000          | Nodes created or deleted per mutation; bulk `limit` |
+| `maxBatch`                   | 1000          | Nodes written per mutation; bulk `limit` by default |
 | `maxQueuedChanges`           | 1000          | How far a change consumer may fall behind           |
 | `maxSubscriptions`           | 100           | Live subscriptions per `subscriptionScope`          |
 | `subscriptionScope`          | the context   | What `maxSubscriptions` counts per                  |

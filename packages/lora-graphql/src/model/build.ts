@@ -40,6 +40,7 @@ import {
   type ViewerMapping,
 } from "./desugar.js";
 import { codeOnly, maskLiterals, scanParams } from "./cypher-lexer.js";
+import { uniqueTogetherTouched } from "./unique-together.js";
 import type {
   AbstractType,
   SearchIndex,
@@ -874,17 +875,26 @@ export function buildModel(
     const WRITES: AuthOperation[] = ["CREATE", "UPDATE", "DELETE"];
     for (const node of nodes.values()) {
       if (node.mutations.size === 0) continue;
-      const own = [
-        ...(node.authorization?.filter ?? []),
-        ...(node.authorization?.validate ?? []),
-      ].some((r) => WRITES.some((op) => r.operations.has(op)));
-      if (own) continue;
+      // Per operation: the default guards each write the type's own rules
+      // leave uncovered. A filter rule never covers CREATE (there is no
+      // node to filter before it exists).
+      const uncovered = WRITES.filter(
+        (op) =>
+          !(node.authorization?.validate ?? []).some((r) =>
+            r.operations.has(op),
+          ) &&
+          (op === "CREATE" ||
+            !(node.authorization?.filter ?? []).some((r) =>
+              r.operations.has(op),
+            )),
+      );
+      if (uncovered.length === 0) continue;
       (node as { authorization: Authorization }).authorization = {
         ...(node.authorization ?? { filter: [] }),
         validate: [
           ...(node.authorization?.validate ?? []),
           {
-            operations: new Set<AuthOperation>(WRITES),
+            operations: new Set<AuthOperation>(uncovered),
             when: new Set<"BEFORE" | "AFTER">(["BEFORE", "AFTER"]),
             requireAuthentication: true,
             where: defaults.mutations,
@@ -1267,6 +1277,17 @@ export function buildModel(
     bypass: defaults.bypass,
     cursorSecret: options.cursorSecret,
   };
+  // A @cypher mutation's write-set is unknown: @uniqueTogether types it
+  // may write are checked by comparing every node of the type.
+  for (const field of model.mutations) {
+    const touched = uniqueTogetherTouched(model, field.statement);
+    if (touched.length === 0) continue;
+    warnings.push({
+      type: "Mutation",
+      field: field.name,
+      message: `the statement may write ${touched.map((n) => n.name).join(", ")} (@uniqueTogether): each call compares every node of ${touched.length === 1 ? "that type" : "those types"} after the statement (a scan); a generated mutation checks only the nodes it writes`,
+    });
+  }
   // An update input with nothing in it would break the schema: the
   // mutations that take it are left out, and the model says so.
   for (const node of nodes.values()) {
