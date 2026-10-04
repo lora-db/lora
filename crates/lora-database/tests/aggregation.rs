@@ -975,12 +975,9 @@ fn agg_collect_with_optional_match_filters_nulls() {
     // People with projects should have exactly 1 project each
     let bob = rows.iter().find(|r| r["name"] == "Bob").unwrap();
     assert_eq!(bob["projects"].as_array().unwrap().len(), 1);
-    // People without projects: collect may include null or be empty
-    // — test documents actual behavior rather than assuming reference semantics
+    // People without projects: collect() ignores nulls, so the list is empty.
     let dave = rows.iter().find(|r| r["name"] == "Dave").unwrap();
-    let dave_projects = dave["projects"].as_array().unwrap();
-    // Dave has no assignments, so list should be empty or contain a single null
-    assert!(dave_projects.len() <= 1);
+    assert_eq!(dave["projects"], serde_json::json!([]));
 }
 
 // ============================================================

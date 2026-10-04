@@ -967,6 +967,10 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                     }
 
                     let mut values = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?;
+                    // openCypher: collect() ignores null values. Only a
+                    // top-level null is dropped; a list or map that
+                    // merely contains nulls is kept as-is.
+                    values.retain(|v| !matches!(v, LoraValue::Null));
 
                     if *distinct {
                         values = dedup_values(values);
