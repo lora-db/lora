@@ -26,6 +26,14 @@ pub enum ExecutorError {
     #[error("expected variable {var} to contain a node before expanding a relationship, but found {found}")]
     ExpectedNodeForExpand { var: String, found: String },
 
+    #[error("CREATE/MERGE expected variable {var} to be bound to a node, but found {found}")]
+    ExpectedNodeForCreate { var: String, found: String },
+
+    #[error(
+        "CREATE/MERGE expected variable {var} to be bound to a relationship, but found {found}"
+    )]
+    ExpectedRelationshipForCreate { var: String, found: String },
+
     #[error("expected a map value for properties, but found {found}")]
     ExpectedPropertyMap { found: String },
 

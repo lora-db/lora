@@ -41,7 +41,7 @@
 //! - `source` — the [`RowSource`] trait, [`drain`],
 //!   [`BufferedRowSource`], and [`ArgumentSource`].
 //! - `context` — [`StreamCtx`], the shared storage / params handle.
-//! - `hydration` — [`HydratingSource`] and [`hydrate_value`].
+//! - `hydration` — [`HydratingSource`] and `hydrate_value`.
 //! - `traits` — the read-side plan walker (`is_streaming_op`,
 //!   `subtree_is_fully_streaming`, `build_streaming`,
 //!   `compiled_to_streaming`, `write_op_input`), [`PullExecutor`],
@@ -103,7 +103,7 @@ pub(crate) use aggregate::{
 };
 pub(crate) use context::StreamCtx;
 pub use hydration::hydrate_row;
-pub(crate) use hydration::{hydrate_value, HydratingSource};
+pub(crate) use hydration::HydratingSource;
 pub(crate) use source::ArgumentSource;
 pub(crate) use traits::{
     build_streaming, build_streaming_seeded, subtree_has_write, subtree_is_fully_streaming,

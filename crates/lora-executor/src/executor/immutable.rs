@@ -969,13 +969,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             params: &self.ctx.params,
         };
 
-        aggregate_rows(
-            input_rows,
-            &op.group_by,
-            &op.aggregates,
-            &eval_ctx,
-            |value| self.hydrate_value(value),
-        )
+        aggregate_rows(input_rows, &op.group_by, &op.aggregates, &eval_ctx)
     }
 
     fn exec_sort(&self, plan: &PhysicalPlan, op: &SortExec) -> ExecResult<Vec<Row>> {

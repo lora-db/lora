@@ -27,7 +27,7 @@ use crate::eval::eval_expr_result;
 use crate::executor::{compute_aggregate_expr, GroupValueKey};
 use crate::value::{LoraValue, Row};
 
-use super::{drain, hydrate_value, RowSource, StreamCtx};
+use super::{drain, RowSource, StreamCtx};
 
 // ============================================================================
 // Streaming fold-only aggregation (count / sum / min / max / avg, no DISTINCT)
@@ -326,7 +326,6 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
                 for proj in group_by {
                     let value = eval_expr_result(&proj.expr, first, &eval_ctx)
                         .map_err(ExecutorError::from_eval)?;
-                    let value = hydrate_value(value, ctx.storage);
                     result.insert_named(proj.output, proj.name.clone(), value);
                 }
             }
@@ -411,7 +410,6 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
             for proj in group_by {
                 let value = eval_expr_result(&proj.expr, &group.first_row, &eval_ctx)
                     .map_err(ExecutorError::from_eval)?;
-                let value = hydrate_value(value, ctx.storage);
                 result.insert_named(proj.output, proj.name.clone(), value);
             }
             for (i, proj) in aggregates.iter().enumerate() {

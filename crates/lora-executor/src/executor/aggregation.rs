@@ -12,41 +12,38 @@ use crate::value::{LoraValue, Row};
 
 use super::helpers::{compute_aggregate_expr, GroupValueKey};
 
-pub(crate) fn aggregate_rows<S, H>(
+/// Group `input_rows` and fold `aggregates` per group.
+///
+/// Grouping-key values are emitted exactly as evaluated: a node or
+/// relationship stays a `Node(id)` / `Relationship(id)` reference (also
+/// when nested inside a list or map key), so downstream clauses
+/// (`CREATE`, `MERGE`, `SET`, expansion, `id()`, equality) still see the
+/// entity. Hydration to the `{id, labels, properties}` output form
+/// happens only at the top of the pipeline.
+pub(crate) fn aggregate_rows<S>(
     input_rows: Vec<Row>,
     group_by: &[ResolvedProjection],
     aggregates: &[ResolvedProjection],
     eval_ctx: &EvalContext<'_, S>,
-    hydrate_value: H,
 ) -> ExecResult<Vec<Row>>
 where
     S: GraphStorage,
-    H: Fn(LoraValue) -> LoraValue,
 {
     if let Some(specs) = crate::pull::classify_streamable_aggregates(aggregates) {
-        return aggregate_streamable_rows(
-            input_rows,
-            group_by,
-            aggregates,
-            &specs,
-            eval_ctx,
-            hydrate_value,
-        );
+        return aggregate_streamable_rows(input_rows, group_by, aggregates, &specs, eval_ctx);
     }
 
-    aggregate_buffered_rows(input_rows, group_by, aggregates, eval_ctx, hydrate_value)
+    aggregate_buffered_rows(input_rows, group_by, aggregates, eval_ctx)
 }
 
-fn aggregate_buffered_rows<S, H>(
+fn aggregate_buffered_rows<S>(
     input_rows: Vec<Row>,
     group_by: &[ResolvedProjection],
     aggregates: &[ResolvedProjection],
     eval_ctx: &EvalContext<'_, S>,
-    hydrate_value: H,
 ) -> ExecResult<Vec<Row>>
 where
     S: GraphStorage,
-    H: Fn(LoraValue) -> LoraValue,
 {
     let mut groups: BTreeMap<Vec<GroupValueKey>, Vec<Row>> = BTreeMap::new();
 
@@ -62,28 +59,22 @@ where
     let mut out = Vec::with_capacity(groups.len());
     for rows in groups.into_values() {
         out.push(build_buffered_group_row(
-            &rows,
-            group_by,
-            aggregates,
-            eval_ctx,
-            &hydrate_value,
+            &rows, group_by, aggregates, eval_ctx,
         )?);
     }
 
     Ok(out)
 }
 
-fn aggregate_streamable_rows<S, H>(
+fn aggregate_streamable_rows<S>(
     input_rows: Vec<Row>,
     group_by: &[ResolvedProjection],
     aggregates: &[ResolvedProjection],
     specs: &[crate::pull::StreamableAggSpec],
     eval_ctx: &EvalContext<'_, S>,
-    hydrate_value: H,
 ) -> ExecResult<Vec<Row>>
 where
     S: GraphStorage,
-    H: Fn(LoraValue) -> LoraValue,
 {
     if group_by.is_empty() {
         return aggregate_single_group(input_rows, aggregates, specs, eval_ctx);
@@ -102,13 +93,7 @@ where
     let mut out = Vec::with_capacity(groups.len());
     for group in groups.into_values() {
         let mut result = Row::new();
-        insert_group_by_values(
-            &mut result,
-            group_by,
-            &group.first_row,
-            eval_ctx,
-            &hydrate_value,
-        )?;
+        insert_group_by_values(&mut result, group_by, &group.first_row, eval_ctx)?;
         insert_finalized_aggs(&mut result, aggregates, specs, group.aggs);
         out.push(result);
     }
@@ -147,21 +132,19 @@ where
     Ok(vec![result])
 }
 
-fn build_buffered_group_row<S, H>(
+fn build_buffered_group_row<S>(
     rows: &[Row],
     group_by: &[ResolvedProjection],
     aggregates: &[ResolvedProjection],
     eval_ctx: &EvalContext<'_, S>,
-    hydrate_value: H,
 ) -> ExecResult<Row>
 where
     S: GraphStorage,
-    H: Fn(LoraValue) -> LoraValue,
 {
     let mut result = Row::new();
 
     if let Some(first) = rows.first() {
-        insert_group_by_values(&mut result, group_by, first, eval_ctx, hydrate_value)?;
+        insert_group_by_values(&mut result, group_by, first, eval_ctx)?;
     }
 
     for proj in aggregates {
@@ -172,21 +155,19 @@ where
     Ok(result)
 }
 
-fn insert_group_by_values<S, H>(
+fn insert_group_by_values<S>(
     result: &mut Row,
     group_by: &[ResolvedProjection],
     row: &Row,
     eval_ctx: &EvalContext<'_, S>,
-    hydrate_value: H,
 ) -> ExecResult<()>
 where
     S: GraphStorage,
-    H: Fn(LoraValue) -> LoraValue,
 {
     for proj in group_by {
         let value =
             eval_expr_result(&proj.expr, row, eval_ctx).map_err(ExecutorError::from_eval)?;
-        result.insert_named(proj.output, proj.name.clone(), hydrate_value(value));
+        result.insert_named(proj.output, proj.name.clone(), value);
     }
 
     Ok(())

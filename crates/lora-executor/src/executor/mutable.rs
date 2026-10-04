@@ -544,13 +544,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             params: &self.ctx.params,
         };
 
-        aggregate_rows(
-            input_rows,
-            &op.group_by,
-            &op.aggregates,
-            &eval_ctx,
-            |value| self.hydrate_value(value),
-        )
+        aggregate_rows(input_rows, &op.group_by, &op.aggregates, &eval_ctx)
     }
 
     fn exec_sort(&mut self, plan: &PhysicalPlan, op: &SortExec) -> ExecResult<Vec<Row>> {
@@ -916,7 +910,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         // materialized branch below.
         if crate::pull::subtree_is_fully_streaming(plan, op.input) {
             return self.streaming_apply(plan, op.input, |this, row| {
-                let already_bound = this.pattern_part_is_bound(row, &op.pattern_part);
+                let already_bound = this.pattern_part_is_bound(row, &op.pattern_part)?;
                 let matched = if already_bound {
                     true
                 } else {
@@ -941,7 +935,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         for mut row in input_rows {
             // First check if the pattern variable is already bound in the row.
-            let already_bound = self.pattern_part_is_bound(&row, &op.pattern_part);
+            let already_bound = self.pattern_part_is_bound(&row, &op.pattern_part)?;
 
             let matched = if already_bound {
                 true
@@ -1307,7 +1301,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 Ok(())
             }
             ResolvedClause::Merge(m) => {
-                let already_bound = self.pattern_part_is_bound(row, &m.pattern_part);
+                let already_bound = self.pattern_part_is_bound(row, &m.pattern_part)?;
                 let matched = if already_bound {
                     true
                 } else {
@@ -1757,7 +1751,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 Ok(())
             }
             PhysicalOp::Merge(m) => {
-                let already_bound = self.pattern_part_is_bound(row, &m.pattern_part);
+                let already_bound = self.pattern_part_is_bound(row, &m.pattern_part)?;
                 let matched = if already_bound {
                     true
                 } else {
@@ -1846,28 +1840,53 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         }
     }
 
-    fn pattern_part_is_bound(&self, row: &Row, part: &ResolvedPatternPart) -> bool {
-        match &part.element {
-            ResolvedPatternElement::Node { var, .. } => var.and_then(|v| row.get(v)).is_some(),
+    /// Whether every variable of a MERGE pattern part is already bound in
+    /// `row` (so the MERGE matches trivially). A variable bound to a value
+    /// of the wrong kind for its position (a map, null or scalar where a
+    /// node or relationship belongs) is an error rather than "unbound":
+    /// treating it as unbound would MERGE a fresh, unrelated entity.
+    fn pattern_part_is_bound(&self, row: &Row, part: &ResolvedPatternPart) -> ExecResult<bool> {
+        fn node_bound(row: &Row, var: Option<VarId>) -> ExecResult<bool> {
+            let Some(var) = var else { return Ok(false) };
+            match row.get(var) {
+                None => Ok(false),
+                Some(LoraValue::Node(_)) => Ok(true),
+                Some(other) => Err(ExecutorError::ExpectedNodeForCreate {
+                    var: bound_var_name(row, var),
+                    found: value_kind(other),
+                }),
+            }
+        }
+        fn rel_bound(row: &Row, var: Option<VarId>) -> ExecResult<bool> {
+            // For MERGE, anonymous relationships cannot be considered
+            // "bound" because we have no variable to check. The merge
+            // must search the graph to see if the relationship exists.
+            let Some(var) = var else { return Ok(false) };
+            match row.get(var) {
+                None => Ok(false),
+                Some(LoraValue::Relationship(_)) => Ok(true),
+                Some(other) => Err(ExecutorError::ExpectedRelationshipForCreate {
+                    var: bound_var_name(row, var),
+                    found: value_kind(other),
+                }),
+            }
+        }
 
-            ResolvedPatternElement::ShortestPath { .. } => false,
+        match &part.element {
+            ResolvedPatternElement::Node { var, .. } => node_bound(row, *var),
+
+            ResolvedPatternElement::ShortestPath { .. } => Ok(false),
 
             ResolvedPatternElement::NodeChain { head, chain } => {
-                let head_ok = head.var.and_then(|v| row.get(v)).is_some();
-
-                let chain_ok = chain.iter().all(|link| {
-                    let node_ok = link.node.var.and_then(|v| row.get(v)).is_some();
-                    // For MERGE, anonymous relationships cannot be considered
-                    // "bound" because we have no variable to check. The merge
-                    // must search the graph to see if the relationship exists.
-                    let rel_ok = match link.rel.var {
-                        Some(v) => row.get(v).is_some(),
-                        None => false,
-                    };
-                    node_ok && rel_ok
-                });
-
-                head_ok && chain_ok
+                // Check every position (not short-circuiting) so a
+                // mis-typed binding anywhere in the chain is reported.
+                let mut all_bound = node_bound(row, head.var)?;
+                for link in chain {
+                    let node_ok = node_bound(row, link.node.var)?;
+                    let rel_ok = rel_bound(row, link.rel.var)?;
+                    all_bound &= node_ok && rel_ok;
+                }
+                Ok(all_bound)
             }
         }
     }
@@ -1880,8 +1899,19 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         properties: Option<&ResolvedExpr>,
     ) -> ExecResult<u64> {
         if let Some(var_id) = var {
-            if let Some(LoraValue::Node(id)) = row.get(var_id) {
-                return Ok(*id);
+            match row.get(var_id) {
+                Some(LoraValue::Node(id)) => return Ok(*id),
+                // A bound variable in a node position names an existing
+                // node. Anything else (a map, null, a scalar) is an error,
+                // never a fresh node: silently creating one would attach
+                // the pattern to a blank node instead of the intended one.
+                Some(other) => {
+                    return Err(ExecutorError::ExpectedNodeForCreate {
+                        var: bound_var_name(row, var_id),
+                        found: value_kind(other),
+                    });
+                }
+                None => {}
             }
         }
 
@@ -1926,6 +1956,15 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         rel: &lora_analyzer::ResolvedRel,
     ) -> ExecResult<u64> {
         if let Some(var_id) = rel.var {
+            if let Some(other) = row
+                .get(var_id)
+                .filter(|v| !matches!(v, LoraValue::Relationship(_)))
+            {
+                return Err(ExecutorError::ExpectedRelationshipForCreate {
+                    var: bound_var_name(row, var_id),
+                    found: value_kind(other),
+                });
+            }
             if let Some(LoraValue::Relationship(id)) = row.get(var_id) {
                 let id = *id;
                 if let Some((src, dst)) = self.ctx.storage.relationship_endpoints(id) {
@@ -2086,4 +2125,12 @@ fn merge_candidates_from_index<S: lora_store::GraphStorage>(
     ids.sort_unstable();
     ids.dedup();
     Some(ids)
+}
+
+/// The user-facing name of `var` in `row`, for error messages.
+fn bound_var_name(row: &Row, var: VarId) -> String {
+    row.iter_named()
+        .find(|(key, _, _)| **key == var)
+        .map(|(_, name, _)| name.into_owned())
+        .unwrap_or_else(|| format!("{var:?}"))
 }

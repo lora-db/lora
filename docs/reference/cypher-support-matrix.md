@@ -23,11 +23,11 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `OPTIONAL MATCH` | **Supported** | Returns null rows for missing patterns. A pattern anchored on already-bound variables expands from them per row, like `MATCH`, instead of matching the pattern across the whole graph and joining |
 | `WHERE` | **Supported** | All comparison, boolean, string, null, list, regex operators |
 | `RETURN` | **Supported** | Projection, aliases, star, computed expressions |
-| `CREATE` | **Supported** | Nodes, relationships, patterns, batch via UNWIND |
+| `CREATE` | **Supported** | Nodes, relationships, patterns, batch via UNWIND. A bound variable in a node position must hold a node (and in a relationship position a relationship); a map, `null` or scalar there is an error, never a new blank entity |
 | `SET` | **Supported** | Property add/update/replace/merge, label add. A `null` value removes the property (`SET n.a = null`, `SET n += {a: null}`); `null` values in a `CREATE` or `SET n = {...}` map are not stored |
 | `REMOVE` | **Supported** | Property removal, label removal |
 | `DELETE` / `DETACH DELETE` | **Supported** | Plain delete requires no incident relationships |
-| `MERGE` | **Supported** | Node and relationship merge, ON MATCH / ON CREATE. Endpoints bound by earlier clauses are honoured, and a pattern that does not match is created whole |
+| `MERGE` | **Supported** | Node and relationship merge, ON MATCH / ON CREATE. Endpoints bound by earlier clauses are honoured, and a pattern that does not match is created whole. A variable in a node or relationship position bound to anything other than that kind of entity (a map, `null`, a scalar) is an error, as in Neo4j, never a fresh entity |
 | `WITH` | **Supported** | Variable piping, renaming, filtering, aggregation, star |
 | `UNWIND` | **Supported** | List unwinding, empty/null handling, `list.range()` |
 | `UNION` / `UNION ALL` | **Supported** | Deduplication, multi-branch, ORDER BY / LIMIT on result |
@@ -126,7 +126,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `stdevp(expr)` | **Supported** | Population standard deviation (n). `DISTINCT` is accepted but silently ignored |
 | `percentileCont(expr, p)` | **Supported** | Continuous, linear interpolation. `DISTINCT` is accepted but silently ignored |
 | `percentileDisc(expr, p)` | **Supported** | Discrete, nearest-rank. `DISTINCT` is accepted but silently ignored |
-| Grouped aggregation | **Supported** | Non-aggregated columns act as GROUP BY |
+| Grouped aggregation | **Supported** | Non-aggregated columns act as GROUP BY. A node or relationship grouping key (also inside a list or map key) groups by entity identity and stays that entity downstream: `WITH u, count(*) AS c` can still `CREATE`/`MERGE`/`SET`/`DELETE`/expand from `u`, and `id(u)`, `u:Label` and `u = n` hold |
 | Multi-aggregate queries | **Supported** | Multiple aggregates in one RETURN |
 | HAVING-style filtering | **Supported** | Via `WITH ... WHERE` |
 

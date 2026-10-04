@@ -377,6 +377,8 @@ fn executor_code(err: &ExecutorError) -> LoraErrorCode {
         ExecutorError::NodeCreateFailed => LoraErrorCode::Internal,
         ExecutorError::RuntimeError(message) => validation_message_code(message),
         ExecutorError::ExpectedNodeForExpand { .. }
+        | ExecutorError::ExpectedNodeForCreate { .. }
+        | ExecutorError::ExpectedRelationshipForCreate { .. }
         | ExecutorError::ExpectedPropertyMap { .. }
         | ExecutorError::GroupByNotLowered
         | ExecutorError::AggregateNotLowered
