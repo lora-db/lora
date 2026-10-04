@@ -227,7 +227,15 @@ string), `Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`,
   out of the `OR`, and an `OR` or `NOT` with nothing left is left out
   entirely, so an unset variable never widens a filter to every row; a
   literal `OR: []` matches nothing. A relationship quantifier whose filter
-  is empty is left out too: ask `count: { gt: 0 }` for "has any". A single
+  is empty, written `{}` or emptied by null and absent operands, matches
+  any related node: `trips: { some: { key: { eq: $t } } }` with `$t` null
+  is "has a trip", `none` "has no trip", `single` "has exactly one", and
+  `all` holds on every row; the same goes for a single relationship
+  (`boss: { key: { eq: $t } }`: has a boss) and `<field>Connection`
+  quantifiers. Only a quantifier that is itself absent or null is left
+  out, so bind the whole quantifier (`trips: $tripFilter`) for an optional
+  one. (Up to 0.21.0 an emptied quantifier was left out, widening it to
+  every row.) A single
   relationship takes `<field>Exists: Boolean` for "is set" (`venueExists:
 false`: festivals without a venue); as in every relationship filter, a
   related node the reader may not see counts as none.
