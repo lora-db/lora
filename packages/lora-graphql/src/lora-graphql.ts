@@ -81,7 +81,7 @@ import {
   type MutationEnv,
   type PopulatedByCallback,
 } from "./execute/mutate.js";
-import { ModelError, requestError } from "./errors.js";
+import { collapseErrors, ModelError, requestError } from "./errors.js";
 import {
   buildManifest,
   generateTypes,
@@ -628,9 +628,19 @@ export class LoraGraphQL {
     return this.#guards === false ? [] : validationRules(this.#guards);
   }
 
-  /** The configured document guards as an Envelop / Yoga plugin. */
-  envelopPlugin(): ReturnType<typeof envelopPlugin> {
-    return envelopPlugin(
+  /**
+   * The configured document guards as an Envelop / Yoga plugin. It also
+   * collapses identical errors across list indices, as `execute()` does.
+   */
+  envelopPlugin(): ReturnType<typeof envelopPlugin> & {
+    onExecute(): {
+      onExecuteDone(payload: {
+        result: unknown;
+        setResult: (result: ExecutionResult) => void;
+      }): void;
+    };
+  } {
+    const guards = envelopPlugin(
       this.#guards === false
         ? {
             maxDepth: Infinity,
@@ -642,6 +652,25 @@ export class LoraGraphQL {
           }
         : this.#guards,
     );
+    return {
+      ...guards,
+      onExecute: () => ({
+        onExecuteDone({ result, setResult }) {
+          // A streamed (incremental) result is left as it is.
+          if (
+            result === null ||
+            typeof result !== "object" ||
+            Symbol.asyncIterator in result
+          ) {
+            return;
+          }
+          const plain = result as ExecutionResult;
+          if (plain.errors && plain.errors.length > 1) {
+            setResult({ ...plain, errors: collapseErrors(plain.errors) });
+          }
+        },
+      }),
+    };
   }
 
   #parse(source: string): DocumentNode {
@@ -1207,6 +1236,10 @@ export class LoraGraphQL {
     } catch (err) {
       await tx?.rollback();
       throw err;
+    }
+    // One error per path pattern, not one per row of every list.
+    if (result.errors && result.errors.length > 1) {
+      result = { ...result, errors: collapseErrors(result.errors) };
     }
     // graphql-js reports bad variables without a code; clients branch on it.
     if (result.errors?.some(isVariableError)) {

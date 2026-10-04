@@ -7,6 +7,7 @@ const typeDefs = /* GraphQL */ `
     name: String
       @filterable(byValue: [EQ, IN, CONTAINS, ENDS_WITH, CASE_INSENSITIVE])
     age: Int @filterable(byValue: [GT, LT])
+    secret: String @authentication
     follows: [User!]! @relationship(type: "FOLLOWS", direction: OUT) @filterable
     followers: [User!]!
       @relationship(type: "FOLLOWS", direction: IN)
@@ -382,5 +383,41 @@ describe("filter operand caps", () => {
     expect(
       (await run(lora, { keys: ["a", "b"], name: "Ann" })).errors,
     ).toBeUndefined();
+  });
+});
+
+describe("error amplification", () => {
+  test("identical errors across list indices collapse into one, with a count", async () => {
+    const r = await h.lora.execute({
+      source: `{ users { key follows { key secret } } }`,
+    });
+    expect(r.errors).toHaveLength(1);
+    const [error] = r.errors!;
+    expect(error!.message).toBe("User.secret needs an authenticated request");
+    expect(error!.path).toEqual(["users", 0, "follows", 0, "secret"]);
+    expect(error!.locations).toHaveLength(1);
+    expect(error!.extensions).toMatchObject({
+      code: "UNAUTHENTICATED",
+      count: 3,
+      pathPattern: ["users", "*", "follows", "*", "secret"],
+    });
+    // The rows are still there, with the refused field null.
+    expect((r.data as { users: unknown[] }).users).toHaveLength(3);
+  });
+
+  test("different fields and messages stay apart; the Envelop plugin collapses too", async () => {
+    const r = await h.lora.execute({
+      source: `{ users { secret follows { secret } } }`,
+    });
+    expect(r.errors?.map((e) => e.extensions["count"])).toEqual([3, 3]);
+    const plugin = h.lora.envelopPlugin();
+    const raw = await h.run(`{ users { key secret } }`);
+    expect(raw.errors).toHaveLength(3);
+    let collapsed: { errors?: readonly unknown[] } | undefined;
+    plugin.onExecute().onExecuteDone({
+      result: raw,
+      setResult: (result) => (collapsed = result),
+    });
+    expect(collapsed?.errors).toHaveLength(1);
   });
 });

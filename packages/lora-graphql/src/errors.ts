@@ -57,3 +57,54 @@ export function requestError(
     originalError: cause instanceof Error ? cause : undefined,
   });
 }
+
+/**
+ * One error per field path pattern: errors with the same message and code
+ * at paths that differ only in list indices (a field every row of a list
+ * refuses, such as an @authentication field read anonymously) become one
+ * error at the first path, with `extensions.count` and
+ * `extensions.pathPattern` (indices as `"*"`). A page of 100 x 100 rows
+ * otherwise answers with 10 000 copies of one error.
+ */
+export function collapseErrors(
+  errors: readonly GraphQLError[],
+): GraphQLError[] {
+  const groups = new Map<string, { first: GraphQLError; count: number }>();
+  const out: Array<GraphQLError | { group: string }> = [];
+  for (const error of errors) {
+    const path = error.path;
+    if (!path?.some((p) => typeof p === "number")) {
+      out.push(error);
+      continue;
+    }
+    const pattern = path.map((p) => (typeof p === "number" ? "*" : p));
+    const key = JSON.stringify([
+      error.message,
+      error.extensions["code"] ?? null,
+      pattern,
+    ]);
+    const group = groups.get(key);
+    if (group) group.count++;
+    else {
+      groups.set(key, { first: error, count: 1 });
+      out.push({ group: key });
+    }
+  }
+  return out.map((item) => {
+    if (item instanceof GraphQLError) return item;
+    const { first, count } = groups.get(item.group)!;
+    if (count === 1) return first;
+    return new GraphQLError(first.message, {
+      ...(first.nodes ? { nodes: first.nodes } : {}),
+      ...(first.source ? { source: first.source } : {}),
+      ...(first.positions ? { positions: first.positions } : {}),
+      path: first.path!,
+      ...(first.originalError ? { originalError: first.originalError } : {}),
+      extensions: {
+        ...first.extensions,
+        count,
+        pathPattern: first.path!.map((p) => (typeof p === "number" ? "*" : p)),
+      },
+    });
+  });
+}

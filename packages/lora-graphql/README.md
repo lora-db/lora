@@ -1386,7 +1386,11 @@ Errors carry `extensions.code`: `BAD_USER_INPUT`, `INVALID_CURSOR`,
 `DATABASE_ERROR` (with an `id`, also given to `onError`),
 `PERSISTED_QUERY_ONLY` (`execute()` or `subscribe()` got a document under
 `persistedOnly`) and `WRONG_OPERATION_TYPE` (`execute()` got a
-subscription, or `subscribe()` a query or mutation). An invalid SDL
+subscription, or `subscribe()` a query or mutation). Identical errors at
+paths that differ only in list indices (an `@authentication` field read
+anonymously on every row of a page) come back once, at the first path,
+with `extensions.count` and `extensions.pathPattern` (indices as `"*"`);
+`execute()` and `lora.envelopPlugin()` both do this. An invalid SDL
 throws one `ModelError` listing every problem, each located by type and
 field.
 
