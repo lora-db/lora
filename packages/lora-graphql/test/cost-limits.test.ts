@@ -198,3 +198,107 @@ describe("maxFilterDepth", () => {
     expect(r.errors).toBeUndefined();
   });
 });
+
+describe("operation budget", () => {
+  /** A driver whose reads take `ms`, recording how many run at once. */
+  function slowDriver(ms: number) {
+    const inner = loraDriver(h.db);
+    const seen = { inFlight: 0, max: 0, aborted: 0, timeouts: [] as number[] };
+    const driver: typeof inner = {
+      ...inner,
+      run: async (statements, options) => {
+        seen.inFlight++;
+        seen.max = Math.max(seen.max, seen.inFlight);
+        if (options.timeoutMs !== undefined) {
+          seen.timeouts.push(options.timeoutMs);
+        }
+        try {
+          await new Promise<void>((resolve, reject) => {
+            let done = false;
+            const timer = setTimeout(() => {
+              done = true;
+              resolve();
+            }, ms);
+            options.signal?.addEventListener("abort", () => {
+              if (done) return;
+              clearTimeout(timer);
+              seen.aborted++;
+              reject(new Error("aborted"));
+            });
+          });
+          return await inner.run(statements, options);
+        } finally {
+          seen.inFlight--;
+        }
+      },
+    };
+    return { driver, seen };
+  }
+  const aliases = (n: number) =>
+    `{ ${Array.from({ length: n }, (_, i) => `a${i}: user(key: "a") { key follows(limit: 1) { key } }`).join(" ")} }`;
+
+  test("aliased root fields run at most maxConcurrentStatements at once", async () => {
+    const { driver, seen } = slowDriver(10);
+    const lora = new LoraGraphQL({ typeDefs, driver });
+    const r = await lora.execute({ source: aliases(6) });
+    expect(r.errors).toBeUndefined();
+    expect(seen.max).toBe(2);
+    const one = slowDriver(10);
+    const serial = new LoraGraphQL({
+      typeDefs,
+      driver: one.driver,
+      maxConcurrentStatements: 1,
+    });
+    expect(
+      (await serial.execute({ source: aliases(3) })).errors,
+    ).toBeUndefined();
+    expect(one.seen.max).toBe(1);
+  });
+
+  test("operationTimeoutMs bounds the whole operation and aborts its statements", async () => {
+    const { driver, seen } = slowDriver(60);
+    const lora = new LoraGraphQL({
+      typeDefs,
+      driver,
+      operationTimeoutMs: 100,
+      maxConcurrentStatements: 1,
+    });
+    const context = {};
+    const started = performance.now();
+    const r = await lora.execute({ source: aliases(4), context });
+    expect(performance.now() - started).toBeLessThan(200);
+    expect(r.data).toEqual({
+      a0: { key: "a", follows: [{ key: "b" }] },
+      a1: null,
+      a2: null,
+      a3: null,
+    });
+    const codes = (r.errors ?? []).map((e) => e.extensions["code"]);
+    expect(codes).toEqual(["TIMEOUT", "TIMEOUT", "TIMEOUT"]);
+    expect(r.errors?.[0]?.extensions["operationTimeoutMs"]).toBe(100);
+    // The statement in flight at the deadline was aborted, and each got
+    // at most the time left.
+    expect(seen.aborted).toBe(1);
+    expect(seen.timeouts[1]).toBeLessThanOrEqual(100 - 60 + 5);
+    // The context, reused for the next request, starts a fresh budget.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const again = await lora.execute({ source: aliases(1), context });
+    expect(again.errors).toBeUndefined();
+  });
+
+  test("operationTimeoutMs defaults to twice timeoutMs; 0 disables it", async () => {
+    const { driver, seen } = slowDriver(1);
+    const lora = new LoraGraphQL({ typeDefs, driver, timeoutMs: 500 });
+    await lora.execute({ source: aliases(1) });
+    expect(seen.timeouts[0]).toBeLessThanOrEqual(500);
+    const off = slowDriver(1);
+    const unbounded = new LoraGraphQL({
+      typeDefs,
+      driver: off.driver,
+      timeoutMs: 500,
+      operationTimeoutMs: 0,
+    });
+    await unbounded.execute({ source: aliases(1) });
+    expect(off.seen.timeouts[0]).toBe(500);
+  });
+});

@@ -36,6 +36,7 @@ export type LoraGraphQLErrorCode =
   | "INVALID_CURSOR"
   | "LIMIT_EXCEEDED"
   | "COST_EXCEEDED"
+  | "TIMEOUT"
   | "UNAUTHENTICATED"
   | "FORBIDDEN"
   | "NOT_FOUND"

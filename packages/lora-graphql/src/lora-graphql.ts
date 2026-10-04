@@ -63,6 +63,12 @@ import { affects, type WriteChange } from "./execute/changes.js";
 import { executeCypherMutation } from "./execute/cypher-mutation.js";
 import { LoraTransaction } from "./execute/transaction.js";
 import { EngineFeed } from "./execute/feed.js";
+import {
+  anySignal,
+  MAX_CONCURRENT_STATEMENTS,
+  OPERATION_TIMEOUT_FACTOR,
+  OperationBudget,
+} from "./execute/budget.js";
 import type { MutationKind } from "./schema/mutations.js";
 import {
   executeMutation,
@@ -128,6 +134,20 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
   driver: LoraDriver;
   /** Timeout for every statement, in milliseconds. Default 10 000; 0 disables. */
   timeoutMs?: number;
+  /**
+   * Time budget for all root fields of one query, in milliseconds: past
+   * it, the operation's statements are aborted and its unfinished fields
+   * fail with TIMEOUT. Default twice `timeoutMs` (20 000); 0 disables.
+   * Subscriptions are not bounded by it; mutations keep `timeoutMs` per
+   * statement.
+   */
+  operationTimeoutMs?: number;
+  /**
+   * Statements one operation runs at once: aliased root fields queue for
+   * a slot instead of taking every libuv worker, so one request cannot
+   * starve the others. Default 2.
+   */
+  maxConcurrentStatements?: number;
   /**
    * Reject a root field whose estimated rows touched exceed this, before
    * it runs. The estimate multiplies page sizes through nested lists,
@@ -406,6 +426,13 @@ export class LoraGraphQL {
   readonly model: GraphModel;
   readonly #driver: LoraDriver;
   readonly #timeoutMs: number;
+  readonly #operationTimeoutMs: number;
+  readonly #maxConcurrentStatements: number;
+  /** Deadline and statement slots per request context and operation. */
+  readonly #operations = new WeakMap<
+    object,
+    Map<OperationDefinitionNode, OperationBudget>
+  >();
   readonly #maxCost: number;
   readonly #maxBatch: number;
   readonly #maxListArgument: number;
@@ -483,6 +510,10 @@ export class LoraGraphQL {
     this.model = buildModel(options.typeDefs, options);
     this.#driver = options.driver;
     this.#timeoutMs = options.timeoutMs ?? 10_000;
+    this.#operationTimeoutMs =
+      options.operationTimeoutMs ?? this.#timeoutMs * OPERATION_TIMEOUT_FACTOR;
+    this.#maxConcurrentStatements =
+      options.maxConcurrentStatements ?? MAX_CONCURRENT_STATEMENTS;
     this.#maxCost = options.maxCost ?? 50_000;
     this.#maxBatch = options.maxBatch ?? 1000;
     this.#maxListArgument = options.maxListArgument ?? MAX_LIST_ARGUMENT;
@@ -1529,10 +1560,24 @@ export class LoraGraphQL {
     }
     const signal = (context as LoraGraphQLContext | undefined)?.signal;
     const owned = (context as LoraGraphQLContext | undefined)?.transaction;
+    const budget = this.#operationBudget(context, info);
     let results;
     const timing = this.#timingOf(context);
     const dbStart = timing ? performance.now() : 0;
     try {
+      const run = (opSignal?: AbortSignal) =>
+        this.#driver.run(compiled.statements, {
+          mode: compiled.mode,
+          timeoutMs:
+            budget && this.#timeoutMs > 0
+              ? Math.max(1, Math.min(this.#timeoutMs, budget.remaining()))
+              : this.#timeoutMs,
+          signal: opSignal ? anySignal(signal, opSignal) : signal,
+          // Queries and object @cypher fields are checked read-only
+          // when the model is built; writes never reach this path.
+          verified: compiled.mode === "read",
+          ...(compiled.bounded && { bounded: true }),
+        });
       results = await this.#observer.statements(
         this.#meta(field, compiled.mode, info, compiled.cost),
         compiled.statements,
@@ -1542,28 +1587,72 @@ export class LoraGraphQL {
             : this.#shared(
                 change,
                 compiled.statements,
-                () =>
-                  this.#driver.run(compiled.statements, {
-                    mode: compiled.mode,
-                    timeoutMs: this.#timeoutMs,
-                    signal,
-                    // Queries and object @cypher fields are checked read-only
-                    // when the model is built; writes never reach this path.
-                    verified: compiled.mode === "read",
-                    ...(compiled.bounded && { bounded: true }),
-                  }),
+                // A bounded lookup streams synchronously: no slot needed.
+                () => (budget && !compiled.bounded ? budget.run(run) : run()),
                 shareKey,
               ),
       );
     } catch (err) {
       throw this.#databaseError(field, err);
     } finally {
+      if (budget) this.#leaveOperation(context as object, info!, budget);
       if (timing) {
         timingEntry(timing, rootKey(info) ?? field).databaseMs +=
           performance.now() - dbStart;
       }
     }
     return assertReadable(compiled.shape(results));
+  }
+
+  /**
+   * The deadline and statement slots of the query `info` belongs to,
+   * started by its first root field. Subscriptions run indefinitely and
+   * are bounded per statement only.
+   */
+  #operationBudget(
+    context: unknown,
+    info: GraphQLResolveInfo | undefined,
+  ): OperationBudget | undefined {
+    if (!info || info.operation.operation === "subscription") return undefined;
+    if (context === null || typeof context !== "object") return undefined;
+    let byOperation = this.#operations.get(context);
+    if (!byOperation) {
+      byOperation = new Map();
+      this.#operations.set(context, byOperation);
+    }
+    let budget = byOperation.get(info.operation);
+    if (!budget) {
+      budget = new OperationBudget(
+        this.#operationTimeoutMs,
+        this.#maxConcurrentStatements,
+      );
+      byOperation.set(info.operation, budget);
+    }
+    budget.active++;
+    return budget;
+  }
+
+  /**
+   * A root field is done. When none is left in flight after the current
+   * turn (graphql-js starts a query's root fields together, and the next
+   * root field of a mutation in a microtask), the operation is over: a
+   * context reused for another request starts a fresh budget.
+   */
+  #leaveOperation(
+    context: object,
+    info: GraphQLResolveInfo,
+    budget: OperationBudget,
+  ): void {
+    budget.active--;
+    if (budget.active > 0) return;
+    setTimeout(() => {
+      if (budget.active > 0) return;
+      budget.dispose();
+      const byOperation = this.#operations.get(context);
+      if (byOperation?.get(info.operation) === budget) {
+        byOperation.delete(info.operation);
+      }
+    }, 0);
   }
 
   #meta(

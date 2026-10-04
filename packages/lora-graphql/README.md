@@ -1354,6 +1354,8 @@ binding has, so the WASM binding serves reads.
 | Option                       | Default       | Meaning                                             |
 | ---------------------------- | ------------- | --------------------------------------------------- |
 | `timeoutMs`                  | 10 000        | Per statement; a `signal` in the context cancels    |
+| `operationTimeoutMs`         | 2 × timeout   | All root fields of one query; then `TIMEOUT`        |
+| `maxConcurrentStatements`    | 2             | Statements one operation runs at once               |
 | `maxCost`                    | 50 000        | Estimated rows per operation                        |
 | `maxBatch`                   | 1000          | Nodes created or deleted per mutation; bulk `limit` |
 | `maxQueuedChanges`           | 1000          | How far a change consumer may fall behind           |
@@ -1374,7 +1376,8 @@ binding has, so the WASM binding serves reads.
 | `metrics`                    |               | Counters and histograms (see below)                 |
 
 Errors carry `extensions.code`: `BAD_USER_INPUT`, `INVALID_CURSOR`,
-`LIMIT_EXCEEDED`, `COST_EXCEEDED`, `UNAUTHENTICATED`, `FORBIDDEN`,
+`LIMIT_EXCEEDED`, `COST_EXCEEDED`, `TIMEOUT` (with `operationTimeoutMs`),
+`UNAUTHENTICATED`, `FORBIDDEN`,
 `NOT_FOUND`, `CONSTRAINT_VIOLATION` (with `type` and `field`),
 `DATABASE_ERROR` (with an `id`, also given to `onError`),
 `PERSISTED_QUERY_ONLY` (`execute()` or `subscribe()` got a document under
@@ -1400,6 +1403,14 @@ server (GraphQL Yoga takes the plugin as is):
 | `maxListArgument`       | 1000       | Items per list argument of a `@cypher` field (`@size(max:)` overrides) |
 | `maxFilterDepth`        | 2          | Relationship levels one `where` nests                                  |
 | `introspection`         | production | Off when `NODE_ENV` is `production`                                    |
+
+One query also has a time budget and a share of the engine: its root
+fields (aliases included) run at most `maxConcurrentStatements` (default 2) statements at once, so one request cannot take every libuv worker
+from the others, and after `operationTimeoutMs` (default twice
+`timeoutMs`, 20 s) its statements are aborted and its unfinished fields
+fail with `TIMEOUT`. Each statement also gets no more than the time the
+operation has left. Mutations keep `timeoutMs` per statement, and
+subscriptions are not bounded by the operation budget.
 
 With `NODE_ENV=production`, database errors are masked and introspection
 is off unless configured otherwise. See
