@@ -1125,14 +1125,23 @@ export function compileSearch(
         `\`vector\` has ${vector.length} dimensions; ${node.name}.${index.field.name} has ${index.dimensions}`,
       );
     }
+    // Every ranked node's vector decides its score, so the vector field's
+    // READ rules apply to each result as to the anchor: a node whose
+    // vector the reader may not read is not ranked at all.
+    checkFieldAuthentication(c, node.name, index.field);
+    const readable = coalesceFalse(
+      fieldValidate(c, node, index.field, "this", "READ"),
+    );
     const pool = Math.max(node.limit.max * 4, 1);
     const candidates = connection
       ? pool
-      : Math.min((limit + (to != null ? 1 : 0)) * (where ? 4 : 1), pool);
+      : Math.min(
+          (limit + (to != null ? 1 : 0)) * (where || readable ? 4 : 1),
+          pool,
+        );
     let source: Expr;
     let exclude: Expr | undefined;
     if (to != null) {
-      checkFieldAuthentication(c, node.name, index.field);
       clauses.push({
         kind: "match",
         pattern: { start: { variable: "anchor", labels: [label] }, hops: [] },
@@ -1159,7 +1168,7 @@ export function compileSearch(
       procedure: "db.index.vector.queryNodes",
       args: [bind(c, index.name), bind(c, candidates), source],
       yields: [{ item: "node", alias: "this" }, { item: "score" }],
-      where: and(exclude, where),
+      where: and(exclude, readable, where),
     });
     return clauses;
   };

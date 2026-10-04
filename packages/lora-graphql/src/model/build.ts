@@ -917,6 +917,11 @@ export function buildModel(
         at(
           "@authorization(mask:) belongs on a scalar field that is not the @key",
         );
+      } else if (masks.length > 0 && f.kind === "scalar" && f.vector) {
+        // The vector index ranks by the stored vector, mask or not.
+        at(
+          "@authorization(mask:) does not fit a @vector field: similarity search ranks by the stored vector. Guard it with READ validate rules",
+        );
       } else if (f.kind === "scalar") {
         for (const m of masks) {
           const missing = (m as { missingValue?: boolean }).missingValue;

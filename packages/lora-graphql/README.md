@@ -546,6 +546,10 @@ say, so search never reaches a value the reader may not read:
   `validate` rule or `@authentication` for READ is a model error naming the
   field: searching it would tell which rows contain a hidden word. Leave
   the field out of the index (index a public copy if it must be found).
+- A vector search, with `vector` or `to`, needs the vector field's
+  `@authentication`, and ranks only nodes passing its READ `validate`
+  rules (the anchor of `to` too); a node whose vector the reader may not
+  read is not a candidate. A mask on a `@vector` field is a model error.
 
 Every search also has a connection: `searchDocsConnection(query:, where:,
 first:, after:)` pages by keyset on (score, key). A vector index returns
