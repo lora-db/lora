@@ -214,3 +214,74 @@ describe("@uniqueTogether under @cypher mutations", () => {
     ]);
   });
 });
+
+describe("maxBatch bounds every write of a mutation", () => {
+  const typeDefs = `type F @node @mutation {
+      key: String! @key  name: String
+      stages: [S!]! @relationship(type: "HAS", direction: OUT)
+    }
+    type S @node @mutation { key: String! @key  size: Int }`;
+  const seed = [
+    "UNWIND range(1, 50) AS i CREATE (:F {key: 'f' + toString(i)})",
+    "CREATE (f:F {key: 'hub'}) WITH f UNWIND range(1, 15) AS i CREATE (f)-[:HAS]->(:S {key: 's' + toString(i)})",
+  ];
+  const setup = () => createTestLoraGraphQL({ typeDefs, seed, maxBatch: 2 });
+
+  test("an upsert counts the inputs that update, not only those that create", async () => {
+    const t = await setup();
+    const input = Array.from(
+      { length: 50 },
+      (_, i) => `{ key: "f${i + 1}", name: "n" }`,
+    ).join(" ");
+    t.statements.length = 0;
+    const r = await t.run(
+      `mutation { upsertFs(input: [${input}]) { info { nodesUpdated } } }`,
+    );
+    expect(codes(r)).toEqual(["LIMIT_EXCEEDED"]);
+    // Refused before any write.
+    expect(t.statements.some((s) => /\bSET\b/.test(s.statement.text))).toBe(
+      false,
+    );
+    expect(
+      await rows(t, "MATCH (f:F) WHERE f.name IS NOT NULL RETURN f"),
+    ).toEqual([]);
+  });
+
+  test("nested update entries count as nodes", async () => {
+    const t = await setup();
+    const update = Array.from(
+      { length: 15 },
+      (_, i) => `{ key: "s${i + 1}", node: { size: 1 } }`,
+    ).join(" ");
+    t.statements.length = 0;
+    const r = await t.run(
+      `mutation { updateF(key: "hub", update: { stages: { update: [${update}] } }) { info { nodesUpdated } } }`,
+    );
+    expect(codes(r)).toEqual(["LIMIT_EXCEEDED"]);
+    expect(t.statements.length).toBeLessThan(10);
+  });
+
+  test("disconnect lists count as relationships", async () => {
+    const t = await setup();
+    const keys = Array.from({ length: 100_000 }, (_, i) => `s${i}`);
+    const r = await t.run(
+      `mutation($keys: [String!]!) { updateF(key: "hub", update: { stages: { disconnect: $keys } }) { info { relationshipsDeleted } } }`,
+      { keys },
+    );
+    expect(codes(r)).toEqual(["LIMIT_EXCEEDED"]);
+    expect(
+      await rows(t, "MATCH (:F {key: 'hub'})-[r:HAS]->() RETURN count(r) AS n"),
+    ).toEqual([{ n: 15 }]);
+  });
+
+  test("writes within the limit still go through", async () => {
+    const t = await setup();
+    const r = await t.run(`mutation {
+      upsertFs(input: [{ key: "f1", name: "a" }, { key: "new" }]) { info { nodesCreated nodesUpdated } } }`);
+    expect(r.errors).toBeUndefined();
+    const u = await t.run(
+      `mutation { updateF(key: "hub", update: { stages: { update: [{ key: "s1", node: { size: 3 } }], disconnect: ["s2", "s3"] } }) { info { nodesUpdated relationshipsDeleted } } }`,
+    );
+    expect(u.errors).toBeUndefined();
+  });
+});

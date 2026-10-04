@@ -87,7 +87,10 @@ export interface MutationEnv {
   timeoutMs: number;
   signal: AbortSignal | undefined;
   degrees: ReadonlyMap<string, number>;
-  /** Most nodes one mutation may create or delete, nested ones included. */
+  /**
+   * Most nodes one mutation may create, update or delete, nested ones
+   * included; relationships written, ten times as many.
+   */
   maxBatch: number;
   /** Most items a @cypher list argument takes without `@size(max:)`. */
   maxListArgument?: number | undefined;
@@ -747,7 +750,7 @@ class Runner {
   /** Every planned write, in order, with the checks that follow them. */
   async apply(plan: WritePlan): Promise<void> {
     for (const task of plan.pending) await task();
-    assertBatch(plan, this.env.maxBatch);
+    this.assertBatch(plan);
     assertUniqueKeys(plan);
     await this.moveHiddenKeys(plan);
     await this.moveTakenUniques(plan);
@@ -760,6 +763,36 @@ class Runner {
     await this.checkCardinality(plan);
     await this.checkRequired();
     await this.validateCreated(plan);
+  }
+
+  /**
+   * `maxBatch` over the whole mutation: nodes created and updated so far
+   * plus those `plan` creates and updates (nested `update` entries
+   * included), and relationships written so far plus those `plan`
+   * connects, disconnects (each listed key) and updates, at most ten per
+   * node allowed. Checked before any of the plan's writes.
+   */
+  assertBatch(plan?: WritePlan, updating = 0): void {
+    const max = this.env.maxBatch;
+    let creates = 0;
+    for (const rows of plan?.creates.values() ?? []) creates += rows.length;
+    const updates =
+      this.info.nodesUpdated + updating + (plan?.nodeUpdates.length ?? 0);
+    const nodes = this.info.nodesCreated + creates + updates;
+    const relationships =
+      this.info.relationshipsCreated +
+      this.info.relationshipsDeleted +
+      (plan
+        ? plan.links.length +
+          plan.edgeUpdates.length +
+          plan.disconnects.reduce((n, d) => n + (d.to ? d.to.length : 1), 0)
+        : 0);
+    if (nodes > max || relationships > max * 10) {
+      throw requestError(
+        "LIMIT_EXCEEDED",
+        `the mutation writes ${nodes} nodes (${this.info.nodesCreated + creates} created, ${updates} updated) and ${relationships} relationships; the limit is ${max} nodes (and ${max * 10} relationships) per mutation`,
+      );
+    }
   }
 
   /**
@@ -1309,6 +1342,7 @@ class Runner {
     adjust?: Input,
   ): Promise<unknown[]> {
     if (rows.length === 0) return [];
+    this.assertBatch(undefined, rows.length);
     const ctx0 = this.ctx();
     checkAuthentication(ctx0, node, "UPDATE");
     const fields = new Set<string>();
@@ -2502,6 +2536,13 @@ async function upsert(
   ) => Promise<unknown[]>,
 ): Promise<unknown> {
   const inputs = args["input"] as Input[];
+  // Every input writes a node, whether it turns out a create or an update.
+  if (inputs.length > runner.env.maxBatch) {
+    throw requestError(
+      "LIMIT_EXCEEDED",
+      `the upsert writes ${inputs.length} nodes; the limit is ${runner.env.maxBatch} nodes per mutation`,
+    );
+  }
   const keys = inputs.map((i) => i[node.key.name]);
   if (new Set(keys.map(keyOf)).size < keys.length) {
     throw requestError(
@@ -2572,17 +2613,6 @@ function bulkLimit(value: unknown, max: number): number {
     );
   }
   return value as number;
-}
-
-function assertBatch(plan: WritePlan, max: number): void {
-  let nodes = 0;
-  for (const rows of plan.creates.values()) nodes += rows.length;
-  if (nodes > max || plan.links.length > max * 10) {
-    throw requestError(
-      "LIMIT_EXCEEDED",
-      `the mutation creates ${nodes} nodes and ${plan.links.length} relationships; the limit is ${max} nodes (and ${max * 10} relationships) per mutation`,
-    );
-  }
 }
 
 function assertUniqueKeys(plan: WritePlan): void {

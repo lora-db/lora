@@ -148,8 +148,8 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
    */
   jwt?: (context: unknown) => Record<string, unknown> | undefined;
   /**
-   * Most nodes one mutation may create or delete, nested ones included.
-   * Default 1000: larger imports belong in a Cypher load, not a GraphQL
+   * Most nodes one mutation may create, update or delete, nested ones
+   * included (and ten times as many relationships written). Default 1000: larger imports belong in a Cypher load, not a GraphQL
    * request. Also the default `limit` of bulk updates and deletes.
    */
   maxBatch?: number;

@@ -477,8 +477,14 @@ it commits only when the operation reports no error, and otherwise rolls
 back and returns `data: null`. With another server, put a `lora.begin()`
 transaction in the context (see [Transactions](#transactions)). Engine
 constraint errors come
-back as `CONSTRAINT_VIOLATION` naming the type and field. A mutation creates
-or deletes at most `maxBatch` nodes (default 1000). `@key` is not updatable.
+back as `CONSTRAINT_VIOLATION` naming the type and field. A mutation writes
+at most `maxBatch` nodes (default 1000): created and updated nodes count
+together (every `upsert` input, nested creates, each nested `update`
+entry), and a delete reaches at most `maxBatch` nodes through
+`onDelete: CASCADE`. Relationships written (connects, each key of a
+`disconnect` list, nested `update` entries) count up to ten times
+`maxBatch`. Going over is `LIMIT_EXCEEDED`, before the writes that
+would exceed it. `@key` is not updatable.
 `info` reports `nodesCreated`, `nodesUpdated`, `nodesDeleted`,
 `relationshipsCreated` and `relationshipsDeleted`.
 
@@ -1349,7 +1355,7 @@ binding has, so the WASM binding serves reads.
 | ---------------------------- | ------------- | --------------------------------------------------- |
 | `timeoutMs`                  | 10 000        | Per statement and lock wait; a `signal` cancels     |
 | `maxCost`                    | 50 000        | Estimated rows per operation                        |
-| `maxBatch`                   | 1000          | Nodes created or deleted per mutation; bulk `limit` |
+| `maxBatch`                   | 1000          | Nodes written per mutation; bulk `limit` by default |
 | `maxQueuedChanges`           | 1000          | How far a change consumer may fall behind           |
 | `defaultLimit` / `maxLimit`  | 25 / 100      | Global page sizes; `@limit` may only lower `max`    |
 | `callbacks`                  |               | Named callbacks for `@populatedBy`                  |
