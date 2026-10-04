@@ -1160,18 +1160,43 @@ writes made elsewhere are not seen). A node that gained or lost a
 relationship is an `UPDATE`. `where` tests the node as it is after the
 write; `node` is read when the event is delivered, through the normal read
 path. Events for nodes the subscriber cannot read are dropped (checked in
-one query per write, not per event), and deletions, which cannot be checked
-after the fact, go only to subscribers following that `key` without a
-`where`. `@authentication(operations: [SUBSCRIBE])` guards the subscription
+one query per write, not per event). A deletion cannot be checked after
+the fact: it goes only to subscribers following that `key` without a
+`where`, and when read rules apply, only to those who could read the node
+as it was, checked inside the deleting transaction (one statement per
+distinct check; claims that settle the rules need none). Under
+`changeFeed` there is no such transaction, so a deletion reaches only
+followers whose claims settle the rules. `@authentication(operations: [SUBSCRIBE])` guards the subscription
 itself. Pass a `signal` in the context to end the stream with the request.
+
+A subscription's `where` runs on every change, so it is bounded when the
+subscription starts: relationship filters may nest
+`maxSubscriptionFilterDepth` (default 1) deep, and its estimated rows per
+changed node (each relationship filter's degree, from `analyze()`, else
+its cardinality, else a page of the target) are charged against
+`maxCost` / `budget` (`COST_EXCEEDED`). One scope, by default the context
+object (one per graphql-ws connection when the server reuses it; set
+`subscriptionScope` to count per connection or user otherwise), holds at
+most `maxSubscriptions` (default 100) live subscriptions; one more is
+`LIMIT_EXCEEDED`. The statements that check a change run under
+`subscriptionTimeoutMs` (default 2000, or `timeoutMs` when lower); one
+that fails or times out ends that subscription with the error.
 
 Every event has a `timestamp` (when the write was committed). With
 `@subscription(relationships: true)` a type also gets `CONNECT` and
 `DISCONNECT` events, one per relationship, with `relationship { field type
-relatedType relatedKey }`. With `@subscription(previousState: true)`,
+relatedType relatedKey }`. Such an event is sent only when the
+subscriber may read the related node (its type's READ rules) through the
+declaring field (that field's READ rules and `@authentication`), checked
+after the write; otherwise it is dropped, not sent with the key left out.
+A related node that is gone (a DISCONNECT by deletion) cannot be checked,
+so its event reaches only subscribers whose claims settle those rules. With `@subscription(previousState: true)`,
 `UPDATE` and `DELETE` events carry `previousState`: the stored values
-before the write (readable scalar fields without field-level rules), at
-the cost of one read per write. Subscribers whose checks compile to the
+before the write (readable scalar fields without field-level validate
+rules), at the cost of one read per write. Field-level `@authentication`
+applies to it as to any read, and masks are decided by the subscriber's
+claims: a mask whose `unless` depends on the node reads as its `value`,
+since the node as it was cannot be tested after the write. Subscribers whose checks compile to the
 same statement share it: twenty subscribers with the same `where` and
 claims cost one visibility query and one node read per write.
 
@@ -1370,6 +1395,10 @@ binding has, so the WASM binding serves reads.
 | `maxCost`                    | 50 000        | Estimated rows per operation                        |
 | `maxBatch`                   | 1000          | Nodes created or deleted per mutation; bulk `limit` |
 | `maxQueuedChanges`           | 1000          | How far a change consumer may fall behind           |
+| `maxSubscriptions`           | 100           | Live subscriptions per `subscriptionScope`          |
+| `subscriptionScope`          | the context   | What `maxSubscriptions` counts per                  |
+| `maxSubscriptionFilterDepth` | 1             | Relationship filter nesting in a subscription where |
+| `subscriptionTimeoutMs`      | 2000          | Per statement checking a change for a subscriber    |
 | `defaultLimit` / `maxLimit`  | 25 / 100      | Global page sizes; `@limit` may only lower `max`    |
 | `callbacks`                  |               | Named callbacks for `@populatedBy`                  |
 | `jwt`                        | `context.jwt` | Where the claims are                                |
@@ -1459,7 +1488,9 @@ object with `counter(name, value, attributes)` and
 
 `budget(context)` sets the cost limit per request (a plan, a user), and
 `onCost` sees every estimate. `execute()` also returns the operation's
-estimate as `extensions.cost`, so clients can tune their queries.
+estimate as `extensions.cost`, so clients can tune their queries. The
+limit holds per execution: a context reused across requests (one per
+graphql-ws connection) does not add their costs up.
 
 ### Compile cache
 

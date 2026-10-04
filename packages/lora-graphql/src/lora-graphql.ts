@@ -103,15 +103,20 @@ import {
   authValidate,
   checkAuthentication,
   checkFieldAuthentication,
+  claimsMaskedValue,
+  fieldReadGuard,
   rootFieldGuard,
 } from "./compile/auth.js";
 import {
   and,
   bin,
+  fn,
+  lit,
   printClauses,
   printExpr,
   prop,
   v,
+  type Expr,
 } from "./compile/cypher.js";
 import { bind } from "./compile/context.js";
 import { keyOf } from "./compile/read.js";
@@ -164,6 +169,27 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
    * is ended with an error. Default 1000.
    */
   maxQueuedChanges?: number;
+  /**
+   * Live subscriptions one scope (see `subscriptionScope`) may hold; one
+   * more is LIMIT_EXCEEDED. Default 100.
+   */
+  maxSubscriptions?: number;
+  /**
+   * What `maxSubscriptions` counts per: by default the context object, so
+   * a server that reuses one context per connection (graphql-ws) limits
+   * each connection. Return the connection (or user) otherwise.
+   */
+  subscriptionScope?: (context: unknown) => object | undefined;
+  /**
+   * How deep relationship filters may nest in a subscription's `where`,
+   * which runs on every change. Deeper is LIMIT_EXCEEDED. Default 1.
+   */
+  maxSubscriptionFilterDepth?: number;
+  /**
+   * Per statement a subscription runs to check a change (visibility,
+   * `where`, related nodes). Default 2000, or `timeoutMs` when lower.
+   */
+  subscriptionTimeoutMs?: number;
   /** Named callbacks for `@populatedBy(callback:)`. */
   callbacks?: Record<string, PopulatedByCallback>;
   /**
@@ -370,6 +396,18 @@ interface SubscriberDelivery {
 }
 type SubscriberSink = (delivery: SubscriberDelivery) => void;
 
+/** A subscription's visibility check (see `#visibleCheck`). */
+interface VisibilityCheck {
+  statement(keys: unknown[]): Statement;
+  settled(): boolean;
+  run(keys: unknown[], change: object): Promise<Set<string>>;
+}
+
+/** A subscriber whose DELETE events are checked inside the transaction. */
+interface DeleteProbe {
+  check: VisibilityCheck;
+}
+
 interface SubscriberGroup {
   node: NodeType;
   all: Set<SubscriberSink>;
@@ -399,11 +437,23 @@ export class LoraGraphQL {
   readonly #maxBatch: number;
   readonly #maxListArgument: number;
   readonly #maxQueued: number;
+  readonly #maxSubscriptions: number;
+  readonly #subscriptionScope: (context: unknown) => object | undefined;
+  readonly #maxFilterDepth: number;
+  readonly #subscriptionTimeoutMs: number;
+  /** Live subscriptions per scope. */
+  readonly #subscriptionCounts = new WeakMap<object, number>();
   readonly #callbacks: Record<string, PopulatedByCallback>;
   readonly #resolvers: NonNullable<LoraGraphQLOptions["resolvers"]>;
   readonly #scalars: LoraGraphQLOptions["scalars"];
-  /** Estimated cost spent per request context and operation. */
-  readonly #spent = new WeakMap<object, Map<unknown, number>>();
+  /**
+   * Estimated cost spent per execution: keyed by `execute()`'s root value,
+   * else by graphql-js's per-execution variable values, never by the
+   * context, which a server may reuse across requests.
+   */
+  readonly #spent = new WeakMap<object, number>();
+  /** Root values `execute()` made, one per execution. */
+  readonly #executions = new WeakSet<object>();
   /**
    * Cost spent per subscription event (its root value). A subscription
    * reuses one context and operation for every event, so each event is
@@ -430,6 +480,13 @@ export class LoraGraphQL {
    * once per type.
    */
   readonly #subscribers = new Map<string, SubscriberGroup>();
+  /** Subscribers following a key whose deletions need a check. */
+  readonly #probes = new WeakMap<SubscriberSink, DeleteProbe>();
+  /** Per change: the doomed keys each probed subscriber could read. */
+  readonly #deleteSeen = new WeakMap<
+    WriteChange,
+    Map<DeleteProbe, Set<string>>
+  >();
   #undispatch: (() => unknown) | undefined;
   /** Changed-node reads compiled per subscription context and field node. */
   readonly #byKeyCompiles = new WeakMap<
@@ -475,6 +532,14 @@ export class LoraGraphQL {
     this.#maxBatch = options.maxBatch ?? 1000;
     this.#maxListArgument = options.maxListArgument ?? MAX_LIST_ARGUMENT;
     this.#maxQueued = options.maxQueuedChanges ?? 1000;
+    this.#maxSubscriptions = options.maxSubscriptions ?? 100;
+    this.#subscriptionScope =
+      options.subscriptionScope ??
+      ((context) =>
+        context !== null && typeof context === "object" ? context : undefined);
+    this.#maxFilterDepth = options.maxSubscriptionFilterDepth ?? 1;
+    this.#subscriptionTimeoutMs =
+      options.subscriptionTimeoutMs ?? Math.min(2000, this.#timeoutMs);
     this.#callbacks = options.callbacks ?? {};
     const missing = [...this.model.nodes.values()].flatMap((n) =>
       [...n.fields.values()].flatMap((f) =>
@@ -617,6 +682,14 @@ export class LoraGraphQL {
                 (event as { [CHANGE]?: WriteChange })[CHANGE],
               ),
             ),
+      previousValue: (node, field, value, context) => {
+        const ctx = this.#context(
+          { schema: this.getSchema(), fragments: {}, variables: {} },
+          context,
+        );
+        checkFieldAuthentication(ctx, node.name, field);
+        return claimsMaskedValue(ctx, node, field, value);
+      },
       resolveAbstract: (abstract, info, context) =>
         span(info, context, () => {
           const compiled = this.#cachedCompile(info, context, (ctx) =>
@@ -1111,11 +1184,15 @@ export class LoraGraphQL {
     if (timed && contextValue !== null && typeof contextValue === "object") {
       this.#timings.set(contextValue, new Map());
     }
+    // This execution's own root value: cost is charged to it.
+    const execution = {};
+    this.#executions.add(execution);
     let result: ExecutionResult;
     try {
       result = (await graphqlExecute({
         schema: this.getSchema(),
         document,
+        rootValue: execution,
         variableValues: args.variables,
         operationName: args.operationName,
         contextValue,
@@ -1163,12 +1240,8 @@ export class LoraGraphQL {
       }
     }
     // The operation's cost estimate, so clients can tune their queries.
-    const spent =
-      contextValue !== null && typeof contextValue === "object"
-        ? this.#spent.get(contextValue)
-        : undefined;
-    if (spent && spent.size > 0) {
-      const cost = [...spent.values()].reduce((a, b) => a + b, 0);
+    const cost = this.#spent.get(execution);
+    if (cost !== undefined) {
       result = {
         ...result,
         extensions: { ...result.extensions, cost: Math.ceil(cost) },
@@ -1445,12 +1518,16 @@ export class LoraGraphQL {
     if (event !== null && typeof event === "object") {
       total = (this.#eventSpent.get(event) ?? 0) + cost;
       this.#eventSpent.set(event, total);
-    } else if (info && context !== null && typeof context === "object") {
-      const byOperation =
-        this.#spent.get(context) ?? new Map<unknown, number>();
-      total = (byOperation.get(info.operation) ?? 0) + cost;
-      byOperation.set(info.operation, total);
-      this.#spent.set(context, byOperation);
+    } else if (info) {
+      const root: unknown = info.rootValue;
+      const execution: unknown =
+        root !== null && typeof root === "object" && this.#executions.has(root)
+          ? root
+          : info.variableValues;
+      if (execution !== null && typeof execution === "object") {
+        total = (this.#spent.get(execution) ?? 0) + cost;
+        this.#spent.set(execution, total);
+      }
     }
     const limit = this.#budget?.(context) ?? this.#maxCost;
     try {
@@ -1665,7 +1742,8 @@ export class LoraGraphQL {
    * Events for one node type, from the exact write-sets of mutations made
    * through this instance. Nodes the subscriber may not read are skipped;
    * deletions of rule-protected types are only sent to subscribers that
-   * follow that key (they cannot be checked after the fact).
+   * follow that key and could read the node before it went (checked in
+   * the deleting transaction).
    */
   #subscribe(
     node: NodeType,
@@ -1687,6 +1765,27 @@ export class LoraGraphQL {
       authFilter(ctx, node, "n", op);
       authValidate(ctx, node, "n", op, "BEFORE");
     }
+    // `where` runs on every change: bound its nesting, charge it once.
+    const field = `${node.name[0]!.toLowerCase()}${node.name.slice(1)}Changed`;
+    const where = args["where"] as Record<string, unknown> | null | undefined;
+    this.#charge(field, 1 + this.#filterCost(node, where, 0), context);
+    const scope = this.#subscriptionScope(context);
+    const live = scope ? (this.#subscriptionCounts.get(scope) ?? 0) : 0;
+    if (scope && live >= this.#maxSubscriptions) {
+      throw requestError(
+        "LIMIT_EXCEEDED",
+        `at most ${this.#maxSubscriptions} subscriptions at a time`,
+      );
+    }
+    if (scope) this.#subscriptionCounts.set(scope, live + 1);
+    let counted = !!scope;
+    const release = () => {
+      if (!counted || !scope) return;
+      counted = false;
+      const n = (this.#subscriptionCounts.get(scope) ?? 1) - 1;
+      if (n > 0) this.#subscriptionCounts.set(scope, n);
+      else this.#subscriptionCounts.delete(scope);
+    };
     // The stream's own signal: ended by `context.signal` or by return().
     // An async generator runs return() only once its pending next()
     // yields, and a quiet or filtered stream may never yield again, so
@@ -1696,6 +1795,7 @@ export class LoraGraphQL {
     const end = () => {
       outer?.removeEventListener("abort", end);
       stop.abort();
+      release();
     };
     if (outer?.aborted) end();
     else outer?.addEventListener("abort", end, { once: true });
@@ -1717,6 +1817,107 @@ export class LoraGraphQL {
       },
     };
     return iterator;
+  }
+
+  /**
+   * Estimated rows one changed node's `where` check touches: each
+   * relationship filter scans the relationship (its measured degree, else
+   * its cardinality, else a page of the target), times what it nests.
+   * Nesting deeper than `maxSubscriptionFilterDepth` is LIMIT_EXCEEDED.
+   */
+  #filterCost(
+    node: NodeType,
+    where: Record<string, unknown> | null | undefined,
+    depth: number,
+  ): number {
+    let cost = 0;
+    for (const [key, value] of Object.entries(where ?? {})) {
+      if (value === null || value === undefined) continue;
+      if (key === "AND" || key === "OR") {
+        for (const w of value as Array<Record<string, unknown>>) {
+          cost += this.#filterCost(node, w, depth);
+        }
+        continue;
+      }
+      if (key === "NOT") {
+        cost += this.#filterCost(node, value as Record<string, unknown>, depth);
+        continue;
+      }
+      let field = node.fields.get(key);
+      let shape: "direct" | "connection" | "flat" = "direct";
+      if (!field) {
+        for (const [suffix, s] of [
+          ["Connection", "connection"],
+          ["Aggregate", "flat"],
+          ["Exists", "flat"],
+        ] as const) {
+          if (key.endsWith(suffix)) {
+            field = node.fields.get(key.slice(0, -suffix.length));
+            shape = s;
+            break;
+          }
+        }
+      }
+      if (field?.kind !== "relationship") continue;
+      if (depth + 1 > this.#maxFilterDepth) {
+        throw requestError(
+          "LIMIT_EXCEEDED",
+          `a subscription's where may nest relationship filters ${this.#maxFilterDepth} deep (${node.name}.${key})`,
+        );
+      }
+      const target = this.model.nodes.get(field.target);
+      const fan = field.list
+        ? Math.max(
+            1,
+            this.#degrees.get(`${field.owner}.${field.name}`) ??
+              field.cardinality ??
+              target?.limit.max ??
+              100,
+          )
+        : 1;
+      let inner = 0;
+      if (target && shape !== "flat" && typeof value === "object") {
+        const parts: unknown[] = field.list
+          ? Object.values(value as Record<string, unknown>)
+          : [value];
+        for (const part of parts) {
+          if (part === null || typeof part !== "object") continue;
+          const w =
+            shape === "connection"
+              ? (part as Record<string, unknown>)["node"]
+              : part;
+          inner += this.#filterCost(
+            target,
+            w as Record<string, unknown> | null | undefined,
+            depth + 1,
+          );
+        }
+      } else if (!target && shape !== "flat" && typeof value === "object") {
+        // An abstract target: a filter by member (`{ Person: {...} }`) or
+        // on the shared fields; the costliest member counts.
+        const parts: unknown[] = field.list
+          ? Object.values(value as Record<string, unknown>)
+          : [value];
+        for (const part of parts) {
+          if (part === null || typeof part !== "object") continue;
+          let worst = 0;
+          for (const member of field.members) {
+            const m = this.model.nodes.get(member);
+            const p = part as Record<string, unknown>;
+            const w = (shape === "connection" ? p["node"] : p) as
+              | Record<string, unknown>
+              | null
+              | undefined;
+            if (!m || !w || typeof w !== "object") continue;
+            const own = (w[member] ?? w) as Record<string, unknown>;
+            worst = Math.max(worst, this.#filterCost(m, own, depth + 1));
+          }
+          inner += worst;
+        }
+      }
+      cost += fan * (1 + inner);
+    }
+    return cost;
   }
 
   async *#events(
@@ -1751,26 +1952,51 @@ export class LoraGraphQL {
       : undefined;
     // Only changes to this type (and this key, when one is followed)
     // arrive, with their events already built.
+    const related = (events: ChangeEvent[]) =>
+      this.#relatedVisible(node, events, base, context, signal);
+    // A deleted node cannot be checked after the fact: a follower of its
+    // key without a `where` is checked inside the deleting transaction,
+    // on the node as it was; other checked subscribers get no deletions.
+    const probe: DeleteProbe | undefined =
+      visible && key != null && !where && wanted.has("DELETE")
+        ? { check: visible }
+        : undefined;
     const deliveries = this.#queue<SubscriberDelivery>(
       (sink) =>
-        this.#addSubscriber(node, key == null ? undefined : keyOf(key), sink),
+        this.#addSubscriber(
+          node,
+          key == null ? undefined : keyOf(key),
+          sink,
+          probe,
+        ),
       { signal },
     );
     for await (const { change, events: all } of deliveries) {
       const events = all.filter((e) => wanted.has(e.operation));
       if (events.length === 0) continue;
-      // A deleted node cannot be checked: its deletion reaches only
-      // subscribers that follow its key, and only unfiltered ones.
+      const probed = probe && this.#deleteSeen.get(change)?.get(probe);
       const deletions = events.filter(
-        (e) => e.operation === "DELETE" && (!check || (key != null && !where)),
+        (e) =>
+          e.operation === "DELETE" &&
+          (!check ||
+            (probe !== undefined &&
+              (probed?.has(keyOf(e.key)) ?? probe.check.settled()))),
       );
       const live = events.filter((e) => e.operation !== "DELETE");
       const seen = visible
-        ? await visible(
+        ? await visible.run(
             live.map((e) => e.key),
             change,
           )
         : undefined;
+      const relationships = live.filter(
+        (e) =>
+          e.relationship !== undefined && (!seen || seen.has(keyOf(e.key))),
+      );
+      const named =
+        relationships.length > 0
+          ? await related(relationships)
+          : new Set<ChangeEvent>();
       for (const event of [...live, ...deletions]) {
         if (
           event.operation !== "DELETE" &&
@@ -1779,6 +2005,7 @@ export class LoraGraphQL {
         ) {
           continue;
         }
+        if (event.relationship && !named.has(event)) continue;
         // Events are built once per change and type: each subscriber gets
         // its own copy, since per-event cost is charged by root value.
         const own = { ...event };
@@ -1793,7 +2020,9 @@ export class LoraGraphQL {
     node: NodeType,
     key: string | undefined,
     sink: SubscriberSink,
+    probe?: DeleteProbe,
   ): () => void {
+    if (probe) this.#probes.set(sink, probe);
     // One listener serves every subscriber, registered while any exist.
     if (!this.#undispatch) {
       const dispatch = (change: WriteChange) => this.#dispatch(change);
@@ -1885,17 +2114,20 @@ export class LoraGraphQL {
    * Whether a subscription may see nodes: which of `keys` it may read
    * (and its `where` matches), in one query per change. The statement is
    * compiled once per subscription, again only when its claims or the
-   * `$context` values it read change.
+   * `$context` values it read change. `statement` gives the check for
+   * other uses (a deletion is checked inside its transaction); `settled`
+   * says whether the claims alone grant reading every node of the type.
    */
   #visibleCheck(
     node: NodeType,
     where: Record<string, unknown> | null | undefined,
     base: SelectionContext,
     context: unknown,
-  ): (keys: unknown[], change: object) => Promise<Set<string>> {
-    let cached: SubscriptionCompile<Statement> | undefined;
-    return async (keys, change) => {
-      if (keys.length === 0) return new Set();
+  ): VisibilityCheck {
+    let cached:
+      | (SubscriptionCompile<Statement> & { settled: boolean })
+      | undefined;
+    const compile = () => {
       const claims = stableKey(this.#jwt(context) ?? null);
       let entry = cached;
       if (
@@ -1906,6 +2138,12 @@ export class LoraGraphQL {
       ) {
         const ctx = this.#context(base, context);
         const slot: unknown[] = [];
+        const rules = and(
+          authFilter(ctx, node, "n", "READ"),
+          authValidate(ctx, node, "n", "READ", "BEFORE"),
+          authFilter(ctx, node, "n", "SUBSCRIBE"),
+          authValidate(ctx, node, "n", "SUBSCRIBE", "BEFORE"),
+        );
         const text = printClauses([
           { kind: "unwind", expr: bind(ctx, slot), alias: "k" },
           {
@@ -1917,10 +2155,7 @@ export class LoraGraphQL {
             where: and(
               bin("=", prop(v("n"), node.key.property), v("k")),
               compileNodeWhere(ctx, node, "n", where),
-              authFilter(ctx, node, "n", "READ"),
-              authValidate(ctx, node, "n", "READ", "BEFORE"),
-              authFilter(ctx, node, "n", "SUBSCRIBE"),
-              authValidate(ctx, node, "n", "SUBSCRIBE", "BEFORE"),
+              rules,
             ),
           },
           {
@@ -1929,39 +2164,272 @@ export class LoraGraphQL {
           },
         ]);
         // The key list is bound directly, so the slot is always found.
-        entry = slotCompile(
-          { text, params: ctx.params },
-          slot,
-          claims,
-          0,
-          undefined,
-          ctx.contextReads,
-        )!;
+        entry = {
+          ...slotCompile(
+            { text, params: ctx.params },
+            slot,
+            claims,
+            0,
+            undefined,
+            ctx.contextReads,
+          )!,
+          settled: rules === undefined,
+        };
         cached = claims === undefined ? undefined : entry;
       }
-      const statements = [
-        {
+      return entry;
+    };
+    const statement = (keys: unknown[]) => {
+      const entry = compile();
+      return {
+        statement: {
           text: entry.compiled.text,
           params: { ...entry.compiled.params, [entry.param]: keys },
         },
-      ];
-      const share =
-        entry.share === undefined
-          ? undefined
-          : `${entry.share}\0${keys.map(keyOf).join("\0")}`;
-      const [result] = await this.#shared(
-        change,
-        statements,
-        () =>
-          this.#driver.run(statements, {
-            mode: "read",
-            timeoutMs: this.#timeoutMs,
-            verified: true,
-          }),
-        share,
-      );
-      return new Set(result!.rows.map((r) => keyOf(r["key"])));
+        share:
+          entry.share === undefined
+            ? undefined
+            : `${entry.share}\0${keys.map(keyOf).join("\0")}`,
+      };
     };
+    return {
+      statement: (keys) => statement(keys).statement,
+      settled: () => {
+        try {
+          return compile().settled;
+        } catch {
+          return false;
+        }
+      },
+      run: async (keys, change) => {
+        if (keys.length === 0) return new Set();
+        const { statement: s, share } = statement(keys);
+        const statements = [s];
+        const [result] = await this.#shared(
+          change,
+          statements,
+          () =>
+            this.#driver.run(statements, {
+              mode: "read",
+              timeoutMs: this.#subscriptionTimeoutMs,
+              verified: true,
+            }),
+          share,
+        );
+        return new Set(result!.rows.map((r) => keyOf(r["key"])));
+      },
+    };
+  }
+
+  /**
+   * The CONNECT / DISCONNECT events whose related node the subscriber may
+   * read (its type's READ rules) through a field it may read (the
+   * declaring field's READ rules), checked after the write. The others are
+   * dropped, so an event never names a node the subscriber could not
+   * read; a related node that is gone, which cannot be checked, drops the
+   * event unless the claims alone settle every rule.
+   */
+  async #relatedVisible(
+    node: NodeType,
+    events: ChangeEvent[],
+    base: SelectionContext,
+    context: unknown,
+    signal: AbortSignal,
+  ): Promise<Set<ChangeEvent>> {
+    type Group =
+      | { kind: "deny" }
+      | { kind: "allow"; events: ChangeEvent[] }
+      | {
+          kind: "check";
+          statement: Statement;
+          slot: string;
+          events: ChangeEvent[];
+        };
+    const groups = new Map<string, Group>();
+    for (const event of events) {
+      const rel = event.relationship!;
+      const selfOwns = (event as { [SELF_OWNS]?: boolean })[SELF_OWNS] ?? true;
+      const id = `${rel.field}\0${rel.relatedType}\0${selfOwns}`;
+      const known = groups.get(id);
+      if (known) {
+        if (known.kind !== "deny") known.events.push(event);
+        continue;
+      }
+      groups.set(
+        id,
+        this.#relatedGroup(node, rel, selfOwns, base, context, event),
+      );
+    }
+    const out = new Set<ChangeEvent>();
+    const checks: Array<Extract<Group, { kind: "check" }>> = [];
+    for (const g of groups.values()) {
+      if (g.kind === "allow") for (const e of g.events) out.add(e);
+      else if (g.kind === "check") checks.push(g);
+    }
+    if (checks.length === 0) return out;
+    const results = await this.#driver.run(
+      checks.map((g) => ({
+        text: g.statement.text,
+        params: {
+          ...g.statement.params,
+          [g.slot]: g.events.map((e) => ({
+            i: events.indexOf(e),
+            s: e.key,
+            r: e.relationship!.relatedKey,
+          })),
+        },
+      })),
+      {
+        mode: "read",
+        timeoutMs: this.#subscriptionTimeoutMs,
+        signal,
+        verified: true,
+      },
+    );
+    for (const result of results) {
+      for (const row of result.rows) {
+        const event = events[row["i"] as number];
+        if (event) out.add(event);
+      }
+    }
+    return out;
+  }
+
+  /** How one field and related type's relationship events are checked. */
+  #relatedGroup(
+    node: NodeType,
+    rel: NonNullable<ChangeEvent["relationship"]>,
+    selfOwns: boolean,
+    base: SelectionContext,
+    context: unknown,
+    first: ChangeEvent,
+  ):
+    | { kind: "deny" }
+    | { kind: "allow"; events: ChangeEvent[] }
+    | {
+        kind: "check";
+        statement: Statement;
+        slot: string;
+        events: ChangeEvent[];
+      } {
+    const related = this.model.nodes.get(rel.relatedType);
+    if (!related) return { kind: "deny" };
+    const [ownerName, fieldName] = rel.field.split(".");
+    const owner = ownerName ? this.model.nodes.get(ownerName) : undefined;
+    const field = fieldName ? owner?.fields.get(fieldName) : undefined;
+    const ctx = this.#context(base, context);
+    let condition: Expr | undefined;
+    let selfGuard: Expr | undefined;
+    try {
+      checkAuthentication(ctx, related, "READ");
+      condition = and(
+        authFilter(ctx, related, "m", "READ"),
+        authValidate(ctx, related, "m", "READ", "BEFORE"),
+      );
+      if (owner && field?.kind === "relationship") {
+        checkFieldAuthentication(ctx, owner.name, field);
+        const guard = fieldReadGuard(ctx, owner, field, selfOwns ? "n" : "m");
+        const when = guard && fn("coalesce", guard.when, lit(false));
+        if (selfOwns) selfGuard = when;
+        else condition = and(condition, when);
+      }
+    } catch {
+      // The claims alone refuse: the events are not sent.
+      return { kind: "deny" };
+    }
+    if (condition === undefined && selfGuard === undefined) {
+      // Nothing depends on the nodes: no check needed.
+      return { kind: "allow", events: [first] };
+    }
+    const slot: unknown[] = [];
+    const pairs = bind(ctx, slot);
+    const match = (
+      variable: string,
+      type: NodeType,
+      end: "r" | "s",
+      where: Expr | undefined,
+    ) => ({
+      kind: "match" as const,
+      pattern: { start: { variable, labels: [type.labels[0]!] }, hops: [] },
+      where: and(
+        bin("=", prop(v(variable), type.key.property), prop(v("p"), end)),
+        where,
+      ),
+    });
+    const text = printClauses([
+      { kind: "unwind", expr: pairs, alias: "p" },
+      match("m", related, "r", condition),
+      ...(selfGuard ? [match("n", node, "s", selfGuard)] : []),
+      { kind: "return", items: [{ expr: prop(v("p"), "i"), alias: "i" }] },
+    ]);
+    const param = Object.keys(ctx.params).find((k) => ctx.params[k] === slot)!;
+    return {
+      kind: "check",
+      statement: { text, params: ctx.params },
+      slot: param,
+      events: [first],
+    };
+  }
+
+  /**
+   * Inside a deleting transaction, before anything is deleted: which of
+   * the doomed nodes each subscriber following one of their keys may
+   * read, kept for the change's DELETE events. A node cannot be checked
+   * once it is gone, so a deletion nobody checked reaches nobody whose
+   * rules depend on the node.
+   */
+  async #probeDeletes(
+    change: WriteChange,
+    doomed: ReadonlyArray<{ node: NodeType; keys: unknown[] }>,
+    run: (statement: Statement) => Promise<QueryResult>,
+  ): Promise<void> {
+    const wanted = new Map<DeleteProbe, unknown[]>();
+    for (const { node, keys } of doomed) {
+      const group = this.#subscribers.get(node.name);
+      if (!group || group.byKey.size === 0) continue;
+      for (const key of keys) {
+        for (const sink of group.byKey.get(keyOf(key)) ?? []) {
+          const probe = this.#probes.get(sink);
+          if (!probe) continue;
+          const list = wanted.get(probe);
+          if (list) list.push(key);
+          else wanted.set(probe, [key]);
+        }
+      }
+    }
+    if (wanted.size === 0) return;
+    let seen = this.#deleteSeen.get(change);
+    if (!seen) {
+      seen = new Map();
+      this.#deleteSeen.set(change, seen);
+    }
+    // Subscribers whose checks compile to the same statement share it.
+    const results = new Map<string, Promise<Set<string>>>();
+    for (const [probe, keys] of wanted) {
+      let visible: Promise<Set<string>>;
+      if (probe.check.settled()) {
+        visible = Promise.resolve(new Set(keys.map(keyOf)));
+      } else {
+        let statement: Statement;
+        try {
+          statement = probe.check.statement(keys);
+        } catch {
+          // The claims alone decide against reading: nothing is visible.
+          continue;
+        }
+        const id = stableKey(statement);
+        const shared = id === undefined ? undefined : results.get(id);
+        visible =
+          shared ??
+          run(statement).then(
+            (r) => new Set(r.rows.map((row) => keyOf(row["key"]))),
+          );
+        if (id !== undefined && !shared) results.set(id, visible);
+      }
+      const own = seen.get(probe) ?? new Set<string>();
+      for (const k of await visible) own.add(k);
+      seen.set(probe, own);
+    }
   }
 
   /**
@@ -2270,6 +2738,8 @@ export class LoraGraphQL {
       onStatement: (statement) =>
         this.#onStatement?.({ field: info.fieldName, statement }),
       observe: this.#mutationObserve(info, context),
+      beforeDelete: (change, doomed, run) =>
+        this.#probeDeletes(change, doomed, run),
     };
   }
 
@@ -2369,6 +2839,8 @@ function operationType(
 
 /** The write an event came from, for reads shared across its subscribers. */
 const CHANGE = Symbol("change");
+/** On a CONNECT / DISCONNECT event: whether its node owns the field. */
+const SELF_OWNS = Symbol("selfOwns");
 
 /** A write's events for one node type, one per node, most specific first. */
 function changeEvents(change: WriteChange, node: NodeType): ChangeEvent[] {
@@ -2417,16 +2889,17 @@ function changeEvents(change: WriteChange, node: NodeType): ChangeEvent[] {
           [r.to, r.from],
         ] as const) {
           if (self.type !== node.name) continue;
-          events.push(
-            make(operation, self.key, {
-              relationship: {
-                field: r.field,
-                type: r.type,
-                relatedType: other.type,
-                relatedKey: other.key,
-              },
-            }),
-          );
+          const event = make(operation, self.key, {
+            relationship: {
+              field: r.field,
+              type: r.type,
+              relatedType: other.type,
+              relatedKey: other.key,
+            },
+          });
+          // The declaring field's owner is `from`: whose rules guard it.
+          Object.defineProperty(event, SELF_OWNS, { value: self === r.from });
+          events.push(event);
         }
       }
     }

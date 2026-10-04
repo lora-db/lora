@@ -85,6 +85,16 @@ export interface SchemaHooks {
     info: GraphQLResolveInfo,
     context: unknown,
   ) => Promise<unknown>;
+  /**
+   * A `previousState` value as the subscriber may see it: throws when
+   * field-level @authentication refuses it, applies masks by the claims.
+   */
+  previousValue: (
+    node: NodeType,
+    field: ScalarField,
+    value: unknown,
+    context: unknown,
+  ) => unknown;
   /** Implementations of custom scalars, by name (the scalars option). */
   scalars?: Readonly<Record<string, GraphQLScalarType>> | undefined;
   /** The resolver of a `@customResolver` field (from the resolvers option). */
@@ -1734,8 +1744,8 @@ export function buildSchema(
     const keyType = scalarType(node.key) as GraphQLInputType &
       GraphQLOutputType;
     // The stored values before an update or delete: readable scalar
-    // fields without field-level rules (they cannot be checked after the
-    // write).
+    // fields without field-level validate rules (they cannot be checked
+    // after the write). Masks and @authentication apply on resolve.
     const previousFields = [...node.fields.values()].filter(
       (f): f is ScalarField =>
         f.kind === "scalar" &&
@@ -1753,8 +1763,17 @@ export function buildSchema(
                 f.name,
                 {
                   type: scalarOutput(f),
-                  resolve: (src: Record<string, unknown>) =>
-                    src[f.property] ?? null,
+                  resolve: (
+                    src: Record<string, unknown>,
+                    _args: unknown,
+                    context: unknown,
+                  ) =>
+                    hooks.previousValue(
+                      node,
+                      f,
+                      src[f.property] ?? null,
+                      context,
+                    ),
                 },
               ]),
             ),
