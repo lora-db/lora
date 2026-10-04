@@ -13,6 +13,7 @@ import {
   Kind,
   parse,
   valueFromAST,
+  type ConstDirectiveNode,
   type ConstValueNode,
   type DocumentNode,
   type GraphQLArgument,
@@ -168,40 +169,31 @@ export function buildModel(
     bypass?: AuthorizationWhere;
     mutations?: AuthorizationWhere;
   } = {};
-  for (const node of [schema.astNode, ...schema.extensionASTNodes]) {
-    if (!node) continue;
-    const args = directive(
-      d("authorizationDefaults"),
-      { astNode: node },
-      (message) => problems.push({ type: "schema", message }),
-    );
-    if (!args) continue;
-    if (args["bypass"] != null)
-      defaults.bypass = args["bypass"] as AuthorizationWhere;
-    if (args["mutations"] != null)
-      defaults.mutations = args["mutations"] as AuthorizationWhere;
-  }
+  const defaultArgs = directive(d("authorizationDefaults"), schema, (message) =>
+    problems.push({ type: "schema", message }),
+  );
+  if (defaultArgs?.["bypass"] != null)
+    defaults.bypass = defaultArgs["bypass"] as AuthorizationWhere;
+  if (defaultArgs?.["mutations"] != null)
+    defaults.mutations = defaultArgs["mutations"] as AuthorizationWhere;
   // `extend schema @authorizationRules(rules: [...])`: claims-only rules.
   const schemaRules = new Map<string, AuthorizationWhere>();
-  for (const node of [schema.astNode, ...schema.extensionASTNodes]) {
-    for (const dir of node?.directives ?? []) {
-      if (dir.name.value !== "authorizationRules") continue;
-      const args = directive(
-        d("authorizationRules"),
-        { astNode: { directives: [dir] } },
-        (message) => problems.push({ type: "schema", message }),
-      );
-      for (const r of (args?.["rules"] as
-        | Array<{ name: string; where: AuthorizationWhere }>
-        | undefined) ?? []) {
-        if (schemaRules.has(r.name)) {
-          problems.push({
-            type: "schema",
-            message: `@authorizationRules: rule "${r.name}" is defined twice`,
-          });
-        }
-        schemaRules.set(r.name, r.where);
+  for (const { node: dir } of directiveNodes("authorizationRules", schema)) {
+    const args = directive(
+      d("authorizationRules"),
+      { astNode: { directives: [dir] } },
+      (message) => problems.push({ type: "schema", message }),
+    );
+    for (const r of (args?.["rules"] as
+      | Array<{ name: string; where: AuthorizationWhere }>
+      | undefined) ?? []) {
+      if (schemaRules.has(r.name)) {
+        problems.push({
+          type: "schema",
+          message: `@authorizationRules: rule "${r.name}" is defined twice`,
+        });
       }
+      schemaRules.set(r.name, r.where);
     }
   }
 
@@ -792,8 +784,7 @@ export function buildModel(
   const typeRules = new Map<string, Map<string, AuthorizationWhere>>();
   for (const t of nodeTypes) {
     const own = new Map<string, AuthorizationWhere>();
-    for (const dir of t.astNode?.directives ?? []) {
-      if (dir.name.value !== "authorizationRule") continue;
+    for (const { node: dir } of directiveNodes("authorizationRule", t)) {
       const args = directive(
         d("authorizationRule"),
         { astNode: { directives: [dir] } },
@@ -1822,11 +1813,7 @@ function readUniqueTogether(
   problems: ModelProblem[],
 ): UniqueTogether[] {
   const out: UniqueTogether[] = [];
-  const dirs = [
-    ...(t.astNode?.directives ?? []),
-    ...t.extensionASTNodes.flatMap((n) => n.directives ?? []),
-  ].filter((x) => x.name.value === "uniqueTogether");
-  for (const dir of dirs) {
+  for (const { node: dir } of directiveNodes("uniqueTogether", t)) {
     let ok = true;
     const at = (message: string) => {
       ok = false;
@@ -1878,19 +1865,63 @@ function readUniqueTogether(
   return out;
 }
 
+/**
+ * The arguments of `def` on `node` (a type, field, argument or the schema),
+ * undefined when it is absent. A type's directives are read from its
+ * definition and every extension (`extend type T @authorization(...)`),
+ * so a directive on an extension is never silently dropped; a
+ * non-repeatable one written more than once across them is a problem
+ * naming each place. Repeatable directives are read with `directiveNodes`.
+ */
 function directive(
   def: GraphQLDirective,
-  node: { astNode?: unknown },
+  node: { astNode?: unknown; extensionASTNodes?: unknown },
   at: (message: string) => void,
 ): Record<string, unknown> | undefined {
-  const ast = node.astNode as Parameters<typeof getDirectiveValues>[1] | null;
-  if (!ast) return undefined;
+  const found = directiveNodes(def.name, node);
+  if (found.length === 0) return undefined;
+  if (found.length > 1 && !def.isRepeatable) {
+    at(
+      `@${def.name} is written ${found.length} times (${found.map((x) => x.place).join(", ")}); write it once`,
+    );
+  }
   try {
-    return getDirectiveValues(def, ast);
+    return getDirectiveValues(def, { directives: [found[0]!.node] });
   } catch (err) {
     at(`@${def.name}: ${err instanceof Error ? err.message : String(err)}`);
     return undefined;
   }
+}
+
+/**
+ * Every use of the directive `name` on `node`: its definition's, then each
+ * extension's, with where it was written (for messages).
+ */
+function directiveNodes(
+  name: string,
+  node: { astNode?: unknown; extensionASTNodes?: unknown },
+): Array<{ node: ConstDirectiveNode; place: string }> {
+  type WithDirectives = {
+    directives?: readonly ConstDirectiveNode[];
+    loc?: { startToken: { line: number } };
+  } | null;
+  const out: Array<{ node: ConstDirectiveNode; place: string }> = [];
+  const visit = (ast: WithDirectives | undefined, kind: string) => {
+    for (const dir of ast?.directives ?? []) {
+      if (dir.name.value !== name) continue;
+      const line = dir.loc?.startToken.line;
+      out.push({
+        node: dir,
+        place: line !== undefined ? `${kind}, line ${line}` : kind,
+      });
+    }
+  };
+  visit(node.astNode as WithDirectives, "the definition");
+  for (const ext of (node.extensionASTNodes as WithDirectives[] | undefined) ??
+    []) {
+    visit(ext, "an extension");
+  }
+  return out;
 }
 
 function unwrap(type: GraphQLOutputType): {
@@ -1940,7 +1971,7 @@ const STORAGE_TYPES: Record<string, ScalarType> = {
 /** A custom scalar's storage type, from its `@storedAs(type:)`. */
 export function storageOf(t: GraphQLNamedType): ScalarType | undefined {
   if (!isScalarType(t)) return undefined;
-  const d = t.astNode?.directives?.find((x) => x.name.value === "storedAs");
+  const d = directiveNodes("storedAs", t)[0]?.node;
   const arg = d?.arguments?.find((a) => a.name.value === "type")?.value;
   return arg && arg.kind === Kind.ENUM ? STORAGE_TYPES[arg.value] : undefined;
 }

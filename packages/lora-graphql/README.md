@@ -108,6 +108,15 @@ field, a `@selectable` on a field of an object type without `@node`, a
 position, never silently ignored. `DIRECTIVE_POSITIONS` in
 `src/model/positions.ts` is the full table.
 
+A directive on an extension (`extend type Secret @authorization(...)`,
+`extend interface`, `extend union`, `extend scalar`, `extend schema`)
+applies exactly as on the definition, so a type's rules may live in
+another file. Repeatable directives (`@uniqueTogether`,
+`@authorizationRule`) add up across the definition and its extensions;
+any other directive written on both is an error. `extend type X @node`
+makes a plain `type X` a node type; extending a type that is never
+defined is an error.
+
 Model:
 
 | Directive                                                                                                  | On                | Meaning                                                                                                                                                                                                                                    |
