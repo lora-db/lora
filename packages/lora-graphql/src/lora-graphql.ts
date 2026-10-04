@@ -360,6 +360,26 @@ export interface ExecuteArgs {
   variables?: Record<string, unknown>;
   operationName?: string;
   context?: unknown;
+  /**
+   * Attach the operation's read-set to the result as a non-enumerable
+   * `readSet` property (never serialized to the client), for a response
+   * cache to invalidate with `lora.affects(result.readSet, change)`.
+   */
+  readSet?: boolean;
+}
+
+/** `execute()`'s result; `readSet` is there when `ExecuteArgs.readSet` asked. */
+export type LoraExecutionResult = ExecutionResult & {
+  readonly readSet?: ReadSet;
+};
+
+/** Read-sets being collected, by GraphQL context (see `ExecuteArgs.readSet`). */
+interface ReadCollector {
+  labels: Set<string>;
+  relationships: Set<string>;
+  opaque: boolean;
+  /** Concurrent `execute()` calls sharing the context. */
+  active: number;
 }
 
 const DOCUMENT_CACHE_SIZE = 500;
@@ -461,6 +481,8 @@ export class LoraGraphQL {
   #schema: GraphQLSchema | undefined;
   readonly #mutationTransaction: "field" | "operation";
   readonly #timing: LoraGraphQLOptions["timing"];
+  /** Per-request read-set collectors, by GraphQL context. */
+  readonly #readSets = new WeakMap<object, ReadCollector>();
   /** Per-request timing collectors, by GraphQL context (see `timing`). */
   readonly #timings = new WeakMap<
     object,
@@ -1068,7 +1090,50 @@ export class LoraGraphQL {
    * subscription runs with {@link LoraGraphQL.subscribe}; given one, this
    * returns a `WRONG_OPERATION_TYPE` error.
    */
-  async execute(args: ExecuteArgs): Promise<ExecutionResult> {
+  async execute(args: ExecuteArgs): Promise<LoraExecutionResult> {
+    if (!args.readSet) return this.#execute(args);
+    const context = args.context ?? {};
+    if (typeof context !== "object" || context === null) {
+      return this.#execute(args);
+    }
+    // Calls sharing a context share one collector: the union of their
+    // reads over-approximates each, which is safe for invalidation.
+    let collector = this.#readSets.get(context);
+    if (collector) collector.active++;
+    else {
+      collector = {
+        labels: new Set(),
+        relationships: new Set(),
+        opaque: false,
+        active: 1,
+      };
+      this.#readSets.set(context, collector);
+    }
+    let result: ExecutionResult;
+    try {
+      result = await this.#execute({ ...args, context });
+    } finally {
+      if (--collector.active === 0) this.#readSets.delete(context);
+    }
+    const document = this.#document(args);
+    const operation = isDocument(document)
+      ? getOperationAST(document, args.operationName)
+      : undefined;
+    const readSet: ReadSet = {
+      labels: [...collector.labels].sort(),
+      relationships: [...collector.relationships].sort(),
+      // A mutation's reads follow its writes; nobody caches it.
+      ...(collector.opaque || operation?.operation === "mutation"
+        ? { opaque: true }
+        : {}),
+    };
+    return Object.defineProperty({ ...result }, "readSet", {
+      value: readSet,
+      enumerable: false,
+    }) as LoraExecutionResult;
+  }
+
+  async #execute(args: ExecuteArgs): Promise<ExecutionResult> {
     const started = performance.now();
     const document = this.#document(args);
     if (!isDocument(document)) return document;
@@ -1098,11 +1163,13 @@ export class LoraGraphQL {
     let tx: LoraTransaction | undefined;
     if (atomic) {
       tx = await this.begin();
+      const collector = this.#readSets.get(contextValue as object);
       contextValue = Object.assign(
         Object.create(Object.getPrototypeOf(contextValue) as object) as object,
         contextValue,
         { transaction: tx },
       );
+      if (collector) this.#readSets.set(contextValue as object, collector);
     }
     const timed =
       typeof this.#timing === "function"
@@ -1509,6 +1576,16 @@ export class LoraGraphQL {
     shareKey?: string,
   ): Promise<unknown> {
     this.#charge(field, compiled.cost, context, info);
+    const collector =
+      typeof context === "object" && context !== null
+        ? this.#readSets.get(context)
+        : undefined;
+    if (collector) {
+      for (const l of compiled.reads.labels) collector.labels.add(l);
+      for (const r of compiled.reads.relationships)
+        collector.relationships.add(r);
+      if (compiled.reads.opaque) collector.opaque = true;
+    }
     for (const statement of compiled.statements) {
       this.#onStatement?.({ field, statement });
     }

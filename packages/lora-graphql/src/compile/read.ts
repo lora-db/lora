@@ -97,6 +97,11 @@ export interface SeekExpectation {
 export interface ReadSet {
   labels: string[];
   relationships: string[];
+  /**
+   * A `@cypher` statement (or a mutation) is part of the read: it may
+   * read anything, so every change affects it.
+   */
+  opaque?: boolean;
 }
 
 export interface CompiledRead {
@@ -209,6 +214,7 @@ export function readSet(ctx: CompileContext): ReadSet {
   return {
     labels: [...ctx.reads.labels].sort(),
     relationships: [...ctx.reads.relationships].sort(),
+    ...(ctx.reads.opaque ? { opaque: true } : {}),
   };
 }
 
@@ -1401,6 +1407,7 @@ export function bindStatement(
   args: Args,
 ): string {
   checkListArguments(ctx, field, args);
+  ctx.reads.opaque = true;
   const texts = new Map<string, string>();
   for (const p of field.params) {
     if (p === "viewer") {

@@ -1113,6 +1113,33 @@ read carries a read-set (labels and relationship types);
 that falls `maxQueuedChanges` (default 1000) behind is ended with an error
 rather than buffering without bound.
 
+`execute({ ..., readSet: true })` returns the operation's read-set as a
+non-enumerable `readSet` on the result (it never reaches the client), so
+a response cache can drop only the entries a write may have changed
+instead of clearing everything:
+
+```ts
+const cache = new Map<string, LoraExecutionResult>();
+
+async function cachedExecute(key: string, args: ExecuteArgs) {
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const result = await lora.execute({ ...args, readSet: true });
+  if (!result.errors) cache.set(key, result);
+  return result;
+}
+
+lora.onWrite((change) => {
+  for (const [key, result] of cache)
+    if (lora.affects(result.readSet!, change)) cache.delete(key);
+});
+```
+
+A read-set is label-level, and over-approximates: a `@cypher` statement
+can read anything, so a read that ran one (and any mutation) carries
+`opaque: true`, which every change affects. `@customResolver` fields
+are not seen; key the cache so they do not need to be.
+
 ## Subscriptions
 
 ```graphql

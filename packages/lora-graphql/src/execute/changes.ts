@@ -59,6 +59,8 @@ export interface WriteChange {
 export interface ReadSetLike {
   labels: readonly string[];
   relationships: readonly string[];
+  /** Reads nobody can name (a `@cypher` statement): every change affects it. */
+  opaque?: boolean | undefined;
 }
 
 /**
@@ -70,7 +72,7 @@ export function affects(
   change: WriteChange,
   labelsOf: (type: string) => readonly string[],
 ): boolean {
-  if (change.broad) return true;
+  if (change.broad || reads.opaque) return true;
   const labels = new Set(change.types.flatMap(labelsOf));
   return (
     reads.labels.some((l) => labels.has(l)) ||

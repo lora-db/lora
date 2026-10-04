@@ -9,6 +9,7 @@ export {
   type ExecutionTiming,
   type LoraGraphQLContext,
   type LoraGraphQLOptions,
+  type LoraExecutionResult,
   type SchemaAssertion,
   type StatementEvent,
 } from "./lora-graphql.js";
