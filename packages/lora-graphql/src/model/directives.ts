@@ -137,6 +137,9 @@ export const directiveTypeDefs = /* GraphQL */ `
   "The most items a list argument of a @cypher field takes; more is BAD_USER_INPUT before the statement runs. Without it, maxListArgument applies."
   directive @size(max: Int!) on ARGUMENT_DEFINITION
 
+  "Bounds of an Int or Float argument of a @cypher field (each item, for a list); a value outside them is BAD_USER_INPUT before the statement runs."
+  directive @range(min: Float, max: Float) on ARGUMENT_DEFINITION
+
   "Generated read operations for a node type. Reads are on by default."
   directive @query(
     read: Boolean = true

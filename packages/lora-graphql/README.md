@@ -147,6 +147,7 @@ API:
 | `@groupBy`                                            | field                                        | A grouping key of `<plural>Grouped(by:)` (needs `@query(aggregate: true)`)                                    |
 | `@limit(default:, max:)`                              | type, interface, union, list relationship    | Page size bounds                                                                                              |
 | `@size(max:)`                                         | list argument of a `@cypher` field           | The most items it takes (default `maxListArgument`)                                                           |
+| `@range(min:, max:)`                                  | Int / Float argument of a `@cypher` field    | Bounds of its value (each item of a list); outside is `BAD_USER_INPUT`                                        |
 | `@relayId`                                            | `@key` field                                 | Adds a global `id` and the `Node` interface                                                                   |
 | `@authentication(operations:, jwt:)`                  | type, field                                  | Needs an authenticated request, whose claims satisfy `jwt`                                                    |
 | `@authorization(filter:, validate:)`                  | type (filter and validate), field (validate) | Row-level rules, compiled into statements                                                                     |
@@ -648,7 +649,7 @@ one seek, in the mutation's transaction, before the statement. Every root
 `@cypher` field is in the access matrix, guarded or not (Mutation fields
 under the operation `EXECUTE`).
 
-### List arguments
+### List and number arguments
 
 The statement sees its arguments as sent, so list arguments are capped:
 at most `@size(max:)` items, or `maxListArgument` (default 1000) without
@@ -657,6 +658,15 @@ nested list counts.
 
 ```graphql
 createPost(key: String!, hashtags: [String!] = [] @size(max: 30)): Post
+```
+
+Int and Float arguments take bounds the same way: `@range(min:, max:)`
+(either or both, inclusive) checks the value, or each item of a list,
+before the statement runs, and a default outside the bounds is a model
+error. Null is not checked; that is the type's business.
+
+```graphql
+nearby(lat: Float! @range(min: -90, max: 90), km: Int = 10 @range(min: 1, max: 500)): [Festival!]!
 ```
 
 ### Filters, sorts and richer results

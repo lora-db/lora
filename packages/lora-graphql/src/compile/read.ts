@@ -75,6 +75,7 @@ import {
   compilePropsWhere,
   relationshipPattern,
 } from "./filter.js";
+import { outOfRange } from "../model/inputs.js";
 import { memberFields } from "../model/relations.js";
 import { collectFields, fieldArgs, subSelections } from "./selection.js";
 
@@ -1438,6 +1439,7 @@ export const MAX_LIST_ARGUMENT = 1000;
  * List arguments of a @cypher field hold at most `@size(max:)` items, or
  * `maxListArgument` without it: the statement sees the input as is, so
  * the cap is checked before it runs. Every level of a nested list counts.
+ * Int and Float arguments with `@range(min:, max:)` stay inside it.
  */
 function checkListArguments(
   ctx: CompileContext,
@@ -1445,6 +1447,22 @@ function checkListArguments(
   args: Args,
 ): void {
   for (const a of field.args) {
+    if (a.range) {
+      const bad = outOfRange(args[a.name], a.range);
+      if (bad !== undefined) {
+        const { min, max } = a.range;
+        const bounds =
+          min !== undefined && max !== undefined
+            ? `between ${min} and ${max}`
+            : min !== undefined
+              ? `at least ${min}`
+              : `at most ${max}`;
+        throw requestError(
+          "BAD_USER_INPUT",
+          `${field.owner}.${field.name}: argument ${a.name} must be ${bounds} (got ${bad})`,
+        );
+      }
+    }
     if (!a.type.list) continue;
     const max = a.maxItems ?? ctx.maxListArgument ?? MAX_LIST_ARGUMENT;
     const tooLong = (value: unknown): boolean =>

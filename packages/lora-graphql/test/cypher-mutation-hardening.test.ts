@@ -290,3 +290,71 @@ type Mutation {
     ).toContain("argument tags: @size applies to arguments of @cypher fields");
   });
 });
+
+describe("@range on scalar arguments of @cypher fields", () => {
+  const sdl = (arg: string) =>
+    byKey +
+    `type Person @node { key: String! @key  subject: String! @unique }
+type Query {
+  echo(${arg}): Float @cypher(statement: "RETURN $n AS n")
+}`;
+  const echo = "query ($n: Int) { echo(n: $n) }";
+
+  test("a value outside the bounds is BAD_USER_INPUT before any statement", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: sdl("n: Int @range(min: 1, max: 100)"),
+    });
+    expect(await t.data(echo, { n: 1 })).toEqual({ echo: 1 });
+    expect(await t.data(echo, { n: 100 })).toEqual({ echo: 100 });
+    expect(await t.data(echo, { n: null })).toEqual({ echo: null });
+    t.statements.length = 0;
+    const r = await t.run(echo, { n: 101 });
+    expect(codes(r)).toEqual(["BAD_USER_INPUT"]);
+    expect(r.errors?.[0]?.message).toContain(
+      "argument n must be between 1 and 100 (got 101)",
+    );
+    expect(codes(await t.run(echo, { n: 0 }))).toEqual(["BAD_USER_INPUT"]);
+    expect(t.statements).toHaveLength(0);
+  });
+
+  test("one bound, a Float and list items", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: sdl("n: Float @range(max: 0.5)"),
+    });
+    const r = await t.run("{ echo(n: 0.75) }");
+    expect(r.errors?.[0]?.message).toContain("must be at most 0.5");
+    const list = await createTestLoraGraphQL({
+      typeDefs:
+        byKey.concat(`type Person @node { key: String! @key  subject: String! @unique }
+type Query {
+  total(ns: [Int!]! @range(min: 0) @size(max: 3)): Int @cypher(statement: "RETURN reduce(s = 0, x IN $ns | s + x) AS n")
+}`),
+    });
+    expect(await list.data("{ total(ns: [1, 2]) }")).toEqual({ total: 3 });
+    const bad = await list.run("{ total(ns: [1, -2]) }");
+    expect(bad.errors?.[0]?.message).toContain("must be at least 0 (got -2)");
+  });
+
+  test("model checks", () => {
+    expect(problems(sdl("n: String @range(min: 1)"))).toContain(
+      "argument n: @range applies to Int and Float arguments",
+    );
+    expect(problems(sdl("n: Int @range"))).toContain(
+      "argument n: @range needs min, max or both",
+    );
+    expect(problems(sdl("n: Int @range(min: 5, max: 1)"))).toContain(
+      "argument n: @range(min:) is greater than max",
+    );
+    expect(problems(sdl("n: Int = 500 @range(max: 100)"))).toContain(
+      "argument n: its default is outside @range",
+    );
+    expect(
+      problems(
+        `type Person @node {
+  key: String! @key
+  label(n: Int @range(max: 2)): String @customResolver
+}`,
+      ),
+    ).toContain("argument n: @range applies to arguments of @cypher fields");
+  });
+});

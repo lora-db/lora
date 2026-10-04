@@ -193,6 +193,8 @@ export interface CypherArgument {
   description: string | undefined;
   /** `@size(max:)`: the most items a list argument takes. */
   maxItems?: number | undefined;
+  /** `@range(min:, max:)`: bounds of an Int or Float argument. */
+  range?: { min?: number | undefined; max?: number | undefined } | undefined;
 }
 
 export interface CypherField extends FieldBase {

@@ -71,7 +71,7 @@ import {
   RELATIONSHIP_OPERATIONS,
   RULE_REFERENCES,
 } from "./types.js";
-import { isUpdatable } from "./inputs.js";
+import { isUpdatable, outOfRange } from "./inputs.js";
 
 export interface ModelOptions {
   /** Page size used when a list or connection gets no `limit` / `first`. */
@@ -2041,12 +2041,18 @@ function buildCypherField(
     } else if (size !== undefined && size < 1) {
       at(`argument ${a.name}: @size(max:) must be at least 1`);
     }
+    const range = cypherArgumentRange(a, argNamed, d("range"), at);
+    const defaultValue = argumentDefault(a);
+    if (range && outOfRange(defaultValue, range) !== undefined) {
+      at(`argument ${a.name}: its default is outside @range`);
+    }
     cypherArgs.push({
       name: a.name,
       type: { named: argNamed, ...argShape },
-      defaultValue: argumentDefault(a),
+      defaultValue,
       description: a.description ?? undefined,
       ...(size !== undefined ? { maxItems: size } : {}),
+      ...(range ? { range } : {}),
     });
   }
 
@@ -2153,6 +2159,35 @@ function buildCypherField(
  * leaves `defaultValue` undefined, so reading only `defaultValue` drops
  * `peers(limit: Int = 2)` to `peers(limit: Int)` there.
  */
+/** `@range(min:, max:)` of a @cypher argument, checked against its type. */
+function cypherArgumentRange(
+  a: GraphQLArgument,
+  named: string,
+  def: GraphQLDirective,
+  at: (message: string) => void,
+): { min?: number; max?: number } | undefined {
+  const args = directive(def, a, at);
+  if (!args) return undefined;
+  const min = args["min"] as number | null | undefined;
+  const max = args["max"] as number | null | undefined;
+  if (named !== "Int" && named !== "Float") {
+    at(`argument ${a.name}: @range applies to Int and Float arguments`);
+    return undefined;
+  }
+  if (min == null && max == null) {
+    at(`argument ${a.name}: @range needs min, max or both`);
+    return undefined;
+  }
+  if (min != null && max != null && min > max) {
+    at(`argument ${a.name}: @range(min:) is greater than max`);
+    return undefined;
+  }
+  return {
+    ...(min != null ? { min } : {}),
+    ...(max != null ? { max } : {}),
+  };
+}
+
 function argumentDefault(a: GraphQLArgument): unknown {
   if (a.defaultValue !== undefined) return a.defaultValue;
   const d = (a as { default?: { value?: unknown; literal?: ConstValueNode } })
