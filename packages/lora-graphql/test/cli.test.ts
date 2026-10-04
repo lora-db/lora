@@ -185,6 +185,92 @@ test("diff exits non-zero on breaking changes", async () => {
   expect(allowed.code).toBe(0);
 });
 
+test("diff --base reads the SDL at a git ref, joining files", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const repo = await mkdtemp(join(tmpdir(), "lora-graphql-diff-"));
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: repo, stdio: "pipe" });
+  git("init", "-q");
+  const schema = join(repo, "packages", "schema");
+  await mkdir(join(schema, "types"), { recursive: true });
+  const festival = `type Festival @node { key: String! @key  name: String @unique }`;
+  const tag = `type Tag @node { key: String! @key }`;
+  await writeFile(join(schema, "festival.graphql"), festival);
+  await writeFile(join(schema, "types", "tag.graphql"), tag);
+  git("add", ".");
+  git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base");
+
+  // No change: exit 0, from a directory or from its files.
+  const same = await cli("diff", "--base", "HEAD", schema);
+  expect(same.code).toBe(0);
+  expect(same.out).toContain("no changes");
+  expect(
+    (
+      await cli(
+        "diff",
+        "--base",
+        "HEAD",
+        join(schema, "festival.graphql"),
+        join(schema, "types", "tag.graphql"),
+      )
+    ).code,
+  ).toBe(0);
+
+  // A field removed from one file: breaking.
+  await writeFile(
+    join(schema, "types", "tag.graphql"),
+    tag.replace("}", "label: String }"),
+  );
+  await writeFile(
+    join(schema, "festival.graphql"),
+    `type Festival @node { key: String! @key }`,
+  );
+  const breaking = await cli("diff", "--base", "HEAD", schema);
+  expect(breaking.code).toBe(1);
+  expect(breaking.out).toMatch(
+    /breaking {3}(Field )?Festival\.name was removed/,
+  );
+  expect(breaking.out).toMatch(/destructive: no longer needed/);
+  expect(
+    (await cli("diff", "--base", "HEAD", schema, "--allow-breaking")).code,
+  ).toBe(0);
+
+  // A destructive statement alone also fails: dropping an index.
+  await writeFile(
+    join(schema, "festival.graphql"),
+    `type Festival @node { key: String! @key  name: String }`,
+  );
+  const destructive = await cli("diff", "--base", "HEAD", schema);
+  expect(destructive.out).toMatch(/destructive: no longer needed/);
+  expect(destructive.code).toBe(1);
+
+  // The nested file counts on both sides.
+  await writeFile(join(schema, "types", "tag.graphql"), "");
+  const nested = await cli("diff", "--base", "HEAD", schema, "--json");
+  expect(nested.out).toMatch(/Tag was removed/);
+
+  // A ref without the files: nothing to compare. A bad ref: an error.
+  git(
+    "-c",
+    "user.email=t@t",
+    "-c",
+    "user.name=t",
+    "commit",
+    "-qm",
+    "empty",
+    "--allow-empty",
+  );
+  const fresh = join(repo, "new");
+  await mkdir(fresh);
+  await writeFile(join(fresh, "a.graphql"), tag);
+  const none = await cli("diff", "--base", "HEAD", fresh);
+  expect(none.code).toBe(0);
+  expect(none.out).toContain("nothing to compare");
+  const bad = await cli("diff", "--base", "no-such-ref", schema);
+  expect(bad.code).toBe(1);
+  expect(bad.err).toContain("no-such-ref is not a commit");
+});
+
 test("model errors and usage", async () => {
   await writeFile(join(dir, "bad.graphql"), "type A @node { name: String }");
   const bad = await cli("print", join(dir, "bad.graphql"));

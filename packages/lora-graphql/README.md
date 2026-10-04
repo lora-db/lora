@@ -86,6 +86,7 @@ them off):
 | `searchFestivals(query, where, limit)`                         | Full-text search, with `@fulltext`                                                                        |
 | `similarFestivals(vector or to, where, limit)`                 | Vector similarity, with a `@vector` field                                                                 |
 | `node(id:)`                                                    | Any `@relayId` type by global id                                                                          |
+| `nodes(ids:)`                                                  | Many global ids at once, in order; null where unknown or hidden (at most `maxLimit`)                      |
 | `events(where, sort, limit)`                                   | An interface's or union's members together                                                                |
 | `createFestivals`, `upsertFestivals`                           | With `@mutation(CREATE)` (upsert also needs `UPDATE`)                                                     |
 | `updateFestival`, `updateFestivals(where, limit)`              | With `@mutation(UPDATE)`: by key, or bulk by `where`                                                      |
@@ -120,30 +121,30 @@ defined is an error.
 
 Model:
 
-| Directive                                                                                                  | On                | Meaning                                                                                                                                                                                                                                    |
-| ---------------------------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@node(labels:, plural:)`                                                                                  | type              | A node label set; default: the type name                                                                                                                                                                                                   |
-| `@key(generate:)`                                                                                          | field             | Required, unique and immutable. The sort tie-breaker, cursor anchor and mutation address. `generate: true` fills a UUID on create                                                                                                          |
-| `@unique`                                                                                                  | field             | Uniqueness constraint                                                                                                                                                                                                                      |
-| `@uniqueTogether(fields:, where:)`                                                                         | type              | No two nodes (matching `where`) share these fields: scalars, single relationships, at most one list relationship as a set. Repeatable; see [Mutations](#mutations)                                                                         |
-| `@index(kind: RANGE \| TEXT \| POINT)`                                                                     | field             | An explicit index, usually inferred                                                                                                                                                                                                        |
-| `@storedAs(type:)`                                                                                         | custom scalar     | How a custom scalar is stored (`STRING`, `INT`, `FLOAT`, `BOOLEAN`, `DATETIME`, `DATE`); its SDL description is what clients see, whatever implementation `scalars` passes                                                                 |
-| `@relationship(type:, direction:, properties:, queryDirection:, onDelete:, nestedOperations:, aggregate:)` | field             | An edge to a `@node` type, interface or union. `queryDirection: UNDIRECTED` reads both ways; `onDelete: DETACH \| CASCADE \| RESTRICT`; `nestedOperations` lists the nested writes inputs offer; `aggregate: false` drops its aggregates   |
-| `@declareRelationship`                                                                                     | interface field   | Every implementation declares this relationship (type and direction may differ); select it on the interface                                                                                                                                |
-| `@relationshipProperties`                                                                                  | type              | Properties on a relationship type                                                                                                                                                                                                          |
-| `@alias(property:)`                                                                                        | field             | API name differs from the stored property                                                                                                                                                                                                  |
-| `@private`                                                                                                 | field             | Stored, never exposed                                                                                                                                                                                                                      |
-| `@readonly`                                                                                                | field             | Exposed, never client-settable; on a relationship, absent from create and update inputs                                                                                                                                                    |
-| `@settable(onCreate:, onUpdate:)`                                                                          | field             | Which mutations may set it, e.g. set once on create; on a relationship, whether the inputs offer it (an upsert of an existing node keeps it); on a relationship property, `onUpdate: false` also refuses a re-connect that would change it |
-| `@selectable(onRead:, onAggregate:)`                                                                       | field             | `onRead: false` makes a field write-only; on a relationship property, it leaves the edge type too (`onAggregate: false`, the edge aggregates); with every property hidden, the edge has no `properties`                                    |
-| `@default(value:)`                                                                                         | field             | Stored on create when the input omits it; on a relationship property, when the relationship is created                                                                                                                                     |
-| `@timestamp(operations: [CREATE, UPDATE])`                                                                 | field             | Set to the current time; never client-settable. On a relationship property: CREATE when the relationship is created, UPDATE on edge updates and re-connects that set properties                                                            |
-| `@populatedBy(callback:, operations:)`                                                                     | field             | Computed by a named callback on write                                                                                                                                                                                                      |
-| `@cardinality(max:)`                                                                                       | list relationship | Declared fan-out, for cost estimates                                                                                                                                                                                                       |
-| `@cypher(statement:, columnName:)`                                                                         | field             | A field backed by a Cypher statement. Returns scalars, `@node` types, interfaces or unions over them, or object types without `@node` (read from a map)                                                                                    |
-| `@fulltext(indexes: [{ name, fields, analyzer, queryName }])`                                              | type              | FULLTEXT indexes, each with a search root field                                                                                                                                                                                            |
-| `@vector(dimensions:, similarity:, queryName:)`                                                            | `[Float!]` field  | A VECTOR index and a similarity root field                                                                                                                                                                                                 |
-| `@plural(value:)`                                                                                          | interface, union  | The root field's name                                                                                                                                                                                                                      |
+| Directive                                                                                                  | On                | Meaning                                                                                                                                                                                                                                      |
+| ---------------------------------------------------------------------------------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@node(labels:, plural:)`                                                                                  | type              | A node label set; default: the type name                                                                                                                                                                                                     |
+| `@key(generate:)`                                                                                          | field             | Required, unique and immutable. The sort tie-breaker, cursor anchor and mutation address. `generate: true` fills a UUID on create                                                                                                            |
+| `@unique`                                                                                                  | field             | Uniqueness constraint                                                                                                                                                                                                                        |
+| `@uniqueTogether(fields:, where:)`                                                                         | type              | No two nodes (matching `where`) share these fields: scalars, single relationships, at most one list relationship as a set. Repeatable; see [Mutations](#mutations)                                                                           |
+| `@index(kind: RANGE \| TEXT \| POINT)`                                                                     | field             | An explicit index, usually inferred                                                                                                                                                                                                          |
+| `@storedAs(type:)`                                                                                         | custom scalar     | How a custom scalar is stored (`STRING`, `INT`, `FLOAT`, `BOOLEAN`, `DATETIME`, `DATE`); its SDL description is what clients see, whatever implementation `scalars` passes                                                                   |
+| `@relationship(type:, direction:, properties:, queryDirection:, onDelete:, nestedOperations:, aggregate:)` | field             | An edge to a `@node` type, interface or union. `queryDirection: UNDIRECTED` reads both ways; `onDelete: DETACH \| CASCADE \| RESTRICT`; `nestedOperations` lists the nested writes inputs offer; `aggregate: false` drops its aggregates     |
+| `@declareRelationship`                                                                                     | interface field   | Every implementation declares this relationship (type and direction may differ); select it on the interface                                                                                                                                  |
+| `@relationshipProperties`                                                                                  | type              | Properties on a relationship type                                                                                                                                                                                                            |
+| `@alias(property:)`                                                                                        | field             | API name differs from the stored property                                                                                                                                                                                                    |
+| `@private`                                                                                                 | field             | Stored, never exposed                                                                                                                                                                                                                        |
+| `@readonly`                                                                                                | field             | Exposed, never client-settable; on a relationship, absent from create and update inputs                                                                                                                                                      |
+| `@settable(onCreate:, onUpdate:)`                                                                          | field             | Which mutations may set it, e.g. set once on create; on a relationship, whether the inputs offer it (an upsert of an existing node keeps it); on a relationship property, `onUpdate: false` also refuses a re-connect that would change it   |
+| `@selectable(onRead:, onAggregate:)`                                                                       | field             | `onRead: false` makes a field write-only; on a relationship property, it leaves the edge type too (`onAggregate: false`, the edge aggregates); with every property hidden, the edge has no `properties`                                      |
+| `@default(value:)`                                                                                         | field             | Stored on create when the input omits it; on a relationship property, when the relationship is created                                                                                                                                       |
+| `@timestamp(operations: [CREATE, UPDATE])`                                                                 | field             | Set to the current time; client-settable only with an explicit `@settable` and a field rule (see Mutations). On a relationship property: CREATE when the relationship is created, UPDATE on edge updates and re-connects that set properties |
+| `@populatedBy(callback:, operations:)`                                                                     | field             | Computed by a named callback on write                                                                                                                                                                                                        |
+| `@cardinality(max:)`                                                                                       | list relationship | Declared fan-out, for cost estimates                                                                                                                                                                                                         |
+| `@cypher(statement:, columnName:)`                                                                         | field             | A field backed by a Cypher statement. Returns scalars, `@node` types, interfaces or unions over them, or object types without `@node` (read from a map)                                                                                      |
+| `@fulltext(indexes: [{ name, fields, analyzer, queryName }])`                                              | type              | FULLTEXT indexes, each with a search root field                                                                                                                                                                                              |
+| `@vector(dimensions:, similarity:, queryName:)`                                                            | `[Float!]` field  | A VECTOR index and a similarity root field                                                                                                                                                                                                   |
+| `@plural(value:)`                                                                                          | interface, union  | The root field's name                                                                                                                                                                                                                        |
 
 API:
 
@@ -157,6 +158,7 @@ API:
 | `@groupBy`                                            | field                                        | A grouping key of `<plural>Grouped(by:)` (needs `@query(aggregate: true)`)                                    |
 | `@limit(default:, max:)`                              | type, interface, union, list relationship    | Page size bounds                                                                                              |
 | `@size(max:)`                                         | list argument of a `@cypher` field           | The most items it takes (default `maxListArgument`)                                                           |
+| `@range(min:, max:)`                                  | Int / Float argument of a `@cypher` field    | Bounds of its value (each item of a list); outside is `BAD_USER_INPUT`                                        |
 | `@relayId`                                            | `@key` field                                 | Adds a global `id` and the `Node` interface                                                                   |
 | `@authentication(operations:, jwt:)`                  | type, field                                  | Needs an authenticated request, whose claims satisfy `jwt`                                                    |
 | `@authorization(filter:, validate:)`                  | type (filter and validate), field (validate) | Row-level rules, compiled into statements                                                                     |
@@ -437,6 +439,21 @@ mutation {
   remain.
 - **`@populatedBy(callback: "slug")`** computes a field with
   `callbacks: { slug: ({ input, key, context, operation }) => … }`.
+- **Supplying a computed field.** `@timestamp` and `@populatedBy` fields
+  are not in the inputs, unless `@settable(onCreate: true)` (or
+  `onUpdate: true`) says so explicitly and a field-level
+  `@authorization(validate:)` rule for that operation decides who may
+  supply the value. A supplied value is stored as given (a seed backfilling
+  history, an import keeping its dates); an omitted one is computed as
+  before. Without such a rule the combination is a model error, so a
+  computed field never becomes client-settable by accident: the schema's
+  bypass and `@authentication` are not rules here, and a bare `@settable`
+  (its defaults) changes nothing. Relationship properties cannot opt in.
+
+  ```graphql
+  createdAt: DateTime! @timestamp(operations: [CREATE]) @settable(onCreate: true)
+    @authorization(validate: [{ operations: [CREATE], where: { jwt: { roles: { includes: "admin" } } } }])
+  ```
 
 Each mutation runs in one interactive transaction and checks, before it
 commits:
@@ -694,7 +711,7 @@ one seek, in the mutation's transaction, before the statement. Every root
 `@cypher` field is in the access matrix, guarded or not (Mutation fields
 under the operation `EXECUTE`).
 
-### List arguments
+### List and number arguments
 
 The statement sees its arguments as sent, so list arguments are capped:
 at most `@size(max:)` items, or `maxListArgument` (default 1000) without
@@ -703,6 +720,15 @@ nested list counts.
 
 ```graphql
 createPost(key: String!, hashtags: [String!] = [] @size(max: 30)): Post
+```
+
+Int and Float arguments take bounds the same way: `@range(min:, max:)`
+(either or both, inclusive) checks the value, or each item of a list,
+before the statement runs, and a default outside the bounds is a model
+error. Null is not checked; that is the type's business.
+
+```graphql
+nearby(lat: Float! @range(min: -90, max: 90), km: Int = 10 @range(min: 1, max: 500)): [Festival!]!
 ```
 
 ### Filters, sorts and richer results
@@ -1007,13 +1033,32 @@ with READ validate rules: a row failing the rule reads the field as
 `FORBIDDEN`, and filtering through the field applies the rule too.
 
 Relationship properties take field-level `@authentication` and
-`@authorization(validate:)` for `READ`, `CREATE` and `UPDATE`. One
-`@relationshipProperties` type can serve fields on both ends, so these
-rules test claims (`jwt`) only; a `node` part is a model error. Setting
+`@authorization(validate:)` for `READ`, `CREATE` and `UPDATE`. They test
+claims (`jwt`); a `node` part is a model error. Setting
 the property on connect or nested create checks `CREATE` for a new
 relationship and `UPDATE` for one that already exists; `update: { edge }`
 checks `UPDATE`. A request the READ rules refuse reads the property as
 `FORBIDDEN` and cannot filter, sort or aggregate by it.
+
+When every relationship field using the properties type declares the
+same ends (owner and target `@node` types), READ rules may also test the
+relationship's `source`, `target` and `edge`, as a relationship rule
+does, and `viewer`. They decide per relationship: one edge can carry an
+`rsvp` every member reads and a marker only its member reads. A
+relationship failing them reads that property as `FORBIDDEN` (the
+others still read), and nothing may filter, sort or aggregate by it.
+Writes stay claims-only: such a part in a `CREATE` or `UPDATE` rule, or
+on a type whose fields disagree on the ends, is a model error.
+
+```graphql
+type Membership @relationshipProperties {
+  rsvp: String
+  lastReadAt: String
+    @authorization(
+      validate: [{ operations: [READ], where: { target: { isViewer: true } } }]
+    )
+}
+```
 
 ### Rules on relationships
 
@@ -1173,6 +1218,33 @@ read carries a read-set (labels and relationship types);
 that falls `maxQueuedChanges` (default 1000) behind is ended with an error
 rather than buffering without bound.
 
+`execute({ ..., readSet: true })` returns the operation's read-set as a
+non-enumerable `readSet` on the result (it never reaches the client), so
+a response cache can drop only the entries a write may have changed
+instead of clearing everything:
+
+```ts
+const cache = new Map<string, LoraExecutionResult>();
+
+async function cachedExecute(key: string, args: ExecuteArgs) {
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const result = await lora.execute({ ...args, readSet: true });
+  if (!result.errors) cache.set(key, result);
+  return result;
+}
+
+lora.onWrite((change) => {
+  for (const [key, result] of cache)
+    if (lora.affects(result.readSet!, change)) cache.delete(key);
+});
+```
+
+A read-set is label-level, and over-approximates: a `@cypher` statement
+can read anything, so a read that ran one (and any mutation) carries
+`opaque: true`, which every change affects. `@customResolver` fields
+are not seen; key the cache so they do not need to be.
+
 ## Subscriptions
 
 ```graphql
@@ -1291,7 +1363,8 @@ lora-graphql requirements schema.graphql --ddl # constraints and indexes, as DDL
 lora-graphql check schema.graphql --operations src/operations
 lora-graphql compile schema.graphql --operations src/operations --out generated
 lora-graphql analyze schema.graphql --database ./data   # statistics JSON
-lora-graphql diff old.graphql new.graphql      # exit 1 on breaking changes
+lora-graphql diff old.graphql new.graphql      # exit 1 on breaking or destructive changes
+lora-graphql diff --base origin/main schema/   # the same, against a git ref
 lora-graphql directives                        # directive SDL for editors
 ```
 
@@ -1312,11 +1385,41 @@ files, and exits non-zero on any finding. It is the CI gate. Options:
 - `--database dir [--name app]`: check an existing database as it is, and
   report indexes it has that the API does not use.
 
-`access` prints who may do what: for every type, guarded field and root
-`@cypher` field, each operation as each kind of caller (anonymous, authenticated, and each role
+`diff` exits 1 when the change breaks clients or needs a destructive
+database statement (a dropped constraint or index, a relabel, a moved
+property); `--allow-breaking` accepts both, e.g. when a PR is labelled
+for it. `--base <ref>` takes the schema as files or directories (searched
+recursively for `.graphql` / `.gql`), concatenates each side in path
+order, and compares the files at that git ref with the working tree, so
+a schema split over many files needs no script. A ref that has none of
+the paths has nothing to compare (exit 0); a ref that is not a commit is
+an error.
+
+`access` prints who may do what: for every type, guarded field (READ,
+and CREATE / UPDATE where field-level rules guard the write), rule on a
+relationship property (READ, CREATE, UPDATE) and root `@cypher` field,
+each operation as each kind of caller (anonymous, authenticated, and each role
 the rules test, such as `roles:admin`), with the verdict (`allowed`,
 `filtered`, `validated`, `masked`, `denied`, `unauthenticated`) and the
-rules that decide it. `lora.accessMatrix()` returns the same list; its
+rules that decide it. A `@key(scope: VIEWER)` type's CREATE reads
+`unauthenticated` for anonymous callers and `validated` by `key scope`
+for the rest.
+
+`lora.operationAccess(document | persistedId, operationName?)` answers
+the same question for one operation: each root field (fragments
+followed) with its type, the operations it needs (an upsert needs
+`CREATE` and `UPDATE`) and the verdict per caller, plus the most
+restrictive verdict per caller over all root fields. A field over
+several types (`node`, a union) reports the most restrictive member.
+Root fields only: nested selections answer to their own types' rules.
+To keep admin-only operations out of client bundles:
+
+````ts
+const { verdicts } = lora.operationAccess(source);
+const adminOnly = ["anonymous", "authenticated"].every((p) =>
+  ["denied", "unauthenticated"].includes(verdicts[p]!),
+);
+``` `lora.accessMatrix()` returns the same list; its
 order is stable, so a snapshot in CI turns access changes into diffs.
 
 `check` lints authorization too:
@@ -1393,7 +1496,7 @@ await expectSeeks(
   `{ festivals(where: { name: { eq: "Sunland" } }) { key } }`,
 );
 t.close();
-```
+````
 
 `createTestLoraGraphQL` builds an in-memory database with the schema
 asserted, runs the seed, and records every statement in `t.statements`.
@@ -1466,7 +1569,18 @@ Errors carry `extensions.code`: `BAD_USER_INPUT`, `INVALID_CURSOR`,
 `DATABASE_ERROR` (with an `id`, also given to `onError`),
 `PERSISTED_QUERY_ONLY` (`execute()` or `subscribe()` got a document under
 `persistedOnly`) and `WRONG_OPERATION_TYPE` (`execute()` got a
-subscription, or `subscribe()` a query or mutation). An invalid SDL
+subscription, or `subscribe()` a query or mutation). The same list is
+exported as `LORA_GRAPHQL_ERROR_CODES`, and `isLoraGraphQLError(err)`
+tells a library error (also a serialized one) from anything else:
+
+```ts
+import { isLoraGraphQLError } from "@loradb/lora-graphql";
+
+for (const err of result.errors ?? [])
+  if (isLoraGraphQLError(err) && err.extensions.code === "FORBIDDEN") deny();
+```
+
+An invalid SDL
 throws one `ModelError` listing every problem, each located by type and
 field.
 
@@ -1491,6 +1605,17 @@ With `NODE_ENV=production`, database errors are masked and introspection
 is off unless configured otherwise. See
 [the threat model](../../docs/design/graphql-threat-model.md) for what
 the library trusts and where each check runs.
+
+The plugin also checks, once, that the server runs the library's own
+`graphql` copy. With two copies (a nested `node_modules/graphql`, a
+dual CJS/ESM load) the library's errors are not instances of the
+server's `GraphQLError`, so Yoga masks every `FORBIDDEN` or
+`BAD_USER_INPUT` as "Unexpected error". The first schema or validation
+from a foreign copy logs a `console.error` naming the problem and the
+fix: dedupe `graphql` (`npm dedupe`, or `pnpm.overrides` / yarn
+`resolutions`) until `npm ls graphql` shows one copy. The standalone
+`envelopPlugin(guards, onRealmMismatch)` takes a reporter in place of
+`console.error`.
 
 ### Observability
 

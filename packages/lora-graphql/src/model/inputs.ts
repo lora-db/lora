@@ -79,3 +79,26 @@ export function hasSettable(
 ): boolean {
   return [...props.fields.values()].some((f) => settable(f, op));
 }
+
+/**
+ * The first value in `value` (each item, for a list) outside `range`, or
+ * undefined. Null and absent values are not checked: nullability is the
+ * type's business.
+ */
+export function outOfRange(
+  value: unknown,
+  range: { min?: number | undefined; max?: number | undefined },
+): number | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const bad = outOfRange(item, range);
+      if (bad !== undefined) return bad;
+    }
+    return undefined;
+  }
+  if (typeof value !== "number" && typeof value !== "bigint") return undefined;
+  const n = Number(value);
+  if (range.min !== undefined && n < range.min) return n;
+  if (range.max !== undefined && n > range.max) return n;
+  return undefined;
+}

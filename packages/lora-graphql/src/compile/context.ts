@@ -8,7 +8,12 @@ export interface CompileContext extends SelectionContext {
   params: Record<string, unknown>;
   vars: Set<string>;
   /** Labels and relationship types the statement reads (S5 read-set). */
-  reads: { labels: Set<string>; relationships: Set<string> };
+  reads: {
+    labels: Set<string>;
+    relationships: Set<string>;
+    /** A `@cypher` statement ran: what it reads is unknown. */
+    opaque?: boolean;
+  };
   /** The request's claims, or undefined when unauthenticated. */
   jwt: Record<string, unknown> | undefined;
   /** Compiling an authorization rule: nested rules are not applied. */

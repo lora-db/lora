@@ -107,7 +107,7 @@ export const directiveTypeDefs = /* GraphQL */ `
     onAggregate: Boolean = true
   ) on FIELD_DEFINITION
 
-  "Set by a callback passed to LoraGraphQL({ callbacks }) on these operations; never client-settable."
+  "Set by a callback passed to LoraGraphQL({ callbacks }) on these operations. Client-settable only with an explicit @settable(onCreate: true) or (onUpdate: true) and a field-level @authorization(validate:) rule for that operation."
   directive @populatedBy(
     callback: String!
     operations: [TimestampOperation!]! = [CREATE, UPDATE]
@@ -136,6 +136,9 @@ export const directiveTypeDefs = /* GraphQL */ `
 
   "The most items a list argument of a @cypher field takes; more is BAD_USER_INPUT before the statement runs. Without it, maxListArgument applies."
   directive @size(max: Int!) on ARGUMENT_DEFINITION
+
+  "Bounds of an Int or Float argument of a @cypher field (each item, for a list); a value outside them is BAD_USER_INPUT before the statement runs."
+  directive @range(min: Float, max: Float) on ARGUMENT_DEFINITION
 
   "Generated read operations for a node type. Reads are on by default."
   directive @query(
@@ -207,7 +210,7 @@ export const directiveTypeDefs = /* GraphQL */ `
   "Value stored on create when the input leaves the field out."
   directive @default(value: DefaultValue!) on FIELD_DEFINITION
 
-  "Set to the current time by the listed operations; never client-settable."
+  "Set to the current time by the listed operations. Client-settable only with an explicit @settable(onCreate: true) or (onUpdate: true) and a field-level @authorization(validate:) rule for that operation."
   directive @timestamp(
     operations: [TimestampOperation!]! = [CREATE, UPDATE]
   ) on FIELD_DEFINITION

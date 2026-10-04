@@ -35,6 +35,7 @@ import {
   UNEXPANDED,
   checkViewer,
   desugarRule,
+  testsRelationshipEnds,
   type DesugarContext,
   type NamedRules,
   type ViewerMapping,
@@ -73,7 +74,7 @@ import {
   RELATIONSHIP_OPERATIONS,
   RULE_REFERENCES,
 } from "./types.js";
-import { isUpdatable } from "./inputs.js";
+import { isUpdatable, outOfRange } from "./inputs.js";
 
 export interface ModelOptions {
   /** Page size used when a list or connection gets no `limit` / `first`. */
@@ -1037,10 +1038,45 @@ export function buildModel(
       if (ends) desugar(undefined, node.name, f.name, rel, ends);
     }
   }
+  // A relationship property's rules may test the relationship's ends
+  // when every relationship field using its type declares the same ones.
+  const propertyEnds = new Map<string, RuleEnds | string>();
+  for (const props of relationshipProperties.values()) {
+    const users: RelationshipField[] = [];
+    for (const node of nodes.values()) {
+      for (const f of node.fields.values()) {
+        if (f.kind === "relationship" && f.properties === props.name) {
+          users.push(f);
+        }
+      }
+    }
+    const pairs = [...new Set(users.map((f) => `${f.owner} → ${f.target}`))];
+    const first = users[0] && ruleEnds(users[0]);
+    propertyEnds.set(
+      props.name,
+      users.length === 0
+        ? `no relationship field uses ${props.name}`
+        : pairs.length > 1
+          ? `the relationship fields using ${props.name} declare different ends (${users.map((f) => `${f.owner}.${f.name}: ${f.owner} → ${f.target}`).join(", ")})`
+          : (first ??
+            `${pairs[0]} has an interface or union end; source and target need @node types`),
+    );
+  }
   for (const props of relationshipProperties.values()) {
     for (const f of props.fields.values()) {
-      if (f.authorization) {
-        desugar(undefined, props.name, f.name, f.authorization.validate);
+      if (!f.authorization) continue;
+      const ends = propertyEnds.get(props.name);
+      const row = f.authorization.validate.filter((r) =>
+        testsRelationshipEnds(r.where),
+      );
+      desugar(
+        undefined,
+        props.name,
+        f.name,
+        f.authorization.validate.filter((r) => !row.includes(r)),
+      );
+      if (typeof ends === "object") {
+        desugar(undefined, props.name, f.name, row, ends);
       }
     }
   }
@@ -1216,6 +1252,21 @@ export function buildModel(
         );
       }
       for (const rule of f.authorization?.validate ?? []) {
+        const ends = testsRelationshipEnds(rule.where)
+          ? propertyEnds.get(props.name)
+          : undefined;
+        if (typeof ends === "string") {
+          at(
+            `@authorization: source, target and edge need every relationship field using ${props.name} to declare the same ends, but ${ends}`,
+          );
+          continue;
+        }
+        if (ends && [...rule.operations].some((op) => op !== "READ")) {
+          at(
+            "@authorization: source, target and edge decide per relationship, so they take READ rules only; CREATE and UPDATE rules on a relationship property test claims",
+          );
+          continue;
+        }
         checkRuleWhere(
           nodes,
           relationshipProperties,
@@ -1225,6 +1276,8 @@ export function buildModel(
           rule.where,
           problems,
           jwtShape,
+          ends ? viewerNode : undefined,
+          ends,
         );
       }
       if (f.authenticationJwt) {
@@ -1276,6 +1329,7 @@ export function buildModel(
     viewer,
     bypass: defaults.bypass,
     cursorSecret: options.cursorSecret,
+    maxLimit: globalLimit.max,
   };
   // A @cypher mutation's write-set is unknown: @uniqueTogether types it
   // may write are checked by comparing every node of the type.
@@ -1540,6 +1594,33 @@ function buildScalarField(
     }
   }
 
+  // A computed field (@timestamp, @populatedBy) is never client-settable,
+  // unless `@settable(onCreate: true)` / `onUpdate: true` says so
+  // explicitly and a field-level rule decides who may supply it: then the
+  // input offers it, and the computation fills it when it is omitted.
+  const computed = timestamp !== undefined || !!populatedArgs;
+  const supplied = {
+    create: computed && explicitlyTrue(f, "settable", "onCreate"),
+    update: computed && !key && explicitlyTrue(f, "settable", "onUpdate"),
+  };
+  if ((supplied.create || supplied.update) && !opts.allowKey) {
+    at(
+      "a @timestamp or @populatedBy relationship property cannot be made @settable",
+    );
+    supplied.create = supplied.update = false;
+  }
+  for (const [op, arg] of [
+    ["CREATE", "onCreate"],
+    ["UPDATE", "onUpdate"],
+  ] as const) {
+    if (!supplied[op === "CREATE" ? "create" : "update"]) continue;
+    if (!fieldAuthorization?.validate.some((r) => r.operations.has(op))) {
+      at(
+        `@settable(${arg}: true) on a @timestamp or @populatedBy field needs a field-level @authorization(validate:) rule for ${op}: it decides who may supply the value (the schema's bypass is no such rule)`,
+      );
+    }
+  }
+
   const field: ScalarField = {
     kind: "scalar",
     name: f.name,
@@ -1562,15 +1643,21 @@ function buildScalarField(
     defaultValue,
     timestamp,
     readonly:
-      readonlyFlag || isPrivate || timestamp !== undefined || !!populatedArgs,
+      readonlyFlag ||
+      isPrivate ||
+      (computed && !supplied.create && !supplied.update),
     settableOn: {
       create:
-        !(readonlyFlag || isPrivate || timestamp || populatedArgs) &&
-        ((settableArgs?.["onCreate"] as boolean | undefined) ?? true),
+        !(readonlyFlag || isPrivate) &&
+        (computed
+          ? supplied.create
+          : ((settableArgs?.["onCreate"] as boolean | undefined) ?? true)),
       update:
         !key &&
-        !(readonlyFlag || isPrivate || timestamp || populatedArgs) &&
-        ((settableArgs?.["onUpdate"] as boolean | undefined) ?? true),
+        !(readonlyFlag || isPrivate) &&
+        (computed
+          ? supplied.update
+          : ((settableArgs?.["onUpdate"] as boolean | undefined) ?? true)),
     },
     selectableOn: {
       read:
@@ -1611,6 +1698,19 @@ function buildScalarField(
   }
   if (vectorQuery) vectorQueryNames.set(field, vectorQuery);
   return field;
+}
+
+/** The directive on `f` spells out `arg: true` (a default does not count). */
+function explicitlyTrue(
+  f: GraphQLField<unknown, unknown>,
+  directiveName: string,
+  arg: string,
+): boolean {
+  const dir = f.astNode?.directives?.find(
+    (x) => x.name.value === directiveName,
+  );
+  const value = dir?.arguments?.find((a) => a.name.value === arg)?.value;
+  return value?.kind === Kind.BOOLEAN && value.value;
 }
 
 function keyArgs(
@@ -2098,12 +2198,18 @@ function buildCypherField(
     } else if (size !== undefined && size < 1) {
       at(`argument ${a.name}: @size(max:) must be at least 1`);
     }
+    const range = cypherArgumentRange(a, argNamed, d("range"), at);
+    const defaultValue = argumentDefault(a);
+    if (range && outOfRange(defaultValue, range) !== undefined) {
+      at(`argument ${a.name}: its default is outside @range`);
+    }
     cypherArgs.push({
       name: a.name,
       type: { named: argNamed, ...argShape },
-      defaultValue: argumentDefault(a),
+      defaultValue,
       description: a.description ?? undefined,
       ...(size !== undefined ? { maxItems: size } : {}),
+      ...(range ? { range } : {}),
     });
   }
 
@@ -2210,6 +2316,35 @@ function buildCypherField(
  * leaves `defaultValue` undefined, so reading only `defaultValue` drops
  * `peers(limit: Int = 2)` to `peers(limit: Int)` there.
  */
+/** `@range(min:, max:)` of a @cypher argument, checked against its type. */
+function cypherArgumentRange(
+  a: GraphQLArgument,
+  named: string,
+  def: GraphQLDirective,
+  at: (message: string) => void,
+): { min?: number; max?: number } | undefined {
+  const args = directive(def, a, at);
+  if (!args) return undefined;
+  const min = args["min"] as number | null | undefined;
+  const max = args["max"] as number | null | undefined;
+  if (named !== "Int" && named !== "Float") {
+    at(`argument ${a.name}: @range applies to Int and Float arguments`);
+    return undefined;
+  }
+  if (min == null && max == null) {
+    at(`argument ${a.name}: @range needs min, max or both`);
+    return undefined;
+  }
+  if (min != null && max != null && min > max) {
+    at(`argument ${a.name}: @range(min:) is greater than max`);
+    return undefined;
+  }
+  return {
+    ...(min != null ? { min } : {}),
+    ...(max != null ? { max } : {}),
+  };
+}
+
 function argumentDefault(a: GraphQLArgument): unknown {
   if (a.defaultValue !== undefined) return a.defaultValue;
   const d = (a as { default?: { value?: unknown; literal?: ConstValueNode } })

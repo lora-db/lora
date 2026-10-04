@@ -185,10 +185,12 @@ describe("no directive is silently ignored", () => {
 
   test("every library directive has a sample use", () => {
     // @storedAs (on scalars) and @authorizationDefaults (on the schema)
-    // have one place each, which graphql-js enforces; @size (on arguments
-    // of @cypher fields) is tested in cypher-mutation-hardening.test.ts.
+    // have one place each, which graphql-js enforces; @size and @range (on
+    // arguments of @cypher fields) are tested in
+    // cypher-mutation-hardening.test.ts.
     const elsewhere = new Set([
       "size",
+      "range",
       "storedAs",
       "authorizationDefaults",
       "authorizationRules",

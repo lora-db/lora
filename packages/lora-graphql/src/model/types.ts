@@ -193,6 +193,8 @@ export interface CypherArgument {
   description: string | undefined;
   /** `@size(max:)`: the most items a list argument takes. */
   maxItems?: number | undefined;
+  /** `@range(min:, max:)`: bounds of an Int or Float argument. */
+  range?: { min?: number | undefined; max?: number | undefined } | undefined;
 }
 
 export interface CypherField extends FieldBase {
@@ -435,6 +437,8 @@ export interface GraphModel {
   viewer: { claim: string; type: string; field: string } | undefined;
   /** Secret cursors are signed with, when configured. */
   cursorSecret: string | undefined;
+  /** The global page-size cap (`maxLimit`); also caps `nodes(ids:)`. */
+  maxLimit?: number | undefined;
 }
 
 export interface ModelWarning {

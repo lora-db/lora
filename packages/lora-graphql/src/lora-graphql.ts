@@ -38,7 +38,9 @@ import { lintModel, unguardedMutations } from "./analyze/lint.js";
 import {
   accessLints,
   accessMatrix,
+  operationAccess,
   type AccessEntry,
+  type OperationAccess,
 } from "./analyze/access.js";
 import { analyze, type Statistics } from "./analyze/statistics.js";
 import { newContext, type CompileContext } from "./compile/context.js";
@@ -389,6 +391,26 @@ export interface ExecuteArgs {
   variables?: Record<string, unknown>;
   operationName?: string;
   context?: unknown;
+  /**
+   * Attach the operation's read-set to the result as a non-enumerable
+   * `readSet` property (never serialized to the client), for a response
+   * cache to invalidate with `lora.affects(result.readSet, change)`.
+   */
+  readSet?: boolean;
+}
+
+/** `execute()`'s result; `readSet` is there when `ExecuteArgs.readSet` asked. */
+export type LoraExecutionResult = ExecutionResult & {
+  readonly readSet?: ReadSet;
+};
+
+/** Read-sets being collected, by GraphQL context (see `ExecuteArgs.readSet`). */
+interface ReadCollector {
+  labels: Set<string>;
+  relationships: Set<string>;
+  opaque: boolean;
+  /** Concurrent `execute()` calls sharing the context. */
+  active: number;
 }
 
 const DOCUMENT_CACHE_SIZE = 500;
@@ -522,6 +544,8 @@ export class LoraGraphQL {
   readonly #mutationTransaction: "field" | "operation";
   #warnedNotAtomic = false;
   readonly #timing: LoraGraphQLOptions["timing"];
+  /** Per-request read-set collectors, by GraphQL context. */
+  readonly #readSets = new WeakMap<object, ReadCollector>();
   /** Per-request timing collectors, by GraphQL context (see `timing`). */
   readonly #timings = new WeakMap<
     object,
@@ -917,6 +941,37 @@ export class LoraGraphQL {
     return accessMatrix(this.model, this.getSchema());
   }
 
+  /**
+   * Who may run an operation: per root field, the verdict for each kind
+   * of caller, from the same rules as `accessMatrix()`, plus the most
+   * restrictive verdict per caller. Takes a document (source or parsed)
+   * or the id of a persisted operation; `operationName` picks one of
+   * several operations.
+   */
+  operationAccess(
+    document: string | DocumentNode,
+    operationName?: string,
+  ): OperationAccess {
+    const doc =
+      typeof document !== "string"
+        ? document
+        : (this.#persisted.get(document) ?? parse(document));
+    const operation = getOperationAST(doc, operationName);
+    if (!operation) {
+      throw new Error(
+        operationName
+          ? `operationAccess: no operation named ${operationName}`
+          : "operationAccess: the document has no single operation; pass operationName",
+      );
+    }
+    const fragments = new Map<string, FragmentDefinitionNode>();
+    for (const def of doc.definitions) {
+      if (def.kind === Kind.FRAGMENT_DEFINITION)
+        fragments.set(def.name.value, def);
+    }
+    return operationAccess(this.model, this.getSchema(), operation, fragments);
+  }
+
   async check(options: CheckOptions = {}): Promise<CheckReport> {
     const report: CheckReport = {
       ok: true,
@@ -1179,7 +1234,50 @@ export class LoraGraphQL {
    * subscription runs with {@link LoraGraphQL.subscribe}; given one, this
    * returns a `WRONG_OPERATION_TYPE` error.
    */
-  async execute(args: ExecuteArgs): Promise<ExecutionResult> {
+  async execute(args: ExecuteArgs): Promise<LoraExecutionResult> {
+    if (!args.readSet) return this.#execute(args);
+    const context = args.context ?? {};
+    if (typeof context !== "object" || context === null) {
+      return this.#execute(args);
+    }
+    // Calls sharing a context share one collector: the union of their
+    // reads over-approximates each, which is safe for invalidation.
+    let collector = this.#readSets.get(context);
+    if (collector) collector.active++;
+    else {
+      collector = {
+        labels: new Set(),
+        relationships: new Set(),
+        opaque: false,
+        active: 1,
+      };
+      this.#readSets.set(context, collector);
+    }
+    let result: ExecutionResult;
+    try {
+      result = await this.#execute({ ...args, context });
+    } finally {
+      if (--collector.active === 0) this.#readSets.delete(context);
+    }
+    const document = this.#document(args);
+    const operation = isDocument(document)
+      ? getOperationAST(document, args.operationName)
+      : undefined;
+    const readSet: ReadSet = {
+      labels: [...collector.labels].sort(),
+      relationships: [...collector.relationships].sort(),
+      // A mutation's reads follow its writes; nobody caches it.
+      ...(collector.opaque || operation?.operation === "mutation"
+        ? { opaque: true }
+        : {}),
+    };
+    return Object.defineProperty({ ...result }, "readSet", {
+      value: readSet,
+      enumerable: false,
+    }) as LoraExecutionResult;
+  }
+
+  async #execute(args: ExecuteArgs): Promise<ExecutionResult> {
     const started = performance.now();
     const document = this.#document(args);
     if (!isDocument(document)) return document;
@@ -1592,6 +1690,16 @@ export class LoraGraphQL {
     shareKey?: string,
   ): Promise<unknown> {
     this.#charge(field, compiled.cost, context, info);
+    const collector =
+      typeof context === "object" && context !== null
+        ? this.#readSets.get(context)
+        : undefined;
+    if (collector) {
+      for (const l of compiled.reads.labels) collector.labels.add(l);
+      for (const r of compiled.reads.relationships)
+        collector.relationships.add(r);
+      if (compiled.reads.opaque) collector.opaque = true;
+    }
     for (const statement of compiled.statements) {
       this.#onStatement?.({ field, statement });
     }
@@ -2779,14 +2887,15 @@ export class LoraGraphQL {
   ): Promise<{ tx: LoraTransaction; context: object }> {
     const tx = await this.begin();
     const base = (context ?? {}) as object;
-    return {
-      tx,
-      context: Object.assign(
-        Object.create(Object.getPrototypeOf(base) as object) as object,
-        base,
-        { transaction: tx },
-      ),
-    };
+    const opened = Object.assign(
+      Object.create(Object.getPrototypeOf(base) as object) as object,
+      base,
+      { transaction: tx },
+    );
+    // The read-set collector follows the operation into its transaction.
+    const collector = this.#readSets.get(base);
+    if (collector) this.#readSets.set(opened, collector);
+    return { tx, context: opened };
   }
 
   /**

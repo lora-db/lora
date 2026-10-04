@@ -38,6 +38,9 @@ export type Position =
   | "field of an object type without @node"
   | "@jwt claim";
 
+/** Directives on arguments of @cypher fields. */
+const ARGUMENT_DIRECTIVES: ReadonlySet<string> = new Set(["size", "range"]);
+
 /**
  * The directives each position applies, plus those it refuses with a more
  * specific message elsewhere in the model build (listed so they are not
@@ -301,7 +304,7 @@ export function checkDirectivePositions(
       check(f.astNode?.directives ?? [], fieldPosition(f), t.name, f.name);
     }
   }
-  // Argument directives (`@size`) apply to arguments of @cypher fields:
+  // Argument directives (`@size`, `@range`) apply to arguments of @cypher fields:
   // every other argument is generated, or passed to a resolver as is.
   for (const t of ctx.userTypes) {
     if (!isObjectType(t) && !isInterfaceType(t)) continue;
@@ -310,7 +313,8 @@ export function checkDirectivePositions(
       for (const a of f.args) {
         for (const dir of a.astNode?.directives ?? []) {
           const name = dir.name.value;
-          if (!ours.has(name) || (cypher && name === "size")) continue;
+          if (!ours.has(name) || (cypher && ARGUMENT_DIRECTIVES.has(name)))
+            continue;
           problems.push({
             type: t.name,
             field: f.name,

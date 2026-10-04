@@ -41,11 +41,12 @@ import {
   checkAuthentication,
   checkFieldAuthentication,
   checkPropertyAccess,
+  propertyReadAccess,
+  propertyReadGuard,
   fieldReadGuard,
   fieldValidate,
   maskedValue,
   maskSettled,
-  propertyAccess,
   refusedEdgeRead,
   relationshipRules,
   viewerKey,
@@ -75,6 +76,7 @@ import {
   compilePropsWhere,
   relationshipPattern,
 } from "./filter.js";
+import { outOfRange } from "../model/inputs.js";
 import { memberFields } from "../model/relations.js";
 import { collectFields, fieldArgs, subSelections } from "./selection.js";
 
@@ -96,6 +98,11 @@ export interface SeekExpectation {
 export interface ReadSet {
   labels: string[];
   relationships: string[];
+  /**
+   * A `@cypher` statement (or a mutation) is part of the read: it may
+   * read anything, so every change affects it.
+   */
+  opaque?: boolean;
 }
 
 export interface CompiledRead {
@@ -208,6 +215,7 @@ export function readSet(ctx: CompileContext): ReadSet {
   return {
     labels: [...ctx.reads.labels].sort(),
     relationships: [...ctx.reads.relationships].sort(),
+    ...(ctx.reads.opaque ? { opaque: true } : {}),
   };
 }
 
@@ -1409,6 +1417,7 @@ export function bindStatement(
   args: Args,
 ): string {
   checkListArguments(ctx, field, args);
+  ctx.reads.opaque = true;
   const texts = new Map<string, string>();
   for (const p of field.params) {
     if (p === "viewer") {
@@ -1447,6 +1456,7 @@ export const MAX_LIST_ARGUMENT = 1000;
  * List arguments of a @cypher field hold at most `@size(max:)` items, or
  * `maxListArgument` without it: the statement sees the input as is, so
  * the cap is checked before it runs. Every level of a nested list counts.
+ * Int and Float arguments with `@range(min:, max:)` stay inside it.
  */
 function checkListArguments(
   ctx: CompileContext,
@@ -1454,6 +1464,22 @@ function checkListArguments(
   args: Args,
 ): void {
   for (const a of field.args) {
+    if (a.range) {
+      const bad = outOfRange(args[a.name], a.range);
+      if (bad !== undefined) {
+        const { min, max } = a.range;
+        const bounds =
+          min !== undefined && max !== undefined
+            ? `between ${min} and ${max}`
+            : min !== undefined
+              ? `at least ${min}`
+              : `at most ${max}`;
+        throw requestError(
+          "BAD_USER_INPUT",
+          `${field.owner}.${field.name}: argument ${a.name} must be ${bounds} (got ${bad})`,
+        );
+      }
+    }
     if (!a.type.list) continue;
     const max = a.maxItems ?? ctx.maxListArgument ?? MAX_LIST_ARGUMENT;
     const tooLong = (value: unknown): boolean =>
@@ -2325,7 +2351,11 @@ function projectRelationshipConnection(
   if (props && sel.properties.length > 0) {
     edgeEntries.push({
       key: "properties",
-      value: projectProperties(ctx, props.name, r, sel.properties, edgeRead),
+      value: projectProperties(ctx, props.name, r, sel.properties, edgeRead, {
+        rel,
+        owner: parent,
+        target: x,
+      }),
     });
   }
 
@@ -2653,6 +2683,8 @@ function projectProperties(
   variable: string,
   sets: SelectionSetNode[],
   guard?: Expr | false,
+  /** The relationship being read, for rules over its ends. */
+  ends?: { rel: RelationshipField; owner: string; target: string },
 ): Expr {
   const props = ctx.model.relationshipProperties.get(propsType)!;
   const objType = ctx.schema.getType(propsType) as GraphQLObjectType;
@@ -2660,9 +2692,37 @@ function projectProperties(
   for (const [key, nodes] of collectFields(ctx, objType, sets)) {
     const field = props.fields.get(nodes[0]!.name.value);
     if (!field) continue;
-    // Rules on a relationship property test claims only: a request they
-    // refuse reads it as FORBIDDEN, on every row that has it.
-    if (propertyAccess(ctx, field, "READ") !== "allowed") {
+    // Rules over the relationship's ends (or the caller's node) decide
+    // per relationship: a failing one reads the property as FORBIDDEN.
+    const access = propertyReadAccess(ctx, field);
+    const own =
+      access === "row" && ends
+        ? propertyReadGuard(ctx, ends.rel, field, {
+            owner: ends.owner,
+            target: ends.target,
+            rel: variable,
+          })
+        : undefined;
+    if (access === "row" && own !== undefined) {
+      const when =
+        guard === false || own === false
+          ? lit(false)
+          : guard === undefined
+            ? own
+            : and(guard, own)!;
+      entries.push({
+        kind: "entry",
+        key,
+        value: guardedValue(
+          { when, code: "FORBIDDEN" },
+          prop(v(variable), field.property),
+        ),
+      });
+      continue;
+    }
+    // Rules testing claims only: a request they refuse reads the property
+    // as FORBIDDEN, on every row that has it.
+    if (access !== "allowed" && !(access === "row" && ends)) {
       entries.push({
         kind: "entry",
         key,

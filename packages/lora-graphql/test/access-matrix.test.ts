@@ -92,6 +92,60 @@ type Mutation {
     ).toMatchSnapshot();
   });
 
+  test("relationship properties, field writes and key scopes", async () => {
+    const typeDefs = `type Claims @jwt {
+  sub: String! @viewer(type: "Person", field: "key")
+  roles: [String!]
+}
+type Person @node @mutation {
+  key: String! @key
+  trips: [Trip!]! @relationship(type: "MEMBER", direction: OUT, properties: "E")
+}
+type E @relationshipProperties {
+  rsvp: String
+  marker: String
+    @authentication(operations: [UPDATE])
+    @authorization(validate: [
+      { operations: [READ], where: { jwt: { roles: { includes: "staff" } } }, requireAuthentication: false }
+      { operations: [CREATE], where: { jwt: { roles: { includes: "admin" } } } }
+    ])
+}
+type Trip @node @mutation {
+  key: String! @key(scope: VIEWER)
+  name: String
+  featured: Boolean
+    @authorization(validate: [{ operations: [CREATE, UPDATE], where: { jwt: { roles: { includes: "admin" } } } }])
+}`;
+    const m = (await lora(typeDefs)).accessMatrix();
+    const lines = m.map(
+      (e) =>
+        `${e.field ? `${e.type}.${e.field}` : e.type} ${e.operation} ${e.principal}: ${e.verdict} (${e.by.join(", ")})`,
+    );
+    expect(lines).toMatchSnapshot();
+    const verdict = (id: string) =>
+      m.find(
+        (e) =>
+          `${e.field ? `${e.type}.${e.field}` : e.type} ${e.operation} ${e.principal}` ===
+          id,
+      )?.verdict;
+    expect(verdict("E.marker CREATE anonymous")).toBe("unauthenticated");
+    expect(verdict("E.marker CREATE authenticated")).toBe("denied");
+    expect(verdict("E.marker CREATE roles:admin")).toBe("allowed");
+    expect(verdict("E.marker READ anonymous")).toBe("denied");
+    expect(verdict("E.marker READ roles:staff")).toBe("allowed");
+    expect(verdict("E.marker UPDATE anonymous")).toBe("unauthenticated");
+    expect(verdict("E.marker UPDATE authenticated")).toBe("allowed");
+    expect(verdict("E.rsvp READ anonymous")).toBeUndefined();
+    expect(verdict("Trip CREATE anonymous")).toBe("unauthenticated");
+    expect(verdict("Trip CREATE authenticated")).toBe("validated");
+    expect(
+      m.find((e) => e.type === "Trip" && e.operation === "CREATE")?.by,
+    ).toEqual(["key scope"]);
+    expect(verdict("Trip UPDATE anonymous")).toBe("allowed");
+    expect(verdict("Trip.featured CREATE authenticated")).toBe("denied");
+    expect(verdict("Trip.featured UPDATE roles:admin")).toBe("allowed");
+  });
+
   test("lora-graphql access prints it", async () => {
     const dir = await mkdtemp(join(tmpdir(), "lora-graphql-access-"));
     await writeFile(join(dir, "schema.graphql"), post);
