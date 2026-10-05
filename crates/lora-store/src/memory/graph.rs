@@ -789,16 +789,12 @@ impl InMemoryGraph {
             return;
         }
 
-        for (id, node) in self.iter_nodes() {
-            if let Some(value) = node.properties.get(key) {
-                indexes.node_properties.insert_with_scopes(
-                    id,
-                    node.labels.iter().map(String::as_str),
-                    key,
-                    value,
-                );
-            }
-        }
+        indexes.node_properties.insert_bulk(key, || {
+            self.iter_nodes().filter_map(|(id, node)| {
+                let value = node.properties.get(key)?;
+                Some((id, node.labels.iter().map(String::as_str), value))
+            })
+        });
         if indexes.node_properties.activate(key) {
             self.indexes
                 .active_node_property_indexes
@@ -819,16 +815,12 @@ impl InMemoryGraph {
             return;
         }
 
-        for (id, rel) in self.iter_rels() {
-            if let Some(value) = rel.properties.get(key) {
-                indexes.relationship_properties.insert_with_scopes(
-                    id,
-                    [rel.rel_type.as_str()],
-                    key,
-                    value,
-                );
-            }
-        }
+        indexes.relationship_properties.insert_bulk(key, || {
+            self.iter_rels().filter_map(|(id, rel)| {
+                let value = rel.properties.get(key)?;
+                Some((id, [rel.rel_type.as_str()], value))
+            })
+        });
         if indexes.relationship_properties.activate(key) {
             self.indexes
                 .active_relationship_property_indexes

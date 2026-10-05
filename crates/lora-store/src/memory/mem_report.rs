@@ -441,7 +441,7 @@ fn property_index_map_bytes(values: &PropertyIndex) -> usize {
 }
 
 fn property_buckets_bytes(key: &str, buckets: &PropertyValueBuckets) -> usize {
-    let mut total = HASHMAP_PER_ENTRY + ARC_STR_BYTES + key.len() + ARC_HEADER;
+    let mut total = HASHMAP_PER_ENTRY + ARC_STR_BYTES + key.len() + buckets.structure_bytes();
     for (indexed, ids) in buckets.iter() {
         total += HASHMAP_PER_ENTRY
             + property_index_key_bytes(indexed)
@@ -506,7 +506,8 @@ fn sorted_registry_bytes(bundle: &IndexBundle) -> usize {
 fn sorted_one(index: &SortedPropertyIndex) -> usize {
     let mut total = 0;
     for (scope, sorted_scope) in &index.by_scope {
-        total += BTREE_PER_ENTRY + scoped_key_bytes(scope);
+        total +=
+            BTREE_PER_ENTRY + scoped_key_bytes(scope) + sorted_scope.by_value.structure_bytes();
         for (indexed, ids) in sorted_scope.by_value.iter() {
             total += BTREE_PER_ENTRY
                 + property_index_key_bytes(indexed)
@@ -526,7 +527,8 @@ fn text_registry_bytes(bundle: &IndexBundle) -> usize {
 fn text_one(registry: &TrigramRegistry) -> usize {
     let mut total = 0;
     for (scope, trigram_scope) in &registry.by_scope {
-        total += HASHMAP_PER_ENTRY + scoped_key_bytes(scope);
+        total +=
+            HASHMAP_PER_ENTRY + scoped_key_bytes(scope) + trigram_scope.grams.structure_bytes();
         for ids in trigram_scope.grams.values() {
             total += BTREE_PER_ENTRY + 3 + ids.heap_bytes();
         }
@@ -543,7 +545,8 @@ fn point_registry_bytes(bundle: &IndexBundle) -> usize {
 fn point_one(registry: &PointRegistry) -> usize {
     let mut total = 0;
     for (scope, scope_data) in &registry.by_scope {
-        total += HASHMAP_PER_ENTRY + scoped_key_bytes(scope);
+        total +=
+            HASHMAP_PER_ENTRY + scoped_key_bytes(scope) + scope_data.grid.cells.structure_bytes();
         for cell in scope_data.grid.cells.values() {
             total += HASHMAP_PER_ENTRY + cell.heap_bytes();
         }
@@ -571,6 +574,7 @@ fn fulltext_one(registry: &FulltextRegistry) -> usize {
         }
         // Term strings are shared `Arc<str>`s: charged once, on the
         // postings key; the per-entity lists hold pointers.
+        total += index.postings.structure_bytes() + index.entity_terms.structure_bytes();
         for (term, postings) in index.postings.iter() {
             total += BTREE_PER_ENTRY + size_of::<std::sync::Arc<str>>() + ARC_HEADER + term.len();
             total += postings.heap_bytes();

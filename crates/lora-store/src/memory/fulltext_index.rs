@@ -35,7 +35,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use std::sync::Arc;
 
-use super::cow::{CowIdMap, CowMap, CowOrdMap};
+use super::cow::{CowMap, CowOrdMap};
+use super::id_map::CowIdMap;
 use crate::Properties;
 
 use super::StoredIndexEntity;
@@ -194,8 +195,9 @@ pub(super) struct FulltextIndex {
     pub properties: Vec<String>,
     /// `term → entity → term_frequency`. Term frequency is the count of
     /// tokens for the entity across all covered properties.
-    /// Keys are `Arc<str>` shared with `entity_terms`, so copying a shard
-    /// for a write bumps refcounts instead of reallocating term strings.
+    /// Keys are `Arc<str>` shared with `entity_terms`, so copying a
+    /// partition for a write bumps refcounts instead of reallocating term
+    /// strings.
     pub(super) postings: CowOrdMap<Arc<str>, CowIdMap<u32>>,
     /// `entity → set<term>` reverse map so re-indexing can remove the
     /// stale contribution before adding the new one.
@@ -283,8 +285,11 @@ impl FulltextIndex {
         let mut exact: Vec<&CowIdMap<u32>> = Vec::with_capacity(tokens.len());
         for (token, prefix) in &tokens {
             if *prefix {
-                let mut union: BTreeMap<u64, u32> = BTreeMap::new();
+                // Posting lists iterate in no particular order: gather,
+                // sort and sum runs, then build the map from sorted input
+                // in one go instead of inserting at random.
                 let prefix = token.clone();
+                let mut hits: Vec<(u64, u32)> = Vec::new();
                 for (_, posting) in self
                     .postings
                     .range(
@@ -293,15 +298,20 @@ impl FulltextIndex {
                     )
                     .take_while(|(term, _)| term.starts_with(prefix.as_str()))
                 {
-                    for (id, tf) in posting.iter() {
-                        let slot = union.entry(*id).or_insert(0);
-                        *slot = slot.saturating_add(*tf);
-                    }
+                    hits.extend(posting.iter().map(|(id, tf)| (*id, *tf)));
                 }
-                if union.is_empty() {
+                if hits.is_empty() {
                     return Vec::new();
                 }
-                merged.push(union);
+                hits.sort_unstable_by_key(|(id, _)| *id);
+                hits.dedup_by(|(id, tf), (kept_id, kept_tf)| {
+                    let same = id == kept_id;
+                    if same {
+                        *kept_tf = kept_tf.saturating_add(*tf);
+                    }
+                    same
+                });
+                merged.push(hits.into_iter().collect());
                 continue;
             }
             match self.postings.get(token.as_str()) {
@@ -314,14 +324,12 @@ impl FulltextIndex {
         posting_iter.extend(merged.iter().map(Posting::Merged));
         posting_iter.sort_by_key(|p| p.len());
 
-        let mut results: BTreeMap<u64, u32> = BTreeMap::new();
-        // Seed with the smallest list.
+        // Seed with the smallest list (collected: built from sorted input
+        // rather than inserted in the list's arbitrary order).
         let Some(seed) = posting_iter.first() else {
             return Vec::new();
         };
-        for (id, tf) in seed.iter() {
-            results.insert(id, tf);
-        }
+        let mut results: BTreeMap<u64, u32> = seed.iter().collect();
         // Intersect with the rest, summing TF as we go.
         for posting in posting_iter.iter().skip(1) {
             let mut next: BTreeMap<u64, u32> = BTreeMap::new();

@@ -27,8 +27,9 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use super::cow::{CowIdMap, CowMap};
+use super::cow::CowMap;
 use super::entity_index_store::ScopedPropertyKey;
+use super::id_map::CowIdMap;
 
 /// Registry of trigram scopes for either nodes or relationships.
 #[derive(Debug, Default, Clone)]

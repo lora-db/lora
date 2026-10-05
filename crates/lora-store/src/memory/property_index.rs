@@ -18,26 +18,28 @@
 //! writer are activated again by the next such lookup. `MemoryReport`
 //! lists the active keys and marks the implicit ones.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use super::cow::CowMap;
+use super::cow::{route, CowMap, FastHashMap};
 use super::id_set::IdSet;
 use crate::types::PropertyValue;
 use crate::{LoraBinary, ZoneId};
 
-/// Value → ids for one property. A copy-on-write sharded map (see
+/// Value → ids for one property. A copy-on-write hash trie (see
 /// [`CowMap`]) so cloning the graph (the staged copy a write works on)
-/// shares it and a write copies only the shard its value lands in.
+/// shares it and a write copies only the path to the value it changes.
 pub(super) type PropertyValueBuckets = CowMap<PropertyIndexKey, IdSet>;
-/// Property key → its buckets. Keys and buckets are both behind `Arc`,
-/// so copying this map (the first write to it after a graph clone) is
-/// one refcount bump per key; the buckets of a key are copied only when
-/// a write lands in them.
-pub(super) type PropertyIndex = HashMap<Arc<str>, Arc<PropertyValueBuckets>>;
+/// Property key → its buckets. Keys are behind `Arc` and cloning the
+/// buckets is one refcount bump on their root, so copying this map (the
+/// first write to it after a graph clone) is two refcount bumps per key;
+/// the buckets of a key are copied only along the path a write takes.
+/// Held directly, not behind another `Arc`: a lookup is one pointer hop
+/// shorter.
+pub(super) type PropertyIndex = FastHashMap<Arc<str>, PropertyValueBuckets>;
 /// Scope (label / relationship type) → its per-key index, each behind
 /// `Arc` so a write copies only the scopes it touches.
-pub(super) type ScopedPropertyIndex = HashMap<Arc<str>, Arc<PropertyIndex>>;
+pub(super) type ScopedPropertyIndex = FastHashMap<Arc<str>, Arc<PropertyIndex>>;
 
 /// Pair of [`PropertyIndexState`] registries: one for node properties,
 /// one for relationship properties. Lives behind an `RwLock` on the
@@ -74,8 +76,9 @@ impl Clone for PropertyIndexRegistry {
 /// Every level sits behind `Arc` and is copied on write, so cloning the
 /// state (part of every graph clone) is three refcount bumps, and the
 /// first write after a clone copies only the path it touches: the key
-/// and scope tables (one pointer per entry) and the touched keys'
-/// buckets, never the buckets of untouched keys or scopes.
+/// and scope tables (a refcount bump or two per entry) and the path to
+/// the touched value in the touched keys' buckets, never the buckets of
+/// untouched keys or scopes.
 #[derive(Debug, Default, Clone)]
 pub(super) struct PropertyIndexState {
     pub(super) active_keys: Arc<BTreeSet<String>>,
@@ -117,14 +120,50 @@ impl PropertyIndexState {
             Some(buckets) => buckets,
             None => values.entry(Arc::from(key)).or_default(),
         };
-        let buckets = Arc::make_mut(buckets);
-        match buckets.get_mut(&value) {
-            Some(ids) => {
+        buckets.upsert(
+            value,
+            || IdSet::new(entity_id),
+            |ids| {
                 ids.insert(entity_id);
+            },
+        );
+    }
+
+    /// Index `key` for every `(id, scopes, value)` that `entries` yields,
+    /// as [`Self::insert_with_scopes`] for each would. `entries` is
+    /// walked twice: first for the keys' routes, to shape each bucket map
+    /// `key` does not have yet for exactly the keys it will hold (see
+    /// [`CowMap::with_shape`]), then to insert. Activating an index over
+    /// existing data this way allocates every leaf table once.
+    pub(super) fn insert_bulk<'a, I, S>(&mut self, key: &str, entries: impl Fn() -> I)
+    where
+        I: Iterator<Item = (u64, S, &'a PropertyValue)>,
+        S: IntoIterator<Item = &'a str>,
+    {
+        let mut flat = Vec::new();
+        let mut scoped: FastHashMap<&'a str, Vec<u64>> = FastHashMap::default();
+        for (_, scopes, value) in entries() {
+            let Some(indexed_value) = PropertyIndexKey::from_value(value) else {
+                continue;
+            };
+            let route = route(&indexed_value);
+            for scope in scopes {
+                scoped.entry(scope).or_default().push(route);
             }
-            None => {
-                buckets.get_or_insert_with(value, || IdSet::new(entity_id));
+            flat.push(route);
+        }
+        let values = Arc::make_mut(&mut self.values);
+        if !flat.is_empty() && !values.contains_key(key) {
+            values.insert(Arc::from(key), CowMap::with_shape(flat));
+        }
+        for (scope, routes) in scoped {
+            let values = Self::scope_mut(&mut self.scoped_values, scope);
+            if !values.contains_key(key) {
+                values.insert(Arc::from(key), CowMap::with_shape(routes));
             }
+        }
+        for (entity_id, scopes, value) in entries() {
+            self.insert_with_scopes(entity_id, scopes, key, value);
         }
     }
 
@@ -144,7 +183,6 @@ impl PropertyIndexState {
     ) {
         let mut remove_key = false;
         if let Some(buckets) = values.get_mut(key) {
-            let buckets = Arc::make_mut(buckets);
             let emptied = buckets
                 .get_mut(value)
                 .is_some_and(|ids| ids.remove(entity_id));
@@ -308,7 +346,7 @@ pub(super) enum PropertyIndexKey {
     Bool(bool),
     Int(i64),
     Float(u64),
-    /// Shared so copying an index shard or partition (a write's staged
+    /// Shared so copying an index leaf or partition (a write's staged
     /// graph copy) bumps a refcount per key instead of reallocating it.
     String(std::sync::Arc<str>),
     Binary(LoraBinary),

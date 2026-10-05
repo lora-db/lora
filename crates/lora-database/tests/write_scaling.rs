@@ -148,6 +148,41 @@ fn staged_round(db: &Database<InMemoryGraph>, n: u64, rounds: u64) -> Duration {
         .expect("create account");
         db.graph_create_node(vec!["Tag".to_string()], BTreeMap::new())
             .expect("api create");
+        indexed_creates(db, n, r);
+        if r >= 5 {
+            samples.push(start.elapsed());
+        }
+    }
+    median(samples)
+}
+
+/// Two creates on the indexed `:Person` label, new ids above `n`: one
+/// through the `graph_*` API and one through Cypher. Each adds an entry to
+/// the hash buckets (flat and per label) and the sorted index of
+/// `person_id`, on the staged copy for the API write.
+fn indexed_creates(db: &Database<InMemoryGraph>, n: u64, r: u64) {
+    let id = (n + 2 * r) as i64;
+    db.graph_create_node(
+        vec!["Person".to_string()],
+        BTreeMap::from([("id".to_string(), LoraValue::Int(id))]),
+    )
+    .expect("api create person");
+    db.execute_with_params(
+        "CREATE (:Person {id: $id, name: 'new'})",
+        Some(ExecuteOptions {
+            format: ResultFormat::Rows,
+        }),
+        BTreeMap::from([("id".to_string(), LoraValue::Int(id + 1))]),
+    )
+    .expect("create person");
+}
+
+/// Median cost of [`indexed_creates`].
+fn indexed_create_round(db: &Database<InMemoryGraph>, n: u64, rounds: u64) -> Duration {
+    let mut samples = Vec::new();
+    for r in 0..rounds + 5 {
+        let start = Instant::now();
+        indexed_creates(db, n, r);
         if r >= 5 {
             samples.push(start.elapsed());
         }
@@ -188,11 +223,29 @@ fn graph_clone_cost_is_independent_of_graph_size() {
     assert_flat("graph clone", small, large, Duration::from_micros(10));
 }
 
+/// Index maintenance on creates of indexed nodes, 2k vs 200k nodes. Index
+/// containers with a fixed top-level fan-out made each such staged write
+/// copy O(N) entries (a hash shard of N/256 buckets, a partition table of
+/// N/1024 pointers): 33 µs at 200k and 197 µs at 2M nodes per API create
+/// in a release build. They now copy a bounded path, ~15 µs at both.
+/// Unoptimised, the fixed per-write cost hides the difference at these
+/// sizes, so this is a guard; the 1M-node test below tells them apart.
+#[test]
+fn indexed_create_cost_is_independent_of_graph_size() {
+    let (small_n, large_n) = (2_000, 200_000);
+    let small = indexed_create_round(&people(small_n), small_n, 300);
+    let large = indexed_create_round(&people(large_n), large_n, 300);
+    assert_flat("indexed create", small, large, Duration::from_micros(20));
+}
+
 /// Staged writes on a ~1M-node / 3M-relationship graph against a 10k-node
 /// one. With the per-chunk clone a round of four writes took 100 µs vs
-/// 483 µs in a release build; now ~85 µs at both sizes. Ignored by default
-/// because it takes ~20 s unoptimised (~3 s in release); run with `cargo test --release -p lora-database --test write_scaling
-/// -- --ignored`.
+/// 483 µs in a release build; now ~85 µs at both sizes. The round also
+/// creates two indexed `:Person` nodes, and those creates are checked on
+/// their own too: with the fixed fan-out index containers they took
+/// 25 µs vs 117 µs, now ~17 µs vs ~19 µs. Ignored by default because it
+/// takes ~20 s unoptimised (~3 s in release); run with `cargo test
+/// --release -p lora-database --test write_scaling -- --ignored`.
 #[test]
 #[ignore = "builds a 1M-node graph; run explicitly"]
 fn staged_write_latency_is_independent_of_graph_size_at_1m_nodes() {
@@ -209,4 +262,7 @@ fn staged_write_latency_is_independent_of_graph_size_at_1m_nodes() {
     );
     let (small, large) = (clone_cost(&small_db), clone_cost(&large_db));
     assert_flat("graph clone", small, large, Duration::from_micros(10));
+    let small = indexed_create_round(&small_db, small_n + 1_000, 500);
+    let large = indexed_create_round(&large_db, large_n + 1_000, 500);
+    assert_flat("indexed create", small, large, Duration::from_micros(20));
 }

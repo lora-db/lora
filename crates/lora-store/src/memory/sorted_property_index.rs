@@ -45,7 +45,8 @@ pub(super) struct SortedPropertyIndex {
 pub(super) struct SortedScope {
     /// Keyed by sortable property key. Values are ids in that bucket.
     /// Copy-on-write partitions (see [`CowOrdMap`]): a write's staged
-    /// graph copy shares them and copies only the partition it changes.
+    /// graph copy shares them and copies only the path (root, group,
+    /// partition) to the entry it changes.
     pub(super) by_value: CowOrdMap<PropertyIndexKey, IdSet>,
     /// Refcount of catalog entries pointing at this scope.
     refcount: u32,
@@ -293,14 +294,13 @@ fn probe_bounds(
 }
 
 fn insert_id(scope: &mut SortedScope, key: PropertyIndexKey, id: u64) {
-    match scope.by_value.get_mut(&key) {
-        Some(bucket) => {
+    scope.by_value.upsert(
+        key,
+        || IdSet::new(id),
+        |bucket| {
             bucket.insert(id);
-        }
-        None => {
-            scope.by_value.get_or_insert_with(key, || IdSet::new(id));
-        }
-    }
+        },
+    );
 }
 
 fn extend_ids<'a>(

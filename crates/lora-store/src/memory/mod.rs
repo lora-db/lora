@@ -21,6 +21,7 @@ mod entity_index_store;
 mod fulltext_index;
 mod graph;
 mod hnsw;
+mod id_map;
 mod id_set;
 mod impls;
 mod index_catalog;

@@ -32,8 +32,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::types::spatial::LoraPoint;
 
-use super::cow::{CowIdMap, CowMap};
+use super::cow::CowMap;
 use super::entity_index_store::ScopedPropertyKey;
+use super::id_map::CowIdMap;
 use super::index_catalog::IndexConfigValue;
 
 /// Default cell side. Tuned for cartesian space at world scale; WGS-84
@@ -65,12 +66,13 @@ impl Default for PointScope {
 #[derive(Debug, Clone)]
 pub(super) struct PointGrid {
     cell_size: f64,
-    /// Copy-on-write shards (see [`super::cow`]) so a write's staged
-    /// graph copy shares the grid and copies only the cells it changes.
+    /// Copy-on-write (see [`super::cow`]) so a write's staged graph copy
+    /// shares the grid and copies only the path to the cell it changes.
     ///
-    /// Each cell maps entity id → point. A dense cell (every festival in
-    /// one city) then splits into id shards, so a write copies one shard
-    /// and removes by id instead of scanning the whole cell.
+    /// Each cell maps entity id → point, in id-sorted chunks (see
+    /// [`CowIdMap`]), so in a dense cell (every festival in one city) a
+    /// write copies one chunk and removes by id instead of scanning the
+    /// whole cell.
     pub(super) cells: CowMap<(i32, i32), CowIdMap<LoraPoint>>,
 }
 
@@ -145,16 +147,16 @@ impl PointGrid {
     }
 
     fn candidates_in_bbox(&self, min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> BTreeSet<u64> {
-        let mut out = BTreeSet::new();
         let Some(cells) = self.cells_in_bbox(min_x, min_y, max_x, max_y) else {
             return self.all_ids();
         };
-        for cell in cells {
-            if let Some(bucket) = self.cells.get(&cell) {
-                out.extend(bucket.keys());
-            }
-        }
-        out
+        // Cells iterate their ids in no particular order: collecting sorts
+        // them once and builds the set in one go.
+        cells
+            .iter()
+            .filter_map(|cell| self.cells.get(cell))
+            .flat_map(|bucket| bucket.keys())
+            .collect()
     }
 
     fn all_ids(&self) -> BTreeSet<u64> {
