@@ -109,7 +109,7 @@ aggregate and its edge cases.
 |---|---|---|---|---|
 | `count(*)` | — | `0` | counted as 1 per row | `Int` |
 | `count(expr)` | yes | `0` | skipped | `Int` |
-| `collect(expr)` | yes | `[]` | included as `null` | `List` |
+| `collect(expr)` | yes | `[]` | skipped | `List` |
 | `sum(expr)` | yes | `0` | skipped | `Int` if all-int, else `Float` |
 | `avg(expr)` | yes | `null` | skipped | `Float` |
 | `min(expr)` | yes | `null` | skipped | type of min element |
@@ -181,19 +181,19 @@ RETURN p.name, collect(DISTINCT c.name) AS unique_cities`} />
 <QueryCodeBlock code={String.raw`MATCH (:Never)
 RETURN collect(1)   // []`} />
 
-### Collect keeps nulls
+### Collect skips nulls
 
-Unlike `count(expr)` / `sum` / `avg`, `collect` **keeps** `null` values
-that make it through the pipeline. Filter first if you don't want them:
+Like `count(expr)` / `sum` / `avg`, `collect` **skips** `null` values, so
+an unmatched `OPTIONAL MATCH` collects to `[]`. Only a top-level `null`
+is skipped: a list or map that merely contains `null` is a value and is
+kept.
 
 <QueryCodeBlock code={String.raw`UNWIND [1, null, 2, null, 3] AS x
-RETURN collect(x);           // [1, null, 2, null, 3]
-RETURN collect(DISTINCT x)  // [1, null, 2, 3]  (distinct still includes null)
+RETURN collect(x);           // [1, 2, 3]
+RETURN collect(DISTINCT x)  // [1, 2, 3]
 
-;// To drop nulls before collecting:
-UNWIND [1, null, 2, null, 3] AS x
-WITH x WHERE x IS NOT NULL
-RETURN collect(x)           // [1, 2, 3]`} />
+;UNWIND [[1, null], null, {a: null}] AS x
+RETURN collect(x)           // [[1, null], {a: null}]`} />
 
 ## sum, avg
 

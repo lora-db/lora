@@ -12,8 +12,8 @@ group. For clause-level semantics (implicit `GROUP BY`,
 where aggregates are legal) see the
 [Aggregation query page](../queries/aggregation).
 
-> All aggregates **skip `null` inputs** except `count(*)` (counts
-> rows) and `collect(expr)` (keeps nulls). Empty-input semantics
+> All aggregates **skip `null` inputs** except `count(*)`, which counts
+> rows. Empty-input semantics
 > vary per function — see the [summary table](#summary-table).
 
 ## Summary table
@@ -22,7 +22,7 @@ where aggregates are legal) see the
 |---|---|---|---|---|
 | <CypherCode code="count(*)" /> | — | `0` | counted as 1 per row | `Int` |
 | <CypherCode code="count(expr)" /> | yes | `0` | skipped | `Int` |
-| <CypherCode code="collect(expr)" /> | yes | `[]` | included as `null` | `List` |
+| <CypherCode code="collect(expr)" /> | yes | `[]` | skipped | `List` |
 | <CypherCode code="sum(expr)" /> | yes | `0` | skipped | `Int` if all-int, else `Float` |
 | <CypherCode code="avg(expr)" /> | yes | `null` | skipped | `Float` |
 | <CypherCode code="min(expr)" /> / <CypherCode code="max(expr)" /> | yes | `null` | skipped | same type as element |
@@ -82,17 +82,17 @@ RETURN p.name, collect(f.name) AS friends`} />
 ### Distinct values
 
 <QueryCodeBlock code={String.raw`UNWIND [1, 2, null, 2, 3] AS x
-RETURN collect(x),           // [1, 2, null, 2, 3]
-       collect(DISTINCT x)   // [1, 2, null, 3]`} />
+RETURN collect(x),           // [1, 2, 2, 3]
+       collect(DISTINCT x)   // [1, 2, 3]`} />
 
-### Collect keeps nulls
+### Collect skips nulls
 
-`collect` **keeps nulls** that survive to the aggregate. Filter before
-the aggregate if you don't want them:
+`collect` **skips** top-level `null` values, so an unmatched
+`OPTIONAL MATCH` collects to `[]`. A list or map that merely contains
+`null` is a value and is kept:
 
-<QueryCodeBlock code={String.raw`UNWIND [1, 2, null, 3] AS x
-WITH x WHERE x IS NOT NULL
-RETURN collect(x)             // [1, 2, 3]`} />
+<QueryCodeBlock code={String.raw`UNWIND [[1, null], null, {a: null}] AS x
+RETURN collect(x)             // [[1, null], {a: null}]`} />
 
 ### Collect + slice for top-N
 
