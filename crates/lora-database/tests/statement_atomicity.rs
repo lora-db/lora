@@ -6,7 +6,9 @@
 //! mutate the graph in place with no rollback, on the grounds that such a
 //! plan can't fail midway. A constraint can: `UNWIND [1, 2] AS i CREATE
 //! (:U {key: 'x'})` kept the first node, `MATCH (u:U) SET u.key = 'same'`
-//! kept the first rename, and a plain `DELETE` kept the nodes it deleted
+//! kept the first rename (on relationships too, `SET t.key = 'same'` under
+//! a relationship uniqueness constraint), and a plain `DELETE` kept the
+//! nodes it deleted
 //! before reaching one that still had relationships. Those plans now take
 //! the staged path whenever a constraint or a relationship can reject them.
 //! Every case runs on each write path (`execute`, the pull pipeline, an
@@ -192,4 +194,22 @@ fn writes_that_cannot_fail_still_succeed() {
             "{path:?}"
         );
     }
+}
+
+fn related() -> TestDb {
+    let db = TestDb::new();
+    db.run("CREATE CONSTRAINT tq FOR ()-[t:T]-() REQUIRE t.key IS UNIQUE");
+    db.run("CREATE (:A)-[:T {key: 'a', i: 1}]->(:B), (:A)-[:T {key: 'b', i: 2}]->(:B)");
+    db
+}
+
+#[test]
+fn a_relationship_set_that_collides_on_a_later_row_changes_none() {
+    assert_rejected_whole(
+        related,
+        "MATCH ()-[t:T]->() SET t.key = 'same'",
+        "22N79",
+        "MATCH ()-[t:T]->() RETURN t.key AS k ORDER BY k",
+        json!([{"k": "a"}, {"k": "b"}]),
+    );
 }

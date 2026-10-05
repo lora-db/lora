@@ -78,8 +78,9 @@ where
 
 /// Whether a constraint can reject one of the plan's writes. The fast path
 /// only creates nodes and sets properties: a created label with any
-/// constraint can fail, and so can a `SET` while any node constraint exists
-/// (which labels its targets carry is only known per row).
+/// constraint can fail, and so can a `SET` while any constraint exists
+/// (whether its targets are nodes or relationships, and which labels or
+/// type they carry, is only known per row).
 fn constraints_may_reject(constraints: &[ConstraintDefinition], compiled: &CompiledQuery) -> bool {
     let on_nodes = |c: &&ConstraintDefinition| c.entity == StoredIndexEntity::Node;
     compiled.physical.nodes.iter().any(|op| match op {
@@ -92,7 +93,7 @@ fn constraints_may_reject(constraints: &[ConstraintDefinition], compiled: &Compi
             }),
             _ => true,
         }),
-        PhysicalOp::Set(_) => constraints.iter().any(|c| on_nodes(&c)),
+        PhysicalOp::Set(_) => !constraints.is_empty(),
         _ => false,
     })
 }
