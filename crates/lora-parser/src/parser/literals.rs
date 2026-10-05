@@ -474,29 +474,44 @@ pub(super) fn lower_schema_name(pair: Pair<Rule>) -> Result<String, ParseError> 
 }
 
 pub(super) fn lower_integer_literal(pair: Pair<Rule>) -> Result<i64, ParseError> {
+    lower_signed_integer_literal(pair, false)
+}
+
+/// An integer literal, negated when `negative`. Negating while parsing
+/// lets `-9223372036854775808` (i64::MIN) through: its digits alone are
+/// one past i64::MAX.
+pub(super) fn lower_signed_integer_literal(
+    pair: Pair<Rule>,
+    negative: bool,
+) -> Result<i64, ParseError> {
+    let sign = if negative { "-" } else { "" };
     match pair.as_rule() {
-        Rule::integer_literal => lower_integer_literal(single_inner(pair)?),
-        Rule::decimal_integer => pair.as_str().parse::<i64>().map_err(|_| {
-            ParseError::new(
-                "invalid decimal integer",
-                pair.as_span().start(),
-                pair.as_span().end(),
-            )
-        }),
-        Rule::hex_integer => i64::from_str_radix(&pair.as_str()[2..], 16).map_err(|_| {
-            ParseError::new(
-                "invalid hex integer",
-                pair.as_span().start(),
-                pair.as_span().end(),
-            )
-        }),
-        Rule::octal_integer => i64::from_str_radix(&pair.as_str()[1..], 8).map_err(|_| {
-            ParseError::new(
-                "invalid octal integer",
-                pair.as_span().start(),
-                pair.as_span().end(),
-            )
-        }),
+        Rule::integer_literal => lower_signed_integer_literal(single_inner(pair)?, negative),
+        Rule::decimal_integer => format!("{sign}{}", pair.as_str())
+            .parse::<i64>()
+            .map_err(|_| {
+                ParseError::new(
+                    "invalid decimal integer",
+                    pair.as_span().start(),
+                    pair.as_span().end(),
+                )
+            }),
+        Rule::hex_integer => i64::from_str_radix(&format!("{sign}{}", &pair.as_str()[2..]), 16)
+            .map_err(|_| {
+                ParseError::new(
+                    "invalid hex integer",
+                    pair.as_span().start(),
+                    pair.as_span().end(),
+                )
+            }),
+        Rule::octal_integer => i64::from_str_radix(&format!("{sign}{}", &pair.as_str()[1..]), 8)
+            .map_err(|_| {
+                ParseError::new(
+                    "invalid octal integer",
+                    pair.as_span().start(),
+                    pair.as_span().end(),
+                )
+            }),
         _ => Err(unexpected_rule("integer_literal", pair)),
     }
 }

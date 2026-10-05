@@ -1,6 +1,7 @@
 use super::literals::{
     lower_exists_subquery, lower_function_invocation, lower_list_predicate, lower_literal,
-    lower_parameter, lower_reduce_expression, lower_schema_name, lower_variable,
+    lower_parameter, lower_reduce_expression, lower_schema_name, lower_signed_integer_literal,
+    lower_variable,
 };
 use super::util::{merge_spans, pair_span, single_inner, unexpected_rule};
 use super::Rule;
@@ -541,9 +542,16 @@ pub(super) fn lower_unary_expression(pair: Pair<Rule>) -> Result<Expr, ParseErro
         }
     }
 
-    let mut expr = lower_expression(
-        tail.ok_or_else(|| ParseError::new("expected expression", span.start, span.end))?,
-    )?;
+    let tail = tail.ok_or_else(|| ParseError::new("expected expression", span.start, span.end))?;
+
+    // `-<integer literal>` is one negative literal, so i64::MIN parses.
+    let mut expr = match (ops.last(), bare_integer_literal(&tail)) {
+        (Some(UnaryOp::Neg), Some(literal)) => {
+            ops.pop();
+            Expr::Integer(lower_signed_integer_literal(literal, true)?, span)
+        }
+        _ => lower_expression(tail)?,
+    };
 
     for op in ops.into_iter().rev() {
         expr = Expr::Unary {
@@ -554,6 +562,26 @@ pub(super) fn lower_unary_expression(pair: Pair<Rule>) -> Result<Expr, ParseErro
     }
 
     Ok(expr)
+}
+
+/// The integer literal `pair` consists of, if it is nothing else: no
+/// postfix operator, no parentheses.
+fn bare_integer_literal<'i>(pair: &Pair<'i, Rule>) -> Option<Pair<'i, Rule>> {
+    let mut current = pair.clone();
+    loop {
+        match current.as_rule() {
+            Rule::integer_literal => return Some(current),
+            Rule::postfix_expression | Rule::atom | Rule::literal | Rule::number_literal => {
+                let mut inner = current.into_inner();
+                let only = inner.next()?;
+                if inner.next().is_some() {
+                    return None;
+                }
+                current = only;
+            }
+            _ => return None,
+        }
+    }
 }
 
 pub(super) fn lower_postfix_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {

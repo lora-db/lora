@@ -924,35 +924,84 @@ fn parse_unwind_clause() {
 
 #[test]
 fn parse_unary_operators() {
-    let doc = parse_query("RETURN -1, +2").unwrap();
+    let doc = parse_query("RETURN -1, +2, -x, -(1), --1").unwrap();
     let sp = as_regular_single_part(doc);
 
     let ret = sp.return_clause.expect("expected RETURN clause");
-    assert_eq!(ret.body.items.len(), 2);
+    let exprs: Vec<&Expr> = ret
+        .body
+        .items
+        .iter()
+        .map(|item| match item {
+            ProjectionItem::Expr { expr, .. } => expr,
+            other => panic!("expected projection expr, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(exprs.len(), 5);
 
-    match &ret.body.items[0] {
-        ProjectionItem::Expr { expr, .. } => match expr {
+    // A minus straight before an integer literal is part of the literal.
+    assert!(matches!(exprs[0], Expr::Integer(-1, _)), "{:?}", exprs[0]);
+    match exprs[1] {
+        Expr::Unary {
+            op: UnaryOp::Pos,
+            expr,
+            ..
+        } => assert!(matches!(expr.as_ref(), Expr::Integer(2, _))),
+        other => panic!("expected unary positive, got {other:?}"),
+    }
+    match exprs[2] {
+        Expr::Unary {
+            op: UnaryOp::Neg,
+            expr,
+            ..
+        } => assert!(matches!(expr.as_ref(), Expr::Variable(_))),
+        other => panic!("expected unary negation, got {other:?}"),
+    }
+    assert!(
+        matches!(
+            exprs[3],
             Expr::Unary {
                 op: UnaryOp::Neg,
-                expr,
                 ..
-            } => assert!(matches!(expr.as_ref(), Expr::Integer(1, _))),
-            other => panic!("expected unary negation, got {other:?}"),
-        },
-        other => panic!("expected projection expr, got {other:?}"),
+            }
+        ),
+        "{:?}",
+        exprs[3]
+    );
+    match exprs[4] {
+        Expr::Unary {
+            op: UnaryOp::Neg,
+            expr,
+            ..
+        } => assert!(matches!(expr.as_ref(), Expr::Integer(-1, _))),
+        other => panic!("expected negation of -1, got {other:?}"),
     }
+}
 
-    match &ret.body.items[1] {
-        ProjectionItem::Expr { expr, .. } => match expr {
-            Expr::Unary {
-                op: UnaryOp::Pos,
-                expr,
-                ..
-            } => assert!(matches!(expr.as_ref(), Expr::Integer(2, _))),
-            other => panic!("expected unary positive, got {other:?}"),
-        },
-        other => panic!("expected projection expr, got {other:?}"),
+#[test]
+fn parse_smallest_integer_literal() {
+    for query in [
+        "RETURN -9223372036854775808",
+        "RETURN -0x8000000000000000",
+        "RETURN -01000000000000000000000",
+    ] {
+        let doc = parse_query(query).unwrap();
+        let ret = as_regular_single_part(doc)
+            .return_clause
+            .expect("expected RETURN clause");
+        match &ret.body.items[0] {
+            ProjectionItem::Expr { expr, .. } => {
+                assert!(
+                    matches!(expr, Expr::Integer(i64::MIN, _)),
+                    "{query}: {expr:?}"
+                )
+            }
+            other => panic!("expected projection expr, got {other:?}"),
+        }
     }
+    // One past the largest integer is still out of range without the minus.
+    assert!(parse_query("RETURN 9223372036854775808").is_err());
+    assert!(parse_query("RETURN -9223372036854775809").is_err());
 }
 
 #[test]
