@@ -979,7 +979,7 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                     Ok(LoraValue::List(values))
                 }
 
-                Some(AggregateFunction::Sum) => {
+                Some(kind @ (AggregateFunction::Sum | AggregateFunction::Avg)) => {
                     if args.is_empty() {
                         return Ok(LoraValue::Null);
                     }
@@ -990,43 +990,17 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                         values = dedup_values(values);
                     }
 
-                    let nums = values
-                        .into_iter()
-                        .filter_map(as_f64_lossy)
-                        .collect::<Vec<_>>();
-
-                    if nums.is_empty() {
-                        Ok(LoraValue::Null)
-                    } else if nums.iter().all(|n| n.fract() == 0.0) {
-                        Ok(LoraValue::Int(nums.iter().sum::<f64>() as i64))
+                    // One implementation with the streaming fold.
+                    let stream_kind = if kind == AggregateFunction::Sum {
+                        crate::pull::StreamableAggKind::Sum
                     } else {
-                        Ok(LoraValue::Float(nums.iter().sum::<f64>()))
+                        crate::pull::StreamableAggKind::Avg
+                    };
+                    let mut state = crate::pull::AggState::seed(stream_kind);
+                    for value in values {
+                        state.fold(stream_kind, value);
                     }
-                }
-
-                Some(AggregateFunction::Avg) => {
-                    if args.is_empty() {
-                        return Ok(LoraValue::Null);
-                    }
-
-                    let mut values = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?;
-
-                    if *distinct {
-                        values = dedup_values(values);
-                    }
-
-                    let nums = values
-                        .into_iter()
-                        .filter_map(as_f64_lossy)
-                        .collect::<Vec<_>>();
-
-                    if nums.is_empty() {
-                        Ok(LoraValue::Null)
-                    } else {
-                        Ok(LoraValue::Float(
-                            nums.iter().sum::<f64>() / nums.len() as f64,
-                        ))
-                    }
+                    state.finalize(stream_kind)
                 }
 
                 Some(AggregateFunction::Min) => {

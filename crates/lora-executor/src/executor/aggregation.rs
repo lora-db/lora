@@ -94,7 +94,7 @@ where
     for group in groups.into_values() {
         let mut result = Row::new();
         insert_group_by_values(&mut result, group_by, &group.first_row, eval_ctx)?;
-        insert_finalized_aggs(&mut result, aggregates, specs, group.aggs);
+        insert_finalized_aggs(&mut result, aggregates, specs, group.aggs)?;
         out.push(result);
     }
 
@@ -128,7 +128,7 @@ where
     }
 
     let mut result = Row::new();
-    insert_finalized_aggs(&mut result, aggregates, specs, aggs);
+    insert_finalized_aggs(&mut result, aggregates, specs, aggs)?;
     Ok(vec![result])
 }
 
@@ -215,10 +215,11 @@ fn insert_finalized_aggs(
     aggregates: &[ResolvedProjection],
     specs: &[crate::pull::StreamableAggSpec],
     aggs: Vec<crate::pull::AggState>,
-) {
+) -> ExecResult<()> {
     for ((proj, spec), agg) in aggregates.iter().zip(specs).zip(aggs) {
-        result.insert_named(proj.output, proj.name.clone(), agg.finalize(spec.kind));
+        result.insert_named(proj.output, proj.name.clone(), agg.finalize(spec.kind)?);
     }
+    Ok(())
 }
 
 fn seed_aggs(specs: &[crate::pull::StreamableAggSpec]) -> Vec<crate::pull::AggState> {

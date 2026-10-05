@@ -165,3 +165,89 @@ fn grouped_min_max_of_temporal_values() {
         ]),
     );
 }
+
+// ---------------------------------------------------------------------------
+// sum / avg
+// ---------------------------------------------------------------------------
+
+fn assert_read_err(query: &str, needle: &str) {
+    for path in READ_PATHS {
+        let db = TestDb::new();
+        let run = std::panic::AssertUnwindSafe(|| run_on(&db.service, path, query));
+        let err =
+            std::panic::catch_unwind(run).expect_err(&format!("{path:?}: `{query}` should fail"));
+        let msg = err.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(msg.contains(needle), "{path:?}: `{query}`: {msg}");
+    }
+}
+
+#[test]
+fn integer_sums_are_exact() {
+    // 2^53 + 1 is not a float: an f64 accumulator loses the 1.
+    assert_both_shapes(
+        "UNWIND [9007199254740993, 2] AS x RETURN sum(x) AS v",
+        json!([{"v": 9007199254740995_i64}]),
+    );
+    assert_both_shapes(
+        "UNWIND [1, 2, 3] AS x RETURN sum(x) AS v",
+        json!([{"v": 6}]),
+    );
+}
+
+#[test]
+fn integer_sum_overflow_is_an_error() {
+    assert_read_err(
+        "UNWIND [9223372036854775807, 1] AS x RETURN sum(x) AS v",
+        "sum() overflowed",
+    );
+    assert_read_err(
+        "UNWIND [9223372036854775807, 1] AS x RETURN sum(DISTINCT x) AS v",
+        "sum() overflowed",
+    );
+}
+
+#[test]
+fn a_float_sum_is_a_float() {
+    assert_both_shapes(
+        "UNWIND [2.0, 3.0] AS x RETURN sum(x) AS v",
+        json!([{"v": 5.0}]),
+    );
+    assert_both_shapes(
+        "UNWIND [1, 2.5] AS x RETURN sum(x) AS v",
+        json!([{"v": 3.5}]),
+    );
+    assert_both_shapes(
+        "UNWIND [1, 2.0] AS x RETURN sum(x) AS v",
+        json!([{"v": 3.0}]),
+    );
+}
+
+#[test]
+fn avg_of_numbers() {
+    assert_both_shapes("UNWIND [1, 2] AS x RETURN avg(x) AS v", json!([{"v": 1.5}]));
+    assert_both_shapes(
+        "UNWIND [1.0, 2.0, null] AS x RETURN avg(x) AS v",
+        json!([{"v": 1.5}]),
+    );
+    assert_both_shapes(
+        "UNWIND [null] AS x RETURN avg(x) AS v",
+        json!([{"v": null}]),
+    );
+}
+
+#[test]
+fn sum_and_avg_of_durations() {
+    assert_both_shapes(
+        "UNWIND [duration('P1D'), duration('PT12H')] AS x RETURN sum(x) AS s, avg(x) AS a",
+        json!([{"s": "P1DT12H", "a": "PT18H"}]),
+    );
+    assert_read(
+        "UNWIND [{g: 1, d: duration('PT1H')}, {g: 1, d: duration('PT3H')}] AS r \
+         RETURN r.g AS g, sum(r.d) AS s, avg(r.d) AS a",
+        json!([{"g": 1, "s": "PT4H", "a": "PT2H"}]),
+    );
+    assert_read_err(
+        "UNWIND [duration('P1D'), 1] AS x RETURN sum(x) AS v",
+        "can't add durations and numbers",
+    );
+}

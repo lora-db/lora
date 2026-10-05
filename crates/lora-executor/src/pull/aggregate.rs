@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 
 use lora_analyzer::{AggregateFunction, ResolvedExpr, ResolvedProjection};
-use lora_store::GraphStorage;
+use lora_store::{GraphStorage, LoraDuration};
 
 use crate::errors::{ExecResult, ExecutorError};
 use crate::eval::eval_expr_result;
@@ -58,34 +58,96 @@ pub(crate) struct StreamableAggSpec {
 #[derive(Clone, Debug)]
 pub(crate) enum AggState {
     Count(i64),
-    /// Running sum tracking integer-only-so-far so we can emit `Int` when
-    /// every contributing value was integer (matching the existing
-    /// `compute_aggregate_expr` semantics).
-    Sum {
-        sum: f64,
-        all_int: bool,
-        any: bool,
-    },
+    /// `sum()`; also the running total behind `avg()`.
+    Sum(Total),
     Min(Option<LoraValue>),
     Max(Option<LoraValue>),
-    Avg {
-        sum: f64,
-        count: usize,
-    },
+    Avg(Total),
+}
+
+/// A running total that keeps each kind of addend apart: integers add
+/// exactly (overflow is an error, like `+`), floats as floats, durations
+/// as durations. Non-numeric, non-duration values are ignored.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Total {
+    int: i64,
+    float: f64,
+    duration: Option<LoraDuration>,
+    ints: usize,
+    floats: usize,
+    durations: usize,
+    overflowed: bool,
+}
+
+impl Total {
+    fn add(&mut self, value: LoraValue) {
+        match value {
+            LoraValue::Int(i) => {
+                match self.int.checked_add(i) {
+                    Some(sum) => self.int = sum,
+                    None => self.overflowed = true,
+                }
+                self.ints += 1;
+            }
+            LoraValue::Float(f) => {
+                self.float += f;
+                self.floats += 1;
+            }
+            LoraValue::Duration(d) => {
+                let sum = match &self.duration {
+                    None => Some(d),
+                    Some(cur) => cur.try_add(&d),
+                };
+                match sum {
+                    Some(sum) => self.duration = Some(sum),
+                    None => self.overflowed = true,
+                }
+                self.durations += 1;
+            }
+            _ => {}
+        }
+    }
+
+    /// The sum: an integer when every addend was one, a float once any was
+    /// a float, a duration for durations; null with no addends.
+    fn sum(&self, name: &str) -> ExecResult<LoraValue> {
+        if self.overflowed {
+            return Err(ExecutorError::RuntimeError(format!("{name}() overflowed")));
+        }
+        match (&self.duration, self.ints + self.floats) {
+            (Some(_), n) if n > 0 => Err(ExecutorError::RuntimeError(format!(
+                "{name}() can't add durations and numbers"
+            ))),
+            (Some(d), _) => Ok(LoraValue::Duration(d.clone())),
+            (None, 0) => Ok(LoraValue::Null),
+            (None, _) if self.floats == 0 => Ok(LoraValue::Int(self.int)),
+            (None, _) => Ok(LoraValue::Float(self.int as f64 + self.float)),
+        }
+    }
+
+    /// The mean: a float for numbers, a duration for durations.
+    fn avg(&self) -> ExecResult<LoraValue> {
+        let numbers = self.ints + self.floats;
+        match self.sum("avg")? {
+            LoraValue::Duration(d) => d
+                .try_div_int(self.durations as i64)
+                .map(LoraValue::Duration)
+                .ok_or_else(|| ExecutorError::RuntimeError("avg() overflowed".into())),
+            LoraValue::Int(i) => Ok(LoraValue::Float(i as f64 / numbers as f64)),
+            LoraValue::Float(f) => Ok(LoraValue::Float(f / numbers as f64)),
+            other => Ok(other),
+        }
+    }
 }
 
 impl AggState {
     pub(crate) fn seed(kind: StreamableAggKind) -> Self {
         match kind {
             StreamableAggKind::CountAll | StreamableAggKind::CountField => AggState::Count(0),
-            StreamableAggKind::Sum => AggState::Sum {
-                sum: 0.0,
-                all_int: true,
-                any: false,
-            },
+            StreamableAggKind::Sum => AggState::Sum(Total::default()),
             StreamableAggKind::Min => AggState::Min(None),
             StreamableAggKind::Max => AggState::Max(None),
-            StreamableAggKind::Avg => AggState::Avg { sum: 0.0, count: 0 },
+            StreamableAggKind::Avg => AggState::Avg(Total::default()),
         }
     }
 
@@ -96,19 +158,7 @@ impl AggState {
                 StreamableAggKind::CountField if !matches!(value, LoraValue::Null) => *n += 1,
                 _ => {}
             },
-            AggState::Sum { sum, all_int, any } => match value {
-                LoraValue::Null => {}
-                LoraValue::Int(i) => {
-                    *sum += i as f64;
-                    *any = true;
-                }
-                LoraValue::Float(f) => {
-                    *sum += f;
-                    *all_int = false;
-                    *any = true;
-                }
-                _ => {}
-            },
+            AggState::Sum(total) | AggState::Avg(total) => total.add(value),
             AggState::Min(slot) => {
                 if matches!(value, LoraValue::Null) {
                     return;
@@ -135,40 +185,15 @@ impl AggState {
                     }
                 }
             }
-            AggState::Avg { sum, count } => {
-                let n = match value {
-                    LoraValue::Int(i) => Some(i as f64),
-                    LoraValue::Float(f) => Some(f),
-                    _ => None,
-                };
-                if let Some(n) = n {
-                    *sum += n;
-                    *count += 1;
-                }
-            }
         }
     }
 
-    pub(crate) fn finalize(self, _kind: StreamableAggKind) -> LoraValue {
+    pub(crate) fn finalize(self, _kind: StreamableAggKind) -> ExecResult<LoraValue> {
         match self {
-            AggState::Count(n) => LoraValue::Int(n),
-            AggState::Sum { sum, all_int, any } => {
-                if !any {
-                    LoraValue::Null
-                } else if all_int && sum.fract() == 0.0 {
-                    LoraValue::Int(sum as i64)
-                } else {
-                    LoraValue::Float(sum)
-                }
-            }
-            AggState::Min(v) | AggState::Max(v) => v.unwrap_or(LoraValue::Null),
-            AggState::Avg { sum, count } => {
-                if count == 0 {
-                    LoraValue::Null
-                } else {
-                    LoraValue::Float(sum / count as f64)
-                }
-            }
+            AggState::Count(n) => Ok(LoraValue::Int(n)),
+            AggState::Sum(total) => total.sum("sum"),
+            AggState::Min(v) | AggState::Max(v) => Ok(v.unwrap_or(LoraValue::Null)),
+            AggState::Avg(total) => total.avg(),
         }
     }
 }
@@ -353,7 +378,7 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
             let mut result = Row::new();
             for (i, proj) in aggregates.iter().enumerate() {
                 let value = std::mem::replace(&mut aggs[i], AggState::seed(specs[i].kind))
-                    .finalize(specs[i].kind);
+                    .finalize(specs[i].kind)?;
                 result.insert_named(proj.output, proj.name.clone(), value);
             }
             return Ok(vec![result]);
@@ -396,7 +421,7 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
                 result.insert_named(proj.output, proj.name.clone(), value);
             }
             for (i, proj) in aggregates.iter().enumerate() {
-                let value = group.aggs[i].clone().finalize(specs[i].kind);
+                let value = group.aggs[i].clone().finalize(specs[i].kind)?;
                 result.insert_named(proj.output, proj.name.clone(), value);
             }
             out.push(result);
