@@ -38,6 +38,7 @@ compare cleanly across branches (build each branch, run the same probe):
 | `optional_probe` | Anchored `OPTIONAL MATCH` vs the equivalent pattern comprehension (target: within 3x) |
 | `keyset_probe` | `WHERE n.key > $after ORDER BY n.key LIMIT 20` latency at 20k and 1M nodes (target: under 1 ms p50, flat in label size) |
 | `bulk_probe` | Bulk-load time with no schema vs a uniqueness constraint, range, or full-text index declared first |
+| `storage_baseline` | Storage scaling: retained heap per node / relationship / property / index entry (`-- mem <variant> <N>`), point-read, traversal and write latency (`-- lat <N>`), snapshot save/load and WAL replay (`-- wal <N>`) at any graph size. Numbers and method: `docs/design/storage-beyond-memory.md` §2 |
 
 ```bash
 cargo run --release -p lora-database --example heap_probe
