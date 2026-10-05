@@ -296,10 +296,9 @@ pub enum PropertyConversionError {
     /// A list entry contained a VECTOR value. Vectors are first-class
     /// properties themselves but they cannot be nested inside lists.
     NestedVectorInList,
-    /// Produced when something that cannot appear on disk (e.g. a `Path`
-    /// value captured by mistake) is asked to be converted — surfaced so
-    /// callers can reject it instead of silently stringifying.
-    #[allow(dead_code)]
+    /// A node, relationship or path, at any depth: graph entities are not
+    /// property values, so they are rejected instead of being stored as a
+    /// `"node:<id>"` string (or, for a path, as null).
     UnsupportedKind(&'static str),
 }
 
@@ -321,10 +320,13 @@ impl std::error::Error for PropertyConversionError {}
 /// Fallible conversion used on every write path
 /// (`set_property_from_expr`, `overwrite_entity_target`,
 /// `mutate_entity_target`, `eval_properties_expr`, plus CREATE /
-/// MERGE). Rejects VECTOR values nested inside lists at any depth —
-/// everything else falls through to the infallible `From`
-/// implementation above. A top-level VECTOR property is always fine;
-/// only LISTs that directly contain a VECTOR entry are rejected.
+/// MERGE). Rejects nodes, relationships and paths at any depth, and
+/// VECTOR values nested inside lists — everything else falls through to
+/// the infallible `From` implementation above. A top-level VECTOR
+/// property is always fine; only LISTs that directly contain a VECTOR
+/// entry are rejected. Index seeks also convert through here: a value
+/// that can't be a property falls back to a scan, where it matches
+/// nothing.
 pub fn lora_value_to_property(value: LoraValue) -> Result<PropertyValue, PropertyConversionError> {
     /// Visit every nested value and, whenever we cross a `List`, flag the
     /// `Vector` entries it directly contains. We still recurse through
@@ -333,6 +335,11 @@ pub fn lora_value_to_property(value: LoraValue) -> Result<PropertyValue, Propert
     fn visit(value: &LoraValue, inside_list: bool) -> Result<(), PropertyConversionError> {
         match value {
             LoraValue::Vector(_) if inside_list => Err(PropertyConversionError::NestedVectorInList),
+            LoraValue::Node(_) => Err(PropertyConversionError::UnsupportedKind("a node")),
+            LoraValue::Relationship(_) => {
+                Err(PropertyConversionError::UnsupportedKind("a relationship"))
+            }
+            LoraValue::Path(_) => Err(PropertyConversionError::UnsupportedKind("a path")),
             LoraValue::List(items) => {
                 for item in items {
                     visit(item, true)?;

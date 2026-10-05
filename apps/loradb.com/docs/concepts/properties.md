@@ -123,7 +123,9 @@ Properties accept every [LoraDB data type](../data-types/overview):
 | `Vector` (typed fixed-dimension coordinates) | [Vectors](../data-types/vectors) |
 
 Graph types (`Node`, `Relationship`, `Path`) are **not** storable as
-properties — they only appear in query results.
+properties — they only appear in query results. Writing one, even inside
+a list or map, is an error (`cannot store a node as a property`) and the
+statement changes nothing; store `id(n)` or a key property instead.
 
 A `VECTOR` can be a property value and can appear as a value inside a
 `Map` property, but a **list that contains a `VECTOR` is rejected at
