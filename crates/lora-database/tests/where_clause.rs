@@ -886,10 +886,9 @@ fn where_value_in_list_with_null() {
 
 #[test]
 fn where_value_not_in_list_with_null() {
-    // 5 IN [1, null] — returns null (not found, null present)
-    // Current engine returns false; test documents actual behavior
+    // 5 IN [1, null] — null: not found, but the null element might be 5
     let v = TestDb::new().scalar("RETURN 5 IN [1, null]");
-    assert_eq!(v, false);
+    assert!(v.is_null());
 }
 
 // ============================================================

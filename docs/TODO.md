@@ -23,7 +23,6 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P2 `min`/`max` of LocalDateTime/Time wrong (E27; sorting is fixed).
 - [ ] P2 `CREATE (r:R) DELETE r` and `SET q:R, q.x = …` fail the existence check (E20 residual).
 - [ ] P2 `stdev`/`stdevp`/`percentile*` silently ignore `DISTINCT` (`executor/helpers.rs:945+`). Reject or implement.
-- [ ] P2 `5 IN [1, null]` returns `false`, Cypher says `null` (pinned at `where_clause.rs:886`). Fix, or document in the matrix §19.
 - [ ] P2 No rollback on constraint violation (`invariants.rs:605`).
 - [ ] P2 HNSW `quantization: 'int8'` clips coordinates outside [-1, 1] silently (un-normalised vectors all score ≈1.0). Reject or normalise on insert.
 - [ ] P2 General procedures: `CALL db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()` ("unknown procedure").

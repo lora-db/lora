@@ -37,12 +37,22 @@ pub(super) fn eval_unary(op: UnaryOp, value: LoraValue) -> LoraValue {
 }
 
 /// `lhs IN rhs`, reading the list in place.
+/// openCypher `IN`: true when an element equals `lhs`; otherwise null when
+/// the answer is unknown (`lhs` is null, or an element is), else false. An
+/// empty list holds nothing, so `null IN []` is false.
 pub(super) fn eval_in(lhs: &LoraValue, rhs: &LoraValue) -> LoraValue {
-    if matches!(lhs, LoraValue::Null) {
-        return LoraValue::Null;
-    }
     match rhs {
-        LoraValue::List(values) => LoraValue::Bool(values.iter().any(|v| value_eq(lhs, v))),
+        LoraValue::List(values) if values.is_empty() => LoraValue::Bool(false),
+        _ if matches!(lhs, LoraValue::Null) => LoraValue::Null,
+        LoraValue::List(values) => {
+            if values.iter().any(|v| value_eq(lhs, v)) {
+                LoraValue::Bool(true)
+            } else if values.iter().any(|v| matches!(v, LoraValue::Null)) {
+                LoraValue::Null
+            } else {
+                LoraValue::Bool(false)
+            }
+        }
         LoraValue::Null => LoraValue::Null,
         _ => LoraValue::Bool(false),
     }

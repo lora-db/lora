@@ -442,8 +442,8 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 | `null AND true` → `null` | **Supported** |
 | `null OR true` → `true` | **Supported** |
 | `null OR false` → `null` | **Supported** |
-| `null IN list` → `null` | **Supported** |
-| `x IN list` where `x` is absent and `list` contains `null` → `null` | **Deviation**: returns `false` (`5 IN [1, null]` is `false`; `1 IN [1, null]` is correctly `true`). Pinned by `where_value_not_in_list_with_null` in `crates/lora-database/tests/where_clause.rs` |
+| `null IN list` → `null` (`null IN []` → `false`) | **Supported** |
+| `x IN list` where `x` is absent and `list` contains `null` → `null` | **Supported** (`5 IN [1, null]` is `null`; `1 IN [1, null]` is `true`) |
 | `IS NULL` / `IS NOT NULL` | **Supported** |
 | Aggregates skip nulls (except `count(*)`) | **Supported** |
 

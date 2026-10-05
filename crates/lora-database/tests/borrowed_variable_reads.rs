@@ -34,7 +34,8 @@ fn reads_of_carried_values_keep_their_results() {
     );
     let r = &rows[0];
     assert_eq!(r["inl"], 2);
-    assert_eq!(r["missing"], false);
+    // Not found, but the null element might be 9.
+    assert_eq!(r["missing"], serde_json::Value::Null);
     assert_eq!(r["innull"], serde_json::Value::Null);
     assert_eq!(r["nullprop"], serde_json::Value::Null);
     assert_eq!(r["first"], 1);

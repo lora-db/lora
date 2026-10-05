@@ -1,5 +1,6 @@
 //! Expression semantics that follow openCypher: integer overflow in the
-//! list builtins is an error like it is for the operators. Every case runs
+//! list builtins is an error like it is for the operators; `IN` is null
+//! when a null element leaves the answer unknown. Every case runs
 //! on each execution path (`execute`, the pull pipeline, both transaction
 //! modes).
 
@@ -109,4 +110,20 @@ fn list_sum_and_product_error_on_integer_overflow() {
     );
     assert_read("RETURN list.sum([1, 2.5]) AS v", json!([{"v": 3.5}]));
     assert_read("RETURN list.product([2, 3, null]) AS v", json!([{"v": 6}]));
+}
+
+#[test]
+fn in_is_null_when_a_null_element_leaves_it_unknown() {
+    assert_read("RETURN 5 IN [1, null] AS v", json!([{"v": null}]));
+    assert_read("RETURN 1 IN [1, null] AS v", json!([{"v": true}]));
+    assert_read("RETURN 5 IN [1, 2] AS v", json!([{"v": false}]));
+    assert_read("RETURN 5 IN [] AS v", json!([{"v": false}]));
+    assert_read("RETURN null IN [] AS v", json!([{"v": false}]));
+    assert_read("RETURN null IN [1] AS v", json!([{"v": null}]));
+    assert_read("RETURN NOT (5 IN [1, null]) AS v", json!([{"v": null}]));
+    // As a filter, unknown keeps the row out, like false.
+    assert_read(
+        "UNWIND [1, 2, 5] AS x WITH x WHERE x IN [1, null] RETURN collect(x) AS v",
+        json!([{"v": [1]}]),
+    );
 }
