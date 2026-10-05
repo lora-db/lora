@@ -109,8 +109,29 @@ impl Total {
     }
 
     /// The sum: an integer when every addend was one, a float once any was
-    /// a float, a duration for durations; null with no addends.
+    /// a float, a duration for durations; `0` with no addends (openCypher).
     fn sum(&self, name: &str) -> ExecResult<LoraValue> {
+        Ok(self.total(name)?.unwrap_or(LoraValue::Int(0)))
+    }
+
+    /// The mean: a float for numbers, a duration for durations; null with
+    /// no addends.
+    fn avg(&self) -> ExecResult<LoraValue> {
+        let numbers = self.ints + self.floats;
+        match self.total("avg")? {
+            None => Ok(LoraValue::Null),
+            Some(LoraValue::Duration(d)) => d
+                .try_div_int(self.durations as i64)
+                .map(LoraValue::Duration)
+                .ok_or_else(|| ExecutorError::RuntimeError("avg() overflowed".into())),
+            Some(LoraValue::Int(i)) => Ok(LoraValue::Float(i as f64 / numbers as f64)),
+            Some(LoraValue::Float(f)) => Ok(LoraValue::Float(f / numbers as f64)),
+            Some(other) => Ok(other),
+        }
+    }
+
+    /// The addends' total as `sum` reports it, or `None` when there were none.
+    fn total(&self, name: &str) -> ExecResult<Option<LoraValue>> {
         if self.overflowed {
             return Err(ExecutorError::RuntimeError(format!("{name}() overflowed")));
         }
@@ -118,24 +139,10 @@ impl Total {
             (Some(_), n) if n > 0 => Err(ExecutorError::RuntimeError(format!(
                 "{name}() can't add durations and numbers"
             ))),
-            (Some(d), _) => Ok(LoraValue::Duration(d.clone())),
-            (None, 0) => Ok(LoraValue::Null),
-            (None, _) if self.floats == 0 => Ok(LoraValue::Int(self.int)),
-            (None, _) => Ok(LoraValue::Float(self.int as f64 + self.float)),
-        }
-    }
-
-    /// The mean: a float for numbers, a duration for durations.
-    fn avg(&self) -> ExecResult<LoraValue> {
-        let numbers = self.ints + self.floats;
-        match self.sum("avg")? {
-            LoraValue::Duration(d) => d
-                .try_div_int(self.durations as i64)
-                .map(LoraValue::Duration)
-                .ok_or_else(|| ExecutorError::RuntimeError("avg() overflowed".into())),
-            LoraValue::Int(i) => Ok(LoraValue::Float(i as f64 / numbers as f64)),
-            LoraValue::Float(f) => Ok(LoraValue::Float(f / numbers as f64)),
-            other => Ok(other),
+            (Some(d), _) => Ok(Some(LoraValue::Duration(d.clone()))),
+            (None, 0) => Ok(None),
+            (None, _) if self.floats == 0 => Ok(Some(LoraValue::Int(self.int))),
+            (None, _) => Ok(Some(LoraValue::Float(self.int as f64 + self.float))),
         }
     }
 }

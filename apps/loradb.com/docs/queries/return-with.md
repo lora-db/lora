@@ -373,7 +373,7 @@ ORDER BY city`} />
 ### Empty aggregation input
 
 `RETURN count(*)` with zero matches still emits one row with value `0`.
-`sum`, `avg`, `min`, `max` return `null` on empty input. See
+`sum` returns `0` on empty input; `avg`, `min` and `max` return `null`. See
 [Aggregation → count](./aggregation#count).
 
 ### WITH without projection

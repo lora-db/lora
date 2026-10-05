@@ -110,7 +110,7 @@ aggregate and its edge cases.
 | `count(*)` | — | `0` | counted as 1 per row | `Int` |
 | `count(expr)` | yes | `0` | skipped | `Int` |
 | `collect(expr)` | yes | `[]` | included as `null` | `List` |
-| `sum(expr)` | yes | `null` | skipped | `Int` if all-int, else `Float` |
+| `sum(expr)` | yes | `0` | skipped | `Int` if all-int, else `Float` |
 | `avg(expr)` | yes | `null` | skipped | `Float` |
 | `min(expr)` | yes | `null` | skipped | type of min element |
 | `max(expr)` | yes | `null` | skipped | type of max element |
@@ -203,7 +203,8 @@ RETURN sum(o.amount) AS revenue,
 
 - `sum` returns an `Int` when every input is an `Int`; otherwise `Float`.
 - `avg` is always `Float`.
-- Both **return `null` on empty input** (nothing to average / sum).
+- On empty input `sum` returns `0` and `avg` returns `null` (there is
+  nothing to average).
 - Nulls in input are skipped — they don't affect the result.
 
 <QueryCodeBlock code={String.raw`UNWIND [1, 2, null, 4] AS x

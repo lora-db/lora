@@ -23,7 +23,7 @@ where aggregates are legal) see the
 | <CypherCode code="count(*)" /> | — | `0` | counted as 1 per row | `Int` |
 | <CypherCode code="count(expr)" /> | yes | `0` | skipped | `Int` |
 | <CypherCode code="collect(expr)" /> | yes | `[]` | included as `null` | `List` |
-| <CypherCode code="sum(expr)" /> | yes | `null` | skipped | `Int` if all-int, else `Float` |
+| <CypherCode code="sum(expr)" /> | yes | `0` | skipped | `Int` if all-int, else `Float` |
 | <CypherCode code="avg(expr)" /> | yes | `null` | skipped | `Float` |
 | <CypherCode code="min(expr)" /> / <CypherCode code="max(expr)" /> | yes | `null` | skipped | same type as element |
 | <CypherCode code="stdev(expr)" /> | — | `0.0` | skipped | `Float`, sample (n − 1) |
@@ -120,7 +120,7 @@ UNWIND [1.0, 2.5, 3.5] AS x
 RETURN sum(x);                 // 7.0
 
 MATCH (:Never)
-RETURN sum(1)                 // null   (empty input)`} />
+RETURN sum(1)                 // 0      (empty input)`} />
 
 Return type: `Int` when every contributing element is an `Int`; `Float`
 if any contributor is a `Float`.
