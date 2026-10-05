@@ -250,8 +250,8 @@ fn bitop(args: &[LoraValue]) -> LoraValue {
         "and" => a & b,
         "or" => a | b,
         "xor" => a ^ b,
-        "shl" => a.wrapping_shl(b as u32),
-        "shr" => a.wrapping_shr(b as u32),
+        "shl" => return super::bits_ns::shift_left(a, b, "number.bitop shl"),
+        "shr" => return super::bits_ns::shift_right(a, b, "number.bitop shr"),
         "not" => !a,
         _ => return LoraValue::Null,
     };

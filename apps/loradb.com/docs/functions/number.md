@@ -126,6 +126,17 @@ RETURN bits.not(0);               // -1
 RETURN bits.shift_left(3, 2);     // 12
 RETURN bits.shift_right(12, 2)   // 3`} />
 
+A shift moves 0 to 63 bits; any other amount is an error.
+`bits.shift_left(a, b)` is `a * 2^b`, so like the arithmetic operators
+it raises an error when the result doesn't fit a 64-bit integer, rather
+than wrapping. `bits.shift_right` keeps the sign (`bits.shift_right(-8, 1)`
+is `-4`) and never overflows.
+
+<QueryCodeBlock code={String.raw`RETURN bits.shift_left(1, 62);    // 4611686018427387904
+RETURN bits.shift_left(-1, 63);   // -9223372036854775808
+RETURN bits.shift_left(1, 63);    // error: overflowed
+RETURN bits.shift_right(1, 64)   // error: shift must be between 0 and 63`} />
+
 For new queries, prefer the named `bits.*` helpers over
 `number.bitop(a, op, b)`. The older `number.bitop` form remains
 available for generated queries that need to pass the operation name as

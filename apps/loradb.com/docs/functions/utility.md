@@ -79,7 +79,9 @@ RETURN bits.shift_left(3, 2)            // 12`} />
 
 `bits.*` operates on integers. `number.bitop` accepts operation strings
 such as `'and'`, `'or'`, `'xor'`, `'shl'`, `'shr'`, and `'not'`; prefer
-the named `bits.*` forms in new queries.
+the named `bits.*` forms in new queries. Shifts take 0 to 63 bits, and a
+left shift whose result doesn't fit an integer is an error, as for the
+arithmetic operators.
 
 ## Bytes, Crypto, UUID, and JSON
 
