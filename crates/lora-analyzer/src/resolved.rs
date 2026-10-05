@@ -142,6 +142,11 @@ pub enum ResolvedRemoveItem {
 pub struct ResolvedReturn {
     pub distinct: bool,
     pub items: Vec<ResolvedProjection>,
+    /// Aggregate calls nested inside a larger item (`size(collect(x))`,
+    /// `count(*) + 1`), each lifted into its own hidden column. Those items
+    /// read the lifted columns, and grouping keys, by output id, so they
+    /// are evaluated after aggregation.
+    pub lifted_aggregates: Vec<ResolvedProjection>,
     pub include_existing: bool,
     pub order: Vec<ResolvedSortItem>,
     pub skip: Option<ResolvedExpr>,
@@ -152,6 +157,11 @@ pub struct ResolvedReturn {
 pub struct ResolvedWith {
     pub distinct: bool,
     pub items: Vec<ResolvedProjection>,
+    /// Aggregate calls nested inside a larger item (`size(collect(x))`,
+    /// `count(*) + 1`), each lifted into its own hidden column. Those items
+    /// read the lifted columns, and grouping keys, by output id, so they
+    /// are evaluated after aggregation.
+    pub lifted_aggregates: Vec<ResolvedProjection>,
     pub include_existing: bool,
     pub order: Vec<ResolvedSortItem>,
     pub skip: Option<ResolvedExpr>,

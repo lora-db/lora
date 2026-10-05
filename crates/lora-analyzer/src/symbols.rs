@@ -19,6 +19,12 @@ impl SymbolTable {
         Self { next_var: 0 }
     }
 
+    /// The id the next `new_var` returns. Every variable bound from here on
+    /// (aliases, comprehension locals) gets this id or a higher one.
+    pub fn next_var(&self) -> VarId {
+        VarId(self.next_var)
+    }
+
     pub fn new_var(&mut self) -> VarId {
         let id = VarId(self.next_var);
         self.next_var += 1;

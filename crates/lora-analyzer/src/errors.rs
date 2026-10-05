@@ -47,6 +47,9 @@ pub enum SemanticError {
     #[error("aggregation functions are not allowed in WHERE clause")]
     AggregationInWhere,
 
+    #[error("`{0}` aggregates, so outside its aggregate functions it can only use grouping keys; project that value as its own column")]
+    ImplicitGroupingKey(String),
+
     #[error("all UNION branches must return the same number of columns: expected {0}, got {1}")]
     UnionColumnCountMismatch(usize, usize),
 

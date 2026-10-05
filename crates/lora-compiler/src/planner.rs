@@ -294,6 +294,7 @@ impl Planner {
         let mut node = self.plan_projection_sort_limit(
             input,
             &with.items,
+            &with.lifted_aggregates,
             with.distinct,
             with.include_existing,
             &with.order,
@@ -315,6 +316,7 @@ impl Planner {
         self.plan_projection_sort_limit(
             input,
             &ret.items,
+            &ret.lifted_aggregates,
             ret.distinct,
             ret.include_existing,
             &ret.order,
@@ -345,19 +347,26 @@ impl Planner {
         &mut self,
         input: PlanNodeId,
         items: &[ResolvedProjection],
+        lifted: &[ResolvedProjection],
         distinct: bool,
         include_existing: bool,
         order: &[ResolvedSortItem],
         skip: &Option<ResolvedExpr>,
         limit: &Option<ResolvedExpr>,
     ) -> PlanNodeId {
-        let aggregates = items.iter().any(|item| expr_contains_aggregate(&item.expr));
+        let aggregates =
+            !lifted.is_empty() || items.iter().any(|item| expr_contains_aggregate(&item.expr));
         let has_order = !order.is_empty();
         let has_limit = skip.is_some() || limit.is_some();
 
         if aggregates || distinct {
-            let mut node =
-                self.plan_projection_or_aggregation(input, items, distinct, include_existing);
+            let mut node = self.plan_projection_or_aggregation(
+                input,
+                items,
+                lifted,
+                distinct,
+                include_existing,
+            );
             if has_order {
                 node = self.push(LogicalOp::Sort(Sort {
                     input: node,
@@ -387,7 +396,13 @@ impl Planner {
                     limit: limit.clone(),
                 }));
             }
-            return self.plan_projection_or_aggregation(node, items, false, include_existing);
+            return self.plan_projection_or_aggregation(
+                node,
+                items,
+                lifted,
+                false,
+                include_existing,
+            );
         }
 
         let mut node = self.push(LogicalOp::Projection(Projection {
@@ -424,13 +439,22 @@ impl Planner {
     /// If any projection item contains an aggregate function, emit an
     /// Aggregation node followed by a Projection. Otherwise emit a plain
     /// Projection.
+    ///
+    /// `lifted` are the aggregate calls the analyzer took out of larger
+    /// items (`size(collect(x))`): they aggregate as hidden columns, and a
+    /// Projection then evaluates those items on the grouped rows.
     fn plan_projection_or_aggregation(
         &mut self,
         input: PlanNodeId,
         items: &[ResolvedProjection],
+        lifted: &[ResolvedProjection],
         distinct: bool,
         include_existing: bool,
     ) -> PlanNodeId {
+        if !lifted.is_empty() {
+            return self.plan_lifted_aggregation(input, items, lifted, distinct);
+        }
+
         let has_aggregates = items.iter().any(|item| expr_contains_aggregate(&item.expr));
 
         if !has_aggregates {
@@ -479,6 +503,54 @@ impl Planner {
         } else {
             node
         }
+    }
+
+    /// Aggregate by the items that read no lifted column and aggregate
+    /// nothing, fold the bare aggregate items and the lifted calls, then
+    /// project every item in order: keys and bare aggregates re-emit their
+    /// column, the rest evaluate on the grouped row.
+    fn plan_lifted_aggregation(
+        &mut self,
+        input: PlanNodeId,
+        items: &[ResolvedProjection],
+        lifted: &[ResolvedProjection],
+        distinct: bool,
+    ) -> PlanNodeId {
+        let lifted_outputs: BTreeSet<VarId> = lifted.iter().map(|p| p.output).collect();
+        let reads_lifted = |item: &ResolvedProjection| {
+            let mut reads = BTreeSet::new();
+            item.expr.collect_vars(&mut reads);
+            !reads.is_disjoint(&lifted_outputs)
+        };
+
+        let mut group_by = Vec::new();
+        let mut aggregates = Vec::new();
+        let mut projected = Vec::with_capacity(items.len());
+        for item in items {
+            if reads_lifted(item) {
+                projected.push(item.clone());
+                continue;
+            }
+            if expr_contains_aggregate(&item.expr) {
+                aggregates.push(item.clone());
+            } else {
+                group_by.push(item.clone());
+            }
+            projected.extend(passthrough_items(std::slice::from_ref(item)));
+        }
+        aggregates.extend(lifted.iter().cloned());
+
+        let node = self.push(LogicalOp::Aggregation(Aggregation {
+            input,
+            group_by,
+            aggregates,
+        }));
+        self.push(LogicalOp::Projection(Projection {
+            input: node,
+            distinct,
+            items: projected,
+            include_existing: false,
+        }))
     }
 
     fn plan_unit_input(&mut self) -> PlanNodeId {

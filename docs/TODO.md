@@ -17,7 +17,6 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P3 A function with two or more arguments (`coalesce(big, [])`), an operator
       (`big + [x]`) or a map/list literal still copies a carried list per call; a lone
       variable argument (`size(big)`) and row clones share it (`value.rs` `SlotValue`).
-- [ ] P2 `head(collect(x))` returns null (E16).
 - [ ] P2 `7/2` returns `3.5`; integer division should give `3` (E22).
 - [ ] P2 `[1,2,3][..-1]` returns `[]` (E23).
 - [ ] P2 `max` over durations returns the smallest; `sum`/`avg` of durations return null (E25).

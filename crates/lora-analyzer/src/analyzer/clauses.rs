@@ -3,7 +3,7 @@ use super::state::{Analyzer, PatternContext};
 use crate::{errors::*, resolved::*, symbols::*};
 use lora_ast::{
     Create, Delete, Expr, Foreach, InQueryCall, Match, Merge, ProjectionBody, ProjectionItem,
-    Remove, RemoveItem, Return, Set, SetItem, Unwind, UpdatingClause, Variable, With,
+    Remove, RemoveItem, Return, Set, SetItem, Span, Unwind, UpdatingClause, Variable, With,
 };
 use lora_store::GraphCatalog;
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,6 +17,7 @@ pub(super) struct ExportedAlias {
 #[derive(Debug, Clone)]
 pub(super) struct AnalyzedProjectionBody {
     pub(super) items: Vec<ResolvedProjection>,
+    pub(super) lifted_aggregates: Vec<ResolvedProjection>,
     pub(super) include_existing: bool,
     pub(super) exported_aliases: Vec<ExportedAlias>,
     pub(super) order: Vec<ResolvedSortItem>,
@@ -318,6 +319,7 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
         Ok(ResolvedReturn {
             distinct: r.body.distinct,
             items: analyzed.items,
+            lifted_aggregates: analyzed.lifted_aggregates,
             include_existing: analyzed.include_existing,
             order: analyzed.order,
             skip: analyzed.skip,
@@ -352,6 +354,7 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
         Ok(ResolvedWith {
             distinct: w.body.distinct,
             items: analyzed.items,
+            lifted_aggregates: analyzed.lifted_aggregates,
             include_existing: analyzed.include_existing,
             order: analyzed.order,
             skip: analyzed.skip,
@@ -364,6 +367,7 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
         &mut self,
         body: &ProjectionBody,
     ) -> Result<AnalyzedProjectionBody, SemanticError> {
+        let first_var = self.symbols.next_var();
         let mut items = Vec::new();
         let mut include_existing = false;
         let mut exported_aliases = Vec::new();
@@ -406,6 +410,8 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
             }
         }
 
+        let lifted_aggregates = self.lift_nested_aggregates(&mut items, first_var)?;
+
         // Build a lookup from alias names to their output VarIds so ORDER BY
         // can reference projection aliases (e.g. ORDER BY name when RETURN p.name AS name).
         let alias_map: BTreeMap<String, VarId> = exported_aliases
@@ -438,12 +444,194 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
 
         Ok(AnalyzedProjectionBody {
             items,
+            lifted_aggregates,
             include_existing,
             exported_aliases,
             order,
             skip,
             limit,
         })
+    }
+}
+
+impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
+    /// Split every item that nests an aggregate inside a larger expression
+    /// (`size(collect(x))`, `{c: count(*)}`): each aggregate call becomes a
+    /// hidden column and the item reads it, so the planner can aggregate
+    /// first and evaluate the item on the grouped row. Inside such an item,
+    /// a sub-expression that restates a grouping key reads that key's column.
+    ///
+    /// Anything else the item reads from before this projection would be a
+    /// different value per row of the group, so it is rejected, as in
+    /// openCypher. `first_var` is the first id this projection allocated:
+    /// lower ids are those earlier bindings, higher ones its own aliases and
+    /// comprehension locals.
+    fn lift_nested_aggregates(
+        &mut self,
+        items: &mut [ResolvedProjection],
+        first_var: VarId,
+    ) -> Result<Vec<ResolvedProjection>, SemanticError> {
+        if !items
+            .iter()
+            .any(|item| expr_contains_aggregate(&item.expr) && !is_bare_aggregate(&item.expr))
+        {
+            return Ok(Vec::new());
+        }
+
+        // Grouping keys, compared by their derived `Debug` form (structural
+        // and deterministic), with the column each one lands in.
+        let keys: Vec<(String, VarId)> = items
+            .iter()
+            .filter(|item| !expr_contains_aggregate(&item.expr))
+            .map(|item| (format!("{:?}", item.expr), item.output))
+            .collect();
+
+        let mut lifted = Vec::new();
+        for item in items.iter_mut() {
+            if !expr_contains_aggregate(&item.expr) || is_bare_aggregate(&item.expr) {
+                continue;
+            }
+            let mut expr = item.expr.clone();
+            lift_aggregates_in(
+                &mut expr,
+                &keys,
+                &mut || self.symbols.new_var(),
+                &mut lifted,
+                item.span,
+            );
+
+            let mut reads = BTreeSet::new();
+            expr.collect_vars(&mut reads);
+            let lifted_outputs: BTreeSet<VarId> = lifted
+                .iter()
+                .map(|p: &ResolvedProjection| p.output)
+                .collect();
+            let key_outputs: BTreeSet<VarId> = keys.iter().map(|(_, v)| *v).collect();
+            if reads
+                .iter()
+                .any(|v| *v < first_var && !key_outputs.contains(v) && !lifted_outputs.contains(v))
+            {
+                return Err(SemanticError::ImplicitGroupingKey(item.name.to_string()));
+            }
+            item.expr = expr;
+        }
+        Ok(lifted)
+    }
+}
+
+/// Whether `expr` is itself one aggregate call, the shape the aggregation
+/// operator evaluates directly.
+fn is_bare_aggregate(expr: &ResolvedExpr) -> bool {
+    matches!(expr, ResolvedExpr::Function { function, .. } if function.is_aggregate())
+}
+
+/// Replace each aggregate call in `expr` with a fresh variable, recording
+/// the call as a hidden projection in `lifted`; replace each aggregate-free
+/// sub-expression that restates a grouping key with that key's column.
+fn lift_aggregates_in(
+    expr: &mut ResolvedExpr,
+    keys: &[(String, VarId)],
+    new_var: &mut dyn FnMut() -> VarId,
+    lifted: &mut Vec<ResolvedProjection>,
+    span: Span,
+) {
+    if is_bare_aggregate(expr) {
+        let output = new_var();
+        let call = std::mem::replace(expr, ResolvedExpr::Variable(output));
+        lifted.push(ResolvedProjection {
+            expr: call,
+            output,
+            name: format!("  aggregate {}", output.0).into(),
+            explicit_alias: false,
+            span,
+        });
+        return;
+    }
+    // Not a key, but its parts may be (`size(n.tags)` with `n.tags` grouped).
+    if !keys.is_empty() && !expr_contains_aggregate(expr) {
+        let shape = format!("{:?}", expr);
+        if let Some((_, output)) = keys.iter().find(|(key, _)| *key == shape) {
+            *expr = ResolvedExpr::Variable(*output);
+            return;
+        }
+    }
+    let mut go = |e: &mut ResolvedExpr| lift_aggregates_in(e, keys, new_var, lifted, span);
+    match expr {
+        ResolvedExpr::Variable(_) | ResolvedExpr::Literal(_) | ResolvedExpr::Parameter(_) => {}
+        ResolvedExpr::Property { expr, .. } | ResolvedExpr::Unary { expr, .. } => go(expr),
+        ResolvedExpr::Binary { lhs, rhs, .. } => {
+            go(lhs);
+            go(rhs);
+        }
+        ResolvedExpr::Function { args, .. } => args.iter_mut().for_each(go),
+        ResolvedExpr::List(items) => items.iter_mut().for_each(go),
+        ResolvedExpr::Map(items) => items.iter_mut().for_each(|(_, v)| go(v)),
+        ResolvedExpr::Case {
+            input,
+            alternatives,
+            else_expr,
+        } => {
+            if let Some(e) = input {
+                go(e);
+            }
+            for (w, t) in alternatives {
+                go(w);
+                go(t);
+            }
+            if let Some(e) = else_expr {
+                go(e);
+            }
+        }
+        ResolvedExpr::ListPredicate {
+            list, predicate, ..
+        } => {
+            go(list);
+            go(predicate);
+        }
+        ResolvedExpr::ListComprehension {
+            list,
+            filter,
+            map_expr,
+            ..
+        } => {
+            go(list);
+            if let Some(e) = filter {
+                go(e);
+            }
+            if let Some(e) = map_expr {
+                go(e);
+            }
+        }
+        ResolvedExpr::Reduce {
+            init, list, expr, ..
+        } => {
+            go(init);
+            go(list);
+            go(expr);
+        }
+        ResolvedExpr::MapProjection { base, selectors } => {
+            go(base);
+            for selector in selectors {
+                if let ResolvedMapSelector::Literal(_, e) = selector {
+                    go(e);
+                }
+            }
+        }
+        ResolvedExpr::Index { expr, index } => {
+            go(expr);
+            go(index);
+        }
+        ResolvedExpr::Slice { expr, from, to } => {
+            go(expr);
+            if let Some(e) = from {
+                go(e);
+            }
+            if let Some(e) = to {
+                go(e);
+            }
+        }
+        // Their pattern reads row bindings directly; aggregates can't nest there.
+        ResolvedExpr::ExistsSubquery { .. } | ResolvedExpr::PatternComprehension { .. } => {}
     }
 }
 
