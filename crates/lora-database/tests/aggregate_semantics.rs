@@ -251,3 +251,47 @@ fn sum_and_avg_of_durations() {
         "can't add durations and numbers",
     );
 }
+
+// ---------------------------------------------------------------------------
+// stdev / percentile
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stdev_honours_distinct() {
+    // [1, 3]: sample stdev sqrt(2), population stdev 1.
+    assert_read(
+        "UNWIND [1, 1, 3] AS x RETURN stdev(DISTINCT x) AS s, stdevp(DISTINCT x) AS p",
+        json!([{"s": std::f64::consts::SQRT_2, "p": 1.0}]),
+    );
+    assert_read(
+        "UNWIND [2, 2] AS x RETURN stdev(DISTINCT x) AS s, stdev(x) AS all",
+        json!([{"s": 0.0, "all": 0.0}]),
+    );
+}
+
+#[test]
+fn percentiles_honour_distinct() {
+    // Without DISTINCT the median of [1, 1, 1, 5] is 1; of [1, 5] it is 3.
+    assert_read(
+        "UNWIND [1, 1, 1, 5] AS x \
+         RETURN percentileCont(x, 0.5) AS c, percentileCont(DISTINCT x, 0.5) AS cd, \
+                percentileDisc(x, 1.0) AS d, percentileDisc(DISTINCT x, 0.0) AS dd",
+        json!([{"c": 1.0, "cd": 3.0, "d": 5, "dd": 1}]),
+    );
+}
+
+#[test]
+fn percentile_disc_returns_the_value_itself() {
+    assert_read(
+        "UNWIND [1, 2, 3] AS x RETURN percentileDisc(x, 0.5) AS v",
+        json!([{"v": 2}]),
+    );
+    assert_read(
+        "UNWIND [1.5, 2.5, 3.5] AS x RETURN percentileDisc(x, 0.5) AS v",
+        json!([{"v": 2.5}]),
+    );
+    assert_read(
+        "UNWIND [1, 2.5] AS x RETURN percentileDisc(x, 0.0) AS lo, percentileDisc(x, 1.0) AS hi",
+        json!([{"lo": 1, "hi": 2.5}]),
+    );
+}

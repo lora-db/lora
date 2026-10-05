@@ -1044,9 +1044,9 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                         return Ok(LoraValue::Null);
                     }
 
-                    let nums: Vec<f64> = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?
+                    let nums: Vec<f64> = aggregate_numbers(&args[0], *distinct, rows, eval_ctx)?
                         .into_iter()
-                        .filter_map(as_f64_lossy)
+                        .map(|(n, _)| n)
                         .collect();
 
                     let is_population = matches!(func, Some(AggregateFunction::Stdevp));
@@ -1079,10 +1079,11 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                         .as_f64()
                         .map(normalize_percentile)
                         .unwrap_or(0.5);
-                    let mut nums: Vec<f64> = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?
-                        .into_iter()
-                        .filter_map(as_f64_lossy)
-                        .collect();
+                    let mut nums: Vec<f64> =
+                        aggregate_numbers(&args[0], *distinct, rows, eval_ctx)?
+                            .into_iter()
+                            .map(|(n, _)| n)
+                            .collect();
 
                     if nums.is_empty() {
                         return Ok(LoraValue::Null);
@@ -1118,20 +1119,18 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                         .as_f64()
                         .map(normalize_percentile)
                         .unwrap_or(0.5);
-                    let mut nums: Vec<f64> = eval_aggregate_arg_values(&args[0], rows, eval_ctx)?
-                        .into_iter()
-                        .filter_map(as_f64_lossy)
-                        .collect();
+                    let mut nums = aggregate_numbers(&args[0], *distinct, rows, eval_ctx)?;
 
                     if nums.is_empty() {
                         return Ok(LoraValue::Null);
                     }
 
-                    nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+                    nums.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
 
+                    // The value itself, as it was: an integer stays an integer.
                     let index = (percentile * (nums.len() - 1) as f64).round() as usize;
                     let index = index.min(nums.len() - 1);
-                    Ok(LoraValue::Float(nums[index]))
+                    Ok(nums.swap_remove(index).1)
                 }
 
                 _ => eval_first_or_null(expr, rows, eval_ctx),
@@ -1140,6 +1139,28 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
 
         _ => eval_first_or_null(expr, rows, eval_ctx),
     }
+}
+
+/// The numeric values of an aggregate's argument over `rows`, each with
+/// its numeric reading, deduplicated for DISTINCT; others are ignored.
+fn aggregate_numbers<S: GraphStorage>(
+    expr: &ResolvedExpr,
+    distinct: bool,
+    rows: &[Row],
+    eval_ctx: &EvalContext<'_, S>,
+) -> ExecResult<Vec<(f64, LoraValue)>> {
+    let mut values = eval_aggregate_arg_values(expr, rows, eval_ctx)?;
+    if distinct {
+        values = dedup_values(values);
+    }
+    Ok(values
+        .into_iter()
+        .filter_map(|v| match v {
+            LoraValue::Int(i) => Some((i as f64, v)),
+            LoraValue::Float(f) => Some((f, v)),
+            _ => None,
+        })
+        .collect())
 }
 
 fn eval_aggregate_arg_values<S: GraphStorage>(
@@ -1183,14 +1204,6 @@ fn dedup_values(values: Vec<LoraValue>) -> Vec<LoraValue> {
     }
 
     out
-}
-
-fn as_f64_lossy(v: LoraValue) -> Option<f64> {
-    match v {
-        LoraValue::Int(i) => Some(i as f64),
-        LoraValue::Float(f) => Some(f),
-        _ => None,
-    }
 }
 
 pub(crate) fn compare_values_total(a: &LoraValue, b: &LoraValue) -> Ordering {
