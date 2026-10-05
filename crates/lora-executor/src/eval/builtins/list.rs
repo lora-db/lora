@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use crate::value::LoraValue;
 
-use super::super::binops::value_eq;
+use super::super::binops::{arithmetic_overflow, value_eq};
 
 pub(super) fn dispatch(op: &str, args: &[LoraValue]) -> Option<LoraValue> {
     Some(match op {
@@ -95,7 +95,10 @@ fn sum(args: &[LoraValue]) -> LoraValue {
                 if any_float {
                     float_acc += *i as f64;
                 } else {
-                    int_acc = int_acc.wrapping_add(*i);
+                    int_acc = match int_acc.checked_add(*i) {
+                        Some(out) => out,
+                        None => return arithmetic_overflow("list.sum"),
+                    };
                 }
             }
             LoraValue::Float(f) => {
@@ -189,7 +192,10 @@ fn product(args: &[LoraValue]) -> LoraValue {
                 if any_float {
                     float_acc *= *i as f64;
                 } else {
-                    int_acc = int_acc.wrapping_mul(*i);
+                    int_acc = match int_acc.checked_mul(*i) {
+                        Some(out) => out,
+                        None => return arithmetic_overflow("list.product"),
+                    };
                 }
             }
             LoraValue::Float(f) => {
@@ -585,7 +591,10 @@ fn scan(args: &[LoraValue]) -> LoraValue {
                     if any_float {
                         float_acc += value;
                     } else if let Some(i) = v.as_i64() {
-                        int_acc = int_acc.wrapping_add(i);
+                        int_acc = match int_acc.checked_add(i) {
+                            Some(out) => out,
+                            None => return arithmetic_overflow("list.scan sum"),
+                        };
                     } else {
                         any_float = true;
                         float_acc = int_acc as f64 + value;
@@ -595,7 +604,10 @@ fn scan(args: &[LoraValue]) -> LoraValue {
                     if any_float {
                         float_acc *= value;
                     } else if let Some(i) = v.as_i64() {
-                        int_acc = int_acc.wrapping_mul(i);
+                        int_acc = match int_acc.checked_mul(i) {
+                            Some(out) => out,
+                            None => return arithmetic_overflow("list.scan product"),
+                        };
                     } else {
                         any_float = true;
                         float_acc = int_acc as f64 * value;

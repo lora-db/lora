@@ -444,7 +444,7 @@ fn mod_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
     }
 }
 
-fn arithmetic_overflow(op: &str) -> LoraValue {
+pub(super) fn arithmetic_overflow(op: &str) -> LoraValue {
     set_eval_error(format!("{op} overflowed"));
     LoraValue::Null
 }

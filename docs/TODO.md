@@ -25,7 +25,6 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P2 `stdev`/`stdevp`/`percentile*` silently ignore `DISTINCT` (`executor/helpers.rs:945+`). Reject or implement.
 - [ ] P2 `5 IN [1, null]` returns `false`, Cypher says `null` (pinned at `where_clause.rs:886`). Fix, or document in the matrix §19.
 - [ ] P2 No rollback on constraint violation (`invariants.rs:605`).
-- [ ] P2 `list.sum` still wraps on integer overflow (returns `i64::MIN`); the operators error now. Make it error too.
 - [ ] P2 HNSW `quantization: 'int8'` clips coordinates outside [-1, 1] silently (un-normalised vectors all score ≈1.0). Reject or normalise on insert.
 - [ ] P2 General procedures: `CALL db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()` ("unknown procedure").
 - [ ] P2 `UNION` inside `CALL {}`, `CALL (x) {}` scope clause, `IN TRANSACTIONS` (`analyzer/state.rs:209`).
