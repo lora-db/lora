@@ -1434,14 +1434,23 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 Some(LoraValue::Node(node_id)) => {
                     let node_id = *node_id;
                     for label in labels {
-                        if let Err(msg) = self
-                            .ctx
-                            .storage
-                            .check_node_add_label_against_constraints(node_id, label)
-                        {
-                            return Err(ExecutorError::ConstraintViolation(msg));
-                        }
+                        // A deferring statement may supply the label's
+                        // required properties after the label (`SET n:L,
+                        // n.required = 1`): existence waits for its end.
+                        let checked = if self.defer_existence {
+                            self.ctx
+                                .storage
+                                .check_node_add_label_deferring_existence(node_id, label)
+                        } else {
+                            self.ctx
+                                .storage
+                                .check_node_add_label_against_constraints(node_id, label)
+                        };
+                        checked.map_err(ExecutorError::ConstraintViolation)?;
                         self.ctx.storage.add_node_label(node_id, label);
+                    }
+                    if self.defer_existence {
+                        self.pending_existence.push(EntityTarget::Node(node_id));
                     }
                     Ok(())
                 }
@@ -1526,8 +1535,24 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     /// Remove one property, checking constraints first. Removing a
-    /// property the entity does not have is a no-op.
+    /// property the entity does not have is a no-op. Removal can only
+    /// break an existence constraint, so a statement that defers those
+    /// checks it once it finishes (`REMOVE n.a SET n.a = …` keeps it).
     fn remove_entity_property(&mut self, target: EntityTarget, property: &str) -> ExecResult<()> {
+        if self.defer_existence {
+            match target {
+                EntityTarget::Node(node_id) => {
+                    self.ctx.storage.remove_node_property(node_id, property);
+                }
+                EntityTarget::Relationship(rel_id) => {
+                    self.ctx
+                        .storage
+                        .remove_relationship_property(rel_id, property);
+                }
+            }
+            self.pending_existence.push(target);
+            return Ok(());
+        }
         match target {
             EntityTarget::Node(node_id) => {
                 if let Err(msg) = self
@@ -1574,28 +1599,10 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         match owner {
             LoraValue::Node(node_id) => {
-                if let Err(msg) = self
-                    .ctx
-                    .storage
-                    .check_node_remove_property_against_constraints(node_id, property)
-                {
-                    return Err(ExecutorError::ConstraintViolation(msg));
-                }
-                self.ctx.storage.remove_node_property(node_id, property);
-                Ok(())
+                self.remove_entity_property(EntityTarget::Node(node_id), property)
             }
             LoraValue::Relationship(rel_id) => {
-                if let Err(msg) = self
-                    .ctx
-                    .storage
-                    .check_relationship_remove_property_against_constraints(rel_id, property)
-                {
-                    return Err(ExecutorError::ConstraintViolation(msg));
-                }
-                self.ctx
-                    .storage
-                    .remove_relationship_property(rel_id, property);
-                Ok(())
+                self.remove_entity_property(EntityTarget::Relationship(rel_id), property)
             }
             other => Err(ExecutorError::InvalidRemoveTarget {
                 found: value_kind(&other),
@@ -2040,18 +2047,18 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 }
 
-/// Whether existence constraints on entities a plan creates must wait
-/// for the end of the statement. They can be checked at `CREATE` only
-/// when nothing after it can add a property: every write is a `CREATE`
-/// or a `DELETE`, with at most one `CREATE`. Checking early keeps a
-/// failing create from mutating anything, which the in-place write path
-/// relies on.
+/// Whether existence constraints must wait for the end of the statement.
+/// They can be checked at `CREATE` only when nothing after it can add a
+/// property or remove the entity: the only write is one `CREATE`. Checking
+/// early keeps a failing create from mutating anything.
 pub(crate) fn plan_defers_existence(plan: &PhysicalPlan) -> bool {
     let mut creates = 0;
+    let mut deletes = false;
     for op in &plan.nodes {
         match op {
             PhysicalOp::Create(_) => creates += 1,
-            PhysicalOp::Delete(_) => {}
+            // `CREATE (n:L) DELETE n`: a deleted entity needs no property.
+            PhysicalOp::Delete(_) => deletes = true,
             PhysicalOp::Merge(_)
             | PhysicalOp::Set(_)
             | PhysicalOp::Remove(_)
@@ -2059,7 +2066,7 @@ pub(crate) fn plan_defers_existence(plan: &PhysicalPlan) -> bool {
             _ => {}
         }
     }
-    creates > 1
+    creates > 1 || creates == 1 && deletes
 }
 
 /// Whether a plan is a write statement with no `RETURN` (its root is the

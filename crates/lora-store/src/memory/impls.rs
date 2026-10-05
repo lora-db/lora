@@ -267,6 +267,21 @@ impl GraphStorage for InMemoryGraph {
             .map_err(|e| format!("[{}] {e}", e.gql_status()))
     }
 
+    fn check_node_add_label_deferring_existence(
+        &self,
+        node_id: NodeId,
+        label: &str,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_node_add_label_deferred(
+            &catalog, self, node_id, label,
+        )
+        .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
     fn graph_stats(&self) -> GraphStats {
         InMemoryGraph::graph_stats(self)
     }

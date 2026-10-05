@@ -1010,3 +1010,27 @@ pub(crate) fn check_node_add_label(
         },
     )
 }
+
+/// [`check_node_add_label`] without the existence checks, for a statement
+/// that checks existence once it has finished. Pair with
+/// [`check_node_existence`].
+pub(crate) fn check_node_add_label_deferred(
+    catalog: &ConstraintCatalog,
+    graph: &InMemoryGraph,
+    node_id: NodeId,
+    label: &str,
+) -> Result<(), ConstraintViolation> {
+    let Some(node) = graph.node_at(node_id) else {
+        return Ok(());
+    };
+    check_record_constraints_with(
+        catalog,
+        graph,
+        ConstraintRecord::Node {
+            labels: NodeLabelMatcher::One(label),
+            properties: &node.properties,
+            skip: Some(node_id),
+        },
+        false,
+    )
+}

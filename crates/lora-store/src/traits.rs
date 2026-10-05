@@ -763,6 +763,19 @@ pub trait GraphStorage {
         Ok(())
     }
 
+    /// [`Self::check_node_add_label_against_constraints`] minus existence
+    /// checks, for a statement that runs
+    /// [`Self::check_node_existence_constraints`] once it finishes (`SET
+    /// n:Label, n.required = …` supplies the property after the label).
+    /// Defaults to the full check.
+    fn check_node_add_label_deferring_existence(
+        &self,
+        node_id: NodeId,
+        label: &str,
+    ) -> Result<(), String> {
+        self.check_node_add_label_against_constraints(node_id, label)
+    }
+
     /// Cardinality snapshot used by the cost model. Backends without
     /// per-label / per-type indexes return [`GraphStats::default()`],
     /// which the planner treats as "no information available".
