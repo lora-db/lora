@@ -17,6 +17,7 @@ pub struct LogicalPlan {
 pub enum LogicalOp {
     Argument(Argument),
     NodeScan(NodeScan),
+    NodeByIdSeek(NodeByIdSeek),
     NodeByPropertyScan(NodeByPropertyScan),
     NodeByPropertyRangeScan(NodeByPropertyRangeScan),
     NodeByTextScan(NodeByTextScan),
@@ -24,6 +25,7 @@ pub enum LogicalOp {
     RelByPropertyRangeScan(RelByPropertyRangeScan),
     RelByTextScan(RelByTextScan),
     RelByPointScan(RelByPointScan),
+    RelByIdSeek(RelByIdSeek),
     Expand(Expand),
     Filter(Filter),
     Projection(Projection),
@@ -102,6 +104,23 @@ pub struct NodeScan {
     pub var: VarId,
     /// Each inner Vec is a disjunctive group (OR). Outer Vec is conjunctive (AND).
     pub labels: Vec<Vec<String>>,
+}
+
+/// Seek nodes by internal id, rewritten from `Filter(NodeScan)` when the
+/// filter has an `id(var) = value` or `id(var) IN list` conjunct whose
+/// value does not read `var`. Emits each existing node whose id equals
+/// the value (or one of the list's elements, once per distinct id) and
+/// whose labels match `labels`. The `Filter` stays above, so the id test
+/// and every other conjunct are still judged with expression semantics.
+#[derive(Debug, Clone)]
+pub struct NodeByIdSeek {
+    pub input: Option<PlanNodeId>,
+    pub var: VarId,
+    /// Each inner Vec is a disjunctive group (OR). Outer Vec is conjunctive (AND).
+    pub labels: Vec<Vec<String>>,
+    pub ids: ResolvedExpr,
+    /// `false`: `id(var) = ids`. `true`: `ids` is a list, `id(var) IN ids`.
+    pub in_list: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -231,6 +250,26 @@ pub struct RelByPointScan {
     pub direction: Direction,
     pub key: String,
     pub predicate: PointPredicate,
+}
+
+/// Seek a relationship by internal id, rewritten from
+/// `Filter(Expand(NodeScan(src)))` when the filter has an `id(rel) = value`
+/// or `id(rel) IN list` conjunct. Binds `src`, `rel` and `dst` from the
+/// stored endpoints as the expand would (direction, `types`, both
+/// orientations of an undirected pattern, already-bound variables), and
+/// checks `src_labels` that the replaced scan carried. The `Filter` stays
+/// above.
+#[derive(Debug, Clone)]
+pub struct RelByIdSeek {
+    pub input: Option<PlanNodeId>,
+    pub src: VarId,
+    pub src_labels: Vec<Vec<String>>,
+    pub rel: VarId,
+    pub dst: VarId,
+    pub types: Vec<String>,
+    pub direction: Direction,
+    pub ids: ResolvedExpr,
+    pub in_list: bool,
 }
 
 #[derive(Debug, Clone)]

@@ -44,7 +44,9 @@ fn subtree_contains_blocking_limit_input(plan: &PhysicalPlan, node_id: PhysicalN
         PhysicalOp::Argument(_)
         | PhysicalOp::NodeScan(_)
         | PhysicalOp::NodeByLabelScan(_)
-        | PhysicalOp::NodeByPropertyScan(_) => false,
+        | PhysicalOp::NodeByPropertyScan(_)
+        | PhysicalOp::NodeByIdSeek(_)
+        | PhysicalOp::RelByIdSeek(_) => false,
         PhysicalOp::Expand(op) => subtree_contains_blocking_limit_input(plan, op.input),
         PhysicalOp::Filter(op) => subtree_contains_blocking_limit_input(plan, op.input),
         PhysicalOp::Projection(op) => subtree_contains_blocking_limit_input(plan, op.input),

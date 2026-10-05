@@ -18,6 +18,7 @@ pub enum PhysicalOp {
     Argument(ArgumentExec),
     NodeScan(NodeScanExec),
     NodeByLabelScan(NodeByLabelScanExec),
+    NodeByIdSeek(NodeByIdSeekExec),
     NodeByPropertyScan(NodeByPropertyScanExec),
     NodeByPropertyRangeScan(NodeByPropertyRangeScanExec),
     NodeByTextScan(NodeByTextScanExec),
@@ -25,6 +26,7 @@ pub enum PhysicalOp {
     RelByPropertyRangeScan(RelByPropertyRangeScanExec),
     RelByTextScan(RelByTextScanExec),
     RelByPointScan(RelByPointScanExec),
+    RelByIdSeek(RelByIdSeekExec),
     Expand(ExpandExec),
     Filter(FilterExec),
     Projection(ProjectionExec),
@@ -93,6 +95,16 @@ pub struct NodeByLabelScanExec {
     pub var: VarId,
     /// Each inner Vec is a disjunctive group (OR). Outer Vec is conjunctive (AND).
     pub labels: Vec<Vec<String>>,
+}
+
+/// See [`crate::logical::NodeByIdSeek`].
+#[derive(Debug, Clone)]
+pub struct NodeByIdSeekExec {
+    pub input: Option<PhysicalNodeId>,
+    pub var: VarId,
+    pub labels: Vec<Vec<String>>,
+    pub ids: ResolvedExpr,
+    pub in_list: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +193,20 @@ pub struct RelByPointScanExec {
     pub direction: Direction,
     pub key: String,
     pub predicate: crate::logical::PointPredicate,
+}
+
+/// See [`crate::logical::RelByIdSeek`].
+#[derive(Debug, Clone)]
+pub struct RelByIdSeekExec {
+    pub input: Option<PhysicalNodeId>,
+    pub src: VarId,
+    pub src_labels: Vec<Vec<String>>,
+    pub rel: VarId,
+    pub dst: VarId,
+    pub types: Vec<String>,
+    pub direction: Direction,
+    pub ids: ResolvedExpr,
+    pub in_list: bool,
 }
 
 #[derive(Debug, Clone)]

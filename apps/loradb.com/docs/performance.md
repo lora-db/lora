@@ -159,6 +159,18 @@ node scripts/summarize-benchmarks.mjs \
 
 ## Query Shape Notes
 
+### Lookup by id
+
+A `WHERE` conjunct <CypherCode code="id(n) = $id" /> or
+<CypherCode code="id(n) IN $ids" /> fetches the node directly
+(`NodeByIdSeek` in `EXPLAIN`) instead of scanning, with or without a
+label on `n`, and also for writes such as
+<CypherCode code="MATCH (n) WHERE id(n) = $id SET n.x = 1" />. The same
+holds for a relationship: <CypherCode code="MATCH (a)-[r]->(b) WHERE id(r) = $id" />
+plans as `RelByIdSeek`. The value must not read `n` itself, and the
+conjunct must be joined to the rest of the `WHERE` with `AND`: under
+`OR`, or as <CypherCode code="id(n) + 0 = $id" />, the query scans.
+
 ### Unbound start nodes in pattern subqueries
 
 A pattern comprehension, <CypherCode code="EXISTS { }" /> or

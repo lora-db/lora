@@ -65,6 +65,8 @@ where
 /// * `NodeByLabelScan` → sum of per-label counts (handles `:A|B`)
 /// * `NodeByPropertyScan` → uniform-distribution heuristic from
 ///   distinct-value count, when both label and property are recorded
+/// * `NodeByIdSeek` / `RelByIdSeek` on `id(x) = value` → 1 (2 for an
+///   undirected relationship, one row per orientation)
 /// * `NodeByPropertyRangeScan`, `NodeByTextScan`, `NodeByPointScan` → a
 ///   fraction of the label count, as the optimizer scores them
 ///
@@ -81,6 +83,15 @@ fn annotate_node(node: &mut PlanTreeNode, stats: &GraphStats) {
         "NodeScan" => Some(stats.node_count as u64),
         "NodeByLabelScan" => labels_estimate(node, stats),
         "NodeByPropertyScan" => property_equality_estimate(node, stats),
+        // One row per sought id (`= value`); the length of an `IN` list
+        // is only known per run.
+        "NodeByIdSeek" if !node.details.contains_key("mode") => Some(1),
+        "RelByIdSeek" if !node.details.contains_key("mode") => {
+            Some(match node.details.get("direction").map(String::as_str) {
+                Some("-") => 2,
+                _ => 1,
+            })
+        }
         // The same selectivity guesses the optimizer scores seeks with
         // (`score_logical_op`), so EXPLAIN shows what the planner assumed.
         "NodeByPropertyRangeScan" => {

@@ -195,6 +195,8 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             PhysicalOp::Argument(op) => self.exec_argument(op),
             PhysicalOp::NodeScan(op) => self.exec_node_scan(plan, op),
             PhysicalOp::NodeByLabelScan(op) => self.exec_node_by_label_scan(plan, op),
+            PhysicalOp::NodeByIdSeek(op) => self.exec_node_by_id_seek(plan, op),
+            PhysicalOp::RelByIdSeek(op) => self.exec_rel_by_id_seek(plan, op),
             PhysicalOp::NodeByPropertyScan(op) => self.exec_node_by_property_scan(plan, op),
             PhysicalOp::NodeByPropertyRangeScan(op) => {
                 self.exec_node_by_property_range_scan(plan, op)
@@ -865,6 +867,42 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         )
     }
 
+    fn exec_node_by_id_seek(
+        &self,
+        plan: &PhysicalPlan,
+        op: &lora_compiler::NodeByIdSeekExec,
+    ) -> ExecResult<Vec<Row>> {
+        let base_rows = match op.input {
+            Some(input) => self.execute_node(plan, input)?,
+            None => vec![Row::new()],
+        };
+        super::helpers::node_by_id_seek_rows(
+            self.ctx.storage,
+            &self.ctx.params,
+            base_rows,
+            op,
+            self.deadline,
+        )
+    }
+
+    fn exec_rel_by_id_seek(
+        &self,
+        plan: &PhysicalPlan,
+        op: &lora_compiler::RelByIdSeekExec,
+    ) -> ExecResult<Vec<Row>> {
+        let base_rows = match op.input {
+            Some(input) => self.execute_node(plan, input)?,
+            None => vec![Row::new()],
+        };
+        super::helpers::rel_by_id_seek_rows(
+            self.ctx.storage,
+            &self.ctx.params,
+            base_rows,
+            op,
+            self.deadline,
+        )
+    }
+
     fn exec_rel_by_point_scan(
         &self,
         plan: &PhysicalPlan,
@@ -1087,6 +1125,8 @@ fn subtree_is_parallel_safe(plan: &PhysicalPlan, node_id: PhysicalNodeId) -> boo
         PhysicalOp::Filter(op) => subtree_is_parallel_safe(plan, op.input),
         PhysicalOp::Projection(op) => subtree_is_parallel_safe(plan, op.input),
         PhysicalOp::NodeByPropertyRangeScan(_)
+        | PhysicalOp::NodeByIdSeek(_)
+        | PhysicalOp::RelByIdSeek(_)
         | PhysicalOp::NodeByTextScan(_)
         | PhysicalOp::NodeByPointScan(_)
         | PhysicalOp::RelByPropertyRangeScan(_)

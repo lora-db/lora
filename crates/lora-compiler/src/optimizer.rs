@@ -176,6 +176,20 @@ impl Optimizer {
                 continue;
             };
 
+            // A seek by internal id reads at most one node per id, so it
+            // beats every other access path whatever the stats say (and an
+            // empty or stale stats snapshot must not keep a scan).
+            if let Some((ids, in_list)) = id_seek_value(&predicate, scan.var, NODE_ID_FUNCTIONS) {
+                plan.nodes[input_id] = LogicalOp::NodeByIdSeek(NodeByIdSeek {
+                    input: scan.input,
+                    var: scan.var,
+                    labels: scan.labels.clone(),
+                    ids,
+                    in_list,
+                });
+                continue;
+            }
+
             let candidates = collect_index_candidates(scan, &predicate, stats);
             let Some(best) = pick_best_candidate(&plan.nodes[input_id], candidates, stats) else {
                 continue;
@@ -209,12 +223,35 @@ impl Optimizer {
             let Some(rel_var) = expand.rel else {
                 continue;
             };
-            // Source must be a root, unconstrained NodeScan; otherwise
-            // replacing it can bypass upstream rows or an already-bound
-            // source variable.
             let LogicalOp::NodeScan(src_scan) = &plan.nodes[expand.input] else {
                 continue;
             };
+            if src_scan.var != expand.src {
+                continue;
+            }
+
+            // `id(r) = value`: seek the relationship and bind its endpoints.
+            // Unlike the index scans below this works under any source
+            // scan: the seek runs once per upstream row, checks the
+            // source's labels, and binds through already-bound variables.
+            if let Some((ids, in_list)) = id_seek_value(&predicate, rel_var, REL_ID_FUNCTIONS) {
+                plan.nodes[filter_input] = LogicalOp::RelByIdSeek(RelByIdSeek {
+                    input: src_scan.input,
+                    src: expand.src,
+                    src_labels: src_scan.labels.clone(),
+                    rel: rel_var,
+                    dst: expand.dst,
+                    types: expand.types.clone(),
+                    direction: expand.direction,
+                    ids,
+                    in_list,
+                });
+                continue;
+            }
+
+            // Source must be a root, unconstrained NodeScan; otherwise
+            // replacing it can bypass upstream rows or an already-bound
+            // source variable.
             if src_scan.input.is_some() || !src_scan.labels.is_empty() {
                 continue;
             }
@@ -291,6 +328,26 @@ fn lower_logical_op(op: LogicalOp) -> PhysicalOp {
         LogicalOp::Argument(_) => PhysicalOp::Argument(ArgumentExec),
 
         LogicalOp::NodeScan(scan) => lower_node_scan(scan),
+
+        LogicalOp::NodeByIdSeek(seek) => PhysicalOp::NodeByIdSeek(NodeByIdSeekExec {
+            input: seek.input,
+            var: seek.var,
+            labels: seek.labels,
+            ids: seek.ids,
+            in_list: seek.in_list,
+        }),
+
+        LogicalOp::RelByIdSeek(seek) => PhysicalOp::RelByIdSeek(RelByIdSeekExec {
+            input: seek.input,
+            src: seek.src,
+            src_labels: seek.src_labels,
+            rel: seek.rel,
+            dst: seek.dst,
+            types: seek.types,
+            direction: seek.direction,
+            ids: seek.ids,
+            in_list: seek.in_list,
+        }),
 
         LogicalOp::NodeByPropertyScan(scan) => {
             PhysicalOp::NodeByPropertyScan(NodeByPropertyScanExec {
@@ -819,6 +876,14 @@ fn score_logical_op(op: &LogicalOp, stats: &GraphStats) -> Option<u64> {
             // fraction of the labelled set.
             Some(base.div_ceil(5))
         }
+        LogicalOp::NodeByIdSeek(seek) => Some(id_seek_rows(&seek.ids, seek.in_list)),
+        LogicalOp::RelByIdSeek(seek) => {
+            let rows = id_seek_rows(&seek.ids, seek.in_list);
+            Some(match seek.direction {
+                lora_ast::Direction::Undirected => rows.saturating_mul(2),
+                _ => rows,
+            })
+        }
         LogicalOp::Filter(_) => None,
         LogicalOp::Expand(expand) => {
             // Used as the baseline when evaluating rel-index rewrites.
@@ -1292,6 +1357,75 @@ fn text_predicate_for_var(predicate: &ResolvedExpr, var: VarId) -> Option<TextCa
         predicate: kind,
         query: (**rhs).clone(),
     })
+}
+
+/// The id functions whose result for a node is the node's id.
+pub(crate) const NODE_ID_FUNCTIONS: &[&str] = &["value.id", "node.id"];
+/// The id functions whose result for a relationship is its id.
+pub(crate) const REL_ID_FUNCTIONS: &[&str] = &["value.id", "edge.id"];
+
+/// `true` when `expr` is `f(var)` for one of the id functions `names`.
+pub(crate) fn is_id_of_var(expr: &ResolvedExpr, var: VarId, names: &[&str]) -> bool {
+    matches!(
+        expr,
+        ResolvedExpr::Function { function, distinct: false, args }
+            if args.len() == 1
+                && matches!(&args[0], ResolvedExpr::Variable(v) if *v == var)
+                && names.iter().any(|name| function.eq_ignore_ascii_case(name))
+    )
+}
+
+/// The first `id(var) = value` conjunct of an AND-tree (either side), or
+/// failing that the first `id(var) IN list`, where the value does not read
+/// `var`. Returns the value and whether it is an `IN` list. Equality comes
+/// first: it seeks one id, a list possibly many.
+fn id_seek_value(
+    predicate: &ResolvedExpr,
+    var: VarId,
+    names: &[&str],
+) -> Option<(ResolvedExpr, bool)> {
+    let conjuncts = and_conjuncts(predicate);
+    let free_of_var = |e: &ResolvedExpr| !collect_vars(e).contains(&var);
+    let equality = conjuncts.iter().find_map(|conjunct| {
+        let ResolvedExpr::Binary {
+            lhs,
+            op: BinaryOp::Eq,
+            rhs,
+        } = conjunct
+        else {
+            return None;
+        };
+        if is_id_of_var(lhs, var, names) && free_of_var(rhs) {
+            Some((**rhs).clone())
+        } else if is_id_of_var(rhs, var, names) && free_of_var(lhs) {
+            Some((**lhs).clone())
+        } else {
+            None
+        }
+    });
+    if let Some(value) = equality {
+        return Some((value, false));
+    }
+    conjuncts.iter().find_map(|conjunct| {
+        let ResolvedExpr::Binary {
+            lhs,
+            op: BinaryOp::In,
+            rhs,
+        } = conjunct
+        else {
+            return None;
+        };
+        (is_id_of_var(lhs, var, names) && free_of_var(rhs)).then(|| ((**rhs).clone(), true))
+    })
+}
+
+/// Estimated rows of an id seek: one per id (a literal list's length,
+/// otherwise one).
+fn id_seek_rows(ids: &ResolvedExpr, in_list: bool) -> u64 {
+    match (in_list, ids) {
+        (true, ResolvedExpr::List(items)) => items.len() as u64,
+        _ => 1,
+    }
 }
 
 /// Every `var.key = value` conjunct of an AND-tree, in order, where

@@ -43,6 +43,8 @@ fn plan_columns_at(plan: &PhysicalPlan, node: PhysicalNodeId) -> Option<Vec<Stri
         | PhysicalOp::NodeScan(_)
         | PhysicalOp::NodeByLabelScan(_)
         | PhysicalOp::NodeByPropertyScan(_)
+        | PhysicalOp::NodeByIdSeek(_)
+        | PhysicalOp::RelByIdSeek(_)
         | PhysicalOp::NodeByPropertyRangeScan(_)
         | PhysicalOp::NodeByTextScan(_)
         | PhysicalOp::NodeByPointScan(_)

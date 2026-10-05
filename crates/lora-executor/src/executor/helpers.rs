@@ -2987,3 +2987,153 @@ impl OrderedRangeCursor {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Seek by internal id
+// ---------------------------------------------------------------------------
+
+/// Ids an id seek visits for `value`, sorted and distinct. A superset of
+/// the ids `id(x) = value` (or, with `in_list`, `id(x) IN value`) holds
+/// for: the `Filter` kept above the seek re-judges each row, so only the
+/// ids that could make the predicate true need to be here. `id()` is an
+/// integer, which equals an integer of the same value or a float that
+/// converts to it exactly (`1 = 1.0`); null, a negative or fractional
+/// number, or any other kind matches nothing. `all_ids` lists every id;
+/// it is only called for a float of 2^53 or more, which `i64 as f64`
+/// rounding makes equal to several ids.
+pub(crate) fn id_seek_candidates(
+    value: &LoraValue,
+    in_list: bool,
+    all_ids: impl Fn() -> Vec<u64>,
+) -> Vec<u64> {
+    fn push_candidates(value: &LoraValue, all_ids: &dyn Fn() -> Vec<u64>, out: &mut Vec<u64>) {
+        /// 2^53: below it every integer converts to `f64` exactly.
+        const EXACT_F64_LIMIT: f64 = 9_007_199_254_740_992.0;
+        match value {
+            LoraValue::Int(i) if *i >= 0 => out.push(*i as u64),
+            LoraValue::Float(f) if f.is_finite() && *f >= 0.0 && f.fract() == 0.0 => {
+                if *f < EXACT_F64_LIMIT {
+                    out.push(*f as u64);
+                } else {
+                    out.extend(all_ids().into_iter().filter(|id| (*id as i64) as f64 == *f));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = Vec::new();
+    if in_list {
+        if let LoraValue::List(items) = value {
+            for item in items {
+                push_candidates(item, &all_ids, &mut out);
+            }
+        }
+    } else {
+        push_candidates(value, &all_ids, &mut out);
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Rows of a `NodeByIdSeek`: for each base row, one row per existing node
+/// among the sought ids whose labels match. A base row that already binds
+/// `op.var` passes through iff that node is among them.
+pub(crate) fn node_by_id_seek_rows<S: GraphStorage>(
+    storage: &S,
+    params: &BTreeMap<String, LoraValue>,
+    base_rows: Vec<Row>,
+    op: &lora_compiler::NodeByIdSeekExec,
+    deadline: Option<Instant>,
+) -> ExecResult<Vec<Row>> {
+    let eval_ctx = EvalContext { storage, params };
+    let node_ok = |id: NodeId| {
+        if op.labels.is_empty() {
+            storage.contains_node(id)
+        } else {
+            storage
+                .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
+                .unwrap_or(false)
+        }
+    };
+    let mut out = Vec::new();
+    for row in base_rows {
+        check_optional_deadline(deadline)?;
+        let value = eval_expr(&op.ids, &row, &eval_ctx);
+        let ids = id_seek_candidates(&value, op.in_list, || storage.all_node_ids());
+        if let Some(bound) = bound_node_id_for_expand(&row, op.var)? {
+            if ids.binary_search(&bound).is_ok() && node_ok(bound) {
+                out.push(row);
+            }
+            continue;
+        }
+        for id in ids {
+            if node_ok(id) {
+                let mut new_row = row.clone();
+                new_row.insert(op.var, LoraValue::Node(id));
+                out.push(new_row);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Rows of a `RelByIdSeek`: for each base row and each existing sought
+/// relationship of one of `op.types`, the rows the replaced
+/// `Expand(NodeScan(src))` would produce for it: endpoints oriented by
+/// `op.direction` (both orientations when undirected, once for a
+/// self-loop), bound through any variable the row already binds, and the
+/// source checked against `op.src_labels`.
+pub(crate) fn rel_by_id_seek_rows<S: GraphStorage>(
+    storage: &S,
+    params: &BTreeMap<String, LoraValue>,
+    base_rows: Vec<Row>,
+    op: &lora_compiler::RelByIdSeekExec,
+    deadline: Option<Instant>,
+) -> ExecResult<Vec<Row>> {
+    let eval_ctx = EvalContext { storage, params };
+    let mut out = Vec::new();
+    let mut emitted = Vec::new();
+    for row in base_rows {
+        check_optional_deadline(deadline)?;
+        let value = eval_expr(&op.ids, &row, &eval_ctx);
+        let ids = id_seek_candidates(&value, op.in_list, || storage.all_rel_ids());
+        for rel_id in ids {
+            emitted.clear();
+            if let Some(result) = storage.with_relationship(rel_id, |rel| {
+                if !op.types.is_empty() && !op.types.iter().any(|t| t == &rel.rel_type) {
+                    return Ok(());
+                }
+                emit_rel_rows(
+                    op.direction,
+                    op.src,
+                    op.rel,
+                    op.dst,
+                    rel,
+                    &row,
+                    &mut emitted,
+                )
+            }) {
+                result?;
+            }
+            for new_row in emitted.drain(..) {
+                if !op.src_labels.is_empty() {
+                    let Some(src) = bound_node_id_for_expand(&new_row, op.src)? else {
+                        continue;
+                    };
+                    let labels_ok = storage
+                        .with_node(src, |n| {
+                            node_matches_label_groups(&n.labels, &op.src_labels)
+                        })
+                        .unwrap_or(false);
+                    if !labels_ok {
+                        continue;
+                    }
+                }
+                out.push(new_row);
+            }
+        }
+    }
+    Ok(out)
+}

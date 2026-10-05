@@ -10,17 +10,19 @@ pub use plan_tree::{plan_tree_from_compiled, PlanTree, PlanTreeNode};
 
 pub use logical::{
     Aggregation, Argument, Create, Delete, Expand, Filter, Foreach, Limit, LogicalOp, LogicalPlan,
-    Merge, NodeByPointScan, NodeByPropertyRangeScan, NodeByPropertyScan, NodeByTextScan, NodeScan,
-    OptionalMatch, PathBuild, PlanNodeId, PointPredicate, Projection, RelByPointScan,
-    RelByPropertyRangeScan, RelByTextScan, Remove, Set, Sort, SortLimit, TextPredicate, Unwind,
+    Merge, NodeByIdSeek, NodeByPointScan, NodeByPropertyRangeScan, NodeByPropertyScan,
+    NodeByTextScan, NodeScan, OptionalMatch, PathBuild, PlanNodeId, PointPredicate, Projection,
+    RelByIdSeek, RelByPointScan, RelByPropertyRangeScan, RelByTextScan, Remove, Set, Sort,
+    SortLimit, TextPredicate, Unwind,
 };
 pub use optimizer::Optimizer;
 pub use physical::{
     ArgumentExec, CreateExec, DeleteExec, ExpandExec, FilterExec, ForeachExec, HashAggregationExec,
-    LimitExec, MergeExec, NodeByLabelScanExec, NodeByPointScanExec, NodeByPropertyRangeScanExec,
-    NodeByPropertyScanExec, NodeByTextScanExec, NodeScanExec, OptionalMatchExec, PathBuildExec,
-    PhysicalNodeId, PhysicalOp, PhysicalPlan, ProjectionExec, RelByPointScanExec,
-    RelByPropertyRangeScanExec, RelByTextScanExec, RemoveExec, SetExec, SortExec, UnwindExec,
+    LimitExec, MergeExec, NodeByIdSeekExec, NodeByLabelScanExec, NodeByPointScanExec,
+    NodeByPropertyRangeScanExec, NodeByPropertyScanExec, NodeByTextScanExec, NodeScanExec,
+    OptionalMatchExec, PathBuildExec, PhysicalNodeId, PhysicalOp, PhysicalPlan, ProjectionExec,
+    RelByIdSeekExec, RelByPointScanExec, RelByPropertyRangeScanExec, RelByTextScanExec, RemoveExec,
+    SetExec, SortExec, UnwindExec,
 };
 pub use planner::Planner;
 

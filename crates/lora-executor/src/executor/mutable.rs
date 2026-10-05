@@ -261,6 +261,8 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             PhysicalOp::Argument(op) => self.exec_argument(op),
             PhysicalOp::NodeScan(op) => self.exec_node_scan(plan, op),
             PhysicalOp::NodeByLabelScan(op) => self.exec_node_by_label_scan(plan, op),
+            PhysicalOp::NodeByIdSeek(op) => self.exec_node_by_id_seek(plan, op),
+            PhysicalOp::RelByIdSeek(op) => self.exec_rel_by_id_seek(plan, op),
             PhysicalOp::NodeByPropertyScan(op) => self.exec_node_by_property_scan(plan, op),
             PhysicalOp::NodeByPropertyRangeScan(op) => {
                 self.exec_node_by_property_range_scan(plan, op)
@@ -428,6 +430,42 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             None => vec![Row::new()],
         };
         super::helpers::rel_by_text_scan_rows(
+            &*self.ctx.storage,
+            &self.ctx.params,
+            base_rows,
+            op,
+            self.deadline,
+        )
+    }
+
+    fn exec_node_by_id_seek(
+        &mut self,
+        plan: &PhysicalPlan,
+        op: &lora_compiler::NodeByIdSeekExec,
+    ) -> ExecResult<Vec<Row>> {
+        let base_rows = match op.input {
+            Some(input) => self.execute_node(plan, input)?,
+            None => vec![Row::new()],
+        };
+        super::helpers::node_by_id_seek_rows(
+            &*self.ctx.storage,
+            &self.ctx.params,
+            base_rows,
+            op,
+            self.deadline,
+        )
+    }
+
+    fn exec_rel_by_id_seek(
+        &mut self,
+        plan: &PhysicalPlan,
+        op: &lora_compiler::RelByIdSeekExec,
+    ) -> ExecResult<Vec<Row>> {
+        let base_rows = match op.input {
+            Some(input) => self.execute_node(plan, input)?,
+            None => vec![Row::new()],
+        };
+        super::helpers::rel_by_id_seek_rows(
             &*self.ctx.storage,
             &self.ctx.params,
             base_rows,

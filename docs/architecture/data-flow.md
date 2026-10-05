@@ -120,6 +120,8 @@ placeholder today.
 Maps logical operators to physical operators with minor specialization:
 
 - `NodeScan` with a label becomes `NodeByLabelScan`
+- `id(n) = value` / `IN list` conjuncts lower to `NodeByIdSeek`, and
+  `id(r)` ones over a single-hop expand to `RelByIdSeek`
 - Indexed predicates can lower to `NodeByPropertyScan`,
   `NodeByPropertyRangeScan`, `NodeByTextScan`, `NodeByPointScan`,
   `RelByPropertyRangeScan`, `RelByTextScan`, or `RelByPointScan`
@@ -155,10 +157,10 @@ executors for other reads and for writes (a transaction's `execute*` is
 always buffered).
 
 **Physical operators** (in `lora-compiler/src/physical.rs`):
-- `Argument`, `NodeScan`, `NodeByLabelScan`, `NodeByPropertyScan`,
+- `Argument`, `NodeScan`, `NodeByLabelScan`, `NodeByIdSeek`, `NodeByPropertyScan`,
   `NodeByPropertyRangeScan`, `NodeByTextScan`, `NodeByPointScan`,
-  `RelByPropertyRangeScan`, `RelByTextScan`, `RelByPointScan`, `Expand`
-  (variable-length aware), `Filter`, `Projection`, `Unwind`,
+  `RelByPropertyRangeScan`, `RelByTextScan`, `RelByPointScan`, `RelByIdSeek`,
+  `Expand` (variable-length aware), `Filter`, `Projection`, `Unwind`,
   `HashAggregation`, `Sort`, `Limit`, `Create`, `Merge`, `Delete`, `Set`,
   `Remove`, `Foreach`, `OptionalMatch`, `PathBuild`, `CallSubquery`
 

@@ -9,11 +9,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use lora_compiler::physical::{
-    CallSubqueryExec, ExpandExec, FilterExec, HashAggregationExec, LimitExec, NodeByLabelScanExec,
-    NodeByPointScanExec, NodeByPropertyRangeScanExec, NodeByPropertyScanExec, NodeByTextScanExec,
-    NodeScanExec, OptionalMatchExec, PathBuildExec, PhysicalNodeId, PhysicalOp, PhysicalPlan,
-    ProjectionExec, RelByPointScanExec, RelByPropertyRangeScanExec, RelByTextScanExec, SortExec,
-    UnwindExec,
+    CallSubqueryExec, ExpandExec, FilterExec, HashAggregationExec, LimitExec, NodeByIdSeekExec,
+    NodeByLabelScanExec, NodeByPointScanExec, NodeByPropertyRangeScanExec, NodeByPropertyScanExec,
+    NodeByTextScanExec, NodeScanExec, OptionalMatchExec, PathBuildExec, PhysicalNodeId, PhysicalOp,
+    PhysicalPlan, ProjectionExec, RelByIdSeekExec, RelByPointScanExec, RelByPropertyRangeScanExec,
+    RelByTextScanExec, SortExec, UnwindExec,
 };
 use lora_compiler::CompiledQuery;
 use lora_store::GraphStorage;
@@ -117,6 +117,8 @@ pub(super) fn is_streaming_op(op: &PhysicalOp) -> bool {
         | PhysicalOp::NodeScan(_)
         | PhysicalOp::NodeByLabelScan(_)
         | PhysicalOp::NodeByPropertyScan(_)
+        | PhysicalOp::NodeByIdSeek(_)
+        | PhysicalOp::RelByIdSeek(_)
         | PhysicalOp::NodeByPropertyRangeScan(_)
         | PhysicalOp::NodeByTextScan(_)
         | PhysicalOp::NodeByPointScan(_)
@@ -182,6 +184,8 @@ pub(crate) fn subtree_is_fully_streaming(plan: &PhysicalPlan, node_id: PhysicalN
         PhysicalOp::NodeScan(o) => o.input,
         PhysicalOp::NodeByLabelScan(o) => o.input,
         PhysicalOp::NodeByPropertyScan(o) => o.input,
+        PhysicalOp::NodeByIdSeek(o) => o.input,
+        PhysicalOp::RelByIdSeek(o) => o.input,
         PhysicalOp::NodeByPropertyRangeScan(o) => o.input,
         PhysicalOp::NodeByTextScan(o) => o.input,
         PhysicalOp::NodeByPointScan(o) => o.input,
@@ -225,6 +229,8 @@ pub(crate) fn subtree_has_write(plan: &PhysicalPlan, node_id: PhysicalNodeId) ->
         PhysicalOp::NodeScan(o) => (o.input, None),
         PhysicalOp::NodeByLabelScan(o) => (o.input, None),
         PhysicalOp::NodeByPropertyScan(o) => (o.input, None),
+        PhysicalOp::NodeByIdSeek(o) => (o.input, None),
+        PhysicalOp::RelByIdSeek(o) => (o.input, None),
         PhysicalOp::NodeByPropertyRangeScan(o) => (o.input, None),
         PhysicalOp::NodeByTextScan(o) => (o.input, None),
         PhysicalOp::NodeByPointScan(o) => (o.input, None),
@@ -327,6 +333,20 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             Ok(Box::new(NodeByPropertyScanSource::new(
                 upstream, ctx, *var, labels, key, value, *in_list,
             )))
+        }
+
+        PhysicalOp::NodeByIdSeek(op @ NodeByIdSeekExec { input, .. }) => {
+            let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
+            let ctx = StreamCtx::new(storage, params);
+            Ok(Box::new(BufferedIndexScanSource::node_id(
+                upstream, ctx, op,
+            )))
+        }
+
+        PhysicalOp::RelByIdSeek(op @ RelByIdSeekExec { input, .. }) => {
+            let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
+            let ctx = StreamCtx::new(storage, params);
+            Ok(Box::new(BufferedIndexScanSource::rel_id(upstream, ctx, op)))
         }
 
         PhysicalOp::NodeByPropertyRangeScan(op @ NodeByPropertyRangeScanExec { input, .. }) => {

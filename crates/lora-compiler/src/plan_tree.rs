@@ -146,6 +146,37 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
             d.insert("labels".to_string(), label_groups_str(&n.labels));
             PlanDescription::with_children("NodeByLabelScan", d, opt_input(n.input))
         }
+        PhysicalOp::NodeByIdSeek(n) => {
+            d.insert("var".to_string(), var_str(n.var));
+            if !n.labels.is_empty() {
+                d.insert("labels".to_string(), label_groups_str(&n.labels));
+            }
+            d.insert("ids".to_string(), expr_str(&n.ids));
+            if n.in_list {
+                d.insert("mode".to_string(), "in".to_string());
+            }
+            PlanDescription::with_children("NodeByIdSeek", d, opt_input(n.input))
+        }
+        PhysicalOp::RelByIdSeek(n) => {
+            d.insert("rel".to_string(), var_str(n.rel));
+            d.insert("src".to_string(), var_str(n.src));
+            d.insert("dst".to_string(), var_str(n.dst));
+            if !n.src_labels.is_empty() {
+                d.insert("src_labels".to_string(), label_groups_str(&n.src_labels));
+            }
+            if !n.types.is_empty() {
+                d.insert("types".to_string(), n.types.join("|"));
+            }
+            d.insert(
+                "direction".to_string(),
+                direction_str(n.direction).to_string(),
+            );
+            d.insert("ids".to_string(), expr_str(&n.ids));
+            if n.in_list {
+                d.insert("mode".to_string(), "in".to_string());
+            }
+            PlanDescription::with_children("RelByIdSeek", d, opt_input(n.input))
+        }
         PhysicalOp::NodeByPropertyScan(n) => {
             d.insert("var".to_string(), var_str(n.var));
             if !n.labels.is_empty() {

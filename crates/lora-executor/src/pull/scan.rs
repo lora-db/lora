@@ -2,25 +2,27 @@
 //!
 //! - [`NodeScanSource`] — every node in the graph.
 //! - [`NodeByLabelScanSource`] — nodes matching a label group filter.
+//! - [`BufferedIndexScanSource`] — id seeks and the catalog-backed
+//!   index scans, one upstream row at a time.
 //! - [`NodeByPropertyScanSource`] — nodes matching an indexed
 //!   `(label, property = value)` filter.
 
 use lora_analyzer::symbols::VarId;
 use lora_analyzer::ResolvedExpr;
 use lora_compiler::physical::{
-    NodeByPointScanExec, NodeByPropertyRangeScanExec, NodeByTextScanExec, RelByPointScanExec,
-    RelByPropertyRangeScanExec, RelByTextScanExec,
+    NodeByIdSeekExec, NodeByPointScanExec, NodeByPropertyRangeScanExec, NodeByTextScanExec,
+    RelByIdSeekExec, RelByPointScanExec, RelByPropertyRangeScanExec, RelByTextScanExec,
 };
 use lora_store::{GraphStorage, NodeId};
 
 use crate::errors::{ExecResult, ExecutorError};
 use crate::eval::eval_expr;
 use crate::executor::{
-    bound_node_id_for_expand, label_group_candidates_prefiltered, node_by_point_scan_rows,
-    node_by_property_range_scan_rows, node_by_text_scan_rows, node_matches_label_groups,
-    property_scan_candidates, property_scan_matches, rel_by_point_scan_rows,
-    rel_by_property_range_scan_rows, rel_by_text_scan_rows, scan_node_ids_for_label_groups,
-    NodePropertyCandidates,
+    bound_node_id_for_expand, label_group_candidates_prefiltered, node_by_id_seek_rows,
+    node_by_point_scan_rows, node_by_property_range_scan_rows, node_by_text_scan_rows,
+    node_matches_label_groups, property_scan_candidates, property_scan_matches,
+    rel_by_id_seek_rows, rel_by_point_scan_rows, rel_by_property_range_scan_rows,
+    rel_by_text_scan_rows, scan_node_ids_for_label_groups, NodePropertyCandidates,
 };
 use crate::value::{LoraValue, Row};
 
@@ -399,6 +401,8 @@ pub struct BufferedIndexScanSource<'a, S: GraphStorage> {
 }
 
 enum BufferedIndexScanOp<'a> {
+    NodeId(&'a NodeByIdSeekExec),
+    RelId(&'a RelByIdSeekExec),
     NodeRange(&'a NodeByPropertyRangeScanExec),
     NodeText(&'a NodeByTextScanExec),
     NodePoint(&'a NodeByPointScanExec),
@@ -408,6 +412,22 @@ enum BufferedIndexScanOp<'a> {
 }
 
 impl<'a, S: GraphStorage> BufferedIndexScanSource<'a, S> {
+    pub(super) fn node_id(
+        upstream: Box<dyn RowSource + 'a>,
+        ctx: StreamCtx<'a, S>,
+        op: &'a NodeByIdSeekExec,
+    ) -> Self {
+        Self::new(upstream, ctx, BufferedIndexScanOp::NodeId(op))
+    }
+
+    pub(super) fn rel_id(
+        upstream: Box<dyn RowSource + 'a>,
+        ctx: StreamCtx<'a, S>,
+        op: &'a RelByIdSeekExec,
+    ) -> Self {
+        Self::new(upstream, ctx, BufferedIndexScanOp::RelId(op))
+    }
+
     pub(super) fn node_range(
         upstream: Box<dyn RowSource + 'a>,
         ctx: StreamCtx<'a, S>,
@@ -471,6 +491,12 @@ impl<'a, S: GraphStorage> BufferedIndexScanSource<'a, S> {
 
     fn refill(&mut self, row: Row) -> ExecResult<()> {
         let rows = match self.op {
+            BufferedIndexScanOp::NodeId(op) => {
+                node_by_id_seek_rows(self.ctx.storage, &self.ctx.params, vec![row], op, None)?
+            }
+            BufferedIndexScanOp::RelId(op) => {
+                rel_by_id_seek_rows(self.ctx.storage, &self.ctx.params, vec![row], op, None)?
+            }
             BufferedIndexScanOp::NodeRange(op) => node_by_property_range_scan_rows(
                 self.ctx.storage,
                 &self.ctx.params,

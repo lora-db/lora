@@ -265,12 +265,60 @@ impl<'a> PatternPlanner<'a> {
     /// first: true when the last node is clearly cheaper to start from
     /// (already bound, a key seek, or a smaller label).
     fn should_start_from_tail(&self, head: &ResolvedNode, chain: &[ResolvedChain]) -> bool {
-        let Some(last) = chain.last() else {
+        let (Some(first), Some(last)) = (chain.first(), chain.last()) else {
             return false;
         };
-        let head_cost = self.start_cost(head);
-        let tail_cost = self.start_cost(&last.node);
+        let head_cost = self
+            .start_cost(head)
+            .min(self.rel_seek_cost(head, &first.rel));
+        let tail_cost = self
+            .start_cost(&last.node)
+            .min(self.rel_seek_cost(&last.node, &last.rel));
         tail_cost < head_cost
+    }
+
+    /// Cost of starting at `end` when the chain's relationship next to it,
+    /// `rel`, can be sought by id (`id(r) = value` pending): the optimizer
+    /// turns `Expand(NodeScan(end))` into a relationship seek, one row.
+    /// `u64::MAX` when it cannot.
+    fn rel_seek_cost(&self, end: &ResolvedNode, rel: &ResolvedRel) -> u64 {
+        let Some(rel_var) = rel.var else {
+            return u64::MAX;
+        };
+        // Inline properties put a Filter between the scan and the expand,
+        // which the seek rewrite does not look through.
+        if end.properties.is_some() || rel.properties.is_some() || rel.range.is_some() {
+            return u64::MAX;
+        }
+        if self.has_pending_id_seek(rel_var, crate::optimizer::REL_ID_FUNCTIONS) {
+            2
+        } else {
+            u64::MAX
+        }
+    }
+
+    /// Whether a pending conjunct `id(var) = value` / `id(var) IN list`
+    /// could be evaluated once `var` is bound (the value reads only
+    /// variables already available).
+    fn has_pending_id_seek(&self, var: VarId, names: &[&str]) -> bool {
+        self.pending.iter().any(|pending| {
+            if !pending
+                .needs
+                .iter()
+                .all(|v| *v == var || self.available.contains(v))
+            {
+                return false;
+            }
+            let ResolvedExpr::Binary { lhs, op, rhs } = &pending.expr else {
+                return false;
+            };
+            let is_id = |e: &ResolvedExpr| crate::optimizer::is_id_of_var(e, var, names);
+            match op {
+                BinaryOp::Eq => is_id(lhs) || is_id(rhs),
+                BinaryOp::In => is_id(lhs),
+                _ => false,
+            }
+        })
     }
 
     /// Rough number of rows a scan of `node` would start with, if it were
@@ -279,6 +327,10 @@ impl<'a> PatternPlanner<'a> {
         let var = assigned_node_var(node.var);
         if self.available.contains(&var) || self.planner.is_bound(var) {
             return 0;
+        }
+        // `id(var) = value`: a seek by id, one row.
+        if self.has_pending_id_seek(var, crate::optimizer::NODE_ID_FUNCTIONS) {
+            return 2;
         }
         let stats = self.planner.stats();
         let label = match node.labels.as_slice() {

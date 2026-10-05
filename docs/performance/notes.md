@@ -188,6 +188,22 @@ estimated cost beats the label/type scan:
 The original predicate remains above conservative TEXT/POINT candidate scans,
 so correctness does not depend on the secondary structure being exact.
 
+### Seek by id
+
+An `id(n) = value` / `id(n) IN list` conjunct on a `Filter(NodeScan)`
+becomes `NodeByIdSeek`, and `id(r) = value` / `IN` on
+`Filter(Expand(NodeScan(src)))` becomes `RelByIdSeek` (binds both
+endpoints per the pattern's direction and types, checks the source's
+labels). Both are committed regardless of stats, and the pattern planner
+starts a chain at an end whose node or adjacent relationship has such a
+conjunct. The seek visits a sorted, de-duplicated superset of the
+matching ids (an integer, or a float equal to one) and the `Filter`
+stays above it, so semantics are the scan's.
+
+**Source**: `crates/lora-compiler/src/optimizer.rs` (`id_seek_value`),
+`crates/lora-executor/src/executor/helpers.rs` (`id_seek_candidates`);
+coverage in `crates/lora-database/tests/id_seek.rs`
+
 ### Condition push-down
 
 A `WHERE` clause is split into its `AND` conjuncts, and a conjunct that reads
