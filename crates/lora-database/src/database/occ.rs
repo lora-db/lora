@@ -23,7 +23,7 @@ use lora_analyzer::{
 use lora_compiler::physical::{PhysicalOp, PhysicalPlan};
 use lora_compiler::CompiledQuery;
 use lora_executor::{LoraValue, MutableExecutionContext, MutableExecutor, Row};
-use lora_store::{GraphStorage, GraphStorageMut};
+use lora_store::{ConstraintDefinition, GraphStorage, GraphStorageMut, StoredIndexEntity};
 
 use crate::database::Database;
 
@@ -57,8 +57,13 @@ where
         // which is only sound for plans that cannot fail midway. A deadline
         // (timeout or cancellation) can stop any plan midway, so bounded
         // writes take the staged path, where a failure discards every
-        // change instead of leaving a partial write behind.
-        if deadline.is_none() && live_fast_path_safe(compiled) {
+        // change instead of leaving a partial write behind. So does a write
+        // a constraint can reject on a later row (a duplicate key in an
+        // `UNWIND … CREATE`, a `SET` that collides on its second node).
+        if deadline.is_none()
+            && live_fast_path_safe(compiled)
+            && !constraints_may_reject(&self.store.load_full().list_constraints(), compiled)
+        {
             let may_delete = compiled
                 .physical
                 .nodes
@@ -69,6 +74,27 @@ where
             self.run_with_durable_recorder(run)
         }
     }
+}
+
+/// Whether a constraint can reject one of the plan's writes. The fast path
+/// only creates nodes and sets properties: a created label with any
+/// constraint can fail, and so can a `SET` while any node constraint exists
+/// (which labels its targets carry is only known per row).
+fn constraints_may_reject(constraints: &[ConstraintDefinition], compiled: &CompiledQuery) -> bool {
+    let on_nodes = |c: &&ConstraintDefinition| c.entity == StoredIndexEntity::Node;
+    compiled.physical.nodes.iter().any(|op| match op {
+        PhysicalOp::Create(create) => create.pattern.parts.iter().any(|part| match &part.element {
+            ResolvedPatternElement::Node { labels, .. } => labels.iter().flatten().any(|label| {
+                constraints
+                    .iter()
+                    .filter(on_nodes)
+                    .any(|c| c.label == *label)
+            }),
+            _ => true,
+        }),
+        PhysicalOp::Set(_) => constraints.iter().any(|c| on_nodes(&c)),
+        _ => false,
+    })
 }
 
 fn live_fast_path_safe(compiled: &CompiledQuery) -> bool {
@@ -98,9 +124,12 @@ fn live_fast_plan_safe(plan: &PhysicalPlan) -> bool {
             {
                 writes.push("delete_created");
             }
-            PhysicalOp::Delete(_) => {
+            // A plain DELETE fails on a node that still has relationships,
+            // possibly after deleting earlier rows; DETACH DELETE can't fail.
+            PhysicalOp::Delete(delete) if delete.detach => {
                 writes.push("delete");
             }
+            PhysicalOp::Delete(_) => return false,
             PhysicalOp::Merge(_)
             | PhysicalOp::Remove(_)
             | PhysicalOp::Foreach(_)

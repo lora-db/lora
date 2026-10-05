@@ -602,16 +602,15 @@ fn acid_properties_for_multi_statement_transactions() {
 }
 
 #[test]
-#[ignore = "constraint violation rollback: rollback on constraint error not yet implemented"]
 fn constraint_violation_rollback() {
-    // Lora: constraint violation rollback
+    // A statement a constraint rejects partway leaves the graph unchanged
+    // (every write path: tests/statement_atomicity.rs).
     let db = TestDb::new();
+    db.run("CREATE CONSTRAINT uk FOR (u:Unique) REQUIRE u.key IS UNIQUE");
     db.run("CREATE (:Unique {key:'one'})");
-    // If a unique constraint existed, creating a duplicate should fail
-    // and the entire transaction should roll back, leaving graph unchanged
-    let _ = db.exec("CREATE (:Unique {key:'one'})");
-    // With constraint support, this should still be 1
-    // Without constraints, it will be 2 — hence ignored
+    assert!(db
+        .exec("UNWIND ['two', 'one'] AS k CREATE (:Unique {key: k})")
+        .is_err());
     db.assert_count("MATCH (u:Unique) RETURN u", 1);
 }
 
