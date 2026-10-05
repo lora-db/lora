@@ -27,7 +27,6 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P3 Quantified path patterns; inline `WHERE` in variable-length relationships (`match.rs:1427,1455`).
 - [ ] P3 Comparison type-mismatch errors (`errors.rs:536`); parse-time parameter type checks (`parameters.rs:383`).
 - [ ] P3 `'…'::DATE` / `::DURATION` cast syntax (the real gap behind `expressions.rs:1067,1073,1377`); `util.text.join` (`:1392`).
-- [ ] P3 Path bindings in `CREATE` patterns not materialised (`executor/mutable.rs:1789`).
 - [ ] P3 Vector procedure options reject `$param` maps (`database/procedures.rs:314-318`).
 - [ ] P3 `SHOW FULLTEXT INDEXES` parses but always returns empty (`cypher.pest:77`).
 - [ ] P3 3D geodesic distance ignores height; no WKT / CRS transform.

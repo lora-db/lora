@@ -12,7 +12,7 @@
 
 use crate::errors::{value_kind, ExecResult, ExecutorError};
 use crate::eval::{clear_eval_error, eval_expr, EvalContext};
-use crate::value::{lora_value_to_property, LoraValue, Row};
+use crate::value::{lora_value_to_property, LoraPath, LoraValue, Row};
 use crate::{project_rows, ExecuteOptions, QueryResult};
 
 use lora_analyzer::{
@@ -910,12 +910,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         // materialized branch below.
         if crate::pull::subtree_is_fully_streaming(plan, op.input) {
             return self.streaming_apply(plan, op.input, |this, row| {
-                let already_bound = this.pattern_part_is_bound(row, &op.pattern_part)?;
-                let matched = if already_bound {
-                    true
-                } else {
-                    this.try_match_merge_pattern(row, &op.pattern_part)?
-                };
+                let matched = this.match_merge_pattern(row, &op.pattern_part)?;
                 if !matched {
                     this.apply_create_pattern_part(row, &op.pattern_part)?;
                 }
@@ -934,15 +929,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         let mut out = Vec::with_capacity(input_rows.len());
 
         for mut row in input_rows {
-            // First check if the pattern variable is already bound in the row.
-            let already_bound = self.pattern_part_is_bound(&row, &op.pattern_part)?;
-
-            let matched = if already_bound {
-                true
-            } else {
-                // Try to find an existing match in the graph.
-                self.try_match_merge_pattern(&mut row, &op.pattern_part)?
-            };
+            let matched = self.match_merge_pattern(&mut row, &op.pattern_part)?;
 
             if !matched {
                 self.apply_create_pattern_part(&mut row, &op.pattern_part)?;
@@ -962,10 +949,24 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         Ok(out)
     }
 
+    /// Whether the MERGE pattern already exists: every variable bound by an
+    /// earlier clause, or a match found in the graph (then bound in the
+    /// row). On a match its path variable (`MERGE p = …`) is bound too; on a
+    /// miss the create binds it.
+    fn match_merge_pattern(&self, row: &mut Row, part: &ResolvedPatternPart) -> ExecResult<bool> {
+        if self.pattern_part_is_bound(row, part)? {
+            if let (Some(var), Some(path)) = (part.binding, bound_pattern_path(row, part)) {
+                row.insert(var, LoraValue::Path(path));
+            }
+            return Ok(true);
+        }
+        self.try_match_merge_pattern(row, part)
+    }
+
     /// Try to find an existing node/pattern in the graph matching the MERGE
-    /// pattern. If found, bind its variables in the row and return true.
-    /// On a miss the row is left untouched, so the create path sees only
-    /// the variables that were bound before the MERGE.
+    /// pattern. If found, bind its variables (and path variable) in the row
+    /// and return true. On a miss the row is left untouched, so the create
+    /// path sees only the variables that were bound before the MERGE.
     fn try_match_merge_pattern(
         &self,
         row: &mut Row,
@@ -987,6 +988,13 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 };
                 if let Some(var_id) = var {
                     row.insert(*var_id, LoraValue::Node(id));
+                }
+                if let Some(path_var) = part.binding {
+                    let path = LoraPath {
+                        nodes: vec![id],
+                        rels: Vec::new(),
+                    };
+                    row.insert(path_var, LoraValue::Path(path));
                 }
                 Ok(true)
             }
@@ -1015,8 +1023,17 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                     if let Some(var_id) = head.var {
                         trial.insert(var_id, LoraValue::Node(head_id));
                     }
-                    let mut used_rels = Vec::with_capacity(chain.len());
-                    if self.match_merge_chain(&mut trial, head_id, chain, &mut used_rels) {
+                    let mut walked = Vec::with_capacity(chain.len());
+                    if self.match_merge_chain(&mut trial, head_id, chain, &mut walked) {
+                        if let Some(path_var) = part.binding {
+                            let path = LoraPath {
+                                nodes: std::iter::once(head_id)
+                                    .chain(walked.iter().map(|&(_, node)| node))
+                                    .collect(),
+                                rels: walked.iter().map(|&(rel, _)| rel).collect(),
+                            };
+                            trial.insert(path_var, LoraValue::Path(path));
+                        }
                         *row = trial;
                         return Ok(true);
                     }
@@ -1029,13 +1046,14 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     /// Match `chain` from `current`, backtracking over every candidate
     /// edge. A step node or relationship already bound in the row (by an
     /// earlier clause or earlier in the chain) must be the one reached;
-    /// the same relationship is never used twice in one pattern.
+    /// the same relationship is never used twice in one pattern. `walked`
+    /// holds the `(relationship, node)` steps taken, in order.
     fn match_merge_chain(
         &self,
         row: &mut Row,
         current: NodeId,
         chain: &[lora_analyzer::ResolvedChain],
-        used_rels: &mut Vec<u64>,
+        walked: &mut Vec<(u64, NodeId)>,
     ) -> bool {
         let Some((step, rest)) = chain.split_first() else {
             return true;
@@ -1059,7 +1077,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         for (rel_id, node_id) in edges {
             if bound_dst.is_some_and(|id| id != node_id)
                 || bound_rel.is_some_and(|id| id != rel_id)
-                || used_rels.contains(&rel_id)
+                || walked.iter().any(|&(used, _)| used == rel_id)
             {
                 continue;
             }
@@ -1092,12 +1110,12 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             if let Some(node_var) = step.node.var {
                 next.insert(node_var, LoraValue::Node(node_id));
             }
-            used_rels.push(rel_id);
-            if self.match_merge_chain(&mut next, node_id, rest, used_rels) {
+            walked.push((rel_id, node_id));
+            if self.match_merge_chain(&mut next, node_id, rest, walked) {
                 *row = next;
                 return true;
             }
-            used_rels.pop();
+            walked.pop();
         }
         false
     }
@@ -1301,12 +1319,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 Ok(())
             }
             ResolvedClause::Merge(m) => {
-                let already_bound = self.pattern_part_is_bound(row, &m.pattern_part)?;
-                let matched = if already_bound {
-                    true
-                } else {
-                    self.try_match_merge_pattern(row, &m.pattern_part)?
-                };
+                let matched = self.match_merge_pattern(row, &m.pattern_part)?;
                 if !matched {
                     self.apply_create_pattern_part(row, &m.pattern_part)?;
                 }
@@ -1758,12 +1771,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 Ok(())
             }
             PhysicalOp::Merge(m) => {
-                let already_bound = self.pattern_part_is_bound(row, &m.pattern_part)?;
-                let matched = if already_bound {
-                    true
-                } else {
-                    self.try_match_merge_pattern(row, &m.pattern_part)?
-                };
+                let matched = self.match_merge_pattern(row, &m.pattern_part)?;
                 if !matched {
                     self.apply_create_pattern_part(row, &m.pattern_part)?;
                 }
@@ -1782,16 +1790,17 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         }
     }
 
+    /// Create a pattern part, binding its path variable (`CREATE p = …`)
+    /// to the nodes and relationships it created or reused.
     fn apply_create_pattern_part(
         &mut self,
         row: &mut Row,
         part: &ResolvedPatternPart,
     ) -> ExecResult<()> {
-        if part.binding.is_some() {
-            trace!("create pattern part has path binding; path materialization not implemented");
+        let path = self.apply_create_pattern_element(row, &part.element)?;
+        if let (Some(var), Some(path)) = (part.binding, path) {
+            row.insert(var, LoraValue::Path(path));
         }
-
-        let _ = self.apply_create_pattern_element(row, &part.element)?;
         Ok(())
     }
 
@@ -1799,7 +1808,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         &mut self,
         row: &mut Row,
         element: &ResolvedPatternElement,
-    ) -> ExecResult<Option<LoraValue>> {
+    ) -> ExecResult<Option<LoraPath>> {
         match element {
             ResolvedPatternElement::Node {
                 var,
@@ -1808,7 +1817,10 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             } => {
                 let node_id =
                     self.materialize_node_pattern(row, *var, labels, properties.as_ref())?;
-                Ok(Some(LoraValue::Node(node_id)))
+                Ok(Some(LoraPath {
+                    nodes: vec![node_id],
+                    rels: Vec::new(),
+                }))
             }
 
             ResolvedPatternElement::NodeChain { head, chain } => {
@@ -1818,6 +1830,11 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                     &head.labels,
                     head.properties.as_ref(),
                 )?;
+                let mut path = LoraPath {
+                    nodes: Vec::with_capacity(chain.len() + 1),
+                    rels: Vec::with_capacity(chain.len()),
+                };
+                path.nodes.push(current_node_id);
 
                 for link in chain {
                     let next_node_id = self.materialize_node_pattern(
@@ -1827,17 +1844,19 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                         link.node.properties.as_ref(),
                     )?;
 
-                    let _ = self.materialize_relationship_pattern(
+                    let rel_id = self.materialize_relationship_pattern(
                         row,
                         current_node_id,
                         next_node_id,
                         &link.rel,
                     )?;
+                    path.rels.push(rel_id);
+                    path.nodes.push(next_node_id);
 
                     current_node_id = next_node_id;
                 }
 
-                Ok(Some(LoraValue::Node(current_node_id)))
+                Ok(Some(path))
             }
 
             ResolvedPatternElement::ShortestPath { .. } => {
@@ -2044,6 +2063,36 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         }
 
         Ok(created.id)
+    }
+}
+
+/// The path a pattern part names when every node and relationship in it is
+/// already bound in `row` (see `pattern_part_is_bound`).
+fn bound_pattern_path(row: &Row, part: &ResolvedPatternPart) -> Option<LoraPath> {
+    let node = |var: Option<VarId>| match var.and_then(|v| row.get(v)) {
+        Some(LoraValue::Node(id)) => Some(*id),
+        _ => None,
+    };
+    match &part.element {
+        ResolvedPatternElement::Node { var, .. } => Some(LoraPath {
+            nodes: vec![node(*var)?],
+            rels: Vec::new(),
+        }),
+        ResolvedPatternElement::NodeChain { head, chain } => {
+            let mut path = LoraPath {
+                nodes: vec![node(head.var)?],
+                rels: Vec::with_capacity(chain.len()),
+            };
+            for link in chain {
+                match link.rel.var.and_then(|v| row.get(v)) {
+                    Some(LoraValue::Relationship(id)) => path.rels.push(*id),
+                    _ => return None,
+                }
+                path.nodes.push(node(link.node.var)?);
+            }
+            Some(path)
+        }
+        ResolvedPatternElement::ShortestPath { .. } => None,
     }
 }
 
