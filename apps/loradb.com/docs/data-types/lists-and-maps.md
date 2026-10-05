@@ -29,12 +29,14 @@ RETURN [10, 20, 30][9]       // null`} />
 
 ### Slicing
 
-End-exclusive. Open-ended slices work.
+End-exclusive. Open-ended slices work; negative bounds count from the end,
+and a `null` bound makes the slice `null`.
 
 <QueryCodeBlock code={String.raw`RETURN [1, 2, 3, 4, 5][1..3];   // [2, 3]
 RETURN [1, 2, 3, 4, 5][..2];    // [1, 2]
 RETURN [1, 2, 3, 4, 5][3..];    // [4, 5]
-RETURN [1, 2, 3, 4, 5][-2..]   // [4, 5]`} />
+RETURN [1, 2, 3, 4, 5][-2..];   // [4, 5]
+RETURN [1, 2, 3, 4, 5][..-1]   // [1, 2, 3, 4]`} />
 
 ### Concatenation
 

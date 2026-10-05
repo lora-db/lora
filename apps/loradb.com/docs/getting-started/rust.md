@@ -373,7 +373,7 @@ Everything is `Result`. Errors fall into three buckets:
 |---|---|---|
 | Parse | Missing paren, bad syntax | Fix the query string |
 | Semantic | Unknown variable, unknown function, wrong arity | Adjust names or fix version |
-| Runtime | `DeleteNodeWithRelationships`, integer overflow; division by zero returns `null` rather than erroring | Adjust query; see [Troubleshooting](../troubleshooting) |
+| Runtime | `DeleteNodeWithRelationships`, integer overflow, integer division by zero | Adjust query; see [Troubleshooting](../troubleshooting) |
 
 Pattern:
 

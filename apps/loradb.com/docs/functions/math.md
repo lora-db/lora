@@ -218,17 +218,18 @@ RETURN p`} />
 | `+` | `a + b` | Also concatenates strings and lists |
 | `-` | `a - b` | Unary `-x` allowed |
 | `*` | `a * b` | |
-| `/` | `a / b` | Always returns a `Float`, even for two integers; divide by zero (`0` or `0.0`) → `null` |
-| `%` | `a % b` | Integer modulo; mod by zero → `null`; a `Float` operand → `null` |
+| `/` | `a / b` | Two integers divide as integers, truncating toward zero; a `Float` operand gives a `Float`. Integer divide by zero fails the query; float divide by zero → `null` |
+| `%` | `a % b` | Remainder, signed like the dividend; a `Float` operand gives a `Float`. Integer mod by zero fails the query; float mod by zero → `null` |
 | `^` | `a ^ b` | Exponent; an integral result that fits in `Int` comes back as `Int` |
 
-<QueryCodeBlock code={String.raw`RETURN 10 / 3;           // 3.333…    (always float)
-RETURN 10 / 4;           // 2.5
+<QueryCodeBlock code={String.raw`RETURN 10 / 3;           // 3         (integer division)
+RETURN 10 / 4.0;         // 2.5
 RETURN 10 % 3;           // 1
+RETURN 7.5 % 2;          // 1.5
 RETURN 2 ^ 10;           // 1024
-RETURN 1 / 0            // null`} />
+RETURN 1 / 0            // error: integer division by zero`} />
 
-`+`, `-`, `*`, `%` and unary `-` on integers are overflow-checked: a
+`+`, `-`, `*`, `/`, `%` and unary `-` on integers are overflow-checked: a
 result outside the 64-bit range fails the query instead of wrapping.
 See [Integer overflow](#integer-overflow).
 
@@ -237,10 +238,10 @@ See [Integer overflow](#integer-overflow).
 <QueryCodeBlock code={String.raw`RETURN 1 + 2.5;          // 3.5 (Float)
 RETURN 10 / 3.0         // 3.333…`} />
 
-Any `Float` operand promotes the result to `Float`. For integer
-(truncating) division, wrap the quotient in `toInteger`:
+Any `Float` operand promotes the result to `Float`. For an exact
+quotient of two integers, make one of them a float:
 
-<QueryCodeBlock code={String.raw`RETURN toInteger(10 / 3)      // 3`} />
+<QueryCodeBlock code={String.raw`RETURN toFloat(10) / 3      // 3.333…`} />
 
 ## Numeric precedence
 
@@ -308,13 +309,14 @@ Guard against zero/null — see
 ### Weighted average
 
 <QueryCodeBlock code={String.raw`MATCH (r:Review)
-RETURN sum(r.stars * r.weight) / sum(r.weight) AS weighted_mean`} />
+RETURN toFloat(sum(r.stars * r.weight)) / sum(r.weight) AS weighted_mean`} />
 
 ## Edge cases
 
 ### Integer overflow
 
-Integer `+`, `-`, `*`, `%` and unary `-` are checked. A result outside
+Integer `+`, `-`, `*`, `/`, `%` and unary `-` are checked, and so are
+`list.sum`, `list.product` and `list.scan`. A result outside
 the `i64` range fails the query with a `LORA_VALIDATION` error such as
 `integer addition overflowed` — it never wraps or panics:
 
@@ -322,13 +324,12 @@ the `i64` range fails the query with a `LORA_VALIDATION` error such as
 // error: integer addition overflowed`} />
 
 For potentially huge inputs, coerce to `Float` with
-[`toFloat`](./string#type-conversion) first. `list.sum` over integers is
-not checked and still wraps.
+[`toFloat`](./string#type-conversion) first.
 
 ### NaN / Infinity
 
-Division by zero never produces `Infinity` or `NaN` — it returns
-`null`, for integer and float operands alike. Math functions guard
+Float division by zero never produces `Infinity` or `NaN` — it returns
+`null` (integer division by zero fails the query). Math functions guard
 their domains the same way.
 
 <QueryCodeBlock code={String.raw`RETURN 1.0 / 0.0;          // null
@@ -338,13 +339,13 @@ RETURN math.sqrt(-1)           // null   (Cypher-level domain guard, not NaN)`} 
 If a `NaN` value does reach a query, IEEE 754 applies: `NaN` is neither less than nor greater than any
 value, and `NaN == NaN` is `false`.
 
-### Division always returns a float
+### Integer division truncates
 
-<QueryCodeBlock code={String.raw`RETURN 7 / 2;                  // 3.5
-RETURN 6 / 2;                  // 3.0
-RETURN toInteger(7 / 2)       // 3`} />
+<QueryCodeBlock code={String.raw`RETURN 7 / 2;                  // 3
+RETURN -7 / 2;                 // -3
+RETURN 7 / 2.0                 // 3.5`} />
 
-Use `toInteger` when you want truncating integer division.
+Make one operand a float (`toFloat`) when you want the exact quotient.
 
 ## Limitations
 

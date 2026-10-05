@@ -30,7 +30,9 @@ fn expr_multiplication() {
 
 #[test]
 fn expr_division() {
-    let f = TestDb::new().scalar("RETURN 10 / 3").as_f64().unwrap();
+    // Integer / integer truncates; a float operand divides exactly.
+    assert_eq!(TestDb::new().scalar("RETURN 10 / 3"), 3);
+    let f = TestDb::new().scalar("RETURN 10.0 / 3").as_f64().unwrap();
     assert!((f - 3.333).abs() < 0.01);
 }
 
@@ -65,13 +67,16 @@ fn expr_operator_precedence() {
 }
 
 #[test]
-fn division_by_zero_returns_null() {
-    assert!(TestDb::new().scalar("RETURN 10 / 0").is_null());
+fn integer_division_by_zero_is_an_error() {
+    let err = TestDb::new().run_err("RETURN 10 / 0");
+    assert!(err.contains("by zero"), "{err}");
+    assert!(TestDb::new().scalar("RETURN 10.0 / 0").is_null());
 }
 
 #[test]
-fn modulo_by_zero_returns_null() {
-    assert!(TestDb::new().scalar("RETURN 10 % 0").is_null());
+fn integer_modulo_by_zero_is_an_error() {
+    let err = TestDb::new().run_err("RETURN 10 % 0");
+    assert!(err.contains("by zero"), "{err}");
 }
 
 #[test]

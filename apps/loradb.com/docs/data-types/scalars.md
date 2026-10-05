@@ -94,15 +94,16 @@ rows where `p.in_stock` is `false` or `null`.
 | Op | Example | Notes |
 |---|---|---|
 | `+`, `-`, `*` | `1 + 2` | Integer if both operands are integers |
-| `/` | `10 / 3` → `3.333…` | Always returns `Float`; use `toInteger(a / b)` to truncate |
-| `%` | `10 % 3` → `1` | Integer modulo |
+| `/` | `10 / 3` → `3` | Integer division (truncates toward zero) when both operands are integers; `Float` if either is |
+| `%` | `10 % 3` → `1` | Remainder, signed like the dividend; `Float` if either operand is |
 | `^` | `2 ^ 10` → `1024` | Exponent |
 | unary `-`, `+` | `-x` | |
 
-Divide or modulo by zero → `null` rather than an error.
+Integer divide or modulo by zero fails the query; with a `Float`
+operand it returns `null`.
 
-<QueryCodeBlock code={String.raw`RETURN 1 / 0;    // null
-RETURN 10 % 0   // null`} />
+<QueryCodeBlock code={String.raw`RETURN 1 / 0;      // error: integer division by zero
+RETURN 1.0 / 0     // null`} />
 
 See [Math Functions → Arithmetic operators](../functions/math#arithmetic-operators)
 for the full details, including mixed-type arithmetic.
@@ -125,7 +126,7 @@ For very large ids, note [integer precision in JS](../getting-started/node#perfo
 
 ### Limitations
 
-Integer `+`, `-`, `*`, `%` and unary `-` are overflow-checked: a result
+Integer `+`, `-`, `*`, `/`, `%` and unary `-` are overflow-checked: a result
 outside the `i64` range fails the query with a `LORA_VALIDATION` error
 (`integer addition overflowed`, …) instead of wrapping. For extreme
 inputs, convert to `Float` first.
@@ -145,7 +146,7 @@ RETURN 10 / 3.0      // 3.333…`} />
 
 - `NaN == NaN` → `false`
 - `NaN` comparisons → `false`
-- Division by zero returns `null` for floats too — `1.0 / 0.0` and
+- Float division by zero returns `null` — `1.0 / 0.0` and
   `0.0 / 0.0` never produce `Infinity` or `NaN`
 
 <QueryCodeBlock code={String.raw`RETURN 1.0 / 0.0;          // null

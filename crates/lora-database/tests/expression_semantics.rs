@@ -1,4 +1,5 @@
-//! Expression semantics that follow openCypher: integer overflow in the
+//! Expression semantics that follow openCypher: integer / integer is
+//! integer division, and dividing an integer by zero is an error; integer overflow in the
 //! list builtins is an error like it is for the operators; `IN` is null
 //! when a null element leaves the answer unknown; a negative slice bound
 //! counts from the end. Every case runs
@@ -146,5 +147,39 @@ fn negative_slice_bounds_count_from_the_end() {
     assert_read(
         "RETURN [1, 2, 3][-1] AS v, [1, 2, 3][-4] AS w",
         json!([{"v": 3, "w": null}]),
+    );
+}
+
+#[test]
+fn integer_division_truncates_toward_zero() {
+    assert_read("RETURN 7 / 2 AS v", json!([{"v": 3}]));
+    assert_read("RETURN -7 / 2 AS v", json!([{"v": -3}]));
+    assert_read("RETURN 7 / -2 AS v", json!([{"v": -3}]));
+    assert_read("RETURN 6 / 3 AS v", json!([{"v": 2}]));
+    // A float operand keeps float division.
+    assert_read("RETURN 7.0 / 2 AS v", json!([{"v": 3.5}]));
+    assert_read("RETURN 7 / 2.0 AS v", json!([{"v": 3.5}]));
+    assert_read("RETURN toFloat(7) / 2 AS v", json!([{"v": 3.5}]));
+    assert_read("RETURN null / 2 AS v", json!([{"v": null}]));
+}
+
+#[test]
+fn modulo_keeps_the_dividends_sign_and_works_on_floats() {
+    assert_read("RETURN 7 % 3 AS v, -7 % 3 AS w", json!([{"v": 1, "w": -1}]));
+    assert_read(
+        "RETURN 7.5 % 2 AS v, -7.5 % 2 AS w",
+        json!([{"v": 1.5, "w": -1.5}]),
+    );
+    assert_read("RETURN 7 % 2.5 AS v", json!([{"v": 2.0}]));
+}
+
+#[test]
+fn integer_division_by_zero_is_an_error() {
+    assert_error("RETURN 7 / 0 AS v", "by zero");
+    assert_error("RETURN 7 % 0 AS v", "by zero");
+    assert_error("UNWIND [1, 0] AS d RETURN 10 / d AS v", "by zero");
+    assert_error(
+        "RETURN -9223372036854775807 - 1 / 1 AS v, (-9223372036854775807 - 1) / -1 AS w",
+        "overflow",
     );
 }

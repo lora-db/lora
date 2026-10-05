@@ -434,6 +434,14 @@ fn div_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
                 None => arithmetic_overflow("duration division"),
             };
         }
+        // Integer / integer is integer division, truncating toward zero.
+        (LoraValue::Int(_), LoraValue::Int(0)) => return division_by_zero("integer division"),
+        (LoraValue::Int(a), LoraValue::Int(b)) => {
+            return match a.checked_div(*b) {
+                Some(out) => LoraValue::Int(out),
+                None => arithmetic_overflow("integer division"),
+            };
+        }
         _ => {}
     }
     match (lhs.as_f64(), rhs.as_f64()) {
@@ -445,13 +453,24 @@ fn div_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
 
 fn mod_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
     match (lhs, rhs) {
-        (LoraValue::Int(_), LoraValue::Int(0)) => LoraValue::Null,
+        (LoraValue::Int(_), LoraValue::Int(0)) => division_by_zero("integer modulo"),
         (LoraValue::Int(a), LoraValue::Int(b)) => match a.checked_rem(b) {
             Some(out) => LoraValue::Int(out),
             None => arithmetic_overflow("integer modulo"),
         },
-        _ => LoraValue::Null,
+        // With a float operand the remainder is a float, signed like the
+        // dividend (as with integers); a zero divisor gives null, as `/` does.
+        (lhs, rhs) => match (lhs.as_f64(), rhs.as_f64()) {
+            (Some(_), Some(0.0)) => LoraValue::Null,
+            (Some(a), Some(b)) => LoraValue::Float(a % b),
+            _ => LoraValue::Null,
+        },
     }
+}
+
+fn division_by_zero(op: &str) -> LoraValue {
+    set_eval_error(format!("{op} by zero"));
+    LoraValue::Null
 }
 
 pub(super) fn arithmetic_overflow(op: &str) -> LoraValue {

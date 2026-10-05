@@ -88,7 +88,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | Integer / float / string / bool / null literals | **Supported** | |
 | Hex / octal integer literals | **Supported** | `0xFF`, `0o17` |
 | List / map literals | **Supported** | Nested, heterogeneous |
-| Arithmetic `+ - * / % ^` | **Supported** | `/` and `%` by zero → null |
+| Arithmetic `+ - * / % ^` | **Supported** | Integer `/` truncates; integer `/` and `%` by zero error, float by zero → null |
 | Unary `-` / `+` | **Supported** | |
 | Equality `=` / `<>` | **Supported** | |
 | Comparison `< > <= >=` | **Supported** | Numbers (integers exactly, also above 2^53), strings, booleans (`false < true`), temporals of one kind, durations, and lists: element by element, a prefix before the longer list. A null or an operand of another kind gives `null`, never `false`, so `[a, b] > $cursor` works for keyset pagination and `NOT (1 < 'a')` is `null`. Two temporals of different kinds (a `DATE` against a `DATETIME`) are an error on every plan, index-backed or not, where Cypher gives `null`: see section 12 |
@@ -99,7 +99,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `CASE` (generic and simple) | **Supported** | |
 | Regex matching `=~` | **Supported** | Full Rust `regex` crate |
 | List indexing `[i]` | **Supported** | Negative indices supported |
-| List slicing `[a..b]` | **Supported** | Open-ended slices |
+| List slicing `[a..b]` | **Supported** | Open-ended slices; negative bounds count from the end |
 | List concatenation `+` | **Supported** | A list and an element append (`[1] + 2`) or prepend (`0 + [1]`) |
 | String concatenation `+` | **Supported** | A string and a number concatenate in either order (`'p' + 1` is `'p1'`); a string with another type is an error |
 | List comprehension `[x IN list WHERE p \| e]` | **Supported** | |

@@ -584,17 +584,19 @@ fn error_invalid_point_missing_coords() {
 
 #[test]
 fn error_division_by_zero_integer() {
-    // Division by zero should not crash
+    // Integer division by zero is an error, not a crash or a silent null.
     let db = TestDb::new();
-    let v = db.scalar("RETURN 1 / 0");
-    assert!(v.is_null());
+    let err = db.run_err("RETURN 1 / 0");
+    assert!(err.contains("by zero"), "{err}");
+    // Float division by zero still yields null.
+    assert!(db.scalar("RETURN 1.0 / 0").is_null());
 }
 
 #[test]
 fn error_modulo_by_zero() {
     let db = TestDb::new();
-    let v = db.scalar("RETURN 10 % 0");
-    assert!(v.is_null());
+    let err = db.run_err("RETURN 10 % 0");
+    assert!(err.contains("by zero"), "{err}");
 }
 
 #[test]
@@ -708,8 +710,8 @@ fn error_float_division_by_zero() {
 
 #[test]
 fn error_nested_division_by_zero() {
-    let v = TestDb::new().scalar("RETURN 10 + (5 / 0)");
-    assert!(v.is_null());
+    let err = TestDb::new().run_err("RETURN 10 + (5 / 0)");
+    assert!(err.contains("by zero"), "{err}");
 }
 
 // ============================================================

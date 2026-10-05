@@ -17,7 +17,6 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P3 A function with two or more arguments (`coalesce(big, [])`), an operator
       (`big + [x]`) or a map/list literal still copies a carried list per call; a lone
       variable argument (`size(big)`) and row clones share it (`value.rs` `SlotValue`).
-- [ ] P2 `7/2` returns `3.5`; integer division should give `3` (E22).
 - [ ] P2 `max` over durations returns the smallest; `sum`/`avg` of durations return null (E25).
 - [ ] P2 `min`/`max` of LocalDateTime/Time wrong (E27; sorting is fixed).
 - [ ] P2 `CREATE (r:R) DELETE r` and `SET q:R, q.x = …` fail the existence check (E20 residual).
