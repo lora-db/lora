@@ -410,9 +410,17 @@ fn duration_times_integer() {
 #[test]
 
 fn duration_divided_by_integer() {
-    let v = TestDb::new().scalar("RETURN 'P14D'::DURATION / 2 AS d");
-    // Expected: P7D
-    assert!(!v.is_null());
+    let db = TestDb::new();
+    assert_eq!(db.scalar("RETURN 'P14D'::DURATION / 2 AS d"), "P7D");
+    // What doesn't divide evenly carries down to the next component.
+    assert_eq!(db.scalar("RETURN 'P1D'::DURATION / 2 AS d"), "PT12H");
+    assert_eq!(
+        db.scalar("RETURN 'P1M'::DURATION / 2 AS d"),
+        "P15DT5H14M33S"
+    );
+    assert_eq!(db.scalar("RETURN 'PT1S'::DURATION / 4 AS d"), "PT0.25S");
+    assert_eq!(db.scalar("RETURN 'P3DT2H'::DURATION / 2 AS d"), "P1DT13H");
+    assert_eq!(db.scalar("RETURN 'P1D'::DURATION / -2 AS d"), "PT-12H");
 }
 
 // ============================================================

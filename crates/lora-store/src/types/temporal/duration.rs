@@ -221,17 +221,33 @@ impl LoraDuration {
         self.try_div_int(n).unwrap_or_else(Self::zero)
     }
 
+    /// Divide each component by `n`, carrying what doesn't divide evenly
+    /// down to the next component, as openCypher does: a leftover month
+    /// becomes days (30.436875 days, the average month), a leftover day
+    /// becomes seconds, a leftover second nanoseconds. Each step rounds
+    /// toward zero. `P1D / 2` is `PT12H`, `P1M / 2` is `P15DT5H14M33S`.
     pub fn try_div_int(&self, n: i64) -> Option<Self> {
+        const NANOS_PER_SECOND: i128 = 1_000_000_000;
+        const NANOS_PER_DAY: i128 = 86_400 * NANOS_PER_SECOND;
+        const NANOS_PER_MONTH: i128 = 2_629_746 * NANOS_PER_SECOND;
         if n == 0 {
             return None;
         }
-        Self {
-            months: self.months.checked_div(n)?,
-            days: self.days.checked_div(n)?,
-            seconds: self.seconds.checked_div(n)?,
-            nanoseconds: self.nanoseconds.checked_div(n)?,
-        }
-        .into()
+        let n128 = i128::from(n);
+        let months = self.months.checked_div(n)?;
+        let month_rest = i128::from(self.months % n);
+        let day_nanos =
+            (i128::from(self.days) * NANOS_PER_DAY + month_rest * NANOS_PER_MONTH) / n128;
+        let days = day_nanos / NANOS_PER_DAY;
+        let nanos = (i128::from(self.seconds) * NANOS_PER_SECOND + i128::from(self.nanoseconds))
+            / n128
+            + day_nanos % NANOS_PER_DAY;
+        Some(Self {
+            months,
+            days: i64::try_from(days).ok()?,
+            seconds: i64::try_from(nanos / NANOS_PER_SECOND).ok()?,
+            nanoseconds: i64::try_from(nanos % NANOS_PER_SECOND).ok()?,
+        })
     }
 
     /// Duration from date1 to date2 expressed as months + days.
