@@ -267,6 +267,36 @@ impl GraphStorage for InMemoryGraph {
             .map_err(|e| format!("[{}] {e}", e.gql_status()))
     }
 
+    fn check_node_replace_properties_deferring_existence(
+        &self,
+        node_id: NodeId,
+        properties: &Properties,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_node_replace_properties_deferred(
+            &catalog, self, node_id, properties,
+        )
+        .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
+    fn check_relationship_replace_properties_deferring_existence(
+        &self,
+        rel_id: RelationshipId,
+        properties: &Properties,
+    ) -> Result<(), String> {
+        if !self.has_active_constraints() {
+            return Ok(());
+        }
+        let catalog = self.constraint_catalog_read();
+        crate::memory::constraint_enforce::check_relationship_replace_properties_deferred(
+            &catalog, self, rel_id, properties,
+        )
+        .map_err(|e| format!("[{}] {e}", e.gql_status()))
+    }
+
     fn check_node_add_label_deferring_existence(
         &self,
         node_id: NodeId,

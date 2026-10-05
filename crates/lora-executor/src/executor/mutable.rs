@@ -1645,29 +1645,37 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             props.insert(lora_store::intern_owned(k), prop);
         }
 
+        // Replacing drops every property the map leaves out, so a
+        // deferring statement may restore a required one later (`SET n =
+        // {…}, n.required = …`): existence waits for its end.
+        let storage = &*self.ctx.storage;
+        let checked = match (target, self.defer_existence) {
+            (EntityTarget::Node(id), true) => {
+                storage.check_node_replace_properties_deferring_existence(id, &props)
+            }
+            (EntityTarget::Node(id), false) => {
+                storage.check_node_replace_properties_against_constraints(id, &props)
+            }
+            (EntityTarget::Relationship(id), true) => {
+                storage.check_relationship_replace_properties_deferring_existence(id, &props)
+            }
+            (EntityTarget::Relationship(id), false) => {
+                storage.check_relationship_replace_properties_against_constraints(id, &props)
+            }
+        };
+        checked.map_err(ExecutorError::ConstraintViolation)?;
         match target {
             EntityTarget::Node(node_id) => {
-                if let Err(msg) = self
-                    .ctx
-                    .storage
-                    .check_node_replace_properties_against_constraints(node_id, &props)
-                {
-                    return Err(ExecutorError::ConstraintViolation(msg));
-                }
                 self.ctx.storage.replace_node_properties(node_id, props);
             }
             EntityTarget::Relationship(rel_id) => {
-                if let Err(msg) = self
-                    .ctx
-                    .storage
-                    .check_relationship_replace_properties_against_constraints(rel_id, &props)
-                {
-                    return Err(ExecutorError::ConstraintViolation(msg));
-                }
                 self.ctx
                     .storage
                     .replace_relationship_properties(rel_id, props);
             }
+        }
+        if self.defer_existence {
+            self.pending_existence.push(target);
         }
         Ok(())
     }

@@ -1,7 +1,9 @@
 //! Existence constraints judge the graph as the statement leaves it
 //! (E20 residual): a node created and deleted in one statement needs no
 //! property, `SET n:Label, n.required = …` supplies the property after the
-//! label, and `REMOVE n.required SET n.required = …` puts it back. A
+//! label, `REMOVE n.required SET n.required = …` puts it back, and so do
+//! `SET n = {…}, n.required = …` and `SET n += {required: null},
+//! n.required = …`, on nodes and relationships alike. A
 //! statement that ends without the property is still rejected, and keeps
 //! nothing it wrote.
 //!
@@ -152,4 +154,72 @@ fn uniqueness_is_still_checked_when_the_label_is_added() {
     // rejected as soon as the label makes the constraint apply.
     assert_rejected("MATCH (q:Q) SET q.u = 'taken', q.x = 1, q:R", "22N79");
     assert_rejected("MATCH (q:Q) SET q:R, q.u = 'taken', q.x = 1", "22N79");
+}
+
+#[test]
+fn a_map_replace_and_its_required_property_set_together() {
+    assert_accepted(
+        "MATCH (r:R) SET r = {y: 1}, r.x = 2",
+        "MATCH (r:R) RETURN properties(r) AS p",
+        json!([{"p": {"x": 2, "y": 1}}]),
+    );
+    assert_accepted(
+        "MATCH (r:R) SET r = {y: 1} SET r.x = 3",
+        "MATCH (r:R) RETURN properties(r) AS p",
+        json!([{"p": {"x": 3, "y": 1}}]),
+    );
+    assert_accepted(
+        "MATCH (r:R) SET r += {x: null}, r.x = 4",
+        "MATCH (r:R) RETURN properties(r) AS p",
+        json!([{"p": {"x": 4, "u": "taken"}}]),
+    );
+    assert_accepted(
+        "MATCH (q:Q) SET q = {}, q:R, q.x = 5",
+        "MATCH (r:R) RETURN r.x AS x ORDER BY x",
+        json!([{"x": 0}, {"x": 5}]),
+    );
+}
+
+#[test]
+fn a_map_replace_that_ends_without_the_property_is_rejected_whole() {
+    assert_rejected("MATCH (r:R) SET r = {y: 1}", "22N77");
+    assert_rejected("MATCH (r:R) SET r = {y: 1} SET r.y = 2", "22N77");
+    assert_rejected("MATCH (r:R) SET r += {x: null}", "22N77");
+    // Uniqueness is still checked on the spot.
+    assert_rejected("MATCH (q:Q) SET q:R, q = {u: 'taken', x: 1}", "22N79");
+}
+
+fn related() -> TestDb {
+    let db = TestDb::new();
+    db.run("CREATE CONSTRAINT tw FOR ()-[t:T]-() REQUIRE t.w IS NOT NULL");
+    db.run("CREATE (:A)-[:T {w: 0}]->(:B)");
+    db
+}
+
+#[test]
+fn a_relationship_map_replace_is_judged_at_the_end() {
+    for path in WRITE_PATHS {
+        let db = related();
+        try_on(
+            &db.service,
+            path,
+            "MATCH ()-[t:T]->() SET t = {z: 1}, t.w = 2",
+        )
+        .unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        assert_eq!(
+            read(&db, "MATCH ()-[t:T]->() RETURN properties(t) AS p"),
+            json!([{"p": {"w": 2, "z": 1}}]),
+            "{path:?}"
+        );
+
+        let db = related();
+        let err = try_on(&db.service, path, "MATCH ()-[t:T]->() SET t = {z: 1}")
+            .expect_err("a relationship left without w");
+        assert!(err.contains("22N77"), "{path:?}: {err}");
+        assert_eq!(
+            read(&db, "MATCH ()-[t:T]->() RETURN properties(t) AS p"),
+            json!([{"p": {"w": 0}}]),
+            "{path:?} changed the graph"
+        );
+    }
 }

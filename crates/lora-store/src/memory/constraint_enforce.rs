@@ -870,11 +870,33 @@ pub(crate) fn check_node_replace_properties(
     node_id: NodeId,
     properties: &Properties,
 ) -> Result<(), ConstraintViolation> {
+    check_node_replace_properties_with(catalog, graph, node_id, properties, true)
+}
+
+/// [`check_node_replace_properties`] without the existence checks, for a
+/// statement that checks existence once it has finished (`SET n = {…},
+/// n.required = …`). Pair with [`check_node_existence`].
+pub(crate) fn check_node_replace_properties_deferred(
+    catalog: &ConstraintCatalog,
+    graph: &InMemoryGraph,
+    node_id: NodeId,
+    properties: &Properties,
+) -> Result<(), ConstraintViolation> {
+    check_node_replace_properties_with(catalog, graph, node_id, properties, false)
+}
+
+fn check_node_replace_properties_with(
+    catalog: &ConstraintCatalog,
+    graph: &InMemoryGraph,
+    node_id: NodeId,
+    properties: &Properties,
+    check_existence: bool,
+) -> Result<(), ConstraintViolation> {
     let node = match graph.node_at(node_id) {
         Some(n) => n,
         None => return Ok(()),
     };
-    check_record_constraints(
+    check_record_constraints_with(
         catalog,
         graph,
         ConstraintRecord::Node {
@@ -882,6 +904,7 @@ pub(crate) fn check_node_replace_properties(
             properties,
             skip: Some(node_id),
         },
+        check_existence,
     )
 }
 
@@ -971,11 +994,31 @@ pub(crate) fn check_relationship_replace_properties(
     rel_id: RelationshipId,
     properties: &Properties,
 ) -> Result<(), ConstraintViolation> {
+    check_relationship_replace_properties_with(catalog, graph, rel_id, properties, true)
+}
+
+/// Relationship counterpart of [`check_node_replace_properties_deferred`].
+pub(crate) fn check_relationship_replace_properties_deferred(
+    catalog: &ConstraintCatalog,
+    graph: &InMemoryGraph,
+    rel_id: RelationshipId,
+    properties: &Properties,
+) -> Result<(), ConstraintViolation> {
+    check_relationship_replace_properties_with(catalog, graph, rel_id, properties, false)
+}
+
+fn check_relationship_replace_properties_with(
+    catalog: &ConstraintCatalog,
+    graph: &InMemoryGraph,
+    rel_id: RelationshipId,
+    properties: &Properties,
+    check_existence: bool,
+) -> Result<(), ConstraintViolation> {
     let rel = match graph.rel_at(rel_id) {
         Some(r) => r,
         None => return Ok(()),
     };
-    check_record_constraints(
+    check_record_constraints_with(
         catalog,
         graph,
         ConstraintRecord::Relationship {
@@ -983,6 +1026,7 @@ pub(crate) fn check_relationship_replace_properties(
             properties,
             skip: Some(rel_id),
         },
+        check_existence,
     )
 }
 

@@ -76,6 +76,22 @@ Existence constraints are single-property only:
 FOR (p:Post)
 REQUIRE p.publishedAt IS NOT NULL;`} />
 
+Existence is judged on the graph as a statement leaves it, so one
+statement may add a label and its required property in either order, or
+replace or remove a required property and set it again. A statement that
+ends without the property is rejected and changes nothing. Uniqueness
+and type constraints are checked at each write.
+
+<QueryCodeBlock code={String.raw`MATCH (d:Draft {id: $id})
+SET d:Post, d.publishedAt = datetime();     // ok
+
+MATCH (p:Post {id: $id})
+SET p = {id: $id, title: $title},
+    p.publishedAt = datetime();             // ok
+
+MATCH (p:Post {id: $id})
+SET p = {id: $id}                           // rejected, nothing changes`} />
+
 ## Property Types
 
 Property type constraints accept scalar types, lists with non-null

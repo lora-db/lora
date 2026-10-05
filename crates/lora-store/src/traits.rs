@@ -763,6 +763,28 @@ pub trait GraphStorage {
         Ok(())
     }
 
+    /// [`Self::check_node_replace_properties_against_constraints`] minus
+    /// existence checks, for a statement that runs
+    /// [`Self::check_node_existence_constraints`] once it finishes (`SET
+    /// n = {…}, n.required = …`). Defaults to the full check.
+    fn check_node_replace_properties_deferring_existence(
+        &self,
+        node_id: NodeId,
+        properties: &Properties,
+    ) -> Result<(), String> {
+        self.check_node_replace_properties_against_constraints(node_id, properties)
+    }
+
+    /// Relationship counterpart of
+    /// [`Self::check_node_replace_properties_deferring_existence`].
+    fn check_relationship_replace_properties_deferring_existence(
+        &self,
+        rel_id: RelationshipId,
+        properties: &Properties,
+    ) -> Result<(), String> {
+        self.check_relationship_replace_properties_against_constraints(rel_id, properties)
+    }
+
     /// [`Self::check_node_add_label_against_constraints`] minus existence
     /// checks, for a statement that runs
     /// [`Self::check_node_existence_constraints`] once it finishes (`SET
