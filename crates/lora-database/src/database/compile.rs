@@ -14,6 +14,32 @@ use lora_parser::parse_query;
 use lora_store::{GraphStats, GraphStorage, GraphStorageMut};
 
 use crate::database::Database;
+use crate::error::DatabaseOperationError;
+
+/// Refuse to run `compiled` when it reads a `$name` that `params` doesn't
+/// supply: a missing parameter is a caller bug, and reading it as null
+/// would silently match nothing or write a null. Pass `null` explicitly
+/// for a parameter that has no value.
+pub(crate) fn ensure_parameters(
+    compiled: &CompiledQuery,
+    params: &std::collections::BTreeMap<String, lora_executor::LoraValue>,
+) -> Result<()> {
+    let missing: Vec<String> = compiled
+        .parameters
+        .iter()
+        .filter(|name| !params.contains_key(*name))
+        .map(|name| format!("${name}"))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(DatabaseOperationError::invalid_params(format!(
+        "expected parameter{}: {}",
+        if missing.len() == 1 { "" } else { "s" },
+        missing.join(", ")
+    ))
+    .into())
+}
 
 impl<S> Database<S>
 where

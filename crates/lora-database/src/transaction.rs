@@ -388,6 +388,7 @@ impl<'db> Transaction<'db> {
             }
         }
         let compiled = self.compile_in_tx(query)?;
+        crate::database::ensure_parameters(&compiled, &params)?;
         self.execute_rows_compiled_deadline(&compiled, params, deadline)
     }
 
@@ -673,6 +674,7 @@ impl<'db> Transaction<'db> {
     ) -> Result<QueryProfile, LoraError> {
         let params = params.unwrap_or_default();
         let compiled = self.compile_in_tx(query).map_err(LoraError::from_anyhow)?;
+        crate::database::ensure_parameters(&compiled, &params).map_err(LoraError::from_anyhow)?;
         let plan = query_plan_for(query, &compiled);
         let shape = plan.shape;
 
@@ -725,6 +727,7 @@ impl<'db> Transaction<'db> {
         params: BTreeMap<String, LoraValue>,
     ) -> Result<QueryStream<'static>, LoraError> {
         let compiled = Arc::new(self.compile_in_tx(query)?);
+        crate::database::ensure_parameters(&compiled, &params)?;
         let columns = compiled_result_columns(&compiled);
         Ok(self.stream_compiled(compiled, columns, params)?)
     }

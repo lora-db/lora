@@ -205,7 +205,8 @@ Common mistakes:
 | `DeleteNodeWithRelationships` | Use [`DETACH DELETE`](./queries/set-delete#detach-delete) instead of plain `DELETE`. |
 | `MissingRelationshipType` | `CREATE (a)-[]->(b)` — a [relationship](./concepts/relationships) must have a type. |
 | `ReadOnlyCreate` | Should not occur via normal paths; file a bug if you see this. |
-| `LIMIT expects a non-negative integer, got null` | `SKIP` / `LIMIT` got `null` (often an unbound parameter), a negative number or a fraction. See [below](#limit-expects-a-non-negative-integer-got-null). |
+| `LIMIT expects a non-negative integer, got null` | `SKIP` / `LIMIT` got `null` (often a parameter bound to `null`), a negative number or a fraction. See [below](#limit-expects-a-non-negative-integer-got-null). |
+| `expected parameter: $name` | The query uses `$name` but the params map has no `name` entry. See [Unbound parameter](#unbound-parameter). |
 
 ### Queries return empty results
 
@@ -223,8 +224,9 @@ Common mistakes:
    and [Schema-free](./concepts/schema-free#unknown-names-are-not-errors).
 3. **Property type mismatch** — `{id: 1}` matches integer `1`, not the
    string `"1"`. See [Data Types](./data-types/overview).
-4. **A parameter is unbound** — missing parameters resolve to `null`,
-   which usually filters everything out. See
+4. **A parameter is `null`** — a parameter bound to `null` never
+   equals anything, so it filters everything out. (A parameter that is
+   missing from the map is an error, not `null`.) See
    [Parameters](./queries/parameters).
 5. **`= null`** — never matches. Use
    [`IS NULL` / `IS NOT NULL`](./queries/where#null-checks).
@@ -480,10 +482,10 @@ which may take longer but preserves correctness.
 
 ### Why are my queries returning nothing?
 
-Missing [parameters](./queries/parameters) resolve to `null`, which
-usually filters everything out. Verify every `$name` in your query has
-a corresponding entry in the params map passed to
-`execute_with_params`.
+A [parameter](./queries/parameters) bound to `null` never equals
+anything, so it usually filters everything out. Check the values you
+pass, not only the keys: a missing key fails the query with
+`expected parameter: $name`, but an explicit `null` runs it.
 
 ### The HTTP API rejected my parameters
 
@@ -903,18 +905,19 @@ RETURN stdev(x)`} />
 
 ## Empty results and filtering issues
 
-### Silent filter from an unbound parameter
+### Unbound parameter
 
-**Symptom:** Query returns zero rows in production but works in the
-local REPL.
+**Symptom:** The query fails with `expected parameter: $id` (code
+`LORA_INVALID_PARAMS`).
 
-**Likely cause:** A `$param` isn't bound. Unbound parameters resolve
-to `null`, which silently filters out every row.
+**Cause:** The query uses `$id` but the params map has no `id` entry.
 
-**Fix:** Audit parameter bindings on the host side before executing.
+**Fix:** Bind it, as `null` if it has no value. A parameter bound to
+`null` runs, but never equals anything:
 
 <QueryCodeBlock code={String.raw`MATCH (u:User) WHERE u.id = $id RETURN u
-// If $id is not bound, this returns zero rows without raising`} />
+// {}           -> error: expected parameter: $id
+// {id: null}   -> zero rows`} />
 
 ### `LIMIT expects a non-negative integer, got null`
 
@@ -1064,8 +1067,8 @@ Does stage 1 emit what you think? If not, the bug is before the
 
 ### 5. Check parameter bindings
 
-Confirm every `$param` the query uses is in the call. Unbound
-parameters become `null` and silently filter.
+Confirm every `$param` the query uses has the value you expect. A
+missing one fails the query; a `null` one silently filters.
 
 ### 6. Re-read the problem
 

@@ -20,6 +20,8 @@ pub struct Analyzer<'a, S: GraphCatalog + ?Sized> {
     /// graph-catalog check — the caller can't know which keys the data
     /// carries until rows are bound at execution time.
     pub(super) dynamic_property_vars: BTreeSet<VarId>,
+    /// Every `$name` resolved so far (see [`ResolvedQuery::parameters`]).
+    pub(super) parameters: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +39,7 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
             scopes: ScopeStack::new(),
             symbols: SymbolTable::default(),
             dynamic_property_vars: BTreeSet::new(),
+            parameters: BTreeSet::new(),
         }
     }
 
@@ -106,7 +109,11 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
             }
         }
 
-        Ok(ResolvedQuery { clauses, unions })
+        Ok(ResolvedQuery {
+            clauses,
+            unions,
+            parameters: std::mem::take(&mut self.parameters),
+        })
     }
 
     fn analyze_single_query(

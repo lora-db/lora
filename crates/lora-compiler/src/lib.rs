@@ -30,6 +30,8 @@ use lora_store::GraphStats;
 #[derive(Debug, Clone)]
 pub struct CompiledQuery {
     pub physical: PhysicalPlan,
+    /// Every `$name` the query reads ([`ResolvedQuery::parameters`]).
+    pub parameters: std::collections::BTreeSet<String>,
     /// Additional UNION branches, each compiled independently.
     pub unions: Vec<CompiledUnionBranch>,
 }
@@ -58,6 +60,7 @@ impl Compiler {
                 let branch_query = ResolvedQuery {
                     clauses: union_part.clauses.clone(),
                     unions: Vec::new(),
+                    parameters: Default::default(),
                 };
                 CompiledUnionBranch {
                     all: union_part.all,
@@ -66,7 +69,11 @@ impl Compiler {
             })
             .collect();
 
-        CompiledQuery { physical, unions }
+        CompiledQuery {
+            physical,
+            unions,
+            parameters: query.parameters.clone(),
+        }
     }
 }
 

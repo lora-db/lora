@@ -184,6 +184,7 @@ where
         // to be a pure read.
         let (store, store_epoch) = self.read_store_with_epoch_deadline(deadline)?;
         let compiled = self.compile_query_cached(query, &*store, store_epoch)?;
+        super::compile::ensure_parameters(&compiled, &params)?;
         let shape = classify_stream(&compiled);
 
         if matches!(shape, StreamShape::ReadOnly) {

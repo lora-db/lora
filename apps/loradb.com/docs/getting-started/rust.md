@@ -125,8 +125,9 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
-Missing parameters resolve to `null`. Always bind every `$name` used
-in the query. See [Queries → Parameters](../queries/parameters).
+Bind every `$name` the query uses: a missing one fails the query with
+`expected parameter: $name`. Bind `null` for "no value". See
+[Queries → Parameters](../queries/parameters).
 
 ### Structured result handling
 

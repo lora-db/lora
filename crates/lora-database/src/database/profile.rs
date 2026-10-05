@@ -53,6 +53,7 @@ where
         let compiled = self
             .compile_query_cached(query, &*store, store_epoch)
             .map_err(LoraError::from_anyhow)?;
+        super::compile::ensure_parameters(&compiled, &params).map_err(LoraError::from_anyhow)?;
         let tree = plan_tree_from_compiled(&compiled);
         let shape: PlanShape = classify_stream(&compiled).into();
         let result_columns = plan_result_columns(&compiled.physical);

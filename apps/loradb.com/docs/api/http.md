@@ -462,8 +462,9 @@ curl -s http://127.0.0.1:4747/query \
        "params": {"name": "Ada"}}'
 ```
 
-`params` must be a JSON object. Missing parameters resolve to `null`,
-just like they do through the in-process bindings.
+`params` must be a JSON object holding every `$name` the query uses: a
+missing one fails the request with `LORA_INVALID_PARAMS`, just like it
+does through the in-process bindings. Send `null` for "no value".
 
 ### Choose a result format
 

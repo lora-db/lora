@@ -264,6 +264,7 @@ mod tests {
                 nodes: vec![PhysicalOp::Argument(lora_compiler::ArgumentExec)],
             },
             unions: Vec::new(),
+            parameters: Default::default(),
         })
     }
 

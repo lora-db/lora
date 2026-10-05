@@ -135,12 +135,13 @@ query text, prefer casts such as `'2026-05-01'::DATE`,
 `{longitude: 4.89, latitude: 52.37}::POINT`, and
 `[1, 2, 3]::VECTOR<INTEGER>(3)`.
 
-Missing entries resolve to `null`. The engine doesn't raise on an
-unbound parameter — it silently filters everything out. Audit bindings
-when a query returns no rows. See
-[Troubleshooting → Silent filter from an unbound parameter](../troubleshooting#silent-filter-from-an-unbound-parameter).
-The exception is `SKIP` and `LIMIT`: they need a non-negative integer,
-so an unbound <CypherCode code="$limit" /> fails the query with
+Every `$name` the query uses must be in the params map: a missing one
+fails the query before it runs, with `expected parameter: $name`
+(error code `LORA_INVALID_PARAMS`), instead of silently reading as
+`null`. To pass "no value", bind `null` explicitly. See
+[Troubleshooting → Unbound parameter](../troubleshooting#unbound-parameter).
+`SKIP` and `LIMIT` need a non-negative integer, so an explicit `null`
+<CypherCode code="$limit" /> fails with
 `LIMIT expects a non-negative integer, got null` instead of returning
 every row.
 
@@ -279,12 +280,12 @@ curl -s http://127.0.0.1:4747/query \
 
 ### Unbound parameter
 
-The query parses, runs, returns zero rows. Cause: the host didn't
-bind `$id` at all. Fix: audit the params map, or validate inputs
-before executing.
+The query fails before it runs with `expected parameter: $id`. Cause: the host
+didn't bind `$id` at all. Fix: add it to the params map, as `null` if
+it has no value.
 
-An unbound parameter in `SKIP` or `LIMIT` is louder: the query fails
-with `LIMIT expects a non-negative integer, got null` (or the `SKIP`
+A `null` in `SKIP` or `LIMIT` is an error too: the query fails with
+`LIMIT expects a non-negative integer, got null` (or the `SKIP`
 equivalent). `LIMIT null` does not mean "no limit". Bind a number, or
 drop the clause from the query text when you want every row.
 

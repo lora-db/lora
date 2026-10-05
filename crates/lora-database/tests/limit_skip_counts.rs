@@ -1,6 +1,6 @@
-//! `SKIP` and `LIMIT` take a non-negative integer. `null` (an omitted
-//! parameter), a negative number or a fraction is an error, as in Neo4j,
-//! never "no limit".
+//! `SKIP` and `LIMIT` take a non-negative integer. `null`, a negative
+//! number or a fraction is an error, as in Neo4j, never "no limit"; an
+//! omitted parameter is an error before the query runs.
 
 mod test_helpers;
 use std::collections::BTreeMap;
@@ -35,12 +35,12 @@ fn limit_null_parameter_is_an_error() {
             "{query}: {err}"
         );
     }
-    // An absent parameter is null too.
+    // An absent parameter is rejected before the query runs.
     let err = db
         .exec_with_params("RETURN 1 AS x LIMIT $missing", BTreeMap::new())
         .expect_err("absent")
         .to_string();
-    assert!(err.contains("LIMIT"), "{err}");
+    assert!(err.contains("expected parameter: $missing"), "{err}");
 }
 
 #[test]

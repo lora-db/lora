@@ -8,6 +8,9 @@ use lora_ast::{
 #[derive(Debug, Clone)]
 pub struct ResolvedQuery {
     pub clauses: Vec<ResolvedClause>,
+    /// Every `$name` the query reads, across its UNION branches and
+    /// subqueries: running it without one of them is an error.
+    pub parameters: BTreeSet<String>,
     /// Additional UNION branches. Each branch is a separate resolved query
     /// that produces rows to be combined with the head query's results.
     pub unions: Vec<ResolvedUnionPart>,

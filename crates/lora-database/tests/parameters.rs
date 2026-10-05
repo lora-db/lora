@@ -112,29 +112,44 @@ fn parameter_numeric_index() {
 }
 
 // ============================================================
-// Missing parameter resolves to null
+// A missing parameter is an error; an explicit null is a value
 // ============================================================
 
 #[test]
-fn parameter_missing_resolves_to_null() {
+fn parameter_missing_is_an_error() {
     let db = TestDb::new();
     db.run("CREATE (:User {name: 'Alice'})");
-    // $undefined is not in the params map — resolves to null, so no match
-    let rows = db.run_with_params(
-        "MATCH (n:User) WHERE n.name = $undefined RETURN n",
-        params(&[("other", LoraValue::String("irrelevant".into()))]),
-    );
-    assert_eq!(rows.len(), 0);
+    let err = db
+        .exec_with_params(
+            "MATCH (n:User) WHERE n.name = $undefined RETURN n",
+            params(&[("other", LoraValue::String("irrelevant".into()))]),
+        )
+        .expect_err("$undefined is not supplied")
+        .to_string();
+    assert!(err.contains("expected parameter: $undefined"), "{err}");
 }
 
 #[test]
 fn parameter_missing_with_empty_params() {
     let db = TestDb::new();
     db.run("CREATE (:User {name: 'Alice'})");
-    // No params at all — $name resolves to null
+    let err = db
+        .exec_with_params(
+            "MATCH (n:User) WHERE n.name = $name RETURN n",
+            BTreeMap::new(),
+        )
+        .expect_err("$name is not supplied")
+        .to_string();
+    assert!(err.contains("expected parameter: $name"), "{err}");
+}
+
+#[test]
+fn parameter_explicit_null_is_a_value() {
+    let db = TestDb::new();
+    db.run("CREATE (:User {name: 'Alice'})");
     let rows = db.run_with_params(
         "MATCH (n:User) WHERE n.name = $name RETURN n",
-        BTreeMap::new(),
+        params(&[("name", LoraValue::Null)]),
     );
     assert_eq!(rows.len(), 0);
 }
@@ -297,12 +312,6 @@ fn parameter_as_list_in_unwind() {
 fn parameter_match_on_org_graph() {
     let db = TestDb::new();
     db.seed_org_graph();
-    let _names = db.sorted_strings(
-        "MATCH (p:Person) WHERE p.dept = $dept RETURN p.name AS name",
-        "name",
-    );
-    // Without params this would fail, but sorted_strings uses run() not run_with_params.
-    // Use run_with_params instead:
     let rows = db.run_with_params(
         "MATCH (p:Person) WHERE p.dept = $dept RETURN p.name AS name ORDER BY p.name",
         params(&[("dept", LoraValue::String("Marketing".into()))]),

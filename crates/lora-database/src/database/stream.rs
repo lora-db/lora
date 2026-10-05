@@ -95,6 +95,7 @@ impl Database<InMemoryGraph> {
         // for every subsequent stream.
         let (store_guard, store_epoch) = self.read_store_with_epoch_deadline(None)?;
         let compiled_arc = self.compile_query_cached(query, &*store_guard, store_epoch)?;
+        super::compile::ensure_parameters(&compiled_arc, &params)?;
         let columns = compiled_result_columns(&compiled_arc);
         let shape = classify_stream(&compiled_arc);
         // Release the analyzer's lock before either branch

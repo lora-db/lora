@@ -117,7 +117,10 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
             Expr::String(v, _) => Ok(ResolvedExpr::Literal(LiteralValue::String(v.clone()))),
             Expr::Bool(v, _) => Ok(ResolvedExpr::Literal(LiteralValue::Bool(*v))),
             Expr::Null(_) => Ok(ResolvedExpr::Literal(LiteralValue::Null)),
-            Expr::Parameter(name, _) => Ok(ResolvedExpr::Parameter(name.clone())),
+            Expr::Parameter(name, _) => {
+                self.parameters.insert(name.clone());
+                Ok(ResolvedExpr::Parameter(name.clone()))
+            }
 
             Expr::List(items, _) => {
                 let items = items

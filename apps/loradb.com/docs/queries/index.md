@@ -111,8 +111,8 @@ Parameters are bound at call time from the host language:
 - [Ruby](/docs/getting-started/ruby#parameterised-query) — `Hash`
 - [HTTP server](/docs/api/http#post-query) — JSON `params` object
 
-Missing parameters resolve to `null`, which can silently produce empty
-results — set them or validate inputs before executing.
+A parameter missing from the map fails the query before it runs; bind
+`null` explicitly for "no value".
 
 ### Parameters vs inline literals
 

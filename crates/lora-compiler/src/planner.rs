@@ -172,6 +172,7 @@ impl Planner {
         let inner_query = ResolvedQuery {
             clauses: call.clauses.clone(),
             unions: Vec::new(),
+            parameters: Default::default(),
         };
         // The inner query sees the outer row; its own WITH / RETURN must
         // not change what the outer query considers bound.
