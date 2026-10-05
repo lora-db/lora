@@ -17,8 +17,6 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P3 A function with two or more arguments (`coalesce(big, [])`), an operator
       (`big + [x]`) or a map/list literal still copies a carried list per call; a lone
       variable argument (`size(big)`) and row clones share it (`value.rs` `SlotValue`).
-- [ ] P2 `max` over durations returns the smallest; `sum`/`avg` of durations return null (E25).
-- [ ] P2 `min`/`max` of LocalDateTime/Time wrong (E27; sorting is fixed).
 - [ ] P2 `stdev`/`stdevp`/`percentile*` silently ignore `DISTINCT` (`executor/helpers.rs:945+`). Reject or implement.
 - [ ] P2 HNSW `quantization: 'int8'` clips coordinates outside [-1, 1] silently (un-normalised vectors all score ≈1.0). Reject or normalise on insert.
 - [ ] P2 General procedures: `CALL db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()` ("unknown procedure").

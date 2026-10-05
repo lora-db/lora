@@ -1219,7 +1219,7 @@ fn as_f64_lossy(v: LoraValue) -> Option<f64> {
     }
 }
 
-pub(super) fn compare_values_total(a: &LoraValue, b: &LoraValue) -> Ordering {
+pub(crate) fn compare_values_total(a: &LoraValue, b: &LoraValue) -> Ordering {
     use LoraValue::*;
 
     match (a, b) {

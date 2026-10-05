@@ -24,7 +24,7 @@ use lora_store::GraphStorage;
 
 use crate::errors::{ExecResult, ExecutorError};
 use crate::eval::eval_expr_result;
-use crate::executor::{compute_aggregate_expr, GroupValueKey};
+use crate::executor::{compare_values_total, compute_aggregate_expr, GroupValueKey};
 use crate::value::{LoraValue, Row};
 
 use super::{drain, RowSource, StreamCtx};
@@ -116,7 +116,7 @@ impl AggState {
                 match slot {
                     None => *slot = Some(value),
                     Some(cur) => {
-                        if cmp_values_total(&value, cur) == std::cmp::Ordering::Less {
+                        if compare_values_total(&value, cur) == std::cmp::Ordering::Less {
                             *cur = value;
                         }
                     }
@@ -129,7 +129,7 @@ impl AggState {
                 match slot {
                     None => *slot = Some(value),
                     Some(cur) => {
-                        if cmp_values_total(&value, cur) == std::cmp::Ordering::Greater {
+                        if compare_values_total(&value, cur) == std::cmp::Ordering::Greater {
                             *cur = value;
                         }
                     }
@@ -230,23 +230,6 @@ fn streamable_spec(expr: &ResolvedExpr) -> Option<StreamableAggSpec> {
             Some(StreamableAggSpec { kind, arg })
         }
         _ => None,
-    }
-}
-
-fn cmp_values_total(a: &LoraValue, b: &LoraValue) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    match (a, b) {
-        (LoraValue::Int(x), LoraValue::Int(y)) => x.cmp(y),
-        (LoraValue::Float(x), LoraValue::Float(y)) => x.partial_cmp(y).unwrap_or(Ordering::Equal),
-        (LoraValue::Int(x), LoraValue::Float(y)) => {
-            (*x as f64).partial_cmp(y).unwrap_or(Ordering::Equal)
-        }
-        (LoraValue::Float(x), LoraValue::Int(y)) => {
-            x.partial_cmp(&(*y as f64)).unwrap_or(Ordering::Equal)
-        }
-        (LoraValue::String(x), LoraValue::String(y)) => x.cmp(y),
-        (LoraValue::Bool(x), LoraValue::Bool(y)) => x.cmp(y),
-        _ => Ordering::Equal,
     }
 }
 
