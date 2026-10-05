@@ -19,6 +19,7 @@
 //! lists the active keys and marks the implicit ones.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 
 use super::cow::CowMap;
 use super::id_set::IdSet;
@@ -29,13 +30,20 @@ use crate::{LoraBinary, ZoneId};
 /// [`CowMap`]) so cloning the graph (the staged copy a write works on)
 /// shares it and a write copies only the shard its value lands in.
 pub(super) type PropertyValueBuckets = CowMap<PropertyIndexKey, IdSet>;
-pub(super) type PropertyIndex = HashMap<String, PropertyValueBuckets>;
-pub(super) type ScopedPropertyIndex = HashMap<String, PropertyIndex>;
+/// Property key → its buckets. Keys and buckets are both behind `Arc`,
+/// so copying this map (the first write to it after a graph clone) is
+/// one refcount bump per key; the buckets of a key are copied only when
+/// a write lands in them.
+pub(super) type PropertyIndex = HashMap<Arc<str>, Arc<PropertyValueBuckets>>;
+/// Scope (label / relationship type) → its per-key index, each behind
+/// `Arc` so a write copies only the scopes it touches.
+pub(super) type ScopedPropertyIndex = HashMap<Arc<str>, Arc<PropertyIndex>>;
 
 /// Pair of [`PropertyIndexState`] registries: one for node properties,
 /// one for relationship properties. Lives behind an `RwLock` on the
 /// graph so cold lookups can take a read guard while activate-on-write
-/// paths take a write guard briefly.
+/// paths take a write guard briefly. Cloning it is six refcount bumps
+/// (see [`PropertyIndexState`]).
 #[derive(Default)]
 pub(super) struct PropertyIndexRegistry {
     pub(super) node_properties: PropertyIndexState,
@@ -62,11 +70,17 @@ impl Clone for PropertyIndexRegistry {
 
 /// Per-namespace property index — flat values plus a scope-keyed
 /// (label / rel-type) variant for filtered lookups.
+///
+/// Every level sits behind `Arc` and is copied on write, so cloning the
+/// state (part of every graph clone) is three refcount bumps, and the
+/// first write after a clone copies only the path it touches: the key
+/// and scope tables (one pointer per entry) and the touched keys'
+/// buckets, never the buckets of untouched keys or scopes.
 #[derive(Debug, Default, Clone)]
 pub(super) struct PropertyIndexState {
-    pub(super) active_keys: BTreeSet<String>,
-    pub(super) values: PropertyIndex,
-    pub(super) scoped_values: ScopedPropertyIndex,
+    pub(super) active_keys: Arc<BTreeSet<String>>,
+    pub(super) values: Arc<PropertyIndex>,
+    pub(super) scoped_values: Arc<ScopedPropertyIndex>,
 }
 
 impl PropertyIndexState {
@@ -75,7 +89,22 @@ impl PropertyIndexState {
     }
 
     pub(super) fn activate(&mut self, key: &str) -> bool {
-        self.active_keys.insert(key.to_string())
+        if self.active_keys.contains(key) {
+            return false;
+        }
+        Arc::make_mut(&mut self.active_keys).insert(key.to_string())
+    }
+
+    /// The (copied-on-write) per-key index of `scope`, created if absent.
+    fn scope_mut<'s>(
+        scoped: &'s mut Arc<ScopedPropertyIndex>,
+        scope: &str,
+    ) -> &'s mut PropertyIndex {
+        let scoped = Arc::make_mut(scoped);
+        if !scoped.contains_key(scope) {
+            scoped.insert(Arc::from(scope), Arc::default());
+        }
+        Arc::make_mut(scoped.get_mut(scope).expect("scope inserted above"))
     }
 
     fn insert_value(
@@ -86,8 +115,9 @@ impl PropertyIndexState {
     ) {
         let buckets = match values.get_mut(key) {
             Some(buckets) => buckets,
-            None => values.entry(key.to_string()).or_default(),
+            None => values.entry(Arc::from(key)).or_default(),
         };
+        let buckets = Arc::make_mut(buckets);
         match buckets.get_mut(&value) {
             Some(ids) => {
                 ids.insert(entity_id);
@@ -98,6 +128,14 @@ impl PropertyIndexState {
         }
     }
 
+    /// Whether `values` has a bucket for `value` under `key`: a remove
+    /// that finds none changes nothing, so it must not copy shared tables.
+    fn holds(values: &PropertyIndex, key: &str, value: &PropertyIndexKey) -> bool {
+        values
+            .get(key)
+            .is_some_and(|buckets| buckets.contains_key(value))
+    }
+
     fn remove_value(
         values: &mut PropertyIndex,
         entity_id: u64,
@@ -106,6 +144,7 @@ impl PropertyIndexState {
     ) {
         let mut remove_key = false;
         if let Some(buckets) = values.get_mut(key) {
+            let buckets = Arc::make_mut(buckets);
             let emptied = buckets
                 .get_mut(value)
                 .is_some_and(|ids| ids.remove(entity_id));
@@ -130,10 +169,7 @@ impl PropertyIndexState {
             return;
         };
 
-        let scoped = match self.scoped_values.get_mut(scope) {
-            Some(scoped) => scoped,
-            None => self.scoped_values.entry(scope.to_string()).or_default(),
-        };
+        let scoped = Self::scope_mut(&mut self.scoped_values, scope);
         Self::insert_value(scoped, entity_id, key, indexed_value);
     }
 
@@ -148,13 +184,43 @@ impl PropertyIndexState {
             return;
         };
 
-        Self::insert_value(&mut self.values, entity_id, key, indexed_value.clone());
+        Self::insert_value(
+            Arc::make_mut(&mut self.values),
+            entity_id,
+            key,
+            indexed_value.clone(),
+        );
         for scope in scopes {
-            let scoped = match self.scoped_values.get_mut(scope) {
-                Some(scoped) => scoped,
-                None => self.scoped_values.entry(scope.to_string()).or_default(),
-            };
+            let scoped = Self::scope_mut(&mut self.scoped_values, scope);
             Self::insert_value(scoped, entity_id, key, indexed_value.clone());
+        }
+    }
+
+    /// Remove `entity_id` from `scope`'s bucket for `key` = `value`,
+    /// dropping the scope once it is empty.
+    fn remove_from_scope(
+        &mut self,
+        entity_id: u64,
+        scope: &str,
+        key: &str,
+        value: &PropertyIndexKey,
+    ) {
+        if !self
+            .scoped_values
+            .get(scope)
+            .is_some_and(|values| Self::holds(values, key, value))
+        {
+            return;
+        }
+        let scoped = Arc::make_mut(&mut self.scoped_values);
+        let mut remove_scope = false;
+        if let Some(values) = scoped.get_mut(scope) {
+            let values = Arc::make_mut(values);
+            Self::remove_value(values, entity_id, key, value);
+            remove_scope = values.is_empty();
+        }
+        if remove_scope {
+            scoped.remove(scope);
         }
     }
 
@@ -168,15 +234,7 @@ impl PropertyIndexState {
         let Some(indexed_value) = PropertyIndexKey::from_value(value) else {
             return;
         };
-
-        let mut remove_scope = false;
-        if let Some(values) = self.scoped_values.get_mut(scope) {
-            Self::remove_value(values, entity_id, key, &indexed_value);
-            remove_scope = values.is_empty();
-        }
-        if remove_scope {
-            self.scoped_values.remove(scope);
-        }
+        self.remove_from_scope(entity_id, scope, key, &indexed_value);
     }
 
     pub(super) fn remove_with_scopes<'a>(
@@ -190,16 +248,16 @@ impl PropertyIndexState {
             return;
         };
 
-        Self::remove_value(&mut self.values, entity_id, key, &indexed_value);
+        if Self::holds(&self.values, key, &indexed_value) {
+            Self::remove_value(
+                Arc::make_mut(&mut self.values),
+                entity_id,
+                key,
+                &indexed_value,
+            );
+        }
         for scope in scopes {
-            let mut remove_scope = false;
-            if let Some(values) = self.scoped_values.get_mut(scope) {
-                Self::remove_value(values, entity_id, key, &indexed_value);
-                remove_scope = values.is_empty();
-            }
-            if remove_scope {
-                self.scoped_values.remove(scope);
-            }
+            self.remove_from_scope(entity_id, scope, key, &indexed_value);
         }
     }
 

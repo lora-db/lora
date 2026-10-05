@@ -45,9 +45,12 @@ InMemoryGraph
 (`crates/lora-store/src/memory/graph.rs`, `IndexBundle` in
 `memory/entity_index_store.rs`.)
 
-`ChunkedVec` (`memory/chunked_vec.rs`) is a `Vec` split into 512-entry chunks
-shared by `Arc`: cloning the graph copies one pointer per chunk, and a write
-copies only the chunks it touches. Records are also held behind `Arc`, so a
+`ChunkedVec` (`memory/chunked_vec.rs`) is a `Vec` stored as a two-level
+persistent radix tree: 512-entry leaf chunks shared by `Arc`, 128 leaves per
+interior node, one shared root. Cloning it bumps one refcount, so cloning the
+graph is O(#labels + #relationship types), and a write copies only the root
+table, interior node and chunk on its path. The index and constraint catalogs
+are shared the same way. Records are also held behind `Arc`, so a
 staged writer shares unchanged records with the current published snapshot;
 property, label, and relationship changes use `Arc::make_mut`, so only touched
 records are cloned. Secondary indexes are copy-on-write too (`memory/cow.rs`),

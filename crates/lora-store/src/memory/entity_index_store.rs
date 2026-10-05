@@ -86,21 +86,34 @@ impl<T: Clone> std::ops::DerefMut for IndexWrite<'_, T> {
     }
 }
 
+/// Read guard on a lone copy-on-write structure (a catalog).
+pub(super) fn read_shared<T>(lock: &RwLock<Arc<T>>) -> IndexRead<'_, T> {
+    IndexRead(lock.read().unwrap_or_else(|poisoned| poisoned.into_inner()))
+}
+
+/// Write guard on a lone copy-on-write structure (a catalog); mutable
+/// access copies it first if a graph clone still shares it.
+pub(super) fn write_shared<T>(lock: &RwLock<Arc<T>>) -> IndexWrite<'_, T> {
+    IndexWrite(
+        lock.write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
+/// A new lock sharing the structure behind `lock`; O(1).
+pub(super) fn share<T>(lock: &RwLock<Arc<T>>) -> RwLock<Arc<T>> {
+    RwLock::new(Arc::clone(
+        &lock.read().unwrap_or_else(|poisoned| poisoned.into_inner()),
+    ))
+}
+
 impl<T> EntityIndexStore<T> {
     pub(super) fn read(&self, entity: StoredIndexEntity) -> IndexRead<'_, T> {
-        IndexRead(
-            self.lock_for(entity)
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        )
+        read_shared(self.lock_for(entity))
     }
 
     pub(super) fn write(&self, entity: StoredIndexEntity) -> IndexWrite<'_, T> {
-        IndexWrite(
-            self.lock_for(entity)
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        )
+        write_shared(self.lock_for(entity))
     }
 
     fn lock_for(&self, entity: StoredIndexEntity) -> &RwLock<Arc<T>> {
@@ -114,13 +127,6 @@ impl<T> EntityIndexStore<T> {
 impl<T> Clone for EntityIndexStore<T> {
     /// Shares both registries; O(1).
     fn clone(&self) -> Self {
-        let share = |lock: &RwLock<Arc<T>>| {
-            RwLock::new(
-                lock.read()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .clone(),
-            )
-        };
         Self {
             node: share(&self.node),
             relationship: share(&self.relationship),
@@ -136,10 +142,14 @@ impl<T> Clone for EntityIndexStore<T> {
 ///
 /// **Layout**
 ///
-/// * `catalog` — declared indexes (CREATE INDEX entries).
+/// * `catalog` — declared indexes (CREATE INDEX entries), behind `Arc`
+///   and copied on write like the registries below.
 /// * `properties` — hash-bucket property indexes used by
 ///   `find_*_by_property`. Shared across both entity kinds, with
 ///   internal `node_properties` / `relationship_properties` splits.
+///   Not behind an extra `Arc`: every level inside it already is (see
+///   [`super::property_index::PropertyIndexState`]), so cloning it is a
+///   handful of refcount bumps and a write copies only what it touches.
 /// * `text`, `sorted`, `point`, `fulltext` — catalog-backed secondary
 ///   indexes split per entity kind via [`EntityIndexStore`].
 /// * `active_*` atomics — fast-path counters that let mutation hooks
@@ -147,9 +157,10 @@ impl<T> Clone for EntityIndexStore<T> {
 ///
 /// **Performance**
 ///
-/// Pure packaging change: same data, same locks, same granularity.
+/// Cloning the bundle (part of every staged write's graph clone) is
+/// O(1): every structure in it is shared and copied on its first write.
 /// Field access from `pub(super)` graph code stays a direct
-/// `self.indexes.<field>` away — no extra indirection, no `dyn` calls.
+/// `self.indexes.<field>` away — no `dyn` calls.
 ///
 /// **Constraint catalog**
 ///
@@ -160,7 +171,7 @@ impl<T> Clone for EntityIndexStore<T> {
 /// index lives in the constraint code path, not in the bundle's shape.
 #[derive(Debug, Default)]
 pub(super) struct IndexBundle {
-    pub(super) catalog: RwLock<IndexCatalog>,
+    pub(super) catalog: RwLock<Arc<IndexCatalog>>,
     pub(super) properties: RwLock<PropertyIndexRegistry>,
     pub(super) text: EntityIndexStore<TrigramRegistry>,
     pub(super) sorted: EntityIndexStore<SortedPropertyIndex>,
@@ -179,12 +190,11 @@ impl Clone for IndexBundle {
         let properties = self
             .properties
             .read()
-            .map(|g| g.clone())
-            .unwrap_or_default();
-        let catalog = self.catalog.read().map(|g| g.clone()).unwrap_or_default();
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
 
         Self {
-            catalog: RwLock::new(catalog),
+            catalog: share(&self.catalog),
             properties: RwLock::new(properties),
             text: self.text.clone(),
             sorted: self.sorted.clone(),

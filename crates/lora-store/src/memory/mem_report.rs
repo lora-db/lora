@@ -55,6 +55,9 @@ const HASHMAP_PER_ENTRY: usize = 24;
 /// `std::sync::Arc<T>`: strong + weak refcount header that precedes
 /// the inline `T` allocation.
 const ARC_HEADER: usize = 16;
+/// An `Arc<str>` key: the fat pointer plus the allocation's refcounts
+/// (the bytes are charged separately).
+const ARC_STR_BYTES: usize = 16 + ARC_HEADER;
 
 /// Aggregated retained-heap breakdown of an [`InMemoryGraph`].
 ///
@@ -247,7 +250,7 @@ pub(super) fn estimate(graph: &super::InMemoryGraph) -> MemoryReport {
                 &props.relationship_properties,
             ),
         ] {
-            for key in &state.active_keys {
+            for key in state.active_keys.iter() {
                 report.property_index_keys.push(PropertyIndexKeyUsage {
                     entity,
                     key: key.clone(),
@@ -276,10 +279,12 @@ pub(super) fn estimate(graph: &super::InMemoryGraph) -> MemoryReport {
 // ---------------- slab + adjacency ----------------
 
 /// Slot storage of a [`ChunkedVec`]: every allocated slot plus one
-/// `Arc<Vec<T>>` chunk header per chunk.
+/// `Arc<Vec<T>>` chunk header and pointer per chunk, plus the root and
+/// interior nodes above the chunks.
 fn chunked_outer_bytes<T>(v: &ChunkedVec<T>) -> usize {
     v.capacity() * size_of::<T>()
         + v.chunk_count() * (ARC_HEADER + size_of::<Vec<T>>() + size_of::<usize>())
+        + v.tree_overhead_bytes()
 }
 
 fn node_slab_bytes(slab: &ChunkedVec<Option<std::sync::Arc<NodeRecord>>>) -> usize {
@@ -417,13 +422,13 @@ fn property_registry_bytes(reg: &PropertyIndexRegistry) -> usize {
 
 fn property_state_bytes(state: &PropertyIndexState) -> usize {
     let mut total = 0;
-    for key in &state.active_keys {
+    for key in state.active_keys.iter() {
         total += BTREE_PER_ENTRY + size_of::<String>() + key.capacity();
     }
     total += property_index_map_bytes(&state.values);
-    for (scope, by_property) in &state.scoped_values {
-        total += HASHMAP_PER_ENTRY + size_of::<String>() + scope.capacity();
-        total += property_index_map_bytes(by_property);
+    for (scope, by_property) in state.scoped_values.iter() {
+        total += HASHMAP_PER_ENTRY + ARC_STR_BYTES + scope.len();
+        total += ARC_HEADER + property_index_map_bytes(by_property);
     }
     total
 }
@@ -435,8 +440,8 @@ fn property_index_map_bytes(values: &PropertyIndex) -> usize {
         .sum()
 }
 
-fn property_buckets_bytes(key: &String, buckets: &PropertyValueBuckets) -> usize {
-    let mut total = HASHMAP_PER_ENTRY + size_of::<String>() + key.capacity();
+fn property_buckets_bytes(key: &str, buckets: &PropertyValueBuckets) -> usize {
+    let mut total = HASHMAP_PER_ENTRY + ARC_STR_BYTES + key.len() + ARC_HEADER;
     for (indexed, ids) in buckets.iter() {
         total += HASHMAP_PER_ENTRY
             + property_index_key_bytes(indexed)
@@ -451,11 +456,11 @@ fn property_buckets_bytes(key: &String, buckets: &PropertyValueBuckets) -> usize
 /// Per-scope map headers are shared by every key and not attributed.
 fn property_key_bytes(state: &PropertyIndexState, key: &String) -> usize {
     let mut total = BTREE_PER_ENTRY + size_of::<String>() + key.capacity();
-    if let Some(buckets) = state.values.get(key) {
+    if let Some(buckets) = state.values.get(key.as_str()) {
         total += property_buckets_bytes(key, buckets);
     }
     for by_property in state.scoped_values.values() {
-        if let Some(buckets) = by_property.get(key) {
+        if let Some(buckets) = by_property.get(key.as_str()) {
             total += property_buckets_bytes(key, buckets);
         }
     }

@@ -35,9 +35,11 @@ Key forces:
 - an explicit index catalog plus RANGE/TEXT/POINT/FULLTEXT/VECTOR backing
   registries for declared secondary indexes, and a constraint catalog
 
-`ChunkedVec` is a `Vec` split into `Arc`-shared chunks, so a clone copies one
-pointer per chunk and a write copies only the chunks it touches (added
-2026-09-29, `d004ba4e`, together with copy-on-write secondary indexes).
+`ChunkedVec` is a `Vec` split into `Arc`-shared chunks, so a write copies only
+the chunks it touches (added 2026-09-29, `d004ba4e`, together with
+copy-on-write secondary indexes). The chunks hang off a two-level persistent
+radix tree (512-entry leaves, 128 leaves per interior node, one shared root), so
+a clone is one refcount bump instead of one per chunk (2026-10-05).
 
 IDs are monotonic `u64`s and are never reused. Deletes leave tombstones in the
 slot vectors. Records are held behind `Arc` so database snapshots and staged

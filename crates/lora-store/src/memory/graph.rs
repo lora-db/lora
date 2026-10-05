@@ -18,7 +18,9 @@ use super::constraint_catalog::{
     ConstraintCatalog, ConstraintRequest, CreateConstraintError, CreateConstraintOutcome,
     DropConstraintError, DropConstraintOutcome,
 };
-use super::entity_index_store::{IndexBundle, IndexRead, IndexWrite};
+use super::entity_index_store::{
+    read_shared, share, write_shared, IndexBundle, IndexRead, IndexWrite,
+};
 use super::fulltext_index::FulltextRegistry;
 use super::hnsw::HnswParams;
 use super::index_catalog::{
@@ -55,14 +57,14 @@ pub struct InMemoryGraph {
     /// `BTreeMap<NodeId, NodeRecord>` had, just with O(1) lookup and
     /// cache-coherent layout.
     ///
-    /// Records are wrapped in `Arc` so [`Self::clone`] (called on every
-    /// auto-commit write to build a working copy) is `O(N)` atomic
-    /// refcount bumps instead of `O(N)` deep record clones — for a
-    /// 100k-node graph the difference is microseconds vs. tens of
-    /// milliseconds. Mutating a record uses `Arc::make_mut`, which
-    /// clones in place when the refcount is 1 (no concurrent reader)
-    /// and falls back to a single-record clone-on-write when readers
-    /// still hold a snapshot.
+    /// [`Self::clone`] (called on every staged write to build a working
+    /// copy, and for every reader snapshot) shares this storage: a
+    /// [`ChunkedVec`] clone is one refcount bump, so the whole-graph
+    /// clone is O(#labels + #relationship types), not O(N). A write
+    /// copies only the chunk path it touches. Records are wrapped in
+    /// `Arc` so copying a chunk bumps refcounts instead of deep-cloning
+    /// records, and mutating a record uses `Arc::make_mut`: in place when
+    /// no snapshot still holds it, a single-record copy otherwise.
     pub(super) nodes: ChunkedVec<Option<Arc<NodeRecord>>>,
     pub(super) relationships: ChunkedVec<Option<Arc<RelationshipRecord>>>,
     /// Live (non-tombstoned) counts kept in sync with `put_*`/`take_*` so
@@ -102,7 +104,7 @@ pub struct InMemoryGraph {
     /// data invariants, not indexed access. The fact that uniqueness /
     /// key constraints back range indexes is handled in the
     /// constraint code path, not by the bundle's layout.
-    pub(super) constraint_catalog: RwLock<ConstraintCatalog>,
+    pub(super) constraint_catalog: RwLock<Arc<ConstraintCatalog>>,
     /// Fast-path counter for mutation-time constraint checks. Most
     /// workloads have no constraints installed; this lets the executor
     /// skip taking the catalog lock in that case.
@@ -175,13 +177,10 @@ impl Clone for InMemoryGraph {
             incoming: self.incoming.clone(),
             nodes_by_label: self.nodes_by_label.clone(),
             relationships_by_type: self.relationships_by_type.clone(),
-            // IndexBundle::clone deep-copies every owned registry under
-            // its locks, mirroring what the old per-field clones did.
-            // The hash-bucket registry skip-on-empty optimisation is
-            // preserved: `PropertyIndexRegistry::clone` itself is cheap
-            // when no entries exist.
+            // Shares every registry and catalog; each is copied on its
+            // first write (see `IndexBundle`).
             indexes: self.indexes.clone(),
-            constraint_catalog: RwLock::new(self.constraint_catalog_read().clone()),
+            constraint_catalog: share(&self.constraint_catalog),
             active_constraints: AtomicUsize::new(self.active_constraint_count()),
             recorder: None,
             deleted_sink: None,
@@ -837,32 +836,22 @@ impl InMemoryGraph {
         }
     }
 
-    pub(super) fn index_catalog_read(&self) -> std::sync::RwLockReadGuard<'_, IndexCatalog> {
-        self.indexes
-            .catalog
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    pub(super) fn index_catalog_read(&self) -> IndexRead<'_, IndexCatalog> {
+        read_shared(&self.indexes.catalog)
     }
 
-    pub(super) fn index_catalog_write(&self) -> RwLockWriteGuard<'_, IndexCatalog> {
-        self.indexes
-            .catalog
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    /// Mutable access copies the catalog first if a clone still shares it.
+    pub(super) fn index_catalog_write(&self) -> IndexWrite<'_, IndexCatalog> {
+        write_shared(&self.indexes.catalog)
     }
 
-    pub(super) fn constraint_catalog_read(
-        &self,
-    ) -> std::sync::RwLockReadGuard<'_, ConstraintCatalog> {
-        self.constraint_catalog
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    pub(super) fn constraint_catalog_read(&self) -> IndexRead<'_, ConstraintCatalog> {
+        read_shared(&self.constraint_catalog)
     }
 
-    pub(super) fn constraint_catalog_write(&self) -> RwLockWriteGuard<'_, ConstraintCatalog> {
-        self.constraint_catalog
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    /// Mutable access copies the catalog first if a clone still shares it.
+    pub(super) fn constraint_catalog_write(&self) -> IndexWrite<'_, ConstraintCatalog> {
+        write_shared(&self.constraint_catalog)
     }
 
     /// Register an explicitly-declared index in the catalog and, when
@@ -1685,18 +1674,18 @@ impl InMemoryGraph {
         // an active hash-index — the cost model falls back to a
         // conservative estimate in that case.
         let prop_indexes = self.indexes_read();
-        for (scope, props) in &prop_indexes.node_properties.scoped_values {
-            for (key, values) in props {
+        for (scope, props) in prop_indexes.node_properties.scoped_values.iter() {
+            for (key, values) in props.iter() {
                 stats
                     .node_distinct_values
-                    .insert((scope.clone(), key.clone()), values.len());
+                    .insert((scope.to_string(), key.to_string()), values.len());
             }
         }
-        for (scope, props) in &prop_indexes.relationship_properties.scoped_values {
-            for (key, values) in props {
+        for (scope, props) in prop_indexes.relationship_properties.scoped_values.iter() {
+            for (key, values) in props.iter() {
                 stats
                     .relationship_distinct_values
-                    .insert((scope.clone(), key.clone()), values.len());
+                    .insert((scope.to_string(), key.to_string()), values.len());
             }
         }
 
