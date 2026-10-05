@@ -49,6 +49,6 @@ pub use index_catalog::{
     IndexConfigValue, IndexDefinition, IndexRequest, StoredIndexEntity, StoredIndexKind,
     StoredIndexState,
 };
-pub use mem_report::{property_value_heap_bytes, MemoryReport};
+pub use mem_report::{property_value_heap_bytes, MemoryReport, PropertyIndexKeyUsage};
 pub use stats::GraphStats;
 pub use vector_index::{VectorBackendSnapshot, VectorIndexSnapshot};

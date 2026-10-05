@@ -26,9 +26,9 @@ use super::index_catalog::{
     IndexDefinition, IndexRequest, StoredIndexEntity, StoredIndexKind, StoredIndexState,
 };
 use super::point_index::PointRegistry;
+use super::property_index::PropertyIndexRegistry;
 #[cfg(test)]
 use super::property_index::PropertyIndexState;
-use super::property_index::{PropertyIndexKey, PropertyIndexRegistry};
 use super::secondary_index_maintenance::SecondaryIndexMutation;
 use super::sorted_property_index::SortedPropertyIndex;
 use super::stats::GraphStats;
@@ -1205,6 +1205,25 @@ impl InMemoryGraph {
         Ok(outcome)
     }
 
+    /// `(entity, key)` pairs whose hash property index a declaration keeps
+    /// active: every property of a RANGE index in the catalog, which
+    /// includes the backing indexes of uniqueness / key constraints. These
+    /// are the only hash indexes a restart rebuilds; any other active key
+    /// was activated implicitly by an equality lookup.
+    pub(super) fn declared_property_index_keys(
+        &self,
+    ) -> std::collections::BTreeSet<(StoredIndexEntity, String)> {
+        self.index_catalog_read()
+            .list()
+            .into_iter()
+            .filter(|def| def.kind == StoredIndexKind::Range)
+            .flat_map(|def| {
+                let entity = def.entity;
+                def.properties.into_iter().map(move |p| (entity, p))
+            })
+            .collect()
+    }
+
     fn populate_index_data(&self, def: &IndexDefinition) {
         // RANGE: piggy-back on the existing lazy property-index buckets.
         // TEXT: build a trigram inverted index over the existing entity
@@ -1730,65 +1749,11 @@ impl InMemoryGraph {
         super::mem_report::estimate(self)
     }
 
-    pub(super) fn rebuild_property_indexes(&mut self) {
-        let mut indexes = PropertyIndexRegistry::default();
-
-        for (id, node) in self.iter_nodes() {
-            for (key, value) in &node.properties {
-                if PropertyIndexKey::from_value(value).is_some() {
-                    indexes.node_properties.activate(key);
-                    indexes.node_properties.insert_with_scopes(
-                        id,
-                        node.labels.iter().map(String::as_str),
-                        key,
-                        value,
-                    );
-                }
-            }
-        }
-
-        for (id, rel) in self.iter_rels() {
-            for (key, value) in &rel.properties {
-                if PropertyIndexKey::from_value(value).is_some() {
-                    indexes.relationship_properties.activate(key);
-                    indexes.relationship_properties.insert_with_scopes(
-                        id,
-                        [rel.rel_type.as_str()],
-                        key,
-                        value,
-                    );
-                }
-            }
-        }
-
-        let node_index_count = indexes.node_properties.active_keys.len();
-        let relationship_index_count = indexes.relationship_properties.active_keys.len();
-        *self.indexes_mut() = indexes;
-        self.indexes
-            .active_node_property_indexes
-            .store(node_index_count, Ordering::Relaxed);
-        self.indexes
-            .active_relationship_property_indexes
-            .store(relationship_index_count, Ordering::Relaxed);
-    }
-
     pub(super) fn on_node_created(&mut self, node: &NodeRecord) {
         for label in &node.labels {
             self.insert_node_label_index(node.id, label);
         }
         self.index_node_properties_if_active(
-            node.id,
-            node.labels.iter().map(String::as_str),
-            &node.properties,
-        );
-        self.maintain_node_secondary_indexes(node, SecondaryIndexMutation::Insert);
-    }
-
-    pub(super) fn on_node_replayed(&mut self, node: &NodeRecord) {
-        for label in &node.labels {
-            self.insert_node_label_index(node.id, label);
-        }
-        self.index_node_properties_eager(
             node.id,
             node.labels.iter().map(String::as_str),
             &node.properties,
@@ -1925,12 +1890,6 @@ impl InMemoryGraph {
         self.maintain_relationship_secondary_indexes(rel, SecondaryIndexMutation::Insert);
     }
 
-    pub(super) fn on_relationship_replayed(&mut self, rel: &RelationshipRecord) {
-        self.attach_relationship(rel);
-        self.index_relationship_properties_eager(rel.id, [rel.rel_type.as_str()], &rel.properties);
-        self.maintain_relationship_secondary_indexes(rel, SecondaryIndexMutation::Insert);
-    }
-
     pub(super) fn on_relationship_property_set(
         &mut self,
         rel_id: RelationshipId,
@@ -1989,80 +1948,6 @@ impl InMemoryGraph {
             &rel.properties,
         );
         self.maintain_relationship_secondary_indexes(rel, SecondaryIndexMutation::Remove);
-    }
-
-    fn index_node_property_eager<'a>(
-        &mut self,
-        node_id: NodeId,
-        labels: impl IntoIterator<Item = &'a str>,
-        key: &str,
-        value: &PropertyValue,
-    ) {
-        if PropertyIndexKey::from_value(value).is_none() {
-            return;
-        }
-
-        let activated = {
-            let indexes = self.indexes_mut();
-            let activated = indexes.node_properties.activate(key);
-            indexes
-                .node_properties
-                .insert_with_scopes(node_id, labels, key, value);
-            activated
-        };
-        if activated {
-            self.indexes
-                .active_node_property_indexes
-                .fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn index_relationship_property_eager<'a>(
-        &mut self,
-        rel_id: RelationshipId,
-        scopes: impl IntoIterator<Item = &'a str>,
-        key: &str,
-        value: &PropertyValue,
-    ) {
-        if PropertyIndexKey::from_value(value).is_none() {
-            return;
-        }
-
-        let activated = {
-            let indexes = self.indexes_mut();
-            let activated = indexes.relationship_properties.activate(key);
-            indexes
-                .relationship_properties
-                .insert_with_scopes(rel_id, scopes, key, value);
-            activated
-        };
-        if activated {
-            self.indexes
-                .active_relationship_property_indexes
-                .fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn index_node_properties_eager<'a>(
-        &mut self,
-        node_id: NodeId,
-        labels: impl IntoIterator<Item = &'a str> + Clone,
-        properties: &Properties,
-    ) {
-        for (key, value) in properties {
-            self.index_node_property_eager(node_id, labels.clone(), key, value);
-        }
-    }
-
-    fn index_relationship_properties_eager<'a>(
-        &mut self,
-        rel_id: RelationshipId,
-        scopes: impl IntoIterator<Item = &'a str> + Clone,
-        properties: &Properties,
-    ) {
-        for (key, value) in properties {
-            self.index_relationship_property_eager(rel_id, scopes.clone(), key, value);
-        }
     }
 
     fn index_node_property_if_active<'a>(
@@ -2511,7 +2396,12 @@ impl InMemoryGraph {
         };
 
         self.put_node_at_slot(idx, node.clone());
-        self.on_node_replayed(&node);
+        // Same index maintenance as a live create: only hash indexes that
+        // are already active (declared by a replayed CREATE INDEX /
+        // CREATE CONSTRAINT, which backfills from the data replayed so
+        // far) are kept current. Lookup-activated (implicit) indexes are
+        // rebuilt lazily on first use, exactly as in a fresh process.
+        self.on_node_created(&node);
 
         Ok(node)
     }
@@ -2563,7 +2453,8 @@ impl InMemoryGraph {
         };
 
         self.put_rel_at_slot(idx, rel.clone());
-        self.on_relationship_replayed(&rel);
+        // See `replay_create_node`: active (declared) indexes only.
+        self.on_relationship_created(&rel);
 
         Ok(rel)
     }

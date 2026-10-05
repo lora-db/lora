@@ -45,7 +45,7 @@ pub use memory::InMemoryGraph;
 // the memory benchmark in `lora-database/benches/memory.rs` and the
 // `mem_probe*` examples to attribute observed RSS growth to a
 // specific component.
-pub use memory::{property_value_heap_bytes, MemoryReport};
+pub use memory::{property_value_heap_bytes, MemoryReport, PropertyIndexKeyUsage};
 
 // ---------- Property-key interning ----------
 //

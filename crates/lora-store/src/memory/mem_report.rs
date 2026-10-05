@@ -36,6 +36,7 @@ use super::index_catalog::{IndexCatalog, StoredIndexEntity};
 use super::point_index::PointRegistry;
 use super::property_index::{
     PropertyIndex, PropertyIndexKey, PropertyIndexRegistry, PropertyIndexState,
+    PropertyValueBuckets,
 };
 use super::sorted_property_index::SortedPropertyIndex;
 use super::text_index::TrigramRegistry;
@@ -102,6 +103,34 @@ pub struct MemoryReport {
 
     pub index_catalog_bytes: usize,
     pub constraint_catalog_bytes: usize,
+
+    /// Per-key breakdown of [`Self::property_index_bytes`]: one entry per
+    /// active hash property index (node and relationship keys), with
+    /// whether a declaration keeps it active. Implicit (`declared ==
+    /// false`) entries were built by an equality lookup on an undeclared
+    /// key; they are not listed by `SHOW INDEXES`, live until the process
+    /// exits, and are not rebuilt on restart (the next lookup builds them
+    /// again). Sorted by entity, then key.
+    #[serde(default)]
+    pub property_index_keys: Vec<PropertyIndexKeyUsage>,
+}
+
+/// One active hash property index key in a [`MemoryReport`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PropertyIndexKeyUsage {
+    pub entity: StoredIndexEntity,
+    pub key: String,
+    /// `true` when a declared RANGE index or a uniqueness / key
+    /// constraint (through its backing RANGE index) on this key exists.
+    /// `false` for an implicit, lookup-activated index — including one
+    /// whose RANGE index was dropped (dropping the declaration leaves the
+    /// hash buckets in place for later lookups).
+    pub declared: bool,
+    /// Estimated bytes of the unscoped buckets plus every per-label /
+    /// per-type scope of this key. Same methodology as
+    /// [`MemoryReport::property_index_bytes`].
+    pub bytes: usize,
 }
 
 impl MemoryReport {
@@ -128,6 +157,17 @@ impl MemoryReport {
             + self.vector_index_bytes
     }
 
+    /// Active hash property index keys that no declaration covers.
+    pub fn implicit_property_index_keys(&self) -> impl Iterator<Item = &PropertyIndexKeyUsage> {
+        self.property_index_keys.iter().filter(|k| !k.declared)
+    }
+
+    /// Estimated bytes held by implicit (lookup-activated) hash property
+    /// indexes: the part of [`Self::property_index_bytes`] nothing declared.
+    pub fn implicit_property_index_bytes(&self) -> usize {
+        self.implicit_property_index_keys().map(|k| k.bytes).sum()
+    }
+
     pub fn catalog_bytes(&self) -> usize {
         self.index_catalog_bytes + self.constraint_catalog_bytes
     }
@@ -151,7 +191,8 @@ impl MemoryReport {
     /// `grep`-friendly snapshot diffs across runs.
     pub fn summary(&self) -> String {
         format!(
-            "total={} graph={} (nodes={} rels={} out={} in={} labels={} types={}) idx={} cat={}",
+            "total={} graph={} (nodes={} rels={} out={} in={} labels={} types={}) idx={} \
+             implicit_idx={} ({} keys) cat={}",
             self.total_bytes(),
             self.graph_core_bytes(),
             self.nodes_bytes,
@@ -161,6 +202,8 @@ impl MemoryReport {
             self.label_index_bytes,
             self.type_index_bytes,
             self.secondary_index_bytes(),
+            self.implicit_property_index_bytes(),
+            self.implicit_property_index_keys().count(),
             self.catalog_bytes(),
         )
     }
@@ -196,6 +239,23 @@ pub(super) fn estimate(graph: &super::InMemoryGraph) -> MemoryReport {
     let bundle = &graph.indexes;
     if let Ok(props) = bundle.properties.read() {
         report.property_index_bytes = property_registry_bytes(&props);
+        let declared = graph.declared_property_index_keys();
+        for (entity, state) in [
+            (StoredIndexEntity::Node, &props.node_properties),
+            (
+                StoredIndexEntity::Relationship,
+                &props.relationship_properties,
+            ),
+        ] {
+            for key in &state.active_keys {
+                report.property_index_keys.push(PropertyIndexKeyUsage {
+                    entity,
+                    key: key.clone(),
+                    declared: declared.contains(&(entity, key.clone())),
+                    bytes: property_key_bytes(state, key),
+                });
+            }
+        }
     }
     report.sorted_index_bytes = sorted_registry_bytes(bundle);
     report.text_index_bytes = text_registry_bytes(bundle);
@@ -369,14 +429,34 @@ fn property_state_bytes(state: &PropertyIndexState) -> usize {
 }
 
 fn property_index_map_bytes(values: &PropertyIndex) -> usize {
-    let mut total = 0;
-    for (key, buckets) in values {
-        total += HASHMAP_PER_ENTRY + size_of::<String>() + key.capacity();
-        for (indexed, ids) in buckets.iter() {
-            total += HASHMAP_PER_ENTRY
-                + property_index_key_bytes(indexed)
-                + size_of::<IdSet>()
-                + ids.heap_bytes();
+    values
+        .iter()
+        .map(|(key, buckets)| property_buckets_bytes(key, buckets))
+        .sum()
+}
+
+fn property_buckets_bytes(key: &String, buckets: &PropertyValueBuckets) -> usize {
+    let mut total = HASHMAP_PER_ENTRY + size_of::<String>() + key.capacity();
+    for (indexed, ids) in buckets.iter() {
+        total += HASHMAP_PER_ENTRY
+            + property_index_key_bytes(indexed)
+            + size_of::<IdSet>()
+            + ids.heap_bytes();
+    }
+    total
+}
+
+/// Bytes one active key holds in a [`PropertyIndexState`]: its
+/// active-key entry, its unscoped buckets and its buckets in every scope.
+/// Per-scope map headers are shared by every key and not attributed.
+fn property_key_bytes(state: &PropertyIndexState, key: &String) -> usize {
+    let mut total = BTREE_PER_ENTRY + size_of::<String>() + key.capacity();
+    if let Some(buckets) = state.values.get(key) {
+        total += property_buckets_bytes(key, buckets);
+    }
+    for by_property in state.scoped_values.values() {
+        if let Some(buckets) = by_property.get(key) {
+            total += property_buckets_bytes(key, buckets);
         }
     }
     total

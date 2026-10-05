@@ -108,7 +108,12 @@ impl InMemoryGraph {
                 .map_err(SnapshotError::Decode)?;
             rebuilt.attach_relationship(&rel);
         }
-        rebuilt.rebuild_property_indexes();
+        // No hash property index is built here. Restart reproduces the
+        // state of a fresh process: the declared RANGE indexes and the
+        // uniqueness/key constraints below activate (and backfill) the
+        // hash indexes they need through `register_index` /
+        // `register_constraint`. Implicit, lookup-activated indexes are
+        // rebuilt lazily by the first lookup that needs them.
 
         let constraint_owned_indexes: BTreeSet<String> = payload
             .constraints

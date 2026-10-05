@@ -183,4 +183,17 @@ export interface MemoryReportSnapshot {
   vectorIndexBytes: number;
   indexCatalogBytes: number;
   constraintCatalogBytes: number;
+  /**
+   * One entry per active hash property index. `declared: false` marks an
+   * implicit index built by an equality lookup on an undeclared key: not
+   * shown by `SHOW INDEXES`, and not rebuilt on restart.
+   */
+  propertyIndexKeys: PropertyIndexKeyUsage[];
+}
+
+export interface PropertyIndexKeyUsage {
+  entity: "Node" | "Relationship";
+  key: string;
+  declared: boolean;
+  bytes: number;
 }

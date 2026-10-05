@@ -8,7 +8,15 @@
 //! Activation is lazy: a property is *activated* the first time a
 //! lookup asks for it. Subsequent lookups read from the index;
 //! mutations to active keys are mirrored into it. Inactive keys still
-//! work via the scan fallback in `super::scan_*`.
+//! work via the scan fallback in `super::scan_*`. A declared RANGE index
+//! (or the backing index of a uniqueness / key constraint) activates its
+//! keys when it is created.
+//!
+//! Restart reproduces that state, not the writer's: snapshot load and WAL
+//! replay activate only the declared keys (by re-registering the catalog
+//! or replaying the DDL events). Keys an equality lookup activated in the
+//! writer are activated again by the next such lookup. `MemoryReport`
+//! lists the active keys and marks the implicit ones.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 

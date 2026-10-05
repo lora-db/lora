@@ -65,6 +65,7 @@ export type {
   IndexScope,
   LabelCount,
   MemoryReportSnapshot,
+  PropertyIndexKeyUsage,
 } from "./worker-protocol.js";
 export type {
   WasmSnapshotByteOptions,

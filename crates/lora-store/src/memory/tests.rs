@@ -265,7 +265,9 @@ fn property_indexes_activate_on_lookup_after_set_for_new_keys() {
 }
 
 #[test]
-fn replay_create_eagerly_activates_property_indexes() {
+fn replay_create_activates_property_indexes_lazily() {
+    // Replay reproduces a fresh process: no hash index is built for an
+    // undeclared key until a lookup asks for it.
     let mut g = InMemoryGraph::new();
     let alice = g
         .replay_create_node(
@@ -282,7 +284,7 @@ fn replay_create_eagerly_activates_property_indexes() {
         )
         .unwrap();
 
-    assert!(g.indexes_read().node_properties.is_active("name"));
+    assert!(!g.indexes_read().node_properties.is_active("name"));
     assert_eq!(
         g.find_node_ids_by_property(
             Some("Person"),
@@ -291,6 +293,7 @@ fn replay_create_eagerly_activates_property_indexes() {
         ),
         vec![alice.id]
     );
+    assert!(g.indexes_read().node_properties.is_active("name"));
 
     let rel = g
         .replay_create_relationship(
@@ -302,11 +305,26 @@ fn replay_create_eagerly_activates_property_indexes() {
         )
         .unwrap();
 
-    assert!(g.indexes_read().relationship_properties.is_active("since"));
+    assert!(!g.indexes_read().relationship_properties.is_active("since"));
     assert_eq!(
         g.find_relationship_ids_by_property(Some("KNOWS"), "since", &PropertyValue::Int(2020)),
         vec![rel.id]
     );
+    assert!(g.indexes_read().relationship_properties.is_active("since"));
+
+    // Once active, later replayed creates are maintained in the index.
+    let carol = g
+        .replay_create_node(
+            2,
+            vec!["Person".into()],
+            props(&[("name", PropertyValue::String("Carol".into()))]),
+        )
+        .unwrap();
+    assert_eq!(
+        g.indexed_node_ids("Person", "name", &PropertyValue::String("Carol".into())),
+        Some(vec![carol.id])
+    );
+    g.assert_property_indexes_match_scan();
 }
 
 #[test]
@@ -716,8 +734,10 @@ fn snapshot_roundtrip_preserves_graph_state() {
     assert_eq!(load_meta.node_count, 2);
     assert_eq!(load_meta.relationship_count, 1);
     assert_eq!(load_meta.wal_lsn, None);
-    assert!(restored.indexes_read().node_properties.is_active("name"));
-    assert!(restored
+    // Nothing was declared, so no hash index is built on load (the writer
+    // had none active either); lookups below activate them lazily.
+    assert!(!restored.indexes_read().node_properties.is_active("name"));
+    assert!(!restored
         .indexes_read()
         .relationship_properties
         .is_active("since"));
