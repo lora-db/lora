@@ -360,10 +360,26 @@ impl Planner {
         let has_limit = skip.is_some() || limit.is_some();
 
         if aggregates || distinct {
+            // Hidden aggregate columns an ORDER BY key reads (the analyzer
+            // lifted them out of it) live until the sort, then go.
+            let sort_reads: BTreeSet<VarId> = order
+                .iter()
+                .flat_map(|key| {
+                    let mut reads = BTreeSet::new();
+                    key.expr.collect_vars(&mut reads);
+                    reads
+                })
+                .collect();
+            let kept: Vec<ResolvedProjection> = lifted
+                .iter()
+                .filter(|p| sort_reads.contains(&p.output))
+                .cloned()
+                .collect();
             let mut node = self.plan_projection_or_aggregation(
                 input,
                 items,
                 lifted,
+                &kept,
                 distinct,
                 include_existing,
             );
@@ -380,6 +396,14 @@ impl Planner {
                     input: node,
                     skip: skip.clone(),
                     limit: limit.clone(),
+                }));
+            }
+            if !kept.is_empty() {
+                node = self.push(LogicalOp::Projection(Projection {
+                    input: node,
+                    distinct: false,
+                    items: passthrough_items(items),
+                    include_existing: false,
                 }));
             }
             return node;
@@ -400,6 +424,7 @@ impl Planner {
                 node,
                 items,
                 lifted,
+                &[],
                 false,
                 include_existing,
             );
@@ -441,18 +466,20 @@ impl Planner {
     /// Projection.
     ///
     /// `lifted` are the aggregate calls the analyzer took out of larger
-    /// items (`size(collect(x))`): they aggregate as hidden columns, and a
-    /// Projection then evaluates those items on the grouped rows.
+    /// items (`size(collect(x))`) or ORDER BY keys: they aggregate as hidden
+    /// columns, and a Projection then evaluates those items on the grouped
+    /// rows, re-emitting the hidden columns in `kept` for a sort to read.
     fn plan_projection_or_aggregation(
         &mut self,
         input: PlanNodeId,
         items: &[ResolvedProjection],
         lifted: &[ResolvedProjection],
+        kept: &[ResolvedProjection],
         distinct: bool,
         include_existing: bool,
     ) -> PlanNodeId {
         if !lifted.is_empty() {
-            return self.plan_lifted_aggregation(input, items, lifted, distinct);
+            return self.plan_lifted_aggregation(input, items, lifted, kept, distinct);
         }
 
         let has_aggregates = items.iter().any(|item| expr_contains_aggregate(&item.expr));
@@ -514,6 +541,7 @@ impl Planner {
         input: PlanNodeId,
         items: &[ResolvedProjection],
         lifted: &[ResolvedProjection],
+        kept: &[ResolvedProjection],
         distinct: bool,
     ) -> PlanNodeId {
         let lifted_outputs: BTreeSet<VarId> = lifted.iter().map(|p| p.output).collect();
@@ -539,6 +567,7 @@ impl Planner {
             projected.extend(passthrough_items(std::slice::from_ref(item)));
         }
         aggregates.extend(lifted.iter().cloned());
+        projected.extend(passthrough_items(kept));
 
         let node = self.push(LogicalOp::Aggregation(Aggregation {
             input,

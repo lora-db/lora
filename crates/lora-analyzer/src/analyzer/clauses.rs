@@ -410,7 +410,19 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
             }
         }
 
-        let lifted_aggregates = self.lift_nested_aggregates(&mut items, first_var)?;
+        // The items as written, before lifting rewrites them: an ORDER BY key
+        // that restates one sorts by its column.
+        let written: Vec<(String, VarId, bool)> = items
+            .iter()
+            .map(|item| {
+                (
+                    format!("{:?}", item.expr),
+                    item.output,
+                    expr_contains_aggregate(&item.expr),
+                )
+            })
+            .collect();
+        let mut lifted_aggregates = self.lift_nested_aggregates(&mut items, first_var)?;
 
         // Build a lookup from alias names to their output VarIds so ORDER BY
         // can reference projection aliases (e.g. ORDER BY name when RETURN p.name AS name).
@@ -430,6 +442,13 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                 })
             })
             .collect::<Result<Vec<_>, SemanticError>>()?;
+        let order = self.lift_order_aggregates(
+            order,
+            &written,
+            &mut lifted_aggregates,
+            body.distinct,
+            first_var,
+        )?;
 
         let skip = body
             .skip
@@ -500,23 +519,85 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                 item.span,
             );
 
-            let mut reads = BTreeSet::new();
-            expr.collect_vars(&mut reads);
-            let lifted_outputs: BTreeSet<VarId> = lifted
-                .iter()
-                .map(|p: &ResolvedProjection| p.output)
-                .collect();
-            let key_outputs: BTreeSet<VarId> = keys.iter().map(|(_, v)| *v).collect();
-            if reads
-                .iter()
-                .any(|v| *v < first_var && !key_outputs.contains(v) && !lifted_outputs.contains(v))
-            {
+            if reads_ungrouped(&expr, &keys, first_var) {
                 return Err(SemanticError::ImplicitGroupingKey(item.name.to_string()));
             }
             item.expr = expr;
         }
         Ok(lifted)
     }
+
+    /// Point ORDER BY keys of an aggregating projection at what they mean
+    /// on the grouped rows. A key that restates an item (as written, before
+    /// lifting) sorts by that item's column; an aggregate in any other key
+    /// is lifted into a hidden column like a nested one in an item, the
+    /// planner keeping it until the sort. A projection that doesn't
+    /// aggregate can't aggregate in ORDER BY, and after DISTINCT a key can
+    /// only aggregate what is projected (openCypher rejects both).
+    fn lift_order_aggregates(
+        &mut self,
+        order: Vec<ResolvedSortItem>,
+        written: &[(String, VarId, bool)],
+        lifted: &mut Vec<ResolvedProjection>,
+        distinct: bool,
+        first_var: VarId,
+    ) -> Result<Vec<ResolvedSortItem>, SemanticError> {
+        let aggregating = written.iter().any(|(_, _, aggregates)| *aggregates);
+        if !aggregating {
+            if order.iter().any(|key| expr_contains_aggregate(&key.expr)) {
+                return Err(SemanticError::AggregationInOrderBy(
+                    "the projection doesn't aggregate".into(),
+                ));
+            }
+            return Ok(order);
+        }
+
+        let keys: Vec<(String, VarId)> = written
+            .iter()
+            .filter(|(_, _, aggregates)| !aggregates)
+            .map(|(shape, output, _)| (shape.clone(), *output))
+            .collect();
+        order
+            .into_iter()
+            .map(|mut key| {
+                let shape = format!("{:?}", key.expr);
+                if let Some((_, output, _)) = written.iter().find(|(s, _, _)| *s == shape) {
+                    key.expr = ResolvedExpr::Variable(*output);
+                    return Ok(key);
+                }
+                if !expr_contains_aggregate(&key.expr) {
+                    return Ok(key);
+                }
+                if distinct {
+                    return Err(SemanticError::AggregationInOrderBy(
+                        "after DISTINCT it can only sort by an aggregate that is projected".into(),
+                    ));
+                }
+                lift_aggregates_in(
+                    &mut key.expr,
+                    &keys,
+                    &mut || self.symbols.new_var(),
+                    lifted,
+                    Span::default(),
+                );
+                if reads_ungrouped(&key.expr, &keys, first_var) {
+                    return Err(SemanticError::ImplicitGroupingKey("ORDER BY".into()));
+                }
+                Ok(key)
+            })
+            .collect()
+    }
+}
+
+/// Whether `expr`, after lifting, reads a binding from before the
+/// projection (an id below `first_var`) that isn't a grouping key's
+/// column: a value that differs per row of the group.
+fn reads_ungrouped(expr: &ResolvedExpr, keys: &[(String, VarId)], first_var: VarId) -> bool {
+    let mut reads = BTreeSet::new();
+    expr.collect_vars(&mut reads);
+    reads
+        .iter()
+        .any(|v| *v < first_var && !keys.iter().any(|(_, key)| key == v))
 }
 
 /// Whether `expr` is itself one aggregate call, the shape the aggregation
