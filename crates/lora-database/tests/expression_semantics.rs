@@ -1,6 +1,7 @@
 //! Expression semantics that follow openCypher: integer overflow in the
 //! list builtins is an error like it is for the operators; `IN` is null
-//! when a null element leaves the answer unknown. Every case runs
+//! when a null element leaves the answer unknown; a negative slice bound
+//! counts from the end. Every case runs
 //! on each execution path (`execute`, the pull pipeline, both transaction
 //! modes).
 
@@ -125,5 +126,25 @@ fn in_is_null_when_a_null_element_leaves_it_unknown() {
     assert_read(
         "UNWIND [1, 2, 5] AS x WITH x WHERE x IN [1, null] RETURN collect(x) AS v",
         json!([{"v": [1]}]),
+    );
+}
+
+#[test]
+fn negative_slice_bounds_count_from_the_end() {
+    assert_read("RETURN [1, 2, 3][..-1] AS v", json!([{"v": [1, 2]}]));
+    assert_read("RETURN [1, 2, 3][-2..] AS v", json!([{"v": [2, 3]}]));
+    assert_read("RETURN [1, 2, 3][1..-1] AS v", json!([{"v": [2]}]));
+    assert_read("RETURN [1, 2, 3][-1..1] AS v", json!([{"v": []}]));
+    // Out of range bounds clamp to the list.
+    assert_read("RETURN [1, 2, 3][-5..] AS v", json!([{"v": [1, 2, 3]}]));
+    assert_read("RETURN [1, 2, 3][..-5] AS v", json!([{"v": []}]));
+    assert_read("RETURN [1, 2, 3][1..10] AS v", json!([{"v": [2, 3]}]));
+    // A null bound makes the slice null.
+    assert_read("RETURN [1, 2, 3][null..] AS v", json!([{"v": null}]));
+    assert_read("RETURN [1, 2, 3][..null] AS v", json!([{"v": null}]));
+    // Single elements already counted from the end.
+    assert_read(
+        "RETURN [1, 2, 3][-1] AS v, [1, 2, 3][-4] AS w",
+        json!([{"v": 3, "w": null}]),
     );
 }

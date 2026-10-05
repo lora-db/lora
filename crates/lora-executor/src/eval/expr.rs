@@ -251,18 +251,22 @@ pub fn eval_expr<S: GraphStorage>(
             match &*base {
                 LoraValue::List(items) => {
                     let len = items.len() as i64;
-                    let start = from
-                        .as_ref()
-                        .map(|e| eval_expr(e, row, ctx).as_i64().unwrap_or(0))
-                        .unwrap_or(0)
-                        .max(0)
-                        .min(len) as usize;
-                    let end = to
-                        .as_ref()
-                        .map(|e| eval_expr(e, row, ctx).as_i64().unwrap_or(len))
-                        .unwrap_or(len)
-                        .max(0)
-                        .min(len) as usize;
+                    // A negative bound counts from the end (`[..-1]` drops the
+                    // last element); a null bound makes the slice null.
+                    let bound = |e: &Option<Box<ResolvedExpr>>, default: i64| match e {
+                        None => Some(default),
+                        Some(e) => match eval_expr(e, row, ctx) {
+                            LoraValue::Null => None,
+                            v => {
+                                let b = v.as_i64().unwrap_or(default);
+                                Some(if b < 0 { len.saturating_add(b) } else { b }.clamp(0, len))
+                            }
+                        },
+                    };
+                    let (Some(start), Some(end)) = (bound(from, 0), bound(to, len)) else {
+                        return LoraValue::Null;
+                    };
+                    let (start, end) = (start as usize, end as usize);
                     if start >= end {
                         LoraValue::List(Vec::new())
                     } else {
