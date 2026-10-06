@@ -504,7 +504,7 @@ fn eval_exists_subquery<S: GraphStorage>(
                                             let matched = ctx
                                                 .storage
                                                 .with_node(dst_id, |dst| {
-                                                    node_matches_labels(
+                                                    crate::executor::node_matches_label_groups(
                                                         dst.labels(),
                                                         &step.node.labels,
                                                     ) && node_matches_properties(
@@ -657,7 +657,7 @@ fn eval_pattern_comprehension<S: GraphStorage>(
                                             let matched = ctx
                                                 .storage
                                                 .with_node(dst_id, |dst| {
-                                                    node_matches_labels(
+                                                    crate::executor::node_matches_label_groups(
                                                         dst.labels(),
                                                         &step.node.labels,
                                                     ) && node_matches_properties(
@@ -752,7 +752,7 @@ fn match_node_pattern<S: GraphStorage>(
             let matched = ctx
                 .storage
                 .with_node(*id, |n| {
-                    node_matches_labels(n.labels(), &node.labels)
+                    crate::executor::node_matches_label_groups(n.labels(), &node.labels)
                         && node_matches_properties(n.properties(), &node.properties, row, ctx)
                 })
                 .unwrap_or(false);
@@ -798,7 +798,7 @@ fn match_node_pattern<S: GraphStorage>(
         let matched = ctx
             .storage
             .with_node(id, |n| {
-                node_matches_labels(n.labels(), &node.labels)
+                crate::executor::node_matches_label_groups(n.labels(), &node.labels)
                     && node_matches_properties(n.properties(), &node.properties, row, ctx)
             })
             .unwrap_or(false);
@@ -917,7 +917,7 @@ impl<S: GraphStorage> VarLengthWalk<'_, '_, S> {
             .ctx
             .storage
             .with_node(node, |n| {
-                node_matches_labels(n.labels(), &self.step.node.labels)
+                crate::executor::node_matches_label_groups(n.labels(), &self.step.node.labels)
                     && node_matches_properties(
                         n.properties(),
                         &self.step.node.properties,
@@ -960,16 +960,6 @@ fn find_last_node_in_row(
         Some(LoraValue::Node(id)) => Some(*id),
         _ => None,
     })
-}
-
-fn node_matches_labels<'a>(
-    node_labels: impl Into<lora_store::LabelsRef<'a>>,
-    groups: &[Vec<String>],
-) -> bool {
-    let node_labels = node_labels.into();
-    groups
-        .iter()
-        .all(|group| group.iter().any(|l| node_labels.has(l)))
 }
 
 fn node_matches_properties<'a, S: GraphStorage>(

@@ -49,3 +49,16 @@ fn a_scan_feeding_a_write_does_not_see_that_write() {
     db.run("MATCH (n:Copy) DELETE n");
     db.assert_count("MATCH (n) RETURN n", items + 300);
 }
+
+/// Nodes without labels are indexed under an internal scope. A pattern
+/// that names an empty label must not be answered from it.
+#[test]
+fn an_empty_label_does_not_match_unlabelled_nodes() {
+    let db = TestDb::new();
+    db.run("CREATE ({k: 1}), (:A {k: 1}), ({k: 2})");
+    // Build the equality index on `k`.
+    db.assert_count("MATCH (n:A {k: 1}) RETURN n", 1);
+    db.assert_count("MATCH (n:`` {k: 1}) RETURN n", 0);
+    db.assert_count("MATCH (n:``) WHERE n.k = 1 RETURN n", 0);
+    db.assert_count("MATCH (n {k: 1}) RETURN n", 2);
+}

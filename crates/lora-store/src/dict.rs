@@ -18,10 +18,11 @@ use crate::Name;
 /// handful of short names beats hashing one.
 const LINEAR_LOOKUP_MAX: usize = 8;
 
-/// FNV-1a. Dictionary keys are short names chosen by the schema, and a
-/// property read hashes one, so the hash has to be cheap; these maps
-/// are not exposed to hostile key sets the way a general map is, since
-/// a name must first be created as a label, type or key.
+/// FNV-1a. A property read hashes its key, so the hash has to be cheap.
+/// It is not collision-resistant: someone who can write arbitrary
+/// property keys can pile names into one bucket and slow lookups down.
+/// They can already do more harm with the same access, and the names
+/// are few in any schema worth the word.
 #[derive(Clone, Copy)]
 pub(crate) struct NameHasher(u64);
 
@@ -77,13 +78,23 @@ impl NameDict {
 
     /// The id for `name`, assigning the next one on first use.
     pub(crate) fn id_or_insert(&mut self, name: &Name) -> u32 {
+        self.id_or_insert_with(name, || name.clone())
+    }
+
+    /// As [`Self::id_or_insert`] for a name held as a `&str`: `make` builds
+    /// the shared name, and only when it is new.
+    ///
+    /// A new name copies the table when a graph clone still shares it, so
+    /// the first write of each new name after a clone costs O(names).
+    pub(crate) fn id_or_insert_with(&mut self, name: &str, make: impl FnOnce() -> Name) -> u32 {
         if let Some(id) = self.id_of(name) {
             return id;
         }
+        let name = make();
         let inner = Arc::make_mut(&mut self.inner);
         let id = inner.names.len() as u32;
         inner.names.push(name.clone());
-        inner.ids.insert(name.clone(), id);
+        inner.ids.insert(name, id);
         id
     }
 

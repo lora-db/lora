@@ -70,6 +70,8 @@ pub(super) enum IdSet {
     },
 }
 
+// On 64-bit targets; a 32-bit one (wasm32) has smaller pointers.
+#[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<IdSet>() == 16);
 
 impl PartialEq for IdSet {

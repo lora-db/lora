@@ -343,10 +343,12 @@ impl<'a> PatternPlanner<'a> {
 
         let mut best = stats.label_count(label).unwrap_or(0);
         for key in self.seekable_keys(var, node) {
-            let indexed = stats
+            // A distinct count exists for every key some node of the label
+            // carries, indexed or not.
+            let counted = stats
                 .node_distinct_values
                 .contains_key(&(label.to_string(), key.clone()));
-            if indexed {
+            if counted {
                 if let Some(rows) = stats.estimate_node_property_equality(label, &key) {
                     best = best.min(rows);
                 }

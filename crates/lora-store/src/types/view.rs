@@ -344,7 +344,8 @@ impl<'a> LabelsRef<'a> {
         LabelNames { names, stored }
     }
 
-    pub fn iter(self) -> impl ExactSizeIterator<Item = &'a str> + Clone + 'a {
+    /// The labels as `&str`s (the counterpart of [`Labels::strs`]).
+    pub fn strs(self) -> impl ExactSizeIterator<Item = &'a str> + Clone + 'a {
         self.names().map(Name::as_str)
     }
 
@@ -424,7 +425,7 @@ impl<'a> From<&'a [Name]> for LabelsRef<'a> {
 
 impl std::fmt::Debug for LabelsRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list().entries(self.iter()).finish()
+        f.debug_list().entries(self.strs()).finish()
     }
 }
 
@@ -655,7 +656,7 @@ mod tests {
         assert_eq!(node.id(), 7);
         assert!(node.has_label("Admin") && !node.has_label("Nope"));
         assert_eq!(
-            node.labels().iter().collect::<Vec<_>>(),
+            node.labels().strs().collect::<Vec<_>>(),
             ["Person", "Admin"]
         );
         assert_eq!(node.labels().len(), 2);

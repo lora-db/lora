@@ -41,6 +41,8 @@ mod text_index;
 mod vector_index;
 
 #[cfg(test)]
+mod model_tests;
+#[cfg(test)]
 mod tests;
 
 pub use constraint_catalog::{

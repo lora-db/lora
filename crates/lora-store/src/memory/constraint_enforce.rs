@@ -136,7 +136,7 @@ impl InMemoryGraph {
         let label = def.label.as_str();
         let mut seen: HashSet<String> = HashSet::new();
         for (_, node) in self.iter_nodes() {
-            if !node.labels().iter().any(|l| l == label) {
+            if !node.labels().strs().any(|l| l == label) {
                 continue;
             }
             validate_record_against_constraint(
@@ -613,7 +613,7 @@ pub(crate) fn check_node_existence(
     for def in catalog.iter() {
         if def.entity != StoredIndexEntity::Node
             || !def.kind.requires_existence()
-            || !node.labels().iter().any(|l| l == def.label)
+            || !node.labels().strs().any(|l| l == def.label)
         {
             continue;
         }
@@ -800,7 +800,7 @@ pub(crate) fn check_node_set_property(
         if def.entity != StoredIndexEntity::Node {
             continue;
         }
-        if !node.labels().iter().any(|l| l == def.label) {
+        if !node.labels().strs().any(|l| l == def.label) {
             continue;
         }
         if !def.properties.iter().any(|p| p == key) {
@@ -853,7 +853,7 @@ pub(crate) fn check_node_remove_property(
         if def.entity != StoredIndexEntity::Node {
             continue;
         }
-        if !node.labels().iter().any(|l| l == def.label) {
+        if !node.labels().strs().any(|l| l == def.label) {
             continue;
         }
         if !def.kind.requires_existence() {

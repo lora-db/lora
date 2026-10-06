@@ -1,7 +1,11 @@
 # Storage beyond memory
 
-Status: **research / proposal**, not scheduled. Written 2026-10-05 against
-LoraDB v0.22.3 (`93dc8ff`). Nothing here is implemented.
+Status: written 2026-10-05 against LoraDB v0.22.3 (`93dc8ff`) as a research
+proposal. **Stages 0 and 1 are implemented** (Stage 0 in v0.23.0, Stage 1 on
+branch `storage/stage1`); see [Implementation status](#implementation-status).
+The disk stages (2 and later) are deferred: the decision on 2026-10-06 was to
+stay in memory until a graph outgrows it. Sections 1 to 3 describe the engine
+as it was before this work.
 
 **Question:** how could LoraDB store graphs larger than RAM while the hot
 working set stays almost as fast as today's in-memory engine? The in-memory
@@ -30,10 +34,72 @@ The decisions this needs from you are collected in [§9](#9-decisions-and-open-q
 
 ## Implementation status
 
-**Stage 0** shipped in v0.23.0. The distinct-count sketches, the streaming
-id scans and the first slice of Stage 1 (interned names, typed adjacency)
-are implemented on branch `storage/stage1`, not yet merged; see
-[Stage 1, first slice](#stage-1-first-slice-interned-names-and-typed-adjacency).
+**Stage 0** shipped in v0.23.0. **Stage 1** is complete on branch
+`storage/stage1`, not yet merged or released. Each slice below has its own
+before/after measurements; this is the sum, v0.23.0 against the branch head,
+on the §2 machine and shape (2M nodes / 8M relationships).
+
+| Measure | v0.23.0 | Stage 1 |
+|---|---|---|
+| Live bytes per element | 247.2 | **71.9** |
+| Exact-match index, per entry | 293 B | 89 B |
+| RANGE index or uniqueness constraint, per entry | 430 B | 138 B |
+| Festimap shape (`heap_probe --festimap`), plain / with schema | 336 / 439 B per element (v0.22.3) | 112 / 175 |
+| Raw typed 1-hop | 813 ns | 294 ns |
+| Cypher 1-hop / 2-hop | 5.67 / 18.3 µs | 3.40 / 9.86 µs |
+| Cypher index seek | 1.88 µs | 1.52 µs |
+| `MATCH (p:Person) RETURN p.id LIMIT 10` | 1.29 ms | 2.4 µs |
+| `graph_create_node` with an indexed unique `id` | 16.3 µs | 9.9 µs |
+| Staged relationship `CREATE` | 57–66 µs | 60 µs |
+
+Index entries are compared at the same record encoding, so the first two
+index rows show the index change alone.
+
+Against the Stage 1 targets of §8.2: T4 (≤ 100 B per element), T6 and T7
+(hot reads within 10%, raw 1-hop no slower) and T8 (fast-path writes within
+20%) are met. T5 (≤ 80 B per RANGE entry) is not: 138 B, with one open
+decision (see the fourth slice).
+
+Decisions of §9 taken so far: D1, Stages 0 and 1 first; D2, per-graph
+dictionaries; D3 option (a), implicit indexes stay lazy and are not rebuilt
+on restart. D4 to D7 belong to the disk tier and are untouched.
+
+**What changed for users of the Rust crates.** Nothing changes in Cypher,
+the bindings, the WAL or the snapshot format. In `lora-store`:
+`NodeRecord::labels` is a `Labels` and `RelationshipRecord::rel_type` a
+`Name`; `with_node` / `with_relationship` pass `NodeRef` / `RelRef` views;
+`BorrowedGraphStorage` is removed; `GraphStats`' distinct-value maps are
+behind `Arc`; `GraphStorage` gains `scan_node_ids` with a default.
+
+**Behaviour a user could notice.** Rows of an unordered expansion keep
+relationship creation order after deletes, where a delete used to move the
+last relationship into the gap. `graph_degree` walks the adjacency list.
+A property read walks the record's properties in key order, where it
+binary-searched; at 128 properties a read is still faster than before
+(`wide` mode). The planner has a distinct count for every property key, so
+plans no longer depend on which lookups ran earlier or on a restart.
+
+**How it was checked.** The workspace suite (3,303 tests), which in debug
+builds also decodes every non-scalar value as it is stored and compares it
+with the original. A randomized test that applies the same operations to
+the store and to a two-map model and compares every read path, clones taken
+along the way and snapshot round trips (`memory/model_tests.rs`; 12 seeds in
+the suite, about 300 longer ones with `--ignored`). Miri over the thin record
+pointer, the encoding, the views and the adjacency lists. The Node (121
+tests) and wasm (48 tests, 32-bit) binding suites. An independent read of
+the branch, which found one wrong result (a pattern naming an empty label
+matched unlabelled nodes through the index; fixed, with a test) and the
+cleanups in the last commit.
+
+Known limits, none of them new failure modes:
+- A new label, type or property key copies its dictionary when a graph
+  clone still shares it, so the first staged write of each new name costs
+  O(names). Fine for schemas; a workload that invents property keys without
+  bound pays for it.
+- A stored value that fails to decode panics. Debug builds check every
+  value on its way in.
+- Labels, types and interned property keys are never freed for the life of
+  the process.
 
 Stage 0's before/after numbers come from three interleaved runs of
 `storage_baseline lat 2000000` (v0.22.3 binary against the branch binary) on

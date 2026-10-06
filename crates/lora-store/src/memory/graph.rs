@@ -32,7 +32,7 @@ use super::index_catalog::{
 use super::point_index::PointRegistry;
 #[cfg(test)]
 use super::property_index::PropertyIndexState;
-use super::property_index::{PropertyIndexRegistry, UNSCOPED};
+use super::property_index::{PropertyIndexRegistry, UNLABELLED};
 use super::secondary_index_maintenance::SecondaryIndexMutation;
 use super::sorted_property_index::SortedPropertyIndex;
 use super::stats::GraphStats;
@@ -281,8 +281,8 @@ impl InMemoryGraph {
 
     // ---------- Slab access helpers ----------
     //
-    // Stand-in for the BTreeMap API the previous storage used. They keep the
-    // call sites readable while the underlying layout is positional Vec.
+    // Slots are indexed by id. Readers get views over the encoded
+    // records; nothing here hands out the bytes.
 
     #[inline]
     pub(super) fn node_at(&self, id: NodeId) -> Option<NodeRef<'_>> {
@@ -586,7 +586,7 @@ impl InMemoryGraph {
             .filter_map(|(i, slot)| slot.as_ref().map(|_| i as NodeId))
     }
 
-    pub(super) fn iter_node_records(&self) -> impl Iterator<Item = NodeRef<'_>> + '_ {
+    pub(super) fn iter_node_refs(&self) -> impl Iterator<Item = NodeRef<'_>> + '_ {
         self.iter_nodes().map(|(_, node)| node)
     }
 
@@ -597,7 +597,7 @@ impl InMemoryGraph {
             .filter_map(|(i, slot)| slot.as_ref().map(|_| i as RelationshipId))
     }
 
-    pub(super) fn iter_rel_records(&self) -> impl Iterator<Item = RelRef<'_>> + '_ {
+    pub(super) fn iter_rel_refs(&self) -> impl Iterator<Item = RelRef<'_>> + '_ {
         self.iter_rels().map(|(_, rel)| rel)
     }
 
@@ -816,24 +816,24 @@ impl InMemoryGraph {
 
     /// Give `key` its across-labels map, for lookups that name no label.
     /// Call after [`Self::ensure_node_property_index`].
-    pub(super) fn ensure_unscoped_node_property_index(&self, key: &str) {
-        if self.indexes_read().node_properties.unscoped_is_active(key) {
+    pub(super) fn ensure_any_scope_node_property_index(&self, key: &str) {
+        if self.indexes_read().node_properties.any_scope_is_active(key) {
             return;
         }
-        self.indexes_write().node_properties.activate_unscoped(key);
+        self.indexes_write().node_properties.activate_any_scope(key);
     }
 
-    pub(super) fn ensure_unscoped_relationship_property_index(&self, key: &str) {
+    pub(super) fn ensure_any_scope_relationship_property_index(&self, key: &str) {
         if self
             .indexes_read()
             .relationship_properties
-            .unscoped_is_active(key)
+            .any_scope_is_active(key)
         {
             return;
         }
         self.indexes_write()
             .relationship_properties
-            .activate_unscoped(key);
+            .activate_any_scope(key);
     }
 
     pub(super) fn ensure_node_property_index(&self, key: &str) {
@@ -852,7 +852,7 @@ impl InMemoryGraph {
         indexes.node_properties.insert_bulk(key, || {
             self.iter_nodes().filter_map(|(id, node)| {
                 let value = node.properties().get(key)?;
-                Some((id, node.labels().iter(), value))
+                Some((id, node.labels().strs(), value))
             })
         });
         if indexes.node_properties.activate(key) {
@@ -1381,7 +1381,7 @@ impl InMemoryGraph {
         let backfill: Vec<(u64, String)> = match entity {
             StoredIndexEntity::Node => self
                 .iter_nodes()
-                .filter(|(_, node)| node.labels().iter().any(|l| l == label))
+                .filter(|(_, node)| node.labels().strs().any(|l| l == label))
                 .filter_map(|(id, node)| match node.properties().get(property) {
                     Some(crate::ValueRef::String(value)) => Some((id, value.to_owned())),
                     _ => None,
@@ -1439,7 +1439,7 @@ impl InMemoryGraph {
                 .filter(|(_, node)| {
                     labels
                         .iter()
-                        .any(|wanted| node.labels().iter().any(|l| l == wanted))
+                        .any(|wanted| node.labels().strs().any(|l| l == wanted))
                 })
                 .map(|(id, node)| {
                     let counts = term_counts_for_properties(node.properties(), properties);
@@ -1495,7 +1495,7 @@ impl InMemoryGraph {
         let backfill: Vec<(u64, PropertyValue)> = match entity {
             StoredIndexEntity::Node => self
                 .iter_nodes()
-                .filter(|(_, node)| node.labels().iter().any(|l| l == label))
+                .filter(|(_, node)| node.labels().strs().any(|l| l == label))
                 .filter_map(|(id, node)| {
                     node.properties()
                         .get(property)
@@ -1560,7 +1560,7 @@ impl InMemoryGraph {
         let backfill: Vec<(u64, LoraPoint)> = match entity {
             StoredIndexEntity::Node => self
                 .iter_nodes()
-                .filter(|(_, node)| node.labels().iter().any(|l| l == label))
+                .filter(|(_, node)| node.labels().strs().any(|l| l == label))
                 .filter_map(|(id, node)| {
                     match node.properties().get(property).map(|v| v.to_owned()) {
                         Some(PropertyValue::Point(point)) => Some((id, point)),
@@ -1654,7 +1654,7 @@ impl InMemoryGraph {
         let backfill: Vec<(u64, crate::LoraVector)> = match entity {
             StoredIndexEntity::Node => self
                 .iter_nodes()
-                .filter(|(_, node)| node.labels().iter().any(|l| l == label))
+                .filter(|(_, node)| node.labels().strs().any(|l| l == label))
                 .filter_map(|(id, node)| {
                     match node.properties().get(property).map(|v| v.to_owned()) {
                         Some(PropertyValue::Vector(v)) => Some((id, v)),
@@ -1893,7 +1893,7 @@ impl InMemoryGraph {
             self.index_node_scope_properties_if_active(node_id, label, &properties);
             // Its first label: it was indexed as a node without any.
             if self.node_at(node_id).is_some_and(|n| n.labels().len() == 1) {
-                self.unindex_node_scope_properties_if_active(node_id, UNSCOPED, &properties);
+                self.unindex_node_scope_properties_if_active(node_id, UNLABELLED, &properties);
             }
         }
         for (key, value) in &properties {
@@ -1922,7 +1922,7 @@ impl InMemoryGraph {
             self.unindex_node_scope_properties_if_active(node_id, label, &properties);
             // Its last label: index it as a node without any.
             if self.node_at(node_id).is_some_and(|n| n.labels().is_empty()) {
-                self.index_node_scope_properties_if_active(node_id, UNSCOPED, &properties);
+                self.index_node_scope_properties_if_active(node_id, UNLABELLED, &properties);
             }
         }
         for (key, value) in &properties {
@@ -2248,7 +2248,7 @@ impl InMemoryGraph {
                 .map(|node| node.to_record())
                 .collect(),
             None => self
-                .iter_node_records()
+                .iter_node_refs()
                 .filter(|node| node.properties().get(key).is_some_and(|v| v == *value))
                 .map(|node| node.to_record())
                 .collect(),
@@ -2316,7 +2316,7 @@ impl InMemoryGraph {
                 .map(|rel| rel.to_record())
                 .collect(),
             None => self
-                .iter_rel_records()
+                .iter_rel_refs()
                 .filter(|rel| rel.properties().get(key).is_some_and(|v| v == *value))
                 .map(|rel| rel.to_record())
                 .collect(),
@@ -2443,7 +2443,7 @@ impl InMemoryGraph {
         let labels = Self::normalize_labels(labels);
         let node = NodeRecord {
             id,
-            labels: labels.clone(),
+            labels,
             properties,
         };
 
@@ -2527,6 +2527,7 @@ impl InMemoryGraph {
 
         let mut expected_nodes = PropertyIndexState {
             active_keys: indexes.node_properties.active_keys.clone(),
+            any_scope_keys: indexes.node_properties.any_scope_keys.clone(),
             ..PropertyIndexState::default()
         };
         for (id, node) in self.iter_nodes() {
@@ -2534,7 +2535,7 @@ impl InMemoryGraph {
                 if expected_nodes.is_active(key) {
                     expected_nodes.insert_with_scopes(
                         id,
-                        node.labels().iter(),
+                        node.labels().strs(),
                         key,
                         &value.to_owned(),
                     );
@@ -2545,9 +2546,14 @@ impl InMemoryGraph {
             indexes.node_properties.scoped_values, expected_nodes.scoped_values,
             "node property scoped index values diverged from scan"
         );
+        assert_eq!(
+            indexes.node_properties.any_scope, expected_nodes.any_scope,
+            "node property across-scopes index values diverged from scan"
+        );
 
         let mut expected_relationships = PropertyIndexState {
             active_keys: indexes.relationship_properties.active_keys.clone(),
+            any_scope_keys: indexes.relationship_properties.any_scope_keys.clone(),
             ..PropertyIndexState::default()
         };
         for (id, rel) in self.iter_rels() {
@@ -2565,6 +2571,10 @@ impl InMemoryGraph {
         assert_eq!(
             indexes.relationship_properties.scoped_values, expected_relationships.scoped_values,
             "relationship property scoped index values diverged from scan"
+        );
+        assert_eq!(
+            indexes.relationship_properties.any_scope, expected_relationships.any_scope,
+            "relationship property across-scopes index values diverged from scan"
         );
     }
 }

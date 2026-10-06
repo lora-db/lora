@@ -2,8 +2,11 @@
 //! `find_*_by_property` lookups.
 //!
 //! Two registries live on the graph (one for nodes, one for
-//! relationships); each registry owns a flat property→value→ids map
-//! plus a parallel scope-keyed map for label/type filtered lookups.
+//! relationships); each registry owns one property→value→ids map per
+//! scope (label or relationship type), for lookups that name one. A
+//! node without labels is listed under [`UNLABELLED`]. A key looked up
+//! without naming a scope also gets a map across all scopes, built by
+//! the first such lookup.
 //!
 //! Activation is lazy: a property is *activated* the first time a
 //! lookup asks for it. Subsequent lookups read from the index;
@@ -84,25 +87,27 @@ pub(super) struct PropertyIndexState {
     pub(super) active_keys: Arc<BTreeSet<String>>,
     pub(super) scoped_values: Arc<ScopedPropertyIndex>,
     /// Active keys that also keep a map across every scope, in
-    /// `unscoped`. Built by the first lookup of the key that names no
+    /// `any_scope`. Built by the first lookup of the key that names no
     /// scope, and not restored by a restart: most keys are only ever
     /// looked up under a label, and the second map would double their
     /// index.
-    pub(super) unscoped_keys: Arc<BTreeSet<String>>,
-    pub(super) unscoped: Arc<PropertyIndex>,
+    pub(super) any_scope_keys: Arc<BTreeSet<String>>,
+    pub(super) any_scope: Arc<PropertyIndex>,
 }
 
-/// The scope of an entity that has none: a node without labels. Labels
-/// are never empty, so this cannot collide with one. Every entity is
-/// indexed under each of its scopes, or under this one, so a lookup that
-/// names no scope finds it by asking every scope.
-pub(super) const UNSCOPED: &str = "";
+/// The scope a node without labels is listed under. No node carries an
+/// empty label (labels are trimmed and empty ones dropped), and a lookup
+/// that asks for one is answered with nothing instead of this scope
+/// (see [`PropertyIndexState::scoped_ids_for`]). Every entity is therefore
+/// listed under at least one scope, which is what the across-scopes map
+/// is built from.
+pub(super) const UNLABELLED: &str = "";
 
-/// `scopes`, or [`UNSCOPED`] when there are none.
-fn or_unscoped<'a>(scopes: impl IntoIterator<Item = &'a str>) -> impl Iterator<Item = &'a str> {
+/// `scopes`, or [`UNLABELLED`] when there are none.
+fn or_unlabelled<'a>(scopes: impl IntoIterator<Item = &'a str>) -> impl Iterator<Item = &'a str> {
     let mut scopes = scopes.into_iter().peekable();
-    let unscoped = scopes.peek().is_none().then_some(UNSCOPED);
-    scopes.chain(unscoped)
+    let unlabelled = scopes.peek().is_none().then_some(UNLABELLED);
+    scopes.chain(unlabelled)
 }
 
 impl PropertyIndexState {
@@ -117,14 +122,14 @@ impl PropertyIndexState {
         Arc::make_mut(&mut self.active_keys).insert(key.to_string())
     }
 
-    pub(super) fn unscoped_is_active(&self, key: &str) -> bool {
-        self.unscoped_keys.contains(key)
+    pub(super) fn any_scope_is_active(&self, key: &str) -> bool {
+        self.any_scope_keys.contains(key)
     }
 
     /// Build the across-scopes map for `key` from the per-scope ones, and
     /// keep it current from now on.
-    pub(super) fn activate_unscoped(&mut self, key: &str) {
-        if self.unscoped_keys.contains(key) {
+    pub(super) fn activate_any_scope(&mut self, key: &str) {
+        if self.any_scope_keys.contains(key) {
             return;
         }
         let mut merged = PropertyValueBuckets::default();
@@ -145,9 +150,9 @@ impl PropertyIndexState {
             }
         }
         if !merged.is_empty() {
-            Arc::make_mut(&mut self.unscoped).insert(Arc::from(key), merged);
+            Arc::make_mut(&mut self.any_scope).insert(Arc::from(key), merged);
         }
-        Arc::make_mut(&mut self.unscoped_keys).insert(key.to_string());
+        Arc::make_mut(&mut self.any_scope_keys).insert(key.to_string());
     }
 
     /// The (copied-on-write) per-key index of `scope`, created if absent.
@@ -198,7 +203,7 @@ impl PropertyIndexState {
                 continue;
             };
             let route = route(&indexed_value);
-            for scope in or_unscoped(scopes) {
+            for scope in or_unlabelled(scopes) {
                 scoped.entry(scope).or_default().push(route);
             }
         }
@@ -268,15 +273,15 @@ impl PropertyIndexState {
             return;
         };
 
-        if self.unscoped_keys.contains(key) {
+        if self.any_scope_keys.contains(key) {
             Self::insert_value(
-                Arc::make_mut(&mut self.unscoped),
+                Arc::make_mut(&mut self.any_scope),
                 entity_id,
                 key,
                 indexed_value.clone(),
             );
         }
-        for scope in or_unscoped(scopes) {
+        for scope in or_unlabelled(scopes) {
             let scoped = Self::scope_mut(&mut self.scoped_values, scope);
             Self::insert_value(scoped, entity_id, key, indexed_value.clone());
         }
@@ -334,55 +339,31 @@ impl PropertyIndexState {
             return;
         };
 
-        if Self::holds(&self.unscoped, key, &indexed_value) {
+        if Self::holds(&self.any_scope, key, &indexed_value) {
             Self::remove_value(
-                Arc::make_mut(&mut self.unscoped),
+                Arc::make_mut(&mut self.any_scope),
                 entity_id,
                 key,
                 &indexed_value,
             );
         }
-        for scope in or_unscoped(scopes) {
+        for scope in or_unlabelled(scopes) {
             self.remove_from_scope(entity_id, scope, key, &indexed_value);
         }
     }
 
     /// Ids of every entity whose `key` equals `value`, whatever its scope,
-    /// in ascending order: from the across-scopes map when the key keeps
-    /// one (see [`Self::activate_unscoped`]), otherwise by asking each
-    /// scope and merging, since an entity with several labels is listed
-    /// under each.
-    pub(super) fn ids_for(&self, key: &str, value: &PropertyValue) -> Vec<u64> {
-        let Some(indexed_value) = PropertyIndexKey::from_value(value) else {
-            return Vec::new();
-        };
-        if self.unscoped_keys.contains(key) {
-            return self
-                .unscoped
-                .get(key)
-                .and_then(|values| values.get(&indexed_value))
-                .map(IdSet::to_vec)
-                .unwrap_or_default();
-        }
-        let mut hits = self
-            .scoped_values
-            .values()
-            .filter_map(|values| values.get(key))
-            .filter_map(|values| values.get(&indexed_value));
-        let Some(first) = hits.next() else {
-            return Vec::new();
-        };
-        let mut ids = first.to_vec();
-        let mut merged = false;
-        for more in hits {
-            ids.extend(more.iter());
-            merged = true;
-        }
-        if merged {
-            ids.sort_unstable();
-            ids.dedup();
-        }
-        ids
+    /// in ascending order. Reads the across-scopes map, which the caller
+    /// must have built (see [`Self::activate_any_scope`]).
+    pub(super) fn ids_for(&self, key: &str, value: &PropertyValue) -> Option<&IdSet> {
+        debug_assert!(
+            self.any_scope_keys.contains(key),
+            "lookup of `{key}` across scopes before its map was built"
+        );
+        let indexed_value = PropertyIndexKey::from_value(value)?;
+        self.any_scope
+            .get(key)
+            .and_then(|values| values.get(&indexed_value))
     }
 
     pub(super) fn scoped_ids_for(
@@ -391,6 +372,11 @@ impl PropertyIndexState {
         key: &str,
         value: &PropertyValue,
     ) -> Option<&IdSet> {
+        // No entity has an empty label; the scope by that name holds the
+        // nodes that have none (see `UNLABELLED`).
+        if scope == UNLABELLED {
+            return None;
+        }
         let indexed_value = PropertyIndexKey::from_value(value)?;
         self.scoped_values
             .get(scope)
@@ -462,6 +448,8 @@ impl From<i128> for Nanos {
     }
 }
 
+// On 64-bit targets; a 32-bit one (wasm32) has smaller pointers.
+#[cfg(target_pointer_width = "64")]
 const _: () = assert!(std::mem::size_of::<PropertyIndexKey>() == 32);
 
 /// Temporal key families. Values of different kinds never compare in

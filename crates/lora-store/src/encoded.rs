@@ -230,11 +230,12 @@ fn skip_payload(bytes: &[u8], tag: u8, pos: &mut usize) {
             *pos += 1;
         }
         TAG_FLOAT => *pos += 8,
-        TAG_STRING | TAG_OTHER => {
+        TAG_NULL | TAG_FALSE | TAG_TRUE => {}
+        // TAG_STRING and TAG_OTHER, as `read_value` reads them.
+        _ => {
             let len = get_varint(bytes, pos) as usize;
             *pos += len;
         }
-        _ => {}
     }
 }
 
@@ -305,6 +306,12 @@ fn write_value(out: &mut Vec<u8>, value: &PropertyValue) {
         other => {
             let encoded = crate::codec::encode_property_value(other)
                 .expect("a property value encodes: lengths fit in u64");
+            // Reads decode these bytes and treat a failure as a bug, so
+            // every debug build checks each value on its way in.
+            debug_assert!(
+                crate::codec::decode_property_value(&encoded).as_ref() == Ok(other),
+                "the codec does not round-trip {other:?}"
+            );
             out.push(TAG_OTHER);
             put_varint(out, encoded.len() as u64);
             out.extend_from_slice(&encoded);
@@ -407,10 +414,7 @@ fn write_props(out: &mut Vec<u8>, properties: &Properties, keys: &mut NameDict) 
     put_varint(out, properties.len() as u64);
     // `Properties` iterates in key order, which is the stored order.
     for (key, value) in properties.iter() {
-        let id = match keys.id_of(key) {
-            Some(id) => id,
-            None => keys.id_or_insert(&crate::Name::from_arc(key.clone())),
-        };
+        let id = keys.id_or_insert_with(key, || crate::Name::from_arc(key.clone()));
         put_varint(out, u64::from(id));
         write_value(out, value);
     }
@@ -673,7 +677,7 @@ pub(crate) fn edit_property(
         if let PropEdit::Set(value) = edit {
             let id = match wanted {
                 Some(id) => id,
-                None => keys.id_or_insert(&crate::Name::from_arc(crate::intern(key))),
+                None => keys.id_or_insert_with(key, || crate::Name::from_arc(crate::intern(key))),
             };
             put_varint(out, u64::from(id));
             write_value(out, value);

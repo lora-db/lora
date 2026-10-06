@@ -68,6 +68,11 @@ thread_local! {
 /// reading a store that does not change under them, so their scans may
 /// fetch ids a page at a time.
 ///
+/// A source reads the mark when it is built. One built later, while rows
+/// are being pulled (the inner side of an `OPTIONAL MATCH`, a subquery
+/// body), is outside the scope and copies its ids like a write's scan
+/// does: slower to its first row, never wrong.
+///
 /// Without it a scan copies its ids before yielding the first row. A
 /// streaming write needs that: it applies each row's write between pulls,
 /// and `MATCH (n:L) CREATE (:L)` over a paged scan would keep finding

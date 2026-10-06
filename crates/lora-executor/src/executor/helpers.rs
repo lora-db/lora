@@ -1252,15 +1252,11 @@ pub fn value_matches_property_value<'a>(
     }
 }
 
+/// The kinds a view does not carry inline. Scalars and strings never
+/// reach this: `value_matches_property_value` settles them, also for the
+/// elements of a list or map, which come back through it.
 fn owned_value_matches(expected: &LoraValue, actual: &PropertyValue) -> bool {
     match (expected, actual) {
-        (LoraValue::Null, PropertyValue::Null) => true,
-        (LoraValue::Bool(a), PropertyValue::Bool(b)) => a == b,
-        (LoraValue::Int(a), PropertyValue::Int(b)) => a == b,
-        (LoraValue::Float(a), PropertyValue::Float(b)) => a == b,
-        (LoraValue::Int(a), PropertyValue::Float(b)) => (*a as f64) == *b,
-        (LoraValue::Float(a), PropertyValue::Int(b)) => *a == (*b as f64),
-        (LoraValue::String(a), PropertyValue::String(b)) => a == b,
         (LoraValue::Binary(a), PropertyValue::Binary(b)) => a == b,
 
         (LoraValue::List(xs), PropertyValue::List(ys)) => {
@@ -1702,7 +1698,7 @@ fn node_matches_range_filter<S: GraphStorage>(
             let Some(actual) = n.properties().get(filter.key) else {
                 return false;
             };
-            let actual_lv = lora_store_property_to_value(actual);
+            let actual_lv = LoraValue::from(actual);
             range_predicate_holds(
                 &actual_lv,
                 filter.lo,
@@ -1790,10 +1786,6 @@ fn range_comparison(actual: &LoraValue, bound: &LoraValue) -> Option<Ordering> {
             .partial_cmp(&b.total_seconds_approx()),
         _ => actual.as_f64()?.partial_cmp(&bound.as_f64()?),
     }
-}
-
-fn lora_store_property_to_value<'a>(value: impl Into<lora_store::ValueRef<'a>>) -> LoraValue {
-    LoraValue::from(value.into())
 }
 
 pub(crate) fn node_by_point_scan_rows<S: GraphStorage>(
@@ -2257,7 +2249,7 @@ pub(crate) fn hydrate_node_record<'a>(node: impl Into<lora_store::NodeRef<'a>>) 
         "labels".to_string(),
         LoraValue::List(
             node.labels()
-                .iter()
+                .strs()
                 .map(|s| LoraValue::String(s.to_string()))
                 .collect(),
         ),

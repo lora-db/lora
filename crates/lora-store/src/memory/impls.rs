@@ -631,7 +631,7 @@ impl GraphStorage for InMemoryGraph {
     // ---------- Overrides: record-returning scans (direct iteration) ----------
 
     fn all_nodes(&self) -> Vec<NodeRecord> {
-        self.iter_node_records().map(|r| r.to_record()).collect()
+        self.iter_node_refs().map(|r| r.to_record()).collect()
     }
 
     fn nodes_by_label(&self, label: &str) -> Vec<NodeRecord> {
@@ -644,7 +644,7 @@ impl GraphStorage for InMemoryGraph {
     }
 
     fn all_relationships(&self) -> Vec<RelationshipRecord> {
-        self.iter_rel_records().map(|r| r.to_record()).collect()
+        self.iter_rel_refs().map(|r| r.to_record()).collect()
     }
 
     fn relationships_by_type(&self, rel_type: &str) -> Vec<RelationshipRecord> {
@@ -743,7 +743,7 @@ impl GraphStorage for InMemoryGraph {
 
     fn all_node_property_keys(&self) -> Vec<String> {
         let mut keys = BTreeSet::new();
-        for node in self.iter_node_records() {
+        for node in self.iter_node_refs() {
             for key in node.properties().keys() {
                 keys.insert(key.to_string());
             }
@@ -755,7 +755,7 @@ impl GraphStorage for InMemoryGraph {
 
     fn all_relationship_property_keys(&self) -> Vec<String> {
         let mut keys = BTreeSet::new();
-        for rel in self.iter_rel_records() {
+        for rel in self.iter_rel_refs() {
             for key in rel.properties().keys() {
                 keys.insert(key.to_string());
             }
@@ -810,7 +810,7 @@ impl GraphStorage for InMemoryGraph {
 
         self.ensure_node_property_index(key);
         if label.is_none() {
-            self.ensure_unscoped_node_property_index(key);
+            self.ensure_any_scope_node_property_index(key);
         }
         let indexes = self.indexes_read();
 
@@ -827,6 +827,7 @@ impl GraphStorage for InMemoryGraph {
                 .node_properties
                 .ids_for(key, value)
                 .into_iter()
+                .flat_map(|ids| ids.iter())
                 .filter_map(|id| self.node_at(id).map(|r| r.to_record()))
                 .collect(),
         }
@@ -847,7 +848,7 @@ impl GraphStorage for InMemoryGraph {
 
         self.ensure_node_property_index(key);
         if label.is_none() {
-            self.ensure_unscoped_node_property_index(key);
+            self.ensure_any_scope_node_property_index(key);
         }
         let indexes = self.indexes_read();
 
@@ -857,7 +858,11 @@ impl GraphStorage for InMemoryGraph {
                 .scoped_ids_for(label, key, value)
                 .map(|ids| ids.to_vec())
                 .unwrap_or_default(),
-            None => indexes.node_properties.ids_for(key, value),
+            None => indexes
+                .node_properties
+                .ids_for(key, value)
+                .map(|ids| ids.to_vec())
+                .unwrap_or_default(),
         }
     }
     // ---------- Overrides: schema introspection ----------
@@ -877,7 +882,7 @@ impl GraphStorage for InMemoryGraph {
 
         self.ensure_relationship_property_index(key);
         if rel_type.is_none() {
-            self.ensure_unscoped_relationship_property_index(key);
+            self.ensure_any_scope_relationship_property_index(key);
         }
         let indexes = self.indexes_read();
 
@@ -897,6 +902,7 @@ impl GraphStorage for InMemoryGraph {
                 .relationship_properties
                 .ids_for(key, value)
                 .into_iter()
+                .flat_map(|ids| ids.iter())
                 .filter_map(|id| self.rel_at(id).map(|r| r.to_record()))
                 .collect(),
         }
@@ -917,7 +923,7 @@ impl GraphStorage for InMemoryGraph {
 
         self.ensure_relationship_property_index(key);
         if rel_type.is_none() {
-            self.ensure_unscoped_relationship_property_index(key);
+            self.ensure_any_scope_relationship_property_index(key);
         }
         let indexes = self.indexes_read();
 
@@ -927,7 +933,11 @@ impl GraphStorage for InMemoryGraph {
                 .scoped_ids_for(rel_type, key, value)
                 .map(|ids| ids.to_vec())
                 .unwrap_or_default(),
-            None => indexes.relationship_properties.ids_for(key, value),
+            None => indexes
+                .relationship_properties
+                .ids_for(key, value)
+                .map(|ids| ids.to_vec())
+                .unwrap_or_default(),
         }
     }
 
@@ -987,7 +997,7 @@ impl GraphStorageMut for InMemoryGraph {
 
         let node = NodeRecord {
             id,
-            labels: labels.clone(),
+            labels,
             properties,
         };
 
@@ -995,8 +1005,8 @@ impl GraphStorageMut for InMemoryGraph {
 
         self.on_node_created(&node);
 
-        // ensure_node_slot grew both adjacency Vecs to cover this id when
-        // we put_node above.
+        // Reserving the slot also grew both adjacency tables to cover
+        // this id.
 
         self.emit(|| MutationEvent::CreateNode {
             id,
@@ -1193,7 +1203,7 @@ impl GraphStorageMut for InMemoryGraph {
         }
         self.on_node_deleted(&node);
 
-        // take_node already cleared the per-node adjacency Vecs.
+        // take_node already cleared the node's adjacency lists.
 
         self.emit(|| MutationEvent::DeleteNode { node_id });
 

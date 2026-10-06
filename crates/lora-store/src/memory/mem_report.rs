@@ -137,7 +137,7 @@ pub struct PropertyIndexKeyUsage {
     /// whose RANGE index was dropped (dropping the declaration leaves the
     /// hash buckets in place for later lookups).
     pub declared: bool,
-    /// Estimated bytes of the unscoped buckets plus every per-label /
+    /// Estimated bytes of the across-scopes buckets plus every per-label /
     /// per-type scope of this key. Same methodology as
     /// [`MemoryReport::property_index_bytes`].
     pub bytes: usize,
@@ -405,7 +405,7 @@ fn property_state_bytes(state: &PropertyIndexState) -> usize {
     for key in state.active_keys.iter() {
         total += BTREE_PER_ENTRY + size_of::<String>() + key.capacity();
     }
-    total += property_index_map_bytes(&state.unscoped);
+    total += property_index_map_bytes(&state.any_scope);
     for (scope, by_property) in state.scoped_values.iter() {
         total += HASHMAP_PER_ENTRY + ARC_STR_BYTES + scope.len();
         total += ARC_HEADER + property_index_map_bytes(by_property);
@@ -436,7 +436,7 @@ fn property_buckets_bytes(key: &str, buckets: &PropertyValueBuckets) -> usize {
 /// Per-scope map headers are shared by every key and not attributed.
 fn property_key_bytes(state: &PropertyIndexState, key: &String) -> usize {
     let mut total = BTREE_PER_ENTRY + size_of::<String>() + key.capacity();
-    if let Some(buckets) = state.unscoped.get(key.as_str()) {
+    if let Some(buckets) = state.any_scope.get(key.as_str()) {
         total += property_buckets_bytes(key, buckets);
     }
     for by_property in state.scoped_values.values() {

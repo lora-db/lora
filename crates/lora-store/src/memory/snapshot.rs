@@ -34,8 +34,8 @@ impl InMemoryGraph {
         SnapshotPayload {
             next_node_id: self.next_node_id,
             next_rel_id: self.next_rel_id,
-            nodes: self.iter_node_records().map(|r| r.to_record()).collect(),
-            relationships: self.iter_rel_records().map(|r| r.to_record()).collect(),
+            nodes: self.iter_node_refs().map(|r| r.to_record()).collect(),
+            relationships: self.iter_rel_refs().map(|r| r.to_record()).collect(),
             indexes: self.index_catalog_read().list(),
             constraints: self.constraint_catalog_read().list(),
             vector_indexes,
