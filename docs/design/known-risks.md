@@ -113,6 +113,38 @@ need. With records this small, declared indexes are a large share of an
 indexed graph's memory: a unique key adds about twice what its node's record
 takes.
 
+### Process memory after reopening a database
+
+A process that only opens an existing database can show more RSS than the
+process that wrote it, while holding the same data in less memory. Measured
+on macOS arm64 through `@loradb/lora-node` 0.24.0, on 20k + 5k nodes, two
+property indexes and 100k relationships with one property each, loaded in
+`UNWIND` batches of 1,000 into a named database and reopened in a fresh
+process (`vmmap -summary` for the allocator's own figures):
+
+| | Writer | Reopened |
+|---|---|---|
+| RSS growth (`process.memoryUsage().rss`, after `gc`) | 38.5 MB | 57.5-58.4 MB |
+| Bytes allocated in the malloc zone | 18.2 MB | 16.5 MB |
+| Dirty pages in the malloc zone | 46.8 MB | 25.7 MB |
+| Physical footprint of the process | 73.1 MB | 52.0 MB |
+| Engine live heap, same element count (`storage_baseline restart`) | 16.4 MB | 16.4 MB (snapshot), 16.5 MB (WAL replay) |
+
+The reopened graph is the same size or smaller. What differs is the path
+there: opening replays the WAL, which reads every committed event into
+memory before applying it, so the process touches about three times the
+memory it ends up holding (inferred from the zone's resident pages, 58 MB
+against 16.5 MB allocated; the peak itself was not traced). It frees the
+difference, and macOS keeps freed
+pages in RSS until something else needs them. RSS therefore reports the
+replay's high-water mark, not what the database holds; the physical
+footprint, which is what macOS charges the process, is lower after a reopen
+than after a load.
+
+Two things follow. Compare processes by allocated bytes or footprint, not
+RSS. And size a container for the replay's peak, not for the steady state:
+the transient is real while it lasts.
+
 Declaring indexes and constraints before a bulk load keeps the load
 linear: a uniqueness check looks the value up in its backing index rather
 than scanning the graph. For the largest loads, creating indexes after
