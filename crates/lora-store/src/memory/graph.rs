@@ -334,17 +334,45 @@ impl InMemoryGraph {
         Some(result)
     }
 
-    pub(super) fn update_rel<R>(
+    /// Set or remove one property of a node, rewriting only that entry of
+    /// its record. Returns the property's previous value; `None` when the
+    /// node does not exist or there was nothing to remove.
+    pub(super) fn edit_node_property(
+        &mut self,
+        id: NodeId,
+        key: &str,
+        edit: encoded::PropEdit<'_>,
+    ) -> Option<Option<PropertyValue>> {
+        let idx = Self::slot_index(id)?;
+        let blob = self.nodes.get(idx)?.as_ref()?;
+        let (blob, old) = encoded::edit_property(
+            blob,
+            encoded::RecordKind::Node,
+            &mut self.dicts.keys,
+            key,
+            edit,
+        )?;
+        self.nodes[idx] = Some(blob);
+        Some(old)
+    }
+
+    pub(super) fn edit_rel_property(
         &mut self,
         id: RelationshipId,
-        change: impl FnOnce(&mut RelationshipRecord) -> R,
-    ) -> Option<R> {
+        key: &str,
+        edit: encoded::PropEdit<'_>,
+    ) -> Option<Option<PropertyValue>> {
         let idx = Self::slot_index(id)?;
-        let mut record = self.rel_at(id)?.to_record();
-        let result = change(&mut record);
-        let blob = encoded::encode_rel(&record, &mut self.dicts);
+        let blob = self.relationships.get(idx)?.as_ref()?;
+        let (blob, old) = encoded::edit_property(
+            blob,
+            encoded::RecordKind::Relationship,
+            &mut self.dicts.keys,
+            key,
+            edit,
+        )?;
         self.relationships[idx] = Some(blob);
-        Some(result)
+        Some(old)
     }
 
     /// Resize the node-keyed Vecs so `id as usize` is in range. Adjacency

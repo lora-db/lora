@@ -48,9 +48,9 @@ fn nodes_by_label(&self, label: &str) -> Vec<NodeRecord>;  // clones matching no
 ```
 
 For a graph with 1M nodes, `MATCH (n) RETURN n` allocates and clones all 1M records.
-Borrow-capable backends can implement `BorrowedGraphStorage` and the
-`with_node` / `with_relationship` hooks to avoid clones on hot paths, but more
-bulk compatibility APIs still return owned records.
+Hot paths read through the `with_node` / `with_relationship` hooks, which hand
+out a view and build no record, but the bulk compatibility APIs still return
+owned records.
 
 **Source**: `crates/lora-store/src/traits.rs` and
 `crates/lora-store/src/memory/impls.rs`.

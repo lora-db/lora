@@ -765,17 +765,18 @@ fn constrained_tuple(
 
 fn constrained_tuple_after_set(
     def: &ConstraintDefinition,
-    properties: &Properties,
+    properties: crate::PropsRef<'_>,
     key: &str,
     value: &PropertyValue,
 ) -> Option<Vec<PropertyValue>> {
+    // Reads only the constrained properties of the stored record.
     def.properties
         .iter()
         .map(|prop| {
             if prop == key {
                 Some(value.clone())
             } else {
-                properties.get(prop.as_str()).cloned()
+                properties.get(prop.as_str()).map(|v| v.to_owned())
             }
         })
         .collect()
@@ -820,9 +821,7 @@ pub(crate) fn check_node_set_property(
         // Uniqueness: build the post-set tuple and search the rest of
         // the graph for an identical one.
         if def.kind.requires_uniqueness() {
-            if let Some(tuple) =
-                constrained_tuple_after_set(def, &node.properties().to_owned(), key, value)
-            {
+            if let Some(tuple) = constrained_tuple_after_set(def, node.properties(), key, value) {
                 if any_other_node_with_tuple(
                     graph,
                     &def.label,
@@ -948,9 +947,7 @@ pub(crate) fn check_relationship_set_property(
             }
         }
         if def.kind.requires_uniqueness() {
-            if let Some(tuple) =
-                constrained_tuple_after_set(def, &rel.properties().to_owned(), key, value)
-            {
+            if let Some(tuple) = constrained_tuple_after_set(def, rel.properties(), key, value) {
                 if any_other_rel_with_tuple(
                     graph,
                     &def.label,

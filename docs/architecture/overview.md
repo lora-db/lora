@@ -71,8 +71,8 @@ Defines the Cypher grammar in PEG notation (pest) and lowers parse trees into th
 
 ### lora-store
 
-Defines the `GraphStorage` (read), `BorrowedGraphStorage`, `GraphCatalog`, and
-`GraphStorageMut` (write) traits and provides `InMemoryGraph`, a slot-indexed
+Defines the `GraphStorage` (read), `GraphCatalog`, and `GraphStorageMut`
+(write) traits and provides `InMemoryGraph`, a slot-indexed
 in-memory implementation with adjacency vectors, label/type indexes, lazy
 exact-match property indexes, and catalog-backed RANGE/TEXT/POINT/LOOKUP
 indexes. Also defines the binary, temporal, spatial, and vector value types

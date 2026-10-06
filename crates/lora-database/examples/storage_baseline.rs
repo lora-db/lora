@@ -1067,6 +1067,98 @@ fn hop_mode(n: u64) {
 }
 
 // ---------------------------------------------------------------------------
+// wide mode: records with many properties, and values that are not scalars
+// ---------------------------------------------------------------------------
+
+/// `wide <W>`: 20k `:Item` nodes with `W` integer properties `p000..`,
+/// a datetime and a point. Times reading and writing one property of a
+/// wide record, and reads of the datetime and the point.
+fn wide_mode(width: u64) {
+    let n = 20_000u64;
+    let db = Database::in_memory();
+    run(&db, "CREATE INDEX item_id FOR (i:Item) ON (i.id)");
+    let assignments: String = (0..width).map(|k| format!(", p{k:03}: i + {k}")).collect();
+    let mut start = 0;
+    while start < n {
+        let end = (start + 1000).min(n) - 1;
+        run(
+            &db,
+            &format!(
+                "UNWIND range({start}, {end}) AS i CREATE (:Item {{id: i, \
+                 created: datetime('2026-01-01T00:00:00Z') + duration({{minutes: i}}), \
+                 at: point({{latitude: 50.0 + (i % 100) / 100.0, longitude: 4.0}}){assignments}}})"
+            ),
+        );
+        start = end + 1;
+    }
+    let id = |r: u64| LoraValue::Int((r % n) as i64);
+    let last = format!("p{:03}", width.saturating_sub(1));
+    let samples = 10_000;
+    for (name, query) in [
+        (
+            "cy_read_first_prop",
+            "MATCH (i:Item {id: $id}) RETURN i.created AS v".to_string(),
+        ),
+        (
+            "cy_read_last_prop",
+            format!("MATCH (i:Item {{id: $id}}) RETURN i.{last} AS v"),
+        ),
+        (
+            "cy_read_point",
+            "MATCH (i:Item {id: $id}) RETURN i.at AS v".to_string(),
+        ),
+        (
+            "cy_read_whole_node",
+            "MATCH (i:Item {id: $id}) RETURN i".to_string(),
+        ),
+    ] {
+        bench(name, samples, |r| {
+            q(&db, &query, params(&[("id", id(r))]));
+        });
+    }
+    let set_last = format!("MATCH (i:Item {{id: $id}}) SET i.{last} = $v");
+    bench("cy_set_last_prop", samples, |r| {
+        q(
+            &db,
+            &set_last,
+            params(&[("id", id(r)), ("v", LoraValue::Int(r as i64))]),
+        );
+    });
+    bench("cy_set_new_then_remove", samples / 2, |r| {
+        q(
+            &db,
+            "MATCH (i:Item {id: $id}) SET i.zz = 1",
+            params(&[("id", id(r))]),
+        );
+        q(
+            &db,
+            "MATCH (i:Item {id: $id}) REMOVE i.zz",
+            params(&[("id", id(r))]),
+        );
+    });
+    bench("db.graph_set_node_property", samples, |r| {
+        db.graph_set_node_property(r % n, last.clone(), LoraValue::Int(r as i64))
+            .unwrap();
+    });
+    for (name, query) in [
+        (
+            "cy_scan_datetime_filter",
+            "MATCH (i:Item) WHERE i.created > datetime('2026-01-10T00:00:00Z') RETURN count(*) AS c",
+        ),
+        (
+            "cy_scan_point_filter",
+            "MATCH (i:Item) WHERE point.distance(i.at, point({latitude: 50.5, longitude: 4.0})) < 10000 RETURN count(*) AS c",
+        ),
+        ("cy_scan_int_filter", "MATCH (i:Item) WHERE i.p000 > 10000 RETURN count(*) AS c"),
+    ] {
+        let s = bench(name, 30, |_| {
+            q(&db, query, params(&[]));
+        });
+        println!("info {name} ns_per_node={:.1}", s.median / n as f64);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // labels mode: equality lookups that name no label
 // ---------------------------------------------------------------------------
 
@@ -1170,8 +1262,9 @@ fn main() {
         Some("hop") => hop_mode(args[2].parse().unwrap()),
         Some("scan") => scan_mode(args[2].parse().unwrap()),
         Some("labels") => labels_mode(args[2].parse().unwrap()),
+        Some("wide") => wide_mode(args[2].parse().unwrap()),
         _ => eprintln!(
-            "usage: storage_baseline mem <variant> <N> | lat <N> | wal <N> | restart <N> | idlat <N> | hop <N> | scan <N> | labels <L>"
+            "usage: storage_baseline mem <variant> <N> | lat <N> | wal <N> | restart <N> | idlat <N> | hop <N> | scan <N> | labels <L> | wide <W>"
         ),
     }
 }

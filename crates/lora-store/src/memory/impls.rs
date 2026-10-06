@@ -1,11 +1,11 @@
-//! `GraphStorage` / `BorrowedGraphStorage` / `GraphStorageMut` impls
-//! for [`InMemoryGraph`]. The trait surfaces — read, borrow, mutate —
-//! all delegate into the inherent helpers defined in `super`.
+//! `GraphStorage` / `GraphStorageMut` impls for [`InMemoryGraph`]. Both
+//! delegate into the inherent helpers defined in `super`.
 
 use std::collections::BTreeSet;
 
 use lora_ast::Direction;
 
+use crate::encoded::PropEdit;
 use crate::{
     ConstraintDefinition, ConstraintRequest, CreateConstraintError, CreateConstraintOutcome,
     CreateIndexError, CreateIndexOutcome, DropConstraintError, DropConstraintOutcome,
@@ -1047,15 +1047,7 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn set_node_property(&mut self, node_id: NodeId, key: String, value: PropertyValue) -> bool {
-        let Some(old) = self.update_node(node_id, |node| {
-            // Reuse the existing key when this is an overwrite: the common
-            // SET-existing-property path then skips the intern table.
-            if let Some(slot) = node.properties.get_mut(key.as_str()) {
-                Some(std::mem::replace(slot, value.clone()))
-            } else {
-                node.properties.insert(crate::intern(&key), value.clone())
-            }
-        }) else {
+        let Some(old) = self.edit_node_property(node_id, &key, PropEdit::Set(&value)) else {
             return false;
         };
         self.on_node_property_set(node_id, &key, old.as_ref(), &value);
@@ -1070,14 +1062,8 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn remove_node_property(&mut self, node_id: NodeId, key: &str) -> bool {
-        if !self
-            .node_at(node_id)
-            .is_some_and(|node| node.properties().contains_key(key))
-        {
-            return false;
-        }
         let Some(removed) = self
-            .update_node(node_id, |node| node.properties.remove(key))
+            .edit_node_property(node_id, key, PropEdit::Remove)
             .flatten()
         else {
             return false;
@@ -1139,13 +1125,7 @@ impl GraphStorageMut for InMemoryGraph {
         key: String,
         value: PropertyValue,
     ) -> bool {
-        let Some(old) = self.update_rel(rel_id, |rel| {
-            if let Some(slot) = rel.properties.get_mut(key.as_str()) {
-                Some(std::mem::replace(slot, value.clone()))
-            } else {
-                rel.properties.insert(crate::intern(&key), value.clone())
-            }
-        }) else {
+        let Some(old) = self.edit_rel_property(rel_id, &key, PropEdit::Set(&value)) else {
             return false;
         };
         self.on_relationship_property_set(rel_id, &key, old.as_ref(), &value);
@@ -1160,14 +1140,8 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn remove_relationship_property(&mut self, rel_id: RelationshipId, key: &str) -> bool {
-        if !self
-            .rel_at(rel_id)
-            .is_some_and(|rel| rel.properties().contains_key(key))
-        {
-            return false;
-        }
         let Some(removed) = self
-            .update_rel(rel_id, |rel| rel.properties.remove(key))
+            .edit_rel_property(rel_id, key, PropEdit::Remove)
             .flatten()
         else {
             return false;

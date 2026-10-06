@@ -39,7 +39,7 @@ pub use types::{
 pub use types::{LabelsRef, NodeRef, OtherValue, PropsIter, PropsRef, RelRef, ValueRef};
 
 // ---------- Storage trait surface ----------
-pub use traits::{BorrowedGraphStorage, GraphCatalog, GraphStorage, GraphStorageMut};
+pub use traits::{GraphCatalog, GraphStorage, GraphStorageMut};
 
 // ---------- In-memory backend ----------
 pub use memory::InMemoryGraph;

@@ -4,8 +4,11 @@
 //! - `graph` — the [`InMemoryGraph`] struct, its `Debug`/`Clone` impls,
 //!   and the inherent helpers (slab access, adjacency, label/type
 //!   indexes, replay hooks).
-//! - `impls` — `GraphStorage` / `BorrowedGraphStorage` / `GraphStorageMut`
-//!   impls that delegate into the inherent helpers above.
+//! - `impls` — `GraphStorage` / `GraphStorageMut` impls that delegate into
+//!   the inherent helpers above.
+//! - `adjacency` — per-node lists of `(type, neighbour, relationship)`.
+//!   Records themselves are stored encoded: see `crate::encoded` and
+//!   `crate::dict`.
 //! - `property_index` — hash-bucket property indexes used by the
 //!   `find_*_by_property` lookups.
 //! - `snapshot` — bridge between [`InMemoryGraph`] and the portable

@@ -1,4 +1,4 @@
-//! Storage trait surface: read, borrow, and mutate contracts.
+//! Storage trait surface: read and mutate contracts.
 //!
 //! Backends speak the value types defined in [`crate::types`] and surface
 //! them through the traits here. The split keeps the hot loop of "what
@@ -40,9 +40,9 @@ pub trait GraphStorage {
     /// Cheap existence check. Should not clone or materialize the record.
     fn contains_node(&self, id: NodeId) -> bool;
 
-    /// Point lookup returning an owned record. Backends that can hand out
-    /// borrows should also implement [`BorrowedGraphStorage::node_ref`] and
-    /// override [`with_node`] to avoid clones on the hot path.
+    /// Point lookup returning an owned record. Backends that can read a
+    /// node without building a record should override [`Self::with_node`],
+    /// which is what hot paths call.
     fn node(&self, id: NodeId) -> Option<NodeRecord>;
 
     /// Enumerate every node id. Should be O(nodes) without cloning records.
@@ -136,8 +136,9 @@ pub trait GraphStorage {
     // ---------- Optional optimization hooks ----------
     //
     // Generic methods gated on `Self: Sized` so they don't affect object
-    // safety. Backends override these to supply borrow-based access on hot
-    // paths; defaults clone through `node` / `relationship`.
+    // safety. A reader gets a view (`NodeRef` / `RelRef`) for the length of
+    // the closure. Backends override these to read in place; the defaults
+    // fetch an owned record through `node` / `relationship` and wrap it.
 
     fn with_node<F, R>(&self, id: NodeId, f: F) -> Option<R>
     where
@@ -304,7 +305,7 @@ pub trait GraphStorage {
     where
         Self: Sized,
     {
-        self.with_node(node_id, |n| n.labels().iter().any(|l| l == label))
+        self.with_node(node_id, |n| n.has_label(label))
             .unwrap_or(false)
     }
 
@@ -1021,56 +1022,6 @@ impl<T: GraphStorage> GraphCatalog for T {
     }
     fn has_property_key(&self, key: &str) -> bool {
         GraphStorage::has_property_key(self, key)
-    }
-}
-
-// ============================================================================
-// BorrowedGraphStorage — optional capability for backends that can hand out
-// long-lived borrows into internal records.
-//
-// The executor prefers `with_node` / `with_relationship` on hot paths because
-// they work for both borrow-capable and owned-only backends. This trait is
-// available for callers that really do want a `&NodeRecord` outliving the
-// closure — mostly internal optimization paths and tests.
-// ============================================================================
-
-pub trait BorrowedGraphStorage: GraphStorage {
-    fn node_ref(&self, id: NodeId) -> Option<&NodeRecord>;
-    fn relationship_ref(&self, id: RelationshipId) -> Option<&RelationshipRecord>;
-
-    fn node_refs(&self) -> Box<dyn Iterator<Item = &NodeRecord> + '_> {
-        Box::new(
-            self.all_node_ids()
-                .into_iter()
-                .filter_map(|id| self.node_ref(id)),
-        )
-    }
-
-    fn node_refs_by_label(&self, label: &str) -> Box<dyn Iterator<Item = &NodeRecord> + '_> {
-        Box::new(
-            self.node_ids_by_label(label)
-                .into_iter()
-                .filter_map(|id| self.node_ref(id)),
-        )
-    }
-
-    fn relationship_refs(&self) -> Box<dyn Iterator<Item = &RelationshipRecord> + '_> {
-        Box::new(
-            self.all_rel_ids()
-                .into_iter()
-                .filter_map(|id| self.relationship_ref(id)),
-        )
-    }
-
-    fn relationship_refs_by_type(
-        &self,
-        rel_type: &str,
-    ) -> Box<dyn Iterator<Item = &RelationshipRecord> + '_> {
-        Box::new(
-            self.rel_ids_by_type(rel_type)
-                .into_iter()
-                .filter_map(|id| self.relationship_ref(id)),
-        )
     }
 }
 

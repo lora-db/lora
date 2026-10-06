@@ -19,7 +19,7 @@ use super::{
     Labels, Name, NodeId, NodeRecord, Properties, PropertyValue, RelationshipId, RelationshipRecord,
 };
 use crate::encoded::{
-    EncodedOther, StoredLabels, StoredNode, StoredProps, StoredPropsIter, StoredRel, StoredValue,
+    EncodedOther, StoredLabels, StoredNode, StoredProps, StoredPropsIter, StoredRel,
 };
 
 /// A borrowed property value.
@@ -54,6 +54,13 @@ enum OtherRepr<'a> {
 }
 
 impl<'a> OtherValue<'a> {
+    #[inline]
+    pub(crate) fn encoded(value: EncodedOther<'a>) -> Self {
+        Self {
+            repr: OtherRepr::Encoded(value),
+        }
+    }
+
     pub fn get(self) -> Cow<'a, PropertyValue> {
         match self.repr {
             OtherRepr::Value(v) => Cow::Borrowed(v),
@@ -93,20 +100,6 @@ impl<'a> ValueRef<'a> {
         match self {
             ValueRef::String(v) => Some(v),
             _ => None,
-        }
-    }
-
-    #[inline]
-    fn from_stored(value: StoredValue<'a>) -> Self {
-        match value {
-            StoredValue::Null => ValueRef::Null,
-            StoredValue::Bool(v) => ValueRef::Bool(v),
-            StoredValue::Int(v) => ValueRef::Int(v),
-            StoredValue::Float(v) => ValueRef::Float(v),
-            StoredValue::String(v) => ValueRef::String(v),
-            StoredValue::Other(v) => ValueRef::Other(OtherValue {
-                repr: OtherRepr::Encoded(v),
-            }),
         }
     }
 }
@@ -181,7 +174,7 @@ impl<'a> PropsRef<'a> {
     pub fn get(self, key: &str) -> Option<ValueRef<'a>> {
         match self.repr {
             PropsRepr::Map(map) => map.get(key).map(ValueRef::from),
-            PropsRepr::Stored(props) => props.get(key).map(ValueRef::from_stored),
+            PropsRepr::Stored(props) => props.get(key),
         }
     }
 
@@ -267,9 +260,7 @@ impl<'a> PropsIter<'a> {
     fn next_shared(&mut self) -> Option<(&'a Arc<str>, ValueRef<'a>)> {
         match &mut self.inner {
             IterRepr::Map(iter) => iter.next().map(|(k, v)| (k, ValueRef::from(v))),
-            IterRepr::Stored(iter) => iter
-                .next()
-                .map(|(k, v)| (k.as_arc(), ValueRef::from_stored(v))),
+            IterRepr::Stored(iter) => iter.next().map(|(k, v)| (k.as_arc(), v)),
         }
     }
 }

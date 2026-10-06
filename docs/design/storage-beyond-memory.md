@@ -271,8 +271,9 @@ string instead of an `Arc<NodeRecord>` / `Arc<RelationshipRecord>`.
   representation: labels and properties are read in place, a property lookup
   resolves the key to its number and walks the entries. `ValueRef::Other`
   now hands out a value that is borrowed or decoded (`OtherValue::get`).
-- **`BorrowedGraphStorage` is no longer implemented by `InMemoryGraph`**:
-  there is no `&NodeRecord` to lend. The change feed reads owned records.
+- **`BorrowedGraphStorage` is gone.** `InMemoryGraph` has no `&NodeRecord`
+  to lend, the change feed (its one consumer) reads owned records, and
+  nothing else implemented it.
 
 This is the per-record form of §5.1's chunk encoding, not the chunk arena:
 each record is its own allocation. It keeps copy-on-write exactly as it was
@@ -308,13 +309,12 @@ than before; T8 (fast-path writes within 20%) is met. T5 (RANGE index ≤ 80 B
 per entry) is the subject of the fourth slice below.
 
 Known costs and what is left:
-- A write to an existing record decodes and re-encodes the whole record.
-  Invisible at four properties; a node with hundreds of properties pays for
-  all of them on each `SET`. Splicing the changed entry would fix it.
-- Constraint checks on a write copy the record's properties into an owned
-  map first. They could read through the view.
-- A value that is not a scalar or string is decoded on each read. A filter
-  over a point or temporal property decodes it per candidate.
+- A label change decodes and re-encodes the whole record. A property
+  change does not (see the follow-up below).
+- A value that is not a scalar or string is decoded on each read. Measured
+  on datetime and point properties this still reads faster than the struct
+  form did (`wide` mode: a point-distance filter over 20k nodes of 32
+  properties 14.3 → 8.7 ms, a datetime filter 12.8 → 6.8 ms).
 - A stored value that fails to decode panics. It was encoded by the same
   process with the snapshot codec, so this should be unreachable, but it is
   a panic and not an error.
@@ -375,6 +375,32 @@ A first version dropped the across-labels map outright and answered
 unlabelled lookups by asking every label's map and merging. That cost 25 ns
 per label: 8 µs with 200 labels sharing the key and 190 µs with 2000,
 against 70 ns before. Building the map on first use keeps that path O(1).
+
+### Follow-up: property writes edit one entry
+
+The third slice re-encoded a whole record for every property write, and a
+`SET` on a wide node paid for it: +5% at 32 properties and +33% (Cypher) to
++55% (`graph_set_node_property`) at 128, against the struct form.
+`SET` and `REMOVE` of a property now rewrite only that entry
+(`encoded::edit_property`): the rest of the record is copied as bytes, and a
+unit test holds the result byte-identical to a fresh encoding. The uniqueness
+pre-check on `SET` reads only the constrained keys instead of copying the
+record's properties.
+
+`wide` mode, 20k nodes, medians in µs: struct form, re-encode, edit in place.
+
+| Properties per node | `SET` an existing property (Cypher) | `graph_set_node_property` |
+|---|---|---|
+| 4 | 4.75 / 4.62 / 4.75 | 3.25 / 3.50 / 3.17 |
+| 32 | 5.62 / 5.54 / 4.96 | 3.79 / 4.33 / 3.62 |
+| 128 | 6.50 / 7.62 / **5.42** | 5.42 / 6.71 / **4.50** |
+
+Also in this follow-up: the thin record pointer's `unsafe` code, the
+encoding, the views and the adjacency lists pass their tests under Miri,
+including clones and drops of one record from four threads; the
+`BorrowedGraphStorage` trait, left with no implementor or caller, is
+removed; and the encoding yields `ValueRef`s directly instead of through a
+second, identical enum.
 
 **Not done yet from Stage 0.**
 - Removing the lazy implicit indexes (D3 options b and c).

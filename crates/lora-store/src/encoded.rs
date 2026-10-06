@@ -31,7 +31,8 @@ use std::sync::atomic::{self, AtomicU32, Ordering};
 
 use crate::dict::{Dicts, NameDict};
 use crate::{
-    Labels, NodeId, NodeRecord, Properties, PropertyValue, RelationshipId, RelationshipRecord,
+    Labels, NodeId, NodeRecord, OtherValue, Properties, PropertyValue, RelationshipId,
+    RelationshipRecord, ValueRef,
 };
 
 // ---------------------------------------------------------------------------
@@ -255,42 +256,30 @@ impl EncodedOther<'_> {
     }
 }
 
-/// A property value as stored. `crate::types::view` turns it into a
-/// public [`crate::ValueRef`].
-#[derive(Clone, Copy)]
-pub(crate) enum StoredValue<'a> {
-    Null,
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    String(&'a str),
-    Other(EncodedOther<'a>),
-}
-
 #[inline]
-fn read_value<'a>(bytes: &'a [u8], tag: u8, pos: &mut usize) -> StoredValue<'a> {
+fn read_value<'a>(bytes: &'a [u8], tag: u8, pos: &mut usize) -> ValueRef<'a> {
     match tag {
-        TAG_NULL => StoredValue::Null,
-        TAG_FALSE => StoredValue::Bool(false),
-        TAG_TRUE => StoredValue::Bool(true),
-        TAG_INT => StoredValue::Int(unzigzag(get_varint(bytes, pos))),
+        TAG_NULL => ValueRef::Null,
+        TAG_FALSE => ValueRef::Bool(false),
+        TAG_TRUE => ValueRef::Bool(true),
+        TAG_INT => ValueRef::Int(unzigzag(get_varint(bytes, pos))),
         TAG_FLOAT => {
             let raw: [u8; 8] = bytes[*pos..*pos + 8].try_into().unwrap();
             *pos += 8;
-            StoredValue::Float(f64::from_le_bytes(raw))
+            ValueRef::Float(f64::from_le_bytes(raw))
         }
         TAG_STRING => {
             let len = get_varint(bytes, pos) as usize;
             let raw = &bytes[*pos..*pos + len];
             *pos += len;
             // SAFETY: written by `write_value` from a `String`'s bytes.
-            StoredValue::String(unsafe { std::str::from_utf8_unchecked(raw) })
+            ValueRef::String(unsafe { std::str::from_utf8_unchecked(raw) })
         }
         _ => {
             let len = get_varint(bytes, pos) as usize;
             let raw = &bytes[*pos..*pos + len];
             *pos += len;
-            StoredValue::Other(EncodedOther { bytes: raw })
+            ValueRef::Other(OtherValue::encoded(EncodedOther { bytes: raw }))
         }
     }
 }
@@ -323,19 +312,6 @@ fn write_value(out: &mut Vec<u8>, value: &PropertyValue) {
     }
 }
 
-impl StoredValue<'_> {
-    pub(crate) fn to_owned(self) -> PropertyValue {
-        match self {
-            StoredValue::Null => PropertyValue::Null,
-            StoredValue::Bool(v) => PropertyValue::Bool(v),
-            StoredValue::Int(v) => PropertyValue::Int(v),
-            StoredValue::Float(v) => PropertyValue::Float(v),
-            StoredValue::String(v) => PropertyValue::String(v.to_owned()),
-            StoredValue::Other(v) => v.decode(),
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Properties
 // ---------------------------------------------------------------------------
@@ -357,7 +333,7 @@ impl<'a> StoredProps<'a> {
     }
 
     #[inline]
-    pub(crate) fn get(self, key: &str) -> Option<StoredValue<'a>> {
+    pub(crate) fn get(self, key: &str) -> Option<ValueRef<'a>> {
         // A key no record ever had is not in the dictionary.
         let wanted = u64::from(self.keys.id_of(key)?);
         let bytes = self.bytes;
@@ -405,7 +381,7 @@ pub(crate) struct StoredPropsIter<'a> {
 }
 
 impl<'a> Iterator for StoredPropsIter<'a> {
-    type Item = (&'a crate::Name, StoredValue<'a>);
+    type Item = (&'a crate::Name, ValueRef<'a>);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -605,6 +581,108 @@ impl<'a> StoredRel<'a> {
     }
 }
 
+/// A change to one property of a stored record.
+pub(crate) enum PropEdit<'v> {
+    Set(&'v PropertyValue),
+    Remove,
+}
+
+/// Which kind of record a blob holds: where its properties start.
+#[derive(Clone, Copy)]
+pub(crate) enum RecordKind {
+    Node,
+    Relationship,
+}
+
+/// Offset of the property block (its count) in a record.
+fn props_offset(bytes: &[u8], kind: RecordKind) -> usize {
+    let mut pos = 0;
+    let skip = match kind {
+        RecordKind::Node => get_varint(bytes, &mut pos),
+        // Source, target, type.
+        RecordKind::Relationship => 3,
+    };
+    for _ in 0..skip {
+        get_varint(bytes, &mut pos);
+    }
+    pos
+}
+
+/// Apply `edit` to property `key` of the record in `blob` and return the
+/// new record with the property's previous value.
+///
+/// Only the edited entry is rewritten: the rest of the record is copied
+/// as bytes, so the cost does not grow with what the other properties
+/// hold. `None` when there is nothing to do: removing a key the record
+/// does not have.
+pub(crate) fn edit_property(
+    blob: &Blob,
+    kind: RecordKind,
+    keys: &mut NameDict,
+    key: &str,
+    edit: PropEdit<'_>,
+) -> Option<(Blob, Option<PropertyValue>)> {
+    let bytes = blob.as_slice();
+    let props_at = props_offset(bytes, kind);
+    let mut pos = props_at;
+    let count = get_varint(bytes, &mut pos);
+    let entries_at = pos;
+
+    // Find the entry, or where a new one goes to keep key-name order.
+    let wanted = keys.id_of(key);
+    let mut found: Option<(usize, usize, PropertyValue)> = None;
+    let mut insert_at = None;
+    for _ in 0..count {
+        let start = pos;
+        let id = get_varint(bytes, &mut pos) as u32;
+        let tag = bytes[pos];
+        pos += 1;
+        if Some(id) == wanted {
+            let old = read_value(bytes, tag, &mut pos).to_owned();
+            found = Some((start, pos, old));
+            break;
+        }
+        if insert_at.is_none() && keys.name(id).as_str() > key {
+            insert_at = Some(start);
+            // A later entry cannot be `key`: entries are in name order.
+            break;
+        }
+        skip_payload(bytes, tag, &mut pos);
+    }
+
+    let (start, end, old) = match found {
+        Some((start, end, old)) => (start, end, Some(old)),
+        None => {
+            if matches!(edit, PropEdit::Remove) {
+                return None;
+            }
+            // `pos` is the end of the record when no later key was met.
+            let at = insert_at.unwrap_or(pos);
+            (at, at, None)
+        }
+    };
+    let new_count = match (&edit, old.is_some()) {
+        (PropEdit::Set(_), true) => count,
+        (PropEdit::Set(_), false) => count + 1,
+        (PropEdit::Remove, _) => count - 1,
+    };
+    let blob = with_scratch(|out| {
+        out.extend_from_slice(&bytes[..props_at]);
+        put_varint(out, new_count);
+        out.extend_from_slice(&bytes[entries_at..start]);
+        if let PropEdit::Set(value) = edit {
+            let id = match wanted {
+                Some(id) => id,
+                None => keys.id_or_insert(&crate::Name::from_arc(crate::intern(key))),
+            };
+            put_varint(out, u64::from(id));
+            write_value(out, value);
+        }
+        out.extend_from_slice(&bytes[end..]);
+    });
+    Some((blob, old))
+}
+
 /// `(source, target)` of a stored relationship, without the rest.
 #[inline]
 pub(crate) fn rel_endpoints(blob: &Blob) -> (NodeId, NodeId) {
@@ -718,6 +796,25 @@ mod tests {
     }
 
     #[test]
+    fn blobs_are_shared_and_freed_across_threads() {
+        let bytes: Vec<u8> = (0..64u8).collect();
+        let blob = Blob::new(&bytes);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let mine = blob.clone();
+                let bytes = &bytes;
+                scope.spawn(move || {
+                    for _ in 0..50 {
+                        let copy = mine.clone();
+                        assert_eq!(copy.as_slice(), bytes.as_slice());
+                    }
+                });
+            }
+        });
+        assert_eq!(blob.as_slice(), bytes);
+    }
+
+    #[test]
     fn a_wide_blob_reads_like_a_narrow_one() {
         let bytes: Vec<u8> = (0..100u8).collect();
         let blob = Blob::with_width(&bytes, true);
@@ -817,6 +914,87 @@ mod tests {
             assert_eq!(stored.rel_type().as_str(), "KNOWS");
             assert_eq!(stored.to_record(), rel);
         }
+    }
+
+    /// Editing a record in place must give the bytes a fresh encoding of
+    /// the edited record would.
+    #[test]
+    fn editing_one_property_matches_re_encoding_the_record() {
+        let all = values();
+        let mut dicts = Dicts::default();
+        let mut node = NodeRecord {
+            id: 1,
+            labels: ["A", "B"].into(),
+            properties: Properties::new(),
+        };
+        let mut rel = RelationshipRecord {
+            id: 2,
+            src: 300,
+            dst: 70_000,
+            rel_type: "T".into(),
+            properties: Properties::new(),
+        };
+        let mut node_blob = encode_node(&node, &mut dicts);
+        let mut rel_blob = encode_rel(&rel, &mut dicts);
+        // Keys arrive out of name order; each is set, overwritten with
+        // another kind of value, and some removed again.
+        let keys = ["m", "c", "x", "a", "q", "zz", "b"];
+        let mut step = 0usize;
+        let mut check = |key: &str, edit: Option<&PropertyValue>, dicts: &mut Dicts| {
+            let expected_old = match edit {
+                Some(value) => node.properties.insert(intern(key), value.clone()),
+                None => node.properties.remove(key),
+            };
+            match edit {
+                Some(value) => rel.properties.insert(intern(key), value.clone()),
+                None => rel.properties.remove(key),
+            };
+            let op = || match edit {
+                Some(value) => PropEdit::Set(value),
+                None => PropEdit::Remove,
+            };
+            let edited = edit_property(&node_blob, RecordKind::Node, &mut dicts.keys, key, op());
+            let edited_rel = edit_property(
+                &rel_blob,
+                RecordKind::Relationship,
+                &mut dicts.keys,
+                key,
+                op(),
+            );
+            if edit.is_none() && expected_old.is_none() {
+                assert!(edited.is_none() && edited_rel.is_none());
+                return;
+            }
+            let (blob, old) = edited.unwrap();
+            assert_eq!(old, expected_old, "{key}");
+            assert_eq!(
+                blob.as_slice(),
+                encode_node(&node, dicts).as_slice(),
+                "{key}"
+            );
+            node_blob = blob;
+            let (blob, old) = edited_rel.unwrap();
+            assert_eq!(old, expected_old, "{key}");
+            assert_eq!(blob.as_slice(), encode_rel(&rel, dicts).as_slice(), "{key}");
+            rel_blob = blob;
+        };
+        for round in 0..3 {
+            for key in keys {
+                let value = &all[step % all.len()];
+                step += 1;
+                check(key, Some(value), &mut dicts);
+                if (step + round).is_multiple_of(3) {
+                    check(key, None, &mut dicts);
+                    check(key, None, &mut dicts);
+                }
+            }
+        }
+        for key in keys {
+            check(key, None, &mut dicts);
+        }
+        assert_eq!(StoredNode::new(1, &node_blob, &dicts).to_record(), node);
+        assert_eq!(StoredRel::new(2, &rel_blob, &dicts).to_record(), rel);
+        assert!(node.properties.is_empty());
     }
 
     #[test]

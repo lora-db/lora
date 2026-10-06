@@ -1,16 +1,15 @@
-//! Proves the storage trait surface works for backends that cannot hand out
-//! long-lived borrows.
+//! Proves the storage trait surface works for a backend that only has
+//! owned records.
 //!
-//! The refactor in `lora-store` demoted `node_ref` / `relationship_ref` onto
-//! an optional [`BorrowedGraphStorage`] capability. Everything the engine
-//! actually needs is reachable through the required primitives plus the
-//! closure-based `with_node` / `with_relationship` hooks (which default to
-//! owned fetches if a backend does not override them).
+//! Everything the engine needs is reachable through the required
+//! primitives plus the closure-based `with_node` / `with_relationship`
+//! hooks, which default to an owned fetch wrapped in a view when a backend
+//! does not override them.
 //!
 //! `OwnedMapStore` below is deliberately minimal: BTreeMap-backed, no label
-//! / type / adjacency indexes, and critically **no impl of
-//! `BorrowedGraphStorage`**. If a query can run end-to-end against it via
-//! `Database`, the trait surface is genuinely backend-neutral.
+//! / type / adjacency indexes, and no override of the view hooks. If a
+//! query can run end-to-end against it via `Database`, the trait surface
+//! is genuinely backend-neutral.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -147,8 +146,8 @@ impl GraphStorage for OwnedMapStore {
     // defaults (clone-through `node` / `relationship`) must be sufficient for
     // every executor/analyzer call site.
     //
-    // Intentionally NOT implementing `BorrowedGraphStorage` — this proves the
-    // engine no longer depends on `&NodeRecord` / `&RelationshipRecord`.
+    // Nothing here lends a `&NodeRecord` / `&RelationshipRecord`: the engine
+    // does not depend on a backend keeping records as structs.
 }
 
 impl GraphStorageMut for OwnedMapStore {

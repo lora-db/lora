@@ -73,15 +73,14 @@ pub struct MemoryReport {
     pub node_tombstone_count: usize,
     pub relationship_tombstone_count: usize,
 
-    /// `nodes: Vec<Option<Arc<NodeRecord>>>` — slot vector plus the
-    /// `Arc` headers plus deep payload of each live record (labels,
-    /// properties — see [`property_value_heap_bytes`]).
+    /// `nodes`: the slot tree plus each live node's encoded record (an
+    /// 8-byte header and its bytes), and the graph's name dictionaries.
     pub nodes_bytes: usize,
-    /// `relationships: Vec<Option<Arc<RelationshipRecord>>>`.
+    /// `relationships`: the slot tree plus each encoded record.
     pub relationships_bytes: usize,
 
-    /// `outgoing: Vec<Vec<RelationshipId>>` — outer Vec capacity plus
-    /// the sum of each inner Vec's capacity in bytes.
+    /// `outgoing`: the slot tree plus the heap of every adjacency list
+    /// too long to sit inline.
     pub outgoing_bytes: usize,
     /// Same for `incoming`.
     pub incoming_bytes: usize,

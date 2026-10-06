@@ -315,8 +315,6 @@ The storage API is split into read, catalog, borrow, and mutation traits:
   default helpers.
 - `GraphCatalog` — a narrow analyzer-facing slice for counts, labels, types, and
   property-key existence.
-- `BorrowedGraphStorage` — optional `&NodeRecord` / `&RelationshipRecord`
-  access for backends that can hand out references.
 - `GraphStorageMut` — create, mutate, delete, `clear`, and property/label helper
   methods.
 
