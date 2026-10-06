@@ -103,6 +103,8 @@ temp/
 node_modules/
 dist/
 build/
+# ...but not source directories that happen to be called `build`.
+!packages/lora-graphql/src/model/build/
 
 # npm lockfiles — this repo is yarn v4 only; `yarn.lock` is canonical.
 # `package-lock.json` can regenerate if someone runs `npm install` by
