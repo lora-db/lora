@@ -19,7 +19,7 @@ import type {
   NodeType,
   RelationshipOperation,
 } from "../model/types.js";
-import { lowerFirst } from "../model/build.js";
+import { lowerFirst } from "../model/build/shapes.js";
 import { names } from "../schema/names.js";
 import { mutationNames } from "../schema/mutations.js";
 import {
@@ -41,9 +41,6 @@ import {
   type AccessEntry,
   type AccessVerdict,
 } from "./verdicts.js";
-
-export { accessLints } from "./access-lint.js";
-export type { AccessEntry, AccessVerdict } from "./verdicts.js";
 
 /** One root field of an operation, as each kind of caller. */
 export interface RootFieldAccess {

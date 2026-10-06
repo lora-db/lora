@@ -19,7 +19,7 @@ import {
 } from "../../compile/context.js";
 import { and, lit, name, printExpr } from "../../compile/cypher.js";
 import { compileNodeWhere } from "../../compile/filter.js";
-import { compileByKeys, keyOf } from "../../compile/read.js";
+import { compileByKeys, keyOf } from "../../compile/read/by-keys.js";
 import type { DriverTransaction } from "../../driver.js";
 import { requestError } from "../../errors.js";
 import { toStored } from "../../model/points.js";

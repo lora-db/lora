@@ -39,13 +39,13 @@ import {
 } from "./analyze/indexes.js";
 import { checkPlans, type PlanReport } from "./analyze/plans.js";
 import { lintModel, unguardedMutations } from "./analyze/lint.js";
+import { accessLints } from "./analyze/access-lint.js";
 import {
-  accessLints,
   accessMatrix,
   operationAccess,
-  type AccessEntry,
   type OperationAccess,
 } from "./analyze/access.js";
+import { type AccessEntry } from "./analyze/verdicts.js";
 import { analyze, type Statistics } from "./analyze/statistics.js";
 import { newContext, type CompileContext } from "./compile/context.js";
 import {
@@ -53,16 +53,18 @@ import {
   COMPILED_TOTAL,
   CompileCache,
 } from "./compile/cache.js";
+import { compileAbstractRoot } from "./compile/read/abstract.js";
 import {
-  compileAbstractRoot,
   compileCypherRoot,
-  compileRoot,
-  compileSearch,
   MAX_LIST_ARGUMENT,
+} from "./compile/read/cypher-field.js";
+import { compileRoot } from "./compile/read/root.js";
+import { compileSearch } from "./compile/read/search.js";
+import {
   type CompiledRead,
   type ReadSet,
   type RootKind,
-} from "./compile/read.js";
+} from "./compile/read/types.js";
 import {
   coercedVariables,
   fieldArgs,
@@ -79,11 +81,11 @@ import {
   OPERATION_TIMEOUT_FACTOR,
 } from "./execute/budget.js";
 import type { MutationKind } from "./schema/mutations.js";
+import { executeMutation } from "./execute/mutate.js";
 import {
-  executeMutation,
   type MutationEnv,
   type PopulatedByCallback,
-} from "./execute/mutate.js";
+} from "./execute/mutate/env.js";
 import { collapseErrors, ModelError, requestError } from "./errors.js";
 import {
   buildManifest,
@@ -147,23 +149,6 @@ import { assertReadable } from "./schema/guard.js";
 import { ChangeHub } from "./subscriptions/change-hub.js";
 import { CHANGE } from "./subscriptions/events.js";
 import { Subscriptions } from "./subscriptions/subscriptions.js";
-
-export type {
-  AssertSchemaOptions,
-  CheckOptions,
-  CostEvent,
-  DatabaseErrorEvent,
-  ExecuteArgs,
-  LoraGraphQLContext,
-  LoraGraphQLOptions,
-  StatementEvent,
-} from "./options.js";
-export type {
-  CheckReport,
-  ExecutionTiming,
-  LoraExecutionResult,
-  SchemaAssertion,
-} from "./results.js";
 
 /** Read-sets being collected, by GraphQL context (see `ExecuteArgs.readSet`). */
 interface ReadCollector {

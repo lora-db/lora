@@ -41,7 +41,8 @@ import {
   inferRequirements,
   requirementDdl,
 } from "./analyze/indexes.js";
-import { LoraGraphQL, type CheckOptions } from "./lora-graphql.js";
+import { LoraGraphQL } from "./lora-graphql.js";
+import { type CheckOptions } from "./options.js";
 import { loraDriver, type LoraDriver } from "./driver.js";
 import { usedFragments } from "./codegen.js";
 import { migrateNeo4j } from "./migrate.js";

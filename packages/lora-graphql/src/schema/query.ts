@@ -13,9 +13,10 @@ import {
   type GraphQLInputType,
 } from "graphql";
 import { encodeCursor } from "../compile/cursor.js";
-import type { RootKind, SearchResult } from "../compile/read.js";
+import type { RootKind } from "../compile/read/types.js";
+import type { SearchResult } from "../compile/read/search.js";
 import { requestError } from "../errors.js";
-import { MAX_LIMIT } from "../model/build.js";
+import { MAX_LIMIT } from "../model/build/limits.js";
 import type { GraphModel, NodeType } from "../model/types.js";
 import type { AggregateTypes } from "./aggregates.js";
 import { listOf, nonNull, type BaseTypes } from "./base.js";

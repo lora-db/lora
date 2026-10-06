@@ -1,18 +1,20 @@
+export { LoraGraphQL } from "./lora-graphql.js";
 export {
-  LoraGraphQL,
   type AssertSchemaOptions,
   type CheckOptions,
-  type CheckReport,
   type CostEvent,
   type DatabaseErrorEvent,
   type ExecuteArgs,
-  type ExecutionTiming,
   type LoraGraphQLContext,
   type LoraGraphQLOptions,
+  type StatementEvent,
+} from "./options.js";
+export {
+  type CheckReport,
+  type ExecutionTiming,
   type LoraExecutionResult,
   type SchemaAssertion,
-  type StatementEvent,
-} from "./lora-graphql.js";
+} from "./results.js";
 export {
   loraDriver,
   type DriverTransaction,
@@ -24,7 +26,8 @@ export {
   type Statement,
 } from "./driver.js";
 export { directiveTypeDefs } from "./model/directives.js";
-export { buildModel, type ModelOptions } from "./model/build.js";
+export { buildModel } from "./model/build.js";
+export { type ModelOptions } from "./model/build/limits.js";
 export type * from "./model/types.js";
 export {
   inferRequirements,
@@ -38,27 +41,30 @@ export {
   type PlanReport,
 } from "./analyze/plans.js";
 export type { DegreeStats, Statistics } from "./analyze/statistics.js";
-export type {
-  AccessEntry,
-  AccessVerdict,
-  OperationAccess,
-  RootFieldAccess,
-} from "./analyze/access.js";
+export type { AccessEntry, AccessVerdict } from "./analyze/verdicts.js";
+export type { OperationAccess, RootFieldAccess } from "./analyze/access.js";
 export type { CypherFinding } from "./analyze/cypher-check.js";
 export {
   diffSchemas,
   type ApiChange,
   type SchemaDiff,
 } from "./analyze/diff.js";
-export type { CompiledRead, ReadSet, SeekExpectation } from "./compile/read.js";
+export type {
+  CompiledRead,
+  ReadSet,
+  SeekExpectation,
+} from "./compile/read/types.js";
 export type {
   EntityRef,
   RelationshipRef,
   WriteChange,
 } from "./execute/changes.js";
-export type { MutationInfo, PopulatedByCallback } from "./execute/mutate.js";
+export type {
+  MutationInfo,
+  PopulatedByCallback,
+} from "./execute/mutate/env.js";
 export type { MutationKind } from "./schema/mutations.js";
-export type { ChangeEvent } from "./schema/build.js";
+export type { ChangeEvent } from "./schema/hooks.js";
 export { LoraTransaction } from "./execute/transaction.js";
 export {
   ModelError,

@@ -15,7 +15,7 @@ import {
   type FieldNode,
   type FragmentDefinitionNode,
 } from "graphql";
-import type { CompiledRead } from "./read.js";
+import type { CompiledRead } from "./read/types.js";
 import type { CompileContext } from "./context.js";
 import { lookupPath } from "./auth.js";
 

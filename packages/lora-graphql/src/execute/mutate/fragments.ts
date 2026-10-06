@@ -12,7 +12,7 @@ import {
   v,
   type Expr,
 } from "../../compile/cypher.js";
-import { keyOf } from "../../compile/read.js";
+import { keyOf } from "../../compile/read/by-keys.js";
 import type {
   Field,
   GraphModel,

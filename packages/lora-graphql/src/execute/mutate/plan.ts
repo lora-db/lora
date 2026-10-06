@@ -10,7 +10,7 @@ import {
   propertyAccess,
 } from "../../compile/auth.js";
 import type { CompileContext } from "../../compile/context.js";
-import { keyOf } from "../../compile/read.js";
+import { keyOf } from "../../compile/read/by-keys.js";
 import { requestError } from "../../errors.js";
 import { toStored } from "../../model/points.js";
 import { memberFields } from "../../model/relations.js";

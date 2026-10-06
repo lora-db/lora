@@ -4,7 +4,7 @@
 // Cypher and `@cypher` mutations included), in commit order.
 
 import type { DriverChange, DriverChangeBatch, LoraDriver } from "../driver.js";
-import { keyOf } from "../compile/read.js";
+import { keyOf } from "../compile/read/by-keys.js";
 import type {
   GraphModel,
   NodeType,

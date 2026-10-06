@@ -3,7 +3,7 @@
 // READ rule refused, and connection pages come out in the requested order.
 
 import type { GraphQLFieldResolver, GraphQLResolveInfo } from "graphql";
-import type { RawConnection, RawEdge } from "../compile/read.js";
+import type { RawConnection, RawEdge } from "../compile/read/types.js";
 import { requestError } from "../errors.js";
 import { assertReadable } from "./guard.js";
 

@@ -17,7 +17,7 @@ import {
   type GraphQLOutputType,
 } from "graphql";
 import { encodeCursor } from "../compile/cursor.js";
-import type { RawConnection, RawEdge } from "../compile/read.js";
+import type { RawConnection, RawEdge } from "../compile/read/types.js";
 import { requestError } from "../errors.js";
 import type {
   CypherField,

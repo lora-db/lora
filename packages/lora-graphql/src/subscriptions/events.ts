@@ -1,10 +1,10 @@
 // The events a subscriber receives, built from a write-set: one per node
 // of a type, plus CONNECT / DISCONNECT events when the type offers them.
 
-import { keyOf } from "../compile/read.js";
+import { keyOf } from "../compile/read/by-keys.js";
 import type { WriteChange } from "../execute/changes.js";
 import type { NodeType } from "../model/types.js";
-import type { ChangeEvent } from "../schema/build.js";
+import type { ChangeEvent } from "../schema/hooks.js";
 
 /** The write an event came from, for reads shared across its subscribers. */
 export const CHANGE = Symbol("change");

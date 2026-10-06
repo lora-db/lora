@@ -9,7 +9,7 @@ import {
   type GraphQLInputType,
   type GraphQLOutputType,
 } from "graphql";
-import { lowerFirst } from "../model/build.js";
+import { lowerFirst } from "../model/build/shapes.js";
 import type { GraphModel, ScalarField } from "../model/types.js";
 import { listOf, nonNull, type BaseTypes } from "./base.js";
 import type { Filters } from "./filters.js";

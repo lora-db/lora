@@ -90,9 +90,6 @@ import {
 import { readSearch } from "./build/search.js";
 import { readUniqueTogether } from "./build/unique-together.js";
 
-export { DEFAULT_LIMIT, MAX_LIMIT, type ModelOptions } from "./build/limits.js";
-export { defaultPlural, lowerFirst, storageOf } from "./build/shapes.js";
-
 const ROOT_TYPES = new Set(["Query", "Mutation", "Subscription"]);
 
 /**

@@ -9,11 +9,8 @@ import {
   type GraphQLSchema,
 } from "graphql";
 import { loraDriver, type LoraDatabaseLike } from "./driver.js";
-import {
-  LoraGraphQL,
-  type LoraGraphQLOptions,
-  type StatementEvent,
-} from "./lora-graphql.js";
+import { LoraGraphQL } from "./lora-graphql.js";
+import { type LoraGraphQLOptions, type StatementEvent } from "./options.js";
 
 /** The node binding's database, as far as tests use it. */
 export type TestDatabase = LoraDatabaseLike & {

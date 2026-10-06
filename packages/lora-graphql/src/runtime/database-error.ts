@@ -4,7 +4,7 @@
 
 import { GraphQLError } from "graphql";
 import { requestError } from "../errors.js";
-import { mapWriteError } from "../execute/mutate.js";
+import { mapWriteError } from "../execute/mutate/errors.js";
 import type { GraphModel } from "../model/types.js";
 import type { DatabaseErrorEvent } from "../options.js";
 

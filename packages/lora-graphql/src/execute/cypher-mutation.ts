@@ -7,18 +7,16 @@
 
 import type { FieldNode } from "graphql";
 import { newContext } from "../compile/context.js";
-import { bindStatement, compileByKeys } from "../compile/read.js";
+import { bindStatement } from "../compile/read/cypher-field.js";
+import { compileByKeys } from "../compile/read/by-keys.js";
 import { subSelections } from "../compile/selection.js";
 import { requestError } from "../errors.js";
 import { assertReadable } from "../schema/guard.js";
 import type { Statement } from "../driver.js";
 import type { CypherField } from "../model/types.js";
 import { uniqueTogetherTouched } from "../model/unique-together.js";
-import {
-  checkUniqueTogetherOf,
-  runStatement,
-  type MutationEnv,
-} from "./mutate.js";
+import { checkUniqueTogetherOf } from "./mutate/unique-together.js";
+import { runStatement, type MutationEnv } from "./mutate/env.js";
 
 export async function executeCypherMutation(
   env: MutationEnv,

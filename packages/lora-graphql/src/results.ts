@@ -5,7 +5,7 @@ import type { ExecutionResult } from "graphql";
 import type { CypherFinding } from "./analyze/cypher-check.js";
 import type { SchemaRequirement } from "./analyze/indexes.js";
 import type { PlanReport } from "./analyze/plans.js";
-import type { ReadSet } from "./compile/read.js";
+import type { ReadSet } from "./compile/read/types.js";
 import type { ModelWarning } from "./model/types.js";
 
 /** `extensions.timing` of an `execute()` result (see the `timing` option). */

@@ -6,7 +6,7 @@ import {
   type GraphQLResolveInfo,
   type GraphQLScalarType,
 } from "graphql";
-import type { RootKind } from "../compile/read.js";
+import type { RootKind } from "../compile/read/types.js";
 import type {
   AbstractType,
   CustomField,

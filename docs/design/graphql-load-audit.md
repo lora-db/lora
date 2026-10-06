@@ -131,8 +131,8 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
   - One global writer mutex. A mutation opens a transaction, then runs its phases as separate awaited statements before committing: creates, disconnects, links, updates, nested deletes, cardinality, required and validation checks, then the payload read-back (`src/execute/mutate.ts:698`). A one-node create is 2.75 statements.
   - Each statement is a round trip between the JS thread and the transaction thread, all while holding the lock.
   - Also inside the lock:
-    - `@populatedBy` callbacks, awaited one at a time (`mutate.ts:1239`);
-    - a delete's neighbour lookup, one statement per key (`mutate.ts:1622`), up to `maxBatch` (1000) statements for a bulk delete.
+    - `@populatedBy` callbacks, awaited one at a time (`src/execute/mutate/runner.ts`);
+    - a delete's neighbour lookup, one statement per key (`src/execute/mutate/delete.ts`), up to `maxBatch` (1000) statements for a bulk delete.
 - **Solutions:**
   - **Fewer round trips:** send a mutation's statements through `tx.executeMany` (one native call), and fold the validation and read-back into the last write. The lock hold then shrinks toward one round trip.
   - Resolve `@populatedBy` callbacks before `begin()`, in parallel.
@@ -170,7 +170,7 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
   - the aggregate: 713 → 113.
 - **Plans** (`db.explain`):
   - The page query is `NodeByPropertyRangeScan(capacity > $p0)` → `Sort` → `Limit 25`. The range filter matches up to 98% of the label, and all of it is sorted to return 25 rows. There is no top-k sort, and no index-ordered scan on `name` with early termination, although the planner's own estimate (6,667 rows) says the filter is not selective.
-  - `totalCount` repeats the scan in a second statement, with `count()`. Two statements also mean a shared read-only transaction rather than one `execute()` (`src/compile/read.ts:361`).
+  - `totalCount` repeats the scan in a second statement, with `count()`. Two statements also mean a shared read-only transaction rather than one `execute()` (`src/compile/read/root.ts`).
   - `festivalsAggregate` is a full scan.
   - All three count as 0 or 1 against `maxCost`, which counts projected rows, not scanned rows (`read.ts:336-376`).
 - **Solutions:**
@@ -210,7 +210,7 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
 
 - **Classification:** Inferred from the code; not load tested.
 - **Fan-out:**
-  - Every subscriber is its own feed listener, and rebuilds its events per change (`src/lora-graphql.ts:1397`, `:1714`).
+  - Every subscriber is its own feed listener, and rebuilds its events per change (`src/subscriptions/subscriptions.ts`).
   - `#visible` and `#resolveByKey` compile, and usually run, one read per subscriber per event.
   - Cost is therefore O(subscribers × changes). A 1,000-node bulk write with 10k subscribers is about 10M iterations plus the reads, on the event loop, and those reads run through the driver from finding 2.
 - **Crash risk:** a feed error that is not `LORA_CHANGES_LAGGED` is rethrown inside a floating `void this.#pump(...)` (`src/execute/feed.ts:59`, `:79`). That is an unhandled rejection: by default it crashes the process, and otherwise the feed silently stops.
@@ -228,7 +228,7 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
 - **Classification:** Observed in code; not measured separately.
 - **Cursor signing:** HMAC-SHA256 is pure JS (`src/compile/hmac.ts`). The key pads are rebuilt, and a new `TextEncoder` is created, on every `sign()` (`src/compile/cursor.ts:93`). This runs once per edge, and twice more for `pageInfo`, so 20 parents × 100 edges is about 2,000 HMACs.
   - Fix: use `node:crypto.createHmac` when it is available, and precompute the pads per secret.
-- **Document cache:** it is FIFO, not LRU (`src/lora-graphql.ts:298`, 500 entries). Clients that inline literals instead of using variables thrash it, and each miss also starts the compile cache cold.
+- **Document cache:** it is FIFO, not LRU (`src/runtime/documents.ts`, 500 entries). Clients that inline literals instead of using variables thrash it, and each miss also starts the compile cache cold.
 - **`onWrite` listeners:** they run synchronously on the mutating request's path.
 
 ### 11. Operational limits to plan around

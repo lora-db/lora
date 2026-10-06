@@ -19,7 +19,7 @@ import {
   type SelectionSetNode,
   type ValueNode,
 } from "graphql";
-import { defaultPlural } from "./model/build.js";
+import { defaultPlural } from "./model/build/shapes.js";
 
 export interface MigrationResult {
   /** The rewritten SDL. */

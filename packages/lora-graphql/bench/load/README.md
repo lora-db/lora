@@ -24,6 +24,7 @@ yarn bench:load --help
   - peak in-flight requests.
 
   A server that does not answer is marked `hung`, and its ramp ends. A ramp also ends when errors pass `--max-errors`.
+
 - Results go to `bench/load/results/<time>.json` and `.md` (gitignored). They record the native binary's build time, because `@loradb/lora-node` can be rebuilt between runs.
 
 ## Worker threads over one engine (`--workers N`)

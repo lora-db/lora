@@ -60,8 +60,8 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P1 Bounded write queue: fail fast with `OVERLOADED`/503.
 - [ ] P1 `maxCost` counts projected rows only — charge scans, `totalCount` and aggregates (from `explain()`/`analyze()`).
 - [ ] P2 Compile cache: keyed lookups miss every request because the key variable is in the cache key; rebind variables into parameter slots the way `$jwt` claims are (`src/compile/cache.ts`).
-- [ ] P2 Resolve `@populatedBy` callbacks in parallel before `begin()` (`src/execute/mutate.ts:1238`).
-- [ ] P2 Batch a delete's neighbour lookup with `UNWIND` (`mutate.ts:1624,1670`).
+- [ ] P2 Resolve `@populatedBy` callbacks in parallel before `begin()` (`src/execute/mutate/runner.ts`).
+- [ ] P2 Batch a delete's neighbour lookup with `UNWIND` (`src/execute/mutate/delete.ts`).
 - [ ] P2 Add a subscription scenario to `bench/load` (fan-out is indexed by type+key but not load tested over HTTP).
 - [ ] P2 `check()` plan-checks queries only — extend to mutations and subscriptions.
 - [ ] P2 `@cypher` `cost` argument; document its per-row semantics (`src/model/directives.ts:196`).
@@ -69,7 +69,7 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P2 Opt-in `totalCount` cap.
 - [ ] P2 Cursor HMAC: use `node:crypto.createHmac`, precompute per secret (`src/compile/cursor.ts:82`).
 - [ ] P2 Worker threads sharing one engine: confirm `bench:load --workers 0,1,2,4` on a quiet machine; document multi-worker serving (change feed for cache invalidation).
-- [ ] P3 Document cache is FIFO, not LRU; `onWrite` listeners run synchronously on the request path (`src/lora-graphql.ts:986`).
+- [ ] P3 Document cache is FIFO, not LRU; `onWrite` listeners run synchronously on the request path (`src/runtime/documents.ts`, `src/subscriptions/change-hub.ts`).
 - [ ] P3 S8 types for `@cypher` parameters in `compile` output.
 - [ ] P3 Load-test `@authorization` rules, cascading and bulk mutations.
 - [ ] P3 CI bench regression gate (>15%, like `scripts/check-bench-delta.mjs`) in `lora-graphql.yml`.

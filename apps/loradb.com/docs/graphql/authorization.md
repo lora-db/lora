@@ -312,8 +312,8 @@ setting for the whole schema:
 To keep a claim-free branch for signed-in callers only, test a claim beside
 it, as the tenant rule above does with
 `{ jwt: { sub: { exists: true } } }`, or put `@authentication` on the type.
-`requireAuthentication` is not a rule's own setting: writing it on a rule
-is a model error that points here.
+`requireAuthentication` is not a rule's field: on a rule it is a model
+error, like any field a rule does not define.
 
 A rule's `where` is `{ node, jwt, viewer, rule, AND, OR, NOT }`:
 

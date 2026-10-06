@@ -10,7 +10,7 @@ import {
 } from "../../compile/auth.js";
 import { bind } from "../../compile/context.js";
 import { lit, name, printExpr } from "../../compile/cypher.js";
-import { keyOf } from "../../compile/read.js";
+import { keyOf } from "../../compile/read/by-keys.js";
 import { requestError } from "../../errors.js";
 import { memberFields } from "../../model/relations.js";
 import type { NodeType, RelationshipField } from "../../model/types.js";

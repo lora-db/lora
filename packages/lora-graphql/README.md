@@ -811,7 +811,7 @@ type Post
   a rule with a branch that reads no claims decides that branch for
   anonymous callers too (the published posts above), while a rule that
   needs claims still asks for a token: `UNAUTHENTICATED`, not `FORBIDDEN`.
-  It is one setting for the schema, not one per rule. To keep a
+  It is one setting for the schema; a rule has no such field. To keep a
   claim-free branch for signed-in callers, test a claim beside it
   (`{ jwt: { sub: { exists: true } } }`, as the tenant rule above does),
   or put `@authentication` on the type.

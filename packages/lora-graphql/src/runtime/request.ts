@@ -11,7 +11,7 @@ import {
   type GraphQLResolveInfo,
   type OperationDefinitionNode,
 } from "graphql";
-import type { RootKind } from "../compile/read.js";
+import type { RootKind } from "../compile/read/types.js";
 import type { SelectionContext } from "../compile/selection.js";
 import type { QueryResult, Statement } from "../driver.js";
 import type { LoraTransaction } from "../execute/transaction.js";

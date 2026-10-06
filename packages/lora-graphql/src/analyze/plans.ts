@@ -3,7 +3,7 @@
 // chose, and a disagreement is a finding.
 
 import type { LoraDriver, PlanNode, QueryPlan, Statement } from "../driver.js";
-import type { CompiledRead, SeekExpectation } from "../compile/read.js";
+import type { CompiledRead, SeekExpectation } from "../compile/read/types.js";
 
 export interface PlanFinding {
   rule:

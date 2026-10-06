@@ -1,7 +1,7 @@
 // Generated type and field names, in one place so the schema builder
 // and the compiler agree.
 
-import { lowerFirst } from "../model/build.js";
+import { lowerFirst } from "../model/build/shapes.js";
 import type { NodeType, RelationshipField } from "../model/types.js";
 
 export const upperFirst = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);

@@ -4,7 +4,7 @@
 
 import { bind } from "../../compile/context.js";
 import { name, printExpr } from "../../compile/cypher.js";
-import { keyOf } from "../../compile/read.js";
+import { keyOf } from "../../compile/read/by-keys.js";
 import { requestError } from "../../errors.js";
 import { declared, memberFields } from "../../model/relations.js";
 import type { NodeType, RelationshipField } from "../../model/types.js";

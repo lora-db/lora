@@ -17,7 +17,7 @@ import {
 } from "../compile/auth.js";
 import { bind, newContext, type CompileContext } from "../compile/context.js";
 import { name, printExpr } from "../compile/cypher.js";
-import { keyOf } from "../compile/read.js";
+import { keyOf } from "../compile/read/by-keys.js";
 import { collectFields, subSelections } from "../compile/selection.js";
 import type { DriverTransaction } from "../driver.js";
 import { requestError } from "../errors.js";
@@ -34,15 +34,6 @@ import { runStatement, type MutationEnv } from "./mutate/env.js";
 import { andText } from "./mutate/fragments.js";
 import type { Input, WritePlan } from "./mutate/plan.js";
 import { Runner } from "./mutate/runner.js";
-
-export {
-  runStatement,
-  type MutationEnv,
-  type MutationInfo,
-  type PopulatedByCallback,
-} from "./mutate/env.js";
-export { mapWriteError } from "./mutate/errors.js";
-export { checkUniqueTogetherOf } from "./mutate/unique-together.js";
 
 /** The payload's node selection, merged across aliases. */
 function payloadSelections(

@@ -8,10 +8,10 @@ import type {
   GraphQLScalarType,
 } from "graphql";
 import type { LoraDriver, Statement } from "./driver.js";
-import type { PopulatedByCallback } from "./execute/mutate.js";
+import type { PopulatedByCallback } from "./execute/mutate/env.js";
 import type { LoraTransaction } from "./execute/transaction.js";
 import type { DocumentGuards } from "./guards.js";
-import type { ModelOptions } from "./model/build.js";
+import type { ModelOptions } from "./model/build/limits.js";
 import type { ObservabilityOptions } from "./observe.js";
 
 export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {

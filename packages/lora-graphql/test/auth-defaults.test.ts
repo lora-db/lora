@@ -334,7 +334,7 @@ describe("requireAuthentication", () => {
           ),
       ),
     ).toEqual([
-      "@authorization: filter[0] sets requireAuthentication, which is no longer a rule's own setting; set @authorizationDefaults(requireAuthentication:) on `extend schema`, and use @authentication where one type differs",
+      "@authorization: filter[0] has no field requireAuthentication (expected operations, where)",
     ]);
   });
 

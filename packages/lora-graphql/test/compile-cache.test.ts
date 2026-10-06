@@ -8,7 +8,7 @@ import { LoraGraphQL, loraDriver, type StatementEvent } from "../src/index.js";
 import { parse as parseDocument, type FieldNode } from "graphql";
 import { CompileCache } from "../src/compile/cache.js";
 import type { CompileContext } from "../src/compile/context.js";
-import type { CompiledRead } from "../src/compile/read.js";
+import type { CompiledRead } from "../src/compile/read/types.js";
 
 const typeDefs = /* GraphQL */ `
   type Doc

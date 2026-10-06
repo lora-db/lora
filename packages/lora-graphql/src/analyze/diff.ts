@@ -5,7 +5,8 @@
 import * as graphql from "graphql";
 import type { DocumentNode, GraphQLSchema } from "graphql";
 import { name } from "../compile/cypher.js";
-import { buildModel, type ModelOptions } from "../model/build.js";
+import { buildModel } from "../model/build.js";
+import { type ModelOptions } from "../model/build/limits.js";
 import type { Field, GraphModel, ScalarField } from "../model/types.js";
 import { buildSchema } from "../schema/build.js";
 import {

@@ -19,14 +19,6 @@ import { buildQuery } from "./query.js";
 import { buildSorts } from "./sorts.js";
 import { buildSubscriptions } from "./subscriptions.js";
 
-export type {
-  ChangeEvent,
-  CypherRootResolver,
-  NodeResolver,
-  RootResolver,
-  SchemaHooks,
-} from "./hooks.js";
-
 export function buildSchema(
   model: GraphModel,
   hooks: SchemaHooks,

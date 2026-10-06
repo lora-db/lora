@@ -25,7 +25,9 @@ import {
   type Expr,
 } from "../compile/cypher.js";
 import { compileNodeWhere } from "../compile/filter.js";
-import { compileRoot, keyOf, type CompiledRead } from "../compile/read.js";
+import { compileRoot } from "../compile/read/root.js";
+import { keyOf } from "../compile/read/by-keys.js";
+import { type CompiledRead } from "../compile/read/types.js";
 import {
   coercedVariables,
   type SelectionContext,
@@ -36,7 +38,7 @@ import type { WriteChange } from "../execute/changes.js";
 import type { GraphModel, NodeType } from "../model/types.js";
 import type { LoraGraphQLContext } from "../options.js";
 import { infoContext } from "../runtime/request.js";
-import type { ChangeEvent } from "../schema/build.js";
+import type { ChangeEvent } from "../schema/hooks.js";
 import type { ChangeHub } from "./change-hub.js";
 import {
   sameContextReads,
