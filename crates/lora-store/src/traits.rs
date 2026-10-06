@@ -52,6 +52,35 @@ pub trait GraphStorage {
     /// a label index should override this.
     fn node_ids_by_label(&self, label: &str) -> Vec<NodeId>;
 
+    /// Streaming node-id scan. Appends the next ids of the scan to `out`
+    /// (every node, or those carrying `label`), in the order
+    /// [`Self::all_node_ids`] / [`Self::node_ids_by_label`] return them,
+    /// and advances `cursor`. A scan starts with `cursor == 0`; the cursor
+    /// is otherwise opaque and only valid while the store is unchanged.
+    /// Returns `false` once the scan is exhausted.
+    ///
+    /// `max` is a hint for how many ids to append per call. The default
+    /// ignores it and hands over the whole list at once; backends with
+    /// positional access should override it so a scan holds one page of
+    /// ids, not all of them.
+    fn scan_node_ids(
+        &self,
+        label: Option<&str>,
+        cursor: &mut u64,
+        max: usize,
+        out: &mut Vec<NodeId>,
+    ) -> bool {
+        let _ = max;
+        if *cursor == 0 {
+            *cursor = u64::MAX;
+            out.extend(match label {
+                Some(label) => self.node_ids_by_label(label),
+                None => self.all_node_ids(),
+            });
+        }
+        false
+    }
+
     // ---------- Required relationship primitives ----------
 
     fn contains_relationship(&self, id: RelationshipId) -> bool;

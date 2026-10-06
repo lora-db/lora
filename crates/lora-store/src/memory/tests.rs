@@ -904,6 +904,45 @@ fn snapshot_load_resets_but_keeps_recorder() {
 }
 
 #[test]
+fn scan_node_ids_pages_match_the_full_lists() {
+    let mut g = InMemoryGraph::new();
+    for i in 0..3000u64 {
+        let label = if i % 3 == 0 { "A" } else { "B" };
+        g.create_node(vec![label.into()], Properties::new());
+    }
+    // Tombstones in the slab and swap-removed entries in the label list.
+    for id in (0..3000u64).filter(|i| i % 5 == 0) {
+        assert!(g.delete_node(id));
+    }
+
+    for label in [None, Some("A"), Some("B"), Some("Missing")] {
+        let expected = match label {
+            Some(label) => g.node_ids_by_label(label),
+            None => g.all_node_ids(),
+        };
+        for max in [1, 7, 512, 1000, 10_000] {
+            let mut cursor = 0;
+            let mut got = Vec::new();
+            let mut calls = 0;
+            loop {
+                let before = got.len();
+                let more = g.scan_node_ids(label, &mut cursor, max, &mut got);
+                assert!(got.len() - before <= max);
+                calls += 1;
+                assert!(calls <= expected.len() + 2, "scan does not terminate");
+                if !more {
+                    break;
+                }
+            }
+            assert_eq!(got, expected, "label {label:?}, page {max}");
+            // An exhausted scan stays exhausted.
+            assert!(!g.scan_node_ids(label, &mut cursor, max, &mut got));
+            assert_eq!(got.len(), expected.len());
+        }
+    }
+}
+
+#[test]
 fn expand_filters_by_type_without_the_relationship_records() {
     let mut g = InMemoryGraph::new();
     let a = g.create_node(vec!["N".into()], Properties::new()).id;

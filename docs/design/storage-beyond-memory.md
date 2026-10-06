@@ -30,8 +30,12 @@ The decisions this needs from you are collected in [§9](#9-decisions-and-open-q
 
 ## Implementation status
 
-**Stage 0** is implemented on branch `storage/stage0`, not yet
-merged. Before/after numbers come from three interleaved runs of
+**Stage 0** shipped in v0.23.0. The distinct-count sketches, the streaming
+id scans and the first slice of Stage 1 (interned names, typed adjacency)
+are implemented on branch `storage/stage1`, not yet merged; see
+[Stage 1, first slice](#stage-1-first-slice-interned-names-and-typed-adjacency).
+
+Stage 0's before/after numbers come from three interleaved runs of
 `storage_baseline lat 2000000` (v0.22.3 binary against the branch binary) on
 the §2 machine and shape: 2M nodes / 8M relationships (10M elements), with a
 RANGE index on `Person.id` and one UNIQUE constraint. Values are medians.
@@ -136,8 +140,83 @@ paid ~450 ns to rebuild the distinct map (two `String`s per key). An
 earlier version that clamped estimates to the row count missed the cache on
 every insert of a unique key.
 
-**Not done in Stage 0.**
-- Streaming id scans: `node_ids_by_label` still returns a `Vec`.
+### Stage 1, first slice: interned names and typed adjacency
+
+Three changes, all in memory, none visible in Cypher, the WAL or the
+snapshot format.
+
+- **Interned labels and relationship types.** `NodeRecord::labels` is a
+  `Labels` and `RelationshipRecord::rel_type` a `Name` (`types/name.rs`):
+  shared `Arc<str>`s from the process-wide intern table, with one label
+  stored inline. A record no longer owns a `Vec<String>` and a `String`.
+  This is a source change for Rust users of `lora-store`: both types
+  compare with `&str` and `String`, deref to `str` / `[Name]` and
+  serialize as before, but code that moved the `String`s out needs
+  `to_string()` / `to_strings()`.
+- **Typed adjacency** (`memory/adjacency.rs`). An adjacency entry is
+  `(type number, neighbour, relationship id)`, so a hop filters by type and
+  finds the far node from the list alone. Before, it dereferenced every
+  incident `Arc<RelationshipRecord>` and compared type `String`s. Entries
+  are variable-width (a header byte, then each field in the bytes it
+  needs): 8 B while ids fit in three bytes, 10 B up to 4 billion, against 8
+  B for the bare id before. Types are numbered by a per-graph dictionary
+  that clones share until one adds a type. The numbers are not persisted.
+- **Streaming id scans.** `GraphStorage::scan_node_ids` hands out node ids
+  a page at a time from a cursor. The pull pipeline's all-node scan and
+  single-label scan use it with pages of 1024 ids when the query is
+  read-only. A scan that feeds a streaming write still copies its ids
+  before the first row, because the write changes the list under it
+  (`tests/streaming_scans.rs`). Multi-label scans and the materializing
+  executor still build a `Vec`.
+
+Medians of interleaved runs of the previous branch state against this one,
+same machine and shape as above (2M nodes / 8M relationships): three
+`hop` processes of three rounds each, three `scan`, three `lat`, one `mem`
+per variant. Another build was running on the machine for part of this, so
+the write rows are given as ranges.
+
+| Measure | Before | After |
+|---|---|---|
+| Live bytes per element, whole graph (`mem relprops`) | 247.2 | **230.8** (−6.6%) |
+| RSS per element, same run | 272.5 | 237.1 (−13%) |
+| Node, one label, no properties (`mem bare`) | 166.4 B | **136.4 B** |
+| Relationship, including both adjacency entries | ≈127 B | ≈114 B |
+| Raw `expand_ids` 1-hop, typed | 813 ns | **325 ns** (2.5×) |
+| Raw 2-hop, typed | 3.95 µs | **1.64 µs** (2.4×) |
+| Cypher 1-hop from an index anchor | 5.67 µs | 4.58 µs (−19%) |
+| Cypher 2-hop | 18.3 µs | 13.9 µs (−24%) |
+| Cypher index seek | 1.88 µs | 1.62 µs |
+| Staged relationship `CREATE` | 57–66 µs | 57–68 µs (+3% to +6% across three sets of runs) |
+| `graph_create_node` / staged `SET` | 16.3 / 12.4 µs | 16.0 / 11.8 µs |
+| `MATCH (p:Person) RETURN p.id LIMIT 10` (`scan` mode) | 1.29 ms | **2.4 µs** |
+| `MATCH (p) RETURN p.id LIMIT 10` | 6.41 ms | **3.4 µs** |
+| `MATCH (p:Person) WHERE p.score > 0.5 RETURN p.id LIMIT 10` | 1.29 ms | 3.3 µs |
+| `MATCH (p:Person) RETURN p.id SKIP 5000 LIMIT 10` | 1.52 ms | 0.22 ms |
+| Full label scan with a filter, 2M nodes | 220.9 ms | 220.8 ms |
+| Fast-path `CREATE` / `SET` | 11.5–12.8 / 6.0–7.2 µs | 7.1–14.0 / 4.7–5.4 µs (run-to-run noise exceeds the difference) |
+| Direct-API bulk build, 10M elements | 6.14–6.31 s | 6.15–6.20 s |
+| Snapshot load, 10M elements | 11.2–11.7 s | 11.6–12.1 s (+3%) |
+| Festimap shape, live bytes per element (`heap_probe --festimap`), plain / with schema | 336 / 439 (v0.22.3) | **316 / 384** |
+
+What this slice does not do. The memory target of Stage 1 (T4, ≤ 100 B per
+element) needs records and properties encoded into chunk arenas, read
+through `NodeView` / `RelView`. A property entry is still 64 B and a record
+still an `Arc` allocation. Of the 231 B per element here, about 113 B is
+property entries, 91 B relationship records and their adjacency, and 27 B
+node records.
+
+Known costs:
+- `degree()` walks the list (one header byte per entry) where it read a
+  length. Only the `graph_degree` API calls it.
+- Removing a relationship shifts the bytes after its entry, where the old
+  list swapped the last id into the hole. Both first scan for the entry.
+- Replacing `AdjList`'s derived `Clone` with one `memcpy`
+  (`SmallVec::from_slice_copy`) made a staged relationship `CREATE` slower
+  (79–83 µs), not faster. Not understood; reverted.
+- Label and type names now live in the process-wide intern table, which
+  never frees. D2's per-graph dictionary would bound that.
+
+**Not done yet from Stage 0.**
 - Removing the lazy implicit indexes (D3 options b and c).
 
 ---

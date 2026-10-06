@@ -145,6 +145,22 @@ impl<T> ChunkedVec<T> {
         }
     }
 
+    /// The rest of the chunk holding element `i`, starting at `i`: an
+    /// empty slice past the end. Lets a scan walk the vector a chunk at a
+    /// time from any position without an iterator borrowed across calls.
+    #[inline]
+    pub(super) fn chunk_from(&self, i: usize) -> &[T] {
+        if i >= self.len {
+            return &[];
+        }
+        // SAFETY: as in `get`, `i < len` puts the node and leaf in bounds.
+        let leaf = unsafe {
+            let node = self.root.get_unchecked(i >> SPAN_SHIFT);
+            node.get_unchecked((i >> SHIFT) & FAN_MASK)
+        };
+        &leaf[i & MASK..]
+    }
+
     /// The leaf chunks in order.
     fn leaves(&self) -> impl DoubleEndedIterator<Item = &Vec<T>> + '_ {
         self.root

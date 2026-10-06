@@ -466,6 +466,60 @@ impl GraphStorage for InMemoryGraph {
         }
     }
 
+    fn scan_node_ids(
+        &self,
+        label: Option<&str>,
+        cursor: &mut u64,
+        max: usize,
+        out: &mut Vec<NodeId>,
+    ) -> bool {
+        let max = max.max(1);
+        let Ok(mut pos) = usize::try_from(*cursor) else {
+            return false;
+        };
+        let mut taken = 0;
+        match label {
+            Some(label) => {
+                let Some(ids) = self.nodes_by_label.get(label) else {
+                    return false;
+                };
+                while taken < max {
+                    let chunk = ids.chunk_from(pos);
+                    if chunk.is_empty() {
+                        break;
+                    }
+                    let chunk = &chunk[..chunk.len().min(max - taken)];
+                    out.extend_from_slice(chunk);
+                    pos += chunk.len();
+                    taken += chunk.len();
+                }
+                *cursor = pos as u64;
+                pos < ids.len()
+            }
+            None => {
+                // The cursor is a slot index; tombstoned slots are skipped.
+                while taken < max {
+                    let chunk = self.nodes.chunk_from(pos);
+                    if chunk.is_empty() {
+                        break;
+                    }
+                    for slot in chunk {
+                        if slot.is_some() {
+                            out.push(pos as NodeId);
+                            taken += 1;
+                        }
+                        pos += 1;
+                        if taken == max {
+                            break;
+                        }
+                    }
+                }
+                *cursor = pos as u64;
+                pos < self.nodes.len()
+            }
+        }
+    }
+
     fn contains_relationship(&self, id: RelationshipId) -> bool {
         self.rel_at(id).is_some()
     }

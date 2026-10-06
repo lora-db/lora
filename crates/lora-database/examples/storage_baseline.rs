@@ -1066,6 +1066,58 @@ fn hop_mode(n: u64) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// scan mode: scans that stop early, and one that does not
+// ---------------------------------------------------------------------------
+
+/// `scan <N>`: build the `lat` graph and time label and all-node scans
+/// cut short by a `LIMIT`, plus one full filtered scan for reference.
+fn scan_mode(n: u64) {
+    let samples: usize = std::env::var("SAMPLES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2_000);
+    let scan_samples: usize = std::env::var("SCAN_SAMPLES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(15);
+    let g = build(n, Props::All, true, true);
+    let db = Database::from_graph(g);
+    for (name, query) in [
+        (
+            "cy_label_scan_limit10",
+            "MATCH (p:Person) RETURN p.id AS id LIMIT 10",
+        ),
+        (
+            "cy_all_scan_limit10",
+            "MATCH (p) RETURN p.id AS id LIMIT 10",
+        ),
+        (
+            "cy_label_scan_filter_limit10",
+            "MATCH (p:Person) WHERE p.score > 0.5 RETURN p.id AS id LIMIT 10",
+        ),
+        (
+            "cy_label_scan_skip_limit",
+            "MATCH (p:Person) RETURN p.id AS id SKIP 5000 LIMIT 10",
+        ),
+    ] {
+        bench(name, samples, |_| {
+            q(&db, query, params(&[]));
+        });
+    }
+    let s = bench("cy_label_scan_filter", scan_samples, |_| {
+        q(
+            &db,
+            "MATCH (p:Person) WHERE p.score > 1000000.0 RETURN p.id AS id",
+            params(&[]),
+        );
+    });
+    println!(
+        "info cy_label_scan_filter ns_per_node={:.2}",
+        s.median / n as f64
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let _ = Arc::new(0); // keep `Arc` import meaningful under cfg churn
@@ -1077,8 +1129,9 @@ fn main() {
         Some("restart") => restart_mode(args[2].parse().unwrap()),
         Some("idlat") => idlat_mode(args[2].parse().unwrap()),
         Some("hop") => hop_mode(args[2].parse().unwrap()),
+        Some("scan") => scan_mode(args[2].parse().unwrap()),
         _ => eprintln!(
-            "usage: storage_baseline mem <variant> <N> | lat <N> | wal <N> | restart <N> | idlat <N> | hop <N>"
+            "usage: storage_baseline mem <variant> <N> | lat <N> | wal <N> | restart <N> | idlat <N> | hop <N> | scan <N>"
         ),
     }
 }

@@ -59,6 +59,9 @@ pub(super) fn compiled_to_streaming<'a, S: GraphStorage + 'a>(
     params: BTreeMap<String, LoraValue>,
 ) -> ExecResult<Box<dyn RowSource + 'a>> {
     let params = Arc::new(params);
+    // A read-only query: nothing writes to `storage` while its cursor is
+    // open, so its scans need not copy their ids up front.
+    let _stable = super::scan::StableStoreScope::enter();
 
     if compiled.unions.is_empty() {
         let plan = &compiled.physical;
