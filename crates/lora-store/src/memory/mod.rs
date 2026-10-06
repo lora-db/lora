@@ -12,6 +12,7 @@
 //!   [`crate::SnapshotPayload`] vocabulary.
 //! - `tests` — unit tests covering the in-memory backend.
 
+mod adjacency;
 mod chunked_vec;
 mod constraint_catalog;
 mod constraint_enforce;

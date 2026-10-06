@@ -281,7 +281,7 @@ pub trait GraphStorage {
     where
         Self: Sized,
     {
-        self.with_node(node_id, |n| n.labels.clone())
+        self.with_node(node_id, |n| n.labels.to_strings())
     }
 
     fn node_properties(&self, node_id: NodeId) -> Option<Properties>
@@ -305,7 +305,7 @@ pub trait GraphStorage {
     where
         Self: Sized,
     {
-        self.with_relationship(rel_id, |r| r.rel_type.clone())
+        self.with_relationship(rel_id, |r| r.rel_type.to_string())
     }
 
     fn relationship_properties(&self, rel_id: RelationshipId) -> Option<Properties>
@@ -1072,7 +1072,7 @@ pub trait GraphStorageMut: GraphStorage {
         self.try_create_node(labels, properties)
             .unwrap_or_else(|| NodeRecord {
                 id: NodeId::MAX,
-                labels: Vec::new(),
+                labels: Default::default(),
                 properties: Properties::new(),
             })
     }

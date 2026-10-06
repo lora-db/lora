@@ -37,7 +37,7 @@ fn edge_type<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> L
     match args.first() {
         Some(LoraValue::Relationship(id)) => ctx
             .storage
-            .with_relationship(*id, |r| LoraValue::String(r.rel_type.clone()))
+            .with_relationship(*id, |r| LoraValue::String(r.rel_type.to_string()))
             .unwrap_or(LoraValue::Null),
         _ => LoraValue::Null,
     }

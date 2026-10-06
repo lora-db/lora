@@ -265,7 +265,7 @@ fn node_change(
             let (labels, properties) = pre
                 .nodes
                 .get(&id)
-                .map(|record| (record.labels.clone(), record.properties.clone()))
+                .map(|record| (record.labels.to_strings(), record.properties.clone()))
                 .unwrap_or_default();
             Some(Change::NodeDeleted {
                 id,
@@ -277,7 +277,7 @@ fn node_change(
             let record = post.node_ref(id)?;
             Some(Change::NodeCreated {
                 id,
-                labels: record.labels.clone(),
+                labels: record.labels.to_strings(),
                 properties: record.properties.clone(),
             })
         }
@@ -287,7 +287,7 @@ fn node_change(
             let (added_labels, removed_labels) = split_ops(touch.labels);
             Some(Change::NodeUpdated {
                 id,
-                labels: record.labels.clone(),
+                labels: record.labels.to_strings(),
                 properties: record.properties.clone(),
                 set_keys,
                 removed_keys,
@@ -310,7 +310,7 @@ fn rel_change(
             let record = pre.rels.get(&id)?;
             Some(Change::RelationshipDeleted {
                 id,
-                rel_type: record.rel_type.clone(),
+                rel_type: record.rel_type.to_string(),
                 start: record.src,
                 end: record.dst,
                 properties: record.properties.clone(),
@@ -320,7 +320,7 @@ fn rel_change(
             let record = post.relationship_ref(id)?;
             Some(Change::RelationshipCreated {
                 id,
-                rel_type: record.rel_type.clone(),
+                rel_type: record.rel_type.to_string(),
                 start: record.src,
                 end: record.dst,
                 properties: record.properties.clone(),
@@ -331,7 +331,7 @@ fn rel_change(
             let (set_keys, removed_keys) = split_ops(touch.keys);
             Some(Change::RelationshipUpdated {
                 id,
-                rel_type: record.rel_type.clone(),
+                rel_type: record.rel_type.to_string(),
                 start: record.src,
                 end: record.dst,
                 properties: record.properties.clone(),

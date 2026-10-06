@@ -902,3 +902,74 @@ fn snapshot_load_resets_but_keeps_recorder() {
     // 1 for the initial A + 1 for the post-load B. The restore path
     // itself does not emit events (that's a snapshot, not a mutation).
 }
+
+#[test]
+fn expand_filters_by_type_without_the_relationship_records() {
+    let mut g = InMemoryGraph::new();
+    let a = g.create_node(vec!["N".into()], Properties::new()).id;
+    let b = g.create_node(vec!["N".into()], Properties::new()).id;
+    let knows = g
+        .create_relationship(a, b, "KNOWS", Properties::new())
+        .unwrap()
+        .id;
+    let likes = g
+        .create_relationship(a, b, "LIKES", Properties::new())
+        .unwrap()
+        .id;
+    let back = g
+        .create_relationship(b, a, "KNOWS", Properties::new())
+        .unwrap()
+        .id;
+    let own = g
+        .create_relationship(a, a, "KNOWS", Properties::new())
+        .unwrap()
+        .id;
+
+    let types = |t: &[&str]| t.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        g.expand_ids(a, Direction::Right, &types(&["KNOWS"])),
+        vec![(knows, b), (own, a)]
+    );
+    assert_eq!(
+        g.expand_ids(a, Direction::Left, &types(&["KNOWS"])),
+        vec![(back, b), (own, a)]
+    );
+    // The self-loop is reported once.
+    assert_eq!(
+        g.expand_ids(a, Direction::Undirected, &[]),
+        vec![(knows, b), (likes, b), (own, a), (back, b)]
+    );
+    assert_eq!(g.degree(a, Direction::Undirected), 4);
+    assert_eq!(
+        g.expand_ids(a, Direction::Right, &types(&["LIKES", "NEVER"])),
+        vec![(likes, b)]
+    );
+    assert!(g
+        .expand_ids(a, Direction::Right, &types(&["NEVER"]))
+        .is_empty());
+
+    // A clone keeps traversing by type after the original adds a new one.
+    let snapshot = g.clone();
+    let hates = g
+        .create_relationship(a, b, "HATES", Properties::new())
+        .unwrap()
+        .id;
+    assert!(snapshot
+        .expand_ids(a, Direction::Right, &types(&["HATES"]))
+        .is_empty());
+    assert_eq!(
+        g.expand_ids(a, Direction::Right, &types(&["HATES"])),
+        vec![(hates, b)]
+    );
+
+    assert!(g.delete_relationship(knows));
+    assert_eq!(
+        g.expand_ids(a, Direction::Right, &types(&["KNOWS"])),
+        vec![(own, a)]
+    );
+    assert_eq!(
+        g.expand_ids(b, Direction::Left, &[]),
+        vec![(likes, a), (hates, a)]
+    );
+    assert_eq!(snapshot.expand_ids(b, Direction::Left, &[]).len(), 2);
+}

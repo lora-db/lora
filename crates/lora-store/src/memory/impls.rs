@@ -499,69 +499,16 @@ impl GraphStorage for InMemoryGraph {
             return Vec::new();
         }
 
-        // Walk the adjacency Vec(s) directly into a single output Vec,
-        // skipping the previous intermediate `Vec<RelationshipId>`
-        // allocation that `relationship_ids_for_direction` produced.
-        // For type-filtered traversal we read `rel.rel_type` once per
-        // edge against the (typically tiny) `types` slice.
         let mut out: Vec<(RelationshipId, NodeId)> = Vec::new();
-
-        let single_type = match types {
-            [single] => Some(single.as_str()),
-            _ => None,
-        };
-        let has_type_filter = !types.is_empty();
-
-        let push_from = |adj: &[RelationshipId],
-                         skip_self_loops: bool,
-                         out: &mut Vec<(RelationshipId, NodeId)>| {
-            for &rel_id in adj {
-                let Some(rel) = self.rel_at(rel_id) else {
-                    continue;
-                };
-                if skip_self_loops && rel.src == node_id && rel.dst == node_id {
-                    continue;
-                }
-                if let Some(single) = single_type {
-                    if rel.rel_type != single {
-                        continue;
-                    }
-                } else if has_type_filter && !types.iter().any(|t| t == &rel.rel_type) {
-                    continue;
-                }
-                let Some(other_id) = Self::other_endpoint(rel, node_id) else {
-                    continue;
-                };
+        let _ = self.try_for_each_adjacent_id_unchecked(
+            node_id,
+            direction,
+            types,
+            |rel_id, other_id| {
                 out.push((rel_id, other_id));
-            }
-        };
-
-        match direction {
-            Direction::Right => {
-                if let Some(adj) = self.outgoing_at(node_id) {
-                    out.reserve(adj.len());
-                    push_from(adj, false, &mut out);
-                }
-            }
-            Direction::Left => {
-                if let Some(adj) = self.incoming_at(node_id) {
-                    out.reserve(adj.len());
-                    push_from(adj, false, &mut out);
-                }
-            }
-            Direction::Undirected => {
-                let out_len = self.outgoing_at(node_id).map(<[_]>::len).unwrap_or(0);
-                let in_len = self.incoming_at(node_id).map(<[_]>::len).unwrap_or(0);
-                out.reserve(out_len + in_len);
-                if let Some(adj) = self.outgoing_at(node_id) {
-                    push_from(adj, false, &mut out);
-                }
-                if let Some(adj) = self.incoming_at(node_id) {
-                    push_from(adj, true, &mut out);
-                }
-            }
-        }
-
+                Ok::<(), ()>(())
+            },
+        );
         out
     }
 
@@ -662,16 +609,16 @@ impl GraphStorage for InMemoryGraph {
     fn outgoing_relationships(&self, node_id: NodeId) -> Vec<RelationshipRecord> {
         self.outgoing_at(node_id)
             .into_iter()
-            .flat_map(|ids| ids.iter())
-            .filter_map(|&id| self.rel_at(id).cloned())
+            .flat_map(|adj| adj.iter())
+            .filter_map(|entry| self.rel_at(entry.rel).cloned())
             .collect()
     }
 
     fn incoming_relationships(&self, node_id: NodeId) -> Vec<RelationshipRecord> {
         self.incoming_at(node_id)
             .into_iter()
-            .flat_map(|ids| ids.iter())
-            .filter_map(|&id| self.rel_at(id).cloned())
+            .flat_map(|adj| adj.iter())
+            .filter_map(|entry| self.rel_at(entry.rel).cloned())
             .collect()
     }
 
@@ -687,22 +634,19 @@ impl GraphStorage for InMemoryGraph {
     }
 
     fn degree(&self, node_id: NodeId, direction: Direction) -> usize {
+        // Counting walks the list: adjacency stores no length.
+        let out = || self.outgoing_at(node_id).map_or(0, |adj| adj.count());
         match direction {
-            Direction::Right => self.outgoing_at(node_id).map(|s| s.len()).unwrap_or(0),
-            Direction::Left => self.incoming_at(node_id).map(|s| s.len()).unwrap_or(0),
+            Direction::Right => out(),
+            Direction::Left => self.incoming_at(node_id).map_or(0, |adj| adj.count()),
             Direction::Undirected => {
-                let out_count = self.outgoing_at(node_id).map(<[_]>::len).unwrap_or(0);
                 let incoming_non_self = self
                     .incoming_at(node_id)
                     .into_iter()
-                    .flat_map(|ids| ids.iter())
-                    .filter(|&&rel_id| {
-                        self.rel_at(rel_id)
-                            .map(|rel| rel.src != node_id || rel.dst != node_id)
-                            .unwrap_or(false)
-                    })
+                    .flat_map(|adj| adj.iter())
+                    .filter(|entry| entry.neighbour != node_id)
                     .count();
-                out_count + incoming_non_self
+                out() + incoming_non_self
             }
         }
     }
@@ -1041,7 +985,7 @@ impl GraphStorageMut for InMemoryGraph {
 
         self.emit(|| MutationEvent::CreateNode {
             id,
-            labels: node.labels.clone(),
+            labels: node.labels.to_strings(),
             properties: node.properties.clone(),
         });
 
@@ -1069,7 +1013,7 @@ impl GraphStorageMut for InMemoryGraph {
             id,
             src,
             dst,
-            rel_type: trimmed.to_string(),
+            rel_type: trimmed.into(),
             properties,
         };
 
@@ -1080,7 +1024,7 @@ impl GraphStorageMut for InMemoryGraph {
             id,
             src,
             dst,
-            rel_type: rel.rel_type.clone(),
+            rel_type: rel.rel_type.to_string(),
             properties: rel.properties.clone(),
         });
 

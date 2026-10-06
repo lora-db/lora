@@ -2154,7 +2154,10 @@ fn type_rank(v: &LoraValue) -> u8 {
 /// Check whether a node's labels satisfy all label groups.
 /// Each group is a disjunction (OR): the node must have at least one label
 /// from the group.  Groups are conjunctive (AND): all groups must be satisfied.
-pub(crate) fn node_matches_label_groups(node_labels: &[String], groups: &[Vec<String>]) -> bool {
+pub(crate) fn node_matches_label_groups(
+    node_labels: &[lora_store::Name],
+    groups: &[Vec<String>],
+) -> bool {
     groups
         .iter()
         .all(|group| group.iter().any(|l| node_labels.iter().any(|nl| nl == l)))
@@ -2223,7 +2226,7 @@ pub(crate) fn hydrate_node_record(node: &lora_store::NodeRecord) -> LoraValue {
         LoraValue::List(
             node.labels
                 .iter()
-                .map(|s| LoraValue::String(s.clone()))
+                .map(|s| LoraValue::String(s.to_string()))
                 .collect(),
         ),
     );
@@ -2243,7 +2246,10 @@ pub(crate) fn hydrate_relationship_record(rel: &lora_store::RelationshipRecord) 
     map.insert("id".to_string(), LoraValue::Int(rel.id as i64));
     map.insert("startId".to_string(), LoraValue::Int(rel.src as i64));
     map.insert("endId".to_string(), LoraValue::Int(rel.dst as i64));
-    map.insert("type".to_string(), LoraValue::String(rel.rel_type.clone()));
+    map.insert(
+        "type".to_string(),
+        LoraValue::String(rel.rel_type.to_string()),
+    );
     map.insert(
         "properties".to_string(),
         properties_to_value_map(&rel.properties),

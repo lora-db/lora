@@ -31,12 +31,12 @@ fn payload() -> SnapshotPayload {
         nodes: vec![
             NodeRecord {
                 id: 0,
-                labels: vec!["User".into(), "Admin".into()],
+                labels: ["User", "Admin"].into(),
                 properties: alice_props,
             },
             NodeRecord {
                 id: 1,
-                labels: vec!["User".into()],
+                labels: ["User"].into(),
                 properties: Properties::new(),
             },
         ],
@@ -212,7 +212,7 @@ fn large_columnar_roundtrip() {
         properties.insert("active".into(), PropertyValue::Bool(id % 2 == 0));
         nodes.push(NodeRecord {
             id,
-            labels: vec!["User".into(), format!("Bucket{}", id % 8)],
+            labels: vec!["User".to_string(), format!("Bucket{}", id % 8)].into(),
             properties,
         });
     }

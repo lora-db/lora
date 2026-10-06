@@ -129,7 +129,7 @@ impl GraphStorage for OwnedMapStore {
         let mut labels = BTreeSet::new();
         for n in self.nodes.values() {
             for l in &n.labels {
-                labels.insert(l.clone());
+                labels.insert(l.to_string());
             }
         }
         labels.into_iter().collect()
@@ -138,7 +138,7 @@ impl GraphStorage for OwnedMapStore {
     fn all_relationship_types(&self) -> Vec<String> {
         let mut types = BTreeSet::new();
         for r in self.relationships.values() {
-            types.insert(r.rel_type.clone());
+            types.insert(r.rel_type.to_string());
         }
         types.into_iter().collect()
     }
@@ -169,7 +169,7 @@ impl GraphStorageMut for OwnedMapStore {
         };
         let record = NodeRecord {
             id,
-            labels,
+            labels: labels.into(),
             properties,
         };
         self.nodes.insert(id, record.clone());
@@ -195,7 +195,7 @@ impl GraphStorageMut for OwnedMapStore {
             id,
             src,
             dst,
-            rel_type: trimmed.to_string(),
+            rel_type: trimmed.into(),
             properties,
         };
         self.relationships.insert(id, record.clone());

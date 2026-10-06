@@ -5,6 +5,7 @@
 //! * [`graph`] — graph-shaped envelopes: `NodeId`, `RelationshipId`,
 //!   `NodeRecord`, `RelationshipRecord`, `Properties`,
 //!   `ExpandedRelationship`.
+//! * [`name`] — interned label / relationship-type names.
 //! * [`property_value`] — the polymorphic `PropertyValue` enum.
 //! * [`binary`] — `LoraBinary`, the byte-string property type.
 //! * [`spatial`] — points, SRID/CRS constants, distance functions.
@@ -16,6 +17,7 @@
 
 pub mod binary;
 pub mod graph;
+pub mod name;
 pub mod property_map;
 pub mod property_value;
 pub mod spatial;
@@ -26,6 +28,7 @@ pub use binary::LoraBinary;
 pub use graph::{
     ExpandedRelationship, NodeId, NodeRecord, Properties, RelationshipId, RelationshipRecord,
 };
+pub use name::{Labels, Name};
 pub use property_map::PropertyMap;
 pub use property_value::PropertyValue;
 pub use spatial::{

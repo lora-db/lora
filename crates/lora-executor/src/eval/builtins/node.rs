@@ -40,7 +40,7 @@ fn labels<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> Lora
                 LoraValue::List(
                     n.labels
                         .iter()
-                        .map(|s| LoraValue::String(s.clone()))
+                        .map(|s| LoraValue::String(s.to_string()))
                         .collect(),
                 )
             })

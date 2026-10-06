@@ -85,7 +85,7 @@ impl InMemoryGraph {
             .fulltext_indexes_read(StoredIndexEntity::Node)
             .by_name()
             .any(|(_, idx)| {
-                idx.covers_any_label(node.labels.iter().map(String::as_str))
+                idx.covers_any_label(node.labels.strs())
                     && (idx
                         .properties
                         .iter()
@@ -97,7 +97,7 @@ impl InMemoryGraph {
         }
         let mut registry = self.fulltext_indexes_write(StoredIndexEntity::Node);
         for (_, idx) in registry.by_name_mut() {
-            if !idx.covers_any_label(node.labels.iter().map(String::as_str)) {
+            if !idx.covers_any_label(node.labels.strs()) {
                 continue;
             }
             let counts = term_counts_for_properties(&node.properties, &idx.properties);
@@ -224,13 +224,13 @@ impl InMemoryGraph {
                 // Map property -> term counts for that property; we'll
                 // pick the relevant subset per matching index below.
                 (
-                    node.labels.clone(),
+                    node.labels.to_strings(),
                     string_property_term_counts(&node.properties),
                 )
             }),
             StoredIndexEntity::Relationship => self.rel_at(entity_id).map(|rel| {
                 (
-                    vec![rel.rel_type.clone()],
+                    vec![rel.rel_type.to_string()],
                     string_property_term_counts(&rel.properties),
                 )
             }),

@@ -100,12 +100,12 @@ overhead on top.
 
 | Element | Bytes |
 |---------|-------|
-| Node, no properties, one label | ~170 |
+| Node, no properties, one label | ~140 |
 | Each property on a node or relationship (inline value) | ~64, plus the value's own heap for strings, lists, maps |
-| Relationship, no properties | ~115 |
+| Relationship, no properties | ~96 to ~115. The higher figure applies once its endpoints have more than two relationships each: their adjacency entries (8-10 bytes each, two per relationship) then live on the heap |
 | Unique-valued entry in a RANGE index or uniqueness constraint | ~290 |
-| 20k festivals + 5k users + 100k relationships, no indexes | ~320 per element |
-| Same, with two uniqueness constraints, a full-text and a point index | ~430 per element |
+| 20k festivals + 5k users + 100k relationships, no indexes | ~316 per element |
+| Same, with two uniqueness constraints, a full-text and a point index | ~384 per element |
 
 Declaring indexes and constraints before a bulk load keeps the load
 linear: a uniqueness check looks the value up in its backing index rather

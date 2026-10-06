@@ -322,24 +322,18 @@ fn rel_slab_bytes(slab: &ChunkedVec<Option<std::sync::Arc<RelationshipRecord>>>)
 }
 
 fn node_record_heap_bytes(record: &NodeRecord) -> usize {
-    let labels = record.labels.capacity() * size_of::<String>()
-        + record.labels.iter().map(|l| l.capacity()).sum::<usize>();
-    labels + properties_heap_bytes(&record.properties)
+    // Label names are interned and shared; only a spilled list is owned.
+    record.labels.heap_bytes() + properties_heap_bytes(&record.properties)
 }
 
 fn rel_record_heap_bytes(record: &RelationshipRecord) -> usize {
-    record.rel_type.capacity() + properties_heap_bytes(&record.properties)
+    // The type name is interned and shared.
+    properties_heap_bytes(&record.properties)
 }
 
-fn adjacency_bytes(adj: &ChunkedVec<super::graph::AdjList>) -> usize {
-    let outer = chunked_outer_bytes(adj);
-    // Inline lists (capacity <= 2) own no heap; spilled ones do.
-    let inner: usize = adj
-        .iter()
-        .filter(|v| v.spilled())
-        .map(|v| v.capacity() * size_of::<u64>())
-        .sum();
-    outer + inner
+fn adjacency_bytes(adj: &ChunkedVec<super::adjacency::AdjList>) -> usize {
+    // Short lists are inline and own no heap; spilled ones do.
+    chunked_outer_bytes(adj) + adj.iter().map(|list| list.heap_bytes()).sum::<usize>()
 }
 
 fn label_or_type_bytes(map: &BTreeMap<String, ChunkedVec<u64>>) -> usize {

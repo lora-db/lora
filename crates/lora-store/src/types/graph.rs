@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use lora_ast::Direction;
 
-use super::{PropertyMap, PropertyValue};
+use super::{Labels, Name, PropertyMap, PropertyValue};
 
 pub type NodeId = u64;
 pub type RelationshipId = u64;
@@ -32,13 +32,13 @@ pub type Properties = PropertyMap;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeRecord {
     pub id: NodeId,
-    pub labels: Vec<String>,
+    pub labels: Labels,
     pub properties: Properties,
 }
 
 impl NodeRecord {
     pub fn has_label(&self, label: &str) -> bool {
-        self.labels.iter().any(|l| l == label)
+        self.labels.has(label)
     }
 
     pub fn property(&self, key: &str) -> Option<&PropertyValue> {
@@ -51,7 +51,7 @@ pub struct RelationshipRecord {
     pub id: RelationshipId,
     pub src: NodeId,
     pub dst: NodeId,
-    pub rel_type: String,
+    pub rel_type: Name,
     pub properties: Properties,
 }
 

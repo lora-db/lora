@@ -418,6 +418,7 @@ fn vector_matches(
 #[derive(Clone, Copy)]
 enum NodeLabelMatcher<'a> {
     AnyOf(&'a [String]),
+    Names(&'a [crate::Name]),
     One(&'a str),
 }
 
@@ -425,6 +426,7 @@ impl NodeLabelMatcher<'_> {
     fn contains(self, label: &str) -> bool {
         match self {
             NodeLabelMatcher::AnyOf(labels) => labels.iter().any(|l| l == label),
+            NodeLabelMatcher::Names(labels) => labels.iter().any(|l| l == label),
             NodeLabelMatcher::One(candidate) => candidate == label,
         }
     }
@@ -900,7 +902,7 @@ fn check_node_replace_properties_with(
         catalog,
         graph,
         ConstraintRecord::Node {
-            labels: NodeLabelMatcher::AnyOf(&node.labels),
+            labels: NodeLabelMatcher::Names(&node.labels),
             properties,
             skip: Some(node_id),
         },

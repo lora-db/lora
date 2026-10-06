@@ -2,17 +2,18 @@
 //! storage, adjacency lists, label/type indexes, and the inherent
 //! helpers that the trait impls in `super::impls` delegate to.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, RwLockWriteGuard};
 
 use lora_ast::Direction;
 
 use crate::{
-    DeletedRecordSink, LoraPoint, MutationEvent, MutationRecorder, NodeId, NodeRecord, Properties,
-    PropertyValue, RelationshipId, RelationshipRecord,
+    DeletedRecordSink, Labels, LoraPoint, MutationEvent, MutationRecorder, NodeId, NodeRecord,
+    Properties, PropertyValue, RelationshipId, RelationshipRecord,
 };
 
+use super::adjacency::{AdjEntry, AdjList, TypeDict, TypeFilter};
 use super::chunked_vec::ChunkedVec;
 use super::constraint_catalog::{
     ConstraintCatalog, ConstraintRequest, CreateConstraintError, CreateConstraintOutcome,
@@ -37,14 +38,6 @@ use super::sorted_property_index::SortedPropertyIndex;
 use super::stats::GraphStats;
 use super::text_index::TrigramRegistry;
 use super::vector_index::{VectorIndexProvider, VectorIndexRegistry, VectorSimilarity};
-
-/// Per-node adjacency list. Two relationship ids fit inline in the same
-/// 24 bytes a `Vec` header takes, so the low-degree nodes that make up
-/// most graphs (chains, trees, sparse social graphs) need no heap
-/// allocation for their edges: less memory, one fewer pointer chase per
-/// hop, and a graph clone that copies them with `memcpy` instead of one
-/// `malloc` per node.
-pub(super) type AdjList = smallvec::SmallVec<RelationshipId, 2>;
 
 #[derive(Default)]
 pub struct InMemoryGraph {
@@ -74,13 +67,16 @@ pub struct InMemoryGraph {
     pub(super) live_node_count: usize,
     pub(super) live_rel_count: usize,
 
-    /// Adjacency keyed by NodeId. `outgoing[id]` is the list of relationship
-    /// ids that leave `id`; mirrored on `incoming[id]`. Inner `Vec` instead
-    /// of `BTreeSet` because edges are inserted exactly once and traversal
-    /// only needs sequential iteration; the cache-friendly contiguous layout
-    /// shows up on every traversal hop.
+    /// Adjacency keyed by NodeId. `outgoing[id]` lists the relationships
+    /// that leave `id` as `(type, target, relationship id)`; `incoming[id]`
+    /// mirrors it with the source as the neighbour. A hop reads only the
+    /// list: it never touches a relationship record. See
+    /// [`super::adjacency`].
     pub(super) outgoing: ChunkedVec<AdjList>,
     pub(super) incoming: ChunkedVec<AdjList>,
+    /// Numbers the relationship types for the adjacency entries. Shared
+    /// with clones until one of them sees a new type.
+    pub(super) rel_types: TypeDict,
 
     // secondary indexes
     /// Label -> the (unique, monotonic) node ids that carry it. The inner
@@ -183,6 +179,7 @@ impl Clone for InMemoryGraph {
             live_rel_count: self.live_rel_count,
             outgoing: self.outgoing.clone(),
             incoming: self.incoming.clone(),
+            rel_types: self.rel_types.clone(),
             nodes_by_label: self.nodes_by_label.clone(),
             relationships_by_type: self.relationships_by_type.clone(),
             // Shares every registry and catalog; each is copied on its
@@ -436,55 +433,37 @@ impl InMemoryGraph {
     }
 
     #[inline]
-    pub(super) fn outgoing_at(&self, id: NodeId) -> Option<&[RelationshipId]> {
-        self.outgoing
-            .get(Self::slot_index(id)?)
-            .map(|adj| adj.as_slice())
+    pub(super) fn outgoing_at(&self, id: NodeId) -> Option<&AdjList> {
+        self.outgoing.get(Self::slot_index(id)?)
     }
 
     #[inline]
-    pub(super) fn incoming_at(&self, id: NodeId) -> Option<&[RelationshipId]> {
-        self.incoming
-            .get(Self::slot_index(id)?)
-            .map(|adj| adj.as_slice())
+    pub(super) fn incoming_at(&self, id: NodeId) -> Option<&AdjList> {
+        self.incoming.get(Self::slot_index(id)?)
     }
 
+    /// Visit the entries of one adjacency list that pass `filter`.
+    /// `skip_self_loops` is set for the incoming half of an undirected
+    /// walk, whose outgoing half already reported the node's self-loops.
     #[inline]
-    fn try_for_each_adjacent_slice<F, E>(
-        &self,
+    fn try_for_each_adjacent_entry<F, E>(
         node_id: NodeId,
-        types: &[String],
-        adj: &[RelationshipId],
+        filter: &TypeFilter,
+        adj: &AdjList,
         skip_self_loops: bool,
         visit: &mut F,
     ) -> Result<(), E>
     where
         F: FnMut(RelationshipId, NodeId) -> Result<(), E>,
     {
-        let single_type = match types {
-            [single] => Some(single.as_str()),
-            _ => None,
-        };
-        let has_type_filter = !types.is_empty();
-
-        for &rel_id in adj {
-            let Some(rel) = self.rel_at(rel_id) else {
-                continue;
-            };
-            if skip_self_loops && rel.src == node_id && rel.dst == node_id {
+        for entry in adj.iter() {
+            if skip_self_loops && entry.neighbour == node_id {
                 continue;
             }
-            if let Some(single) = single_type {
-                if rel.rel_type != single {
-                    continue;
-                }
-            } else if has_type_filter && !types.iter().any(|t| t == &rel.rel_type) {
+            if !filter.matches(entry.type_id) {
                 continue;
             }
-            let Some(other_id) = Self::other_endpoint(rel, node_id) else {
-                continue;
-            };
-            visit(rel_id, other_id)?;
+            visit(entry.rel, entry.neighbour)?;
         }
         Ok(())
     }
@@ -500,24 +479,25 @@ impl InMemoryGraph {
     where
         F: FnMut(RelationshipId, NodeId) -> Result<(), E>,
     {
-        match direction {
-            Direction::Right => {
-                if let Some(adj) = self.outgoing_at(node_id) {
-                    self.try_for_each_adjacent_slice(node_id, types, adj, false, &mut visit)?;
-                }
+        let filter = self.rel_types.filter(types);
+        if matches!(filter, TypeFilter::Nothing) {
+            return Ok(());
+        }
+        if !matches!(direction, Direction::Left) {
+            if let Some(adj) = self.outgoing_at(node_id) {
+                Self::try_for_each_adjacent_entry(node_id, &filter, adj, false, &mut visit)?;
             }
-            Direction::Left => {
-                if let Some(adj) = self.incoming_at(node_id) {
-                    self.try_for_each_adjacent_slice(node_id, types, adj, false, &mut visit)?;
-                }
-            }
-            Direction::Undirected => {
-                if let Some(adj) = self.outgoing_at(node_id) {
-                    self.try_for_each_adjacent_slice(node_id, types, adj, false, &mut visit)?;
-                }
-                if let Some(adj) = self.incoming_at(node_id) {
-                    self.try_for_each_adjacent_slice(node_id, types, adj, true, &mut visit)?;
-                }
+        }
+        if !matches!(direction, Direction::Right) {
+            if let Some(adj) = self.incoming_at(node_id) {
+                let skip_self_loops = matches!(direction, Direction::Undirected);
+                Self::try_for_each_adjacent_entry(
+                    node_id,
+                    &filter,
+                    adj,
+                    skip_self_loops,
+                    &mut visit,
+                )?;
             }
         }
 
@@ -585,48 +565,40 @@ impl InMemoryGraph {
             .filter_map(|(i, slot)| slot.as_ref().map(|r| (i as RelationshipId, r.as_ref())))
     }
 
-    /// Add `rel_id` to `node_id`'s outgoing list. Relies on the monotonic-id
-    /// invariant: relationship ids are allocated once and never re-used, so
-    /// the bucket can never see a duplicate.
-    fn outgoing_push(&mut self, node_id: NodeId, rel_id: RelationshipId) {
+    /// Add an entry to `node_id`'s outgoing (or incoming) list. Relies on
+    /// the monotonic-id invariant: relationship ids are allocated once and
+    /// never re-used, so the list can never see a duplicate.
+    fn adjacency_push(&mut self, node_id: NodeId, outgoing: bool, entry: AdjEntry) {
         if let Ok(idx) = self.ensure_node_slot_checked(node_id) {
-            self.outgoing[idx].push(rel_id);
+            let lists = if outgoing {
+                &mut self.outgoing
+            } else {
+                &mut self.incoming
+            };
+            lists[idx].push(entry);
         }
     }
 
-    fn incoming_push(&mut self, node_id: NodeId, rel_id: RelationshipId) {
-        if let Ok(idx) = self.ensure_node_slot_checked(node_id) {
-            self.incoming[idx].push(rel_id);
+    fn adjacency_remove(&mut self, node_id: NodeId, outgoing: bool, rel_id: RelationshipId) {
+        let lists = if outgoing {
+            &mut self.outgoing
+        } else {
+            &mut self.incoming
+        };
+        if let Some(list) = Self::slot_index(node_id).and_then(|idx| lists.get_mut(idx)) {
+            list.remove(rel_id);
         }
     }
 
-    /// Remove `rel_id` from `node_id`'s outgoing list. `swap_remove` keeps
-    /// the operation O(1) — adjacency order doesn't carry semantic meaning.
-    fn outgoing_remove(&mut self, node_id: NodeId, rel_id: RelationshipId) {
-        if let Some(v) = Self::slot_index(node_id).and_then(|idx| self.outgoing.get_mut(idx)) {
-            if let Some(pos) = v.iter().position(|&id| id == rel_id) {
-                v.swap_remove(pos);
+    pub(super) fn normalize_labels(labels: Vec<String>) -> Labels {
+        let mut out = Labels::new();
+        for label in &labels {
+            let label = label.trim();
+            if !label.is_empty() && !out.has(label) {
+                out.push(label);
             }
         }
-    }
-
-    fn incoming_remove(&mut self, node_id: NodeId, rel_id: RelationshipId) {
-        if let Some(v) = Self::slot_index(node_id).and_then(|idx| self.incoming.get_mut(idx)) {
-            if let Some(pos) = v.iter().position(|&id| id == rel_id) {
-                v.swap_remove(pos);
-            }
-        }
-    }
-
-    pub(super) fn normalize_labels(labels: Vec<String>) -> Vec<String> {
-        let mut seen = BTreeSet::new();
-
-        labels
-            .into_iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .filter(|s| seen.insert(s.clone()))
-            .collect()
+        out
     }
 
     pub(super) fn insert_node_label_index(&mut self, node_id: NodeId, label: &str) {
@@ -801,7 +773,7 @@ impl InMemoryGraph {
         indexes.node_properties.insert_bulk(key, || {
             self.iter_nodes().filter_map(|(id, node)| {
                 let value = node.properties.get(key)?;
-                Some((id, node.labels.iter().map(String::as_str), value))
+                Some((id, node.labels.strs(), value))
             })
         });
         if indexes.node_properties.activate(key) {
@@ -1756,15 +1728,11 @@ impl InMemoryGraph {
         }
         Self::count_distinct_values(
             &mut self.distinct_stats.nodes,
-            node.labels.iter().map(String::as_str),
+            node.labels.strs(),
             &node.properties,
             true,
         );
-        self.index_node_properties_if_active(
-            node.id,
-            node.labels.iter().map(String::as_str),
-            &node.properties,
-        );
+        self.index_node_properties_if_active(node.id, node.labels.strs(), &node.properties);
         self.maintain_node_secondary_indexes(node, SecondaryIndexMutation::Insert);
     }
 
@@ -1784,24 +1752,14 @@ impl InMemoryGraph {
 
         if self.node_property_index_is_active(key) {
             if let Some(old) = old {
-                self.unindex_node_property_if_active(
-                    node_id,
-                    labels.iter().map(String::as_str),
-                    key,
-                    old,
-                );
+                self.unindex_node_property_if_active(node_id, labels.strs(), key, old);
             }
-            self.index_node_property_if_active(
-                node_id,
-                labels.iter().map(String::as_str),
-                key,
-                new,
-            );
+            self.index_node_property_if_active(node_id, labels.strs(), key, new);
         }
 
         self.update_secondary_property(
             StoredIndexEntity::Node,
-            labels.iter().map(String::as_str),
+            labels.strs(),
             node_id,
             key,
             old,
@@ -1822,16 +1780,11 @@ impl InMemoryGraph {
             self.distinct_stats.nodes.remove(label, key, old);
         }
         if self.node_property_index_is_active(key) {
-            self.unindex_node_property_if_active(
-                node_id,
-                labels.iter().map(String::as_str),
-                key,
-                old,
-            );
+            self.unindex_node_property_if_active(node_id, labels.strs(), key, old);
         }
         self.update_secondary_property(
             StoredIndexEntity::Node,
-            labels.iter().map(String::as_str),
+            labels.strs(),
             node_id,
             key,
             Some(old),
@@ -1889,15 +1842,11 @@ impl InMemoryGraph {
         }
         Self::count_distinct_values(
             &mut self.distinct_stats.nodes,
-            node.labels.iter().map(String::as_str),
+            node.labels.strs(),
             &node.properties,
             false,
         );
-        self.unindex_active_node_properties(
-            node.id,
-            node.labels.iter().map(String::as_str),
-            &node.properties,
-        );
+        self.unindex_active_node_properties(node.id, node.labels.strs(), &node.properties);
         self.maintain_node_secondary_indexes(node, SecondaryIndexMutation::Remove);
     }
 
@@ -2304,17 +2253,31 @@ impl InMemoryGraph {
     }
 
     pub(super) fn attach_relationship(&mut self, rel: &RelationshipRecord) {
-        self.outgoing_push(rel.src, rel.id);
-        self.incoming_push(rel.dst, rel.id);
+        let type_id = self.rel_types.id_or_insert(&rel.rel_type);
+        self.adjacency_push(
+            rel.src,
+            true,
+            AdjEntry {
+                type_id,
+                neighbour: rel.dst,
+                rel: rel.id,
+            },
+        );
+        self.adjacency_push(
+            rel.dst,
+            false,
+            AdjEntry {
+                type_id,
+                neighbour: rel.src,
+                rel: rel.id,
+            },
+        );
         self.insert_relationship_type_index(rel.id, &rel.rel_type);
     }
 
     fn detach_relationship_indexes(&mut self, rel: &RelationshipRecord) {
-        // Adjacency is now positional `Vec<Vec<RelationshipId>>` — clearing
-        // the inner Vec leaves the slot in place (the slot is sized for the
-        // node's lifetime, not the edge's).
-        self.outgoing_remove(rel.src, rel.id);
-        self.incoming_remove(rel.dst, rel.id);
+        self.adjacency_remove(rel.src, true, rel.id);
+        self.adjacency_remove(rel.dst, false, rel.id);
 
         self.remove_relationship_type_index(rel.id, &rel.rel_type);
     }
@@ -2324,86 +2287,21 @@ impl InMemoryGraph {
         node_id: NodeId,
         direction: Direction,
     ) -> Vec<RelationshipId> {
-        match direction {
-            Direction::Left => self
-                .incoming_at(node_id)
-                .map(<[_]>::to_vec)
-                .unwrap_or_default(),
-
-            Direction::Right => self
-                .outgoing_at(node_id)
-                .map(<[_]>::to_vec)
-                .unwrap_or_default(),
-
-            Direction::Undirected => {
-                let out = self.outgoing_at(node_id);
-                let inc = self.incoming_at(node_id);
-                let mut ids = Vec::with_capacity(
-                    out.map(<[_]>::len).unwrap_or(0) + inc.map(<[_]>::len).unwrap_or(0),
-                );
-
-                if let Some(out) = out {
-                    ids.extend(out.iter().copied());
-                }
-                if let Some(inc) = inc {
-                    for &rel_id in inc {
-                        let Some(rel) = self.rel_at(rel_id) else {
-                            continue;
-                        };
-                        if rel.src == node_id && rel.dst == node_id {
-                            continue;
-                        }
-                        ids.push(rel_id);
-                    }
-                }
-
-                ids
-            }
-        }
-    }
-
-    pub(super) fn other_endpoint(rel: &RelationshipRecord, node_id: NodeId) -> Option<NodeId> {
-        if rel.src == node_id {
-            Some(rel.dst)
-        } else if rel.dst == node_id {
-            Some(rel.src)
-        } else {
-            None
-        }
+        let mut ids = Vec::new();
+        let _ = self.try_for_each_adjacent_id_unchecked(node_id, direction, &[], |rel_id, _| {
+            ids.push(rel_id);
+            Ok::<(), ()>(())
+        });
+        ids
     }
 
     pub(super) fn has_incident_relationships(&self, node_id: NodeId) -> bool {
-        self.outgoing_at(node_id)
-            .map(|ids| !ids.is_empty())
-            .unwrap_or(false)
-            || self
-                .incoming_at(node_id)
-                .map(|ids| !ids.is_empty())
-                .unwrap_or(false)
+        self.outgoing_at(node_id).is_some_and(|adj| !adj.is_empty())
+            || self.incoming_at(node_id).is_some_and(|adj| !adj.is_empty())
     }
 
     pub(super) fn incident_relationship_ids(&self, node_id: NodeId) -> Vec<RelationshipId> {
-        let out = self.outgoing_at(node_id);
-        let inc = self.incoming_at(node_id);
-        let mut rel_ids =
-            Vec::with_capacity(out.map(<[_]>::len).unwrap_or(0) + inc.map(<[_]>::len).unwrap_or(0));
-
-        if let Some(ids) = out {
-            rel_ids.extend(ids.iter().copied());
-        }
-        if let Some(ids) = inc {
-            for &rel_id in ids {
-                let Some(rel) = self.rel_at(rel_id) else {
-                    continue;
-                };
-                if rel.src == node_id && rel.dst == node_id {
-                    continue;
-                }
-                rel_ids.push(rel_id);
-            }
-        }
-
-        rel_ids
+        self.relationship_ids_for_direction(node_id, Direction::Undirected)
     }
 
     /// Replay a node creation using the id captured in a durable mutation
@@ -2487,7 +2385,7 @@ impl InMemoryGraph {
             id,
             src,
             dst,
-            rel_type: trimmed.to_string(),
+            rel_type: trimmed.into(),
             properties,
         };
 
@@ -2519,12 +2417,7 @@ impl InMemoryGraph {
         for (id, node) in self.iter_nodes() {
             for (key, value) in &node.properties {
                 if expected_nodes.is_active(key) {
-                    expected_nodes.insert_with_scopes(
-                        id,
-                        node.labels.iter().map(String::as_str),
-                        key,
-                        value,
-                    );
+                    expected_nodes.insert_with_scopes(id, node.labels.strs(), key, value);
                 }
             }
         }

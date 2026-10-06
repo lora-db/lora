@@ -962,7 +962,7 @@ fn find_last_node_in_row(
     })
 }
 
-fn node_matches_labels(node_labels: &[String], groups: &[Vec<String>]) -> bool {
+fn node_matches_labels(node_labels: &[lora_store::Name], groups: &[Vec<String>]) -> bool {
     groups
         .iter()
         .all(|group| group.iter().any(|l| node_labels.iter().any(|nl| nl == l)))

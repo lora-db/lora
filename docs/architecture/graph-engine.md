@@ -26,8 +26,9 @@ InMemoryGraph
 ├── relationships:          ChunkedVec<Option<Arc<RelationshipRecord>>>
 ├── live_node_count:        usize
 ├── live_rel_count:         usize
-├── outgoing:               ChunkedVec<AdjList>      // SmallVec<RelationshipId, 2>
+├── outgoing:               ChunkedVec<AdjList>      // (type, neighbour, relationship id) entries
 ├── incoming:               ChunkedVec<AdjList>
+├── rel_types:              TypeDict                 // relationship type -> number, for AdjList
 ├── nodes_by_label:         BTreeMap<String, ChunkedVec<NodeId>>
 ├── relationships_by_type:  BTreeMap<String, ChunkedVec<RelationshipId>>
 ├── indexes:                IndexBundle
@@ -65,7 +66,7 @@ it, so change feeds can report deleted entities without copying the graph.
 ```rust
 struct NodeRecord {
     id: NodeId,           // u64, auto-incremented
-    labels: Vec<String>,  // trimmed, empty labels removed, duplicates removed
+    labels: Labels,       // trimmed, empty labels removed, duplicates removed
     properties: PropertyMap,
 }
 ```
@@ -77,10 +78,15 @@ struct RelationshipRecord {
     id: RelationshipId,   // u64, auto-incremented
     src: NodeId,          // source node
     dst: NodeId,          // destination node
-    rel_type: String,     // trimmed, non-empty, immutable
+    rel_type: Name,       // trimmed, non-empty, immutable
     properties: PropertyMap,
 }
 ```
+
+`Name` and `Labels` (`types/name.rs`) are interned: every record with the
+label `User` points at one shared copy of the string, and a node with one
+label stores it inline. Both compare with `&str` and `String` and serialize
+like the `String` and `Vec<String>` they replaced.
 
 `PropertyMap` (`types/property_map.rs`) is a key-sorted `Vec` with a
 `BTreeMap`-shaped API: same iteration order and serde form, much smaller
@@ -170,14 +176,24 @@ ordinary exact-match lookups.
 
 ### Adjacency indexes
 
-Outgoing and incoming relationship IDs are stored in two per-node vectors:
+Each node has two adjacency lists (`memory/adjacency.rs`):
 
-- `outgoing[node_id]` — relationships leaving the node
-- `incoming[node_id]` — relationships arriving at the node
+- `outgoing[node_id]`: relationships leaving the node
+- `incoming[node_id]`: relationships arriving at the node
 
-Deleting a relationship removes its ID from both endpoint vectors. Deleting a
-node clears the node's adjacency vectors; the outer adjacency vectors are not
-shrunk.
+An entry is `(relationship type, neighbour, relationship id)`, so a hop
+filters by type and finds the far endpoint from the list alone, without
+reading a relationship record. A list is a byte string of variable-width
+entries: one header byte, then the type number and the two ids in as many
+bytes as each needs. That is 8 bytes per entry while ids fit in three bytes
+(16M nodes and relationships) and 10 bytes up to 4 billion. Two such entries
+fit inline; longer lists spill to the heap. Relationship types are numbered
+per graph by `rel_types`. The numbers are not persisted: snapshots and the WAL
+store names.
+
+Deleting a relationship removes its entry from both endpoint lists. Deleting a
+node clears the node's lists; the outer adjacency vectors are not shrunk. A
+list stores no length, so `degree` counts entries.
 
 ## ID allocation
 
@@ -199,11 +215,13 @@ deletions and slot vectors may contain tombstones.
 The core traversal primitive takes a source node, a direction, and an optional
 relationship type filter:
 
-1. Read relationship IDs from `outgoing`, `incoming`, or both.
-2. Filter by relationship type when types were supplied.
-3. Resolve each relationship and the other endpoint node.
-4. Return `Vec<(RelationshipRecord, NodeRecord)>` for the compatibility API, or
-   use borrow hooks on hot executor paths to avoid record clones.
+1. Resolve the requested relationship types to their numbers. A type no
+   relationship ever had matches nothing.
+2. Walk the entries of `outgoing`, `incoming`, or both, keeping those of a
+   requested type. An undirected walk reports a self-loop once.
+3. Yield `(relationship id, neighbour id)` straight from the entries.
+4. The compatibility API then reads both records and returns
+   `Vec<(RelationshipRecord, NodeRecord)>`. Hot executor paths stop at the ids.
 
 ```text
 Direction::Right      -> outgoing adjacency

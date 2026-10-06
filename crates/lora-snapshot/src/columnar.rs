@@ -5,7 +5,7 @@ use lora_store::{
         decode_constraint_definitions, decode_index_definitions, decode_property_value,
         encode_constraint_definitions, encode_index_definitions, encode_property_value,
     },
-    ConstraintDefinition, IndexDefinition, NodeRecord, Properties, PropertyValue,
+    ConstraintDefinition, IndexDefinition, Name, NodeRecord, Properties, PropertyValue,
     RelationshipRecord, SnapshotPayload, VectorIndexSnapshot,
 };
 use serde::{Deserialize, Serialize};
@@ -139,7 +139,7 @@ impl ColumnarSnapshot {
                 .ok_or_else(|| SnapshotCodecError::Decode("invalid node label offset".into()))?;
             nodes.push(NodeRecord {
                 id,
-                labels: labels.to_vec(),
+                labels: labels.iter().collect(),
                 properties: Properties::new(),
             });
         }
@@ -148,6 +148,7 @@ impl ColumnarSnapshot {
 
     fn relationship_records_from_columns(&self) -> Result<Vec<RelationshipRecord>> {
         let column_err = || SnapshotCodecError::Decode("relationship column lookup".into());
+        let type_names: Vec<Name> = self.rel_type_dictionary.iter().map(Name::from).collect();
         let mut relationships = Vec::with_capacity(self.rel_ids.len());
         for index in 0..self.rel_ids.len() {
             let type_id_raw = self
@@ -156,8 +157,7 @@ impl ColumnarSnapshot {
                 .copied()
                 .ok_or_else(column_err)?;
             let type_id = u32_to_usize(type_id_raw, "relationship type id")?;
-            let rel_type = self
-                .rel_type_dictionary
+            let rel_type = type_names
                 .get(type_id)
                 .ok_or_else(|| SnapshotCodecError::Decode("invalid relationship type id".into()))?
                 .clone();
@@ -336,7 +336,7 @@ fn node_label_columns(nodes: &[NodeRecord]) -> Result<(Vec<u32>, Vec<String>)> {
         .map_err(|_| SnapshotCodecError::Encode("node labels are too large to allocate".into()))?;
     offsets.push(0);
     for node in nodes {
-        labels.extend(node.labels.iter().cloned());
+        labels.extend(node.labels.iter().map(String::from));
         offsets.push(u32::try_from(labels.len()).map_err(|_| {
             SnapshotCodecError::Encode("node label offset exceeds u32 range".into())
         })?);
@@ -362,7 +362,7 @@ fn relationship_type_columns(
             let id = u32::try_from(dictionary.len()).map_err(|_| {
                 SnapshotCodecError::Encode("relationship type dictionary too large".into())
             })?;
-            dictionary.push(rel.rel_type.clone());
+            dictionary.push(rel.rel_type.to_string());
             index.insert(rel_type, id);
             id
         };

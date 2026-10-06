@@ -1,65 +1,65 @@
 {
   "_meta": {
     "default_tolerance_pct": 10,
-    "last_updated": "2026-09-29",
-    "notes": "Captured from `cargo bench -p lora-database --bench memory -- --quick` on Apple Silicon. Numbers are bytes from `MemoryReport::total_bytes()` after the build phase (or after_query for chain/star/social which run a representative MATCH after building). Tolerance is per-scenario; a regression beyond `total * (1 + tolerance_pct/100)` fails the gate. Bump the baseline whenever an intentional storage-shape change shifts a scenario. 2026-09-29: property maps became key-sorted vectors, index postings inline single ids, adjacency lists inline two edges. These are MemoryReport estimates; `cargo run --release -p lora-database --example heap_probe` measures real allocations. Later the same day: slabs, adjacency and label indexes became chunked copy-on-write vectors and index maps copy-on-write shards (structural sharing for staged writes)."
+    "last_updated": "2026-10-06",
+    "notes": "Captured from `cargo bench -p lora-database --bench memory -- --quick` on Apple Silicon. Numbers are bytes from `MemoryReport::total_bytes()` after the build phase (or after_query for chain/star/social which run a representative MATCH after building). Tolerance is per-scenario; a regression beyond `total * (1 + tolerance_pct/100)` fails the gate. Bump the baseline whenever an intentional storage-shape change shifts a scenario. 2026-09-29: property maps became key-sorted vectors, index postings inline single ids, adjacency lists inline two edges. These are MemoryReport estimates; `cargo run --release -p lora-database --example heap_probe` measures real allocations. Later the same day: slabs, adjacency and label indexes became chunked copy-on-write vectors and index maps copy-on-write shards (structural sharing for staged writes). 2026-10-06: labels and relationship types are interned (no per-record strings) and adjacency entries carry the type and neighbour inline."
   },
   "benchmarks": {
     "node_only_10k": {
-      "total_bytes": 3668174,
-      "bytes_per_node": 309.2,
+      "total_bytes": 3393610,
+      "bytes_per_node": 281.2,
       "tolerance_pct": 10
     },
     "chain_1000.build": {
-      "total_bytes": 514627,
-      "bytes_per_node": 173.3,
-      "bytes_per_rel": 100.3,
+      "total_bytes": 496084,
+      "bytes_per_node": 144.3,
+      "bytes_per_rel": 88.3,
       "tolerance_pct": 10
     },
     "chain_10000.build": {
-      "total_bytes": 5161131,
-      "bytes_per_node": 173.3,
-      "bytes_per_rel": 101.2,
+      "total_bytes": 4917588,
+      "bytes_per_node": 144.3,
+      "bytes_per_rel": 89.2,
       "tolerance_pct": 10
     },
     "chain_100000.build": {
-      "total_bytes": 51531835,
-      "bytes_per_node": 173.1,
-      "bytes_per_rel": 100.9,
+      "total_bytes": 49168020,
+      "bytes_per_node": 144.1,
+      "bytes_per_rel": 88.9,
       "tolerance_pct": 10
     },
     "star_1000.build": {
-      "total_bytes": 346187,
-      "bytes_per_node": 172.3,
-      "bytes_per_rel": 99.3,
+      "total_bytes": 310455,
+      "bytes_per_node": 144.3,
+      "bytes_per_rel": 88.3,
       "tolerance_pct": 10
     },
     "star_10000.build": {
-      "total_bytes": 3594019,
-      "bytes_per_node": 173.2,
-      "bytes_per_rel": 100.2,
+      "total_bytes": 3141751,
+      "bytes_per_node": 145.2,
+      "bytes_per_rel": 89.2,
       "tolerance_pct": 10
     },
     "star_100000.build": {
-      "total_bytes": 35465315,
-      "bytes_per_node": 173.0,
-      "bytes_per_rel": 99.9,
+      "total_bytes": 31569287,
+      "bytes_per_node": 145,
+      "bytes_per_rel": 88.9,
       "tolerance_pct": 10
     },
     "social_20k_x8.build": {
-      "total_bytes": 42867985,
-      "bytes_per_node": 383.9,
-      "bytes_per_rel": 165.9,
+      "total_bytes": 40573564,
+      "bytes_per_node": 353.9,
+      "bytes_per_rel": 152.9,
       "tolerance_pct": 10
     },
     "vector_flat_5k_d128": {
-      "total_bytes": 6615020,
-      "bytes_per_node": 681.3,
+      "total_bytes": 6490220,
+      "bytes_per_node": 656.3,
       "tolerance_pct": 10
     },
     "vector_hnsw_5k_d128": {
-      "total_bytes": 10296500,
-      "bytes_per_node": 681.3,
+      "total_bytes": 10171700,
+      "bytes_per_node": 656.3,
       "tolerance_pct": 15
     }
   }
