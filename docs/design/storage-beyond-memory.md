@@ -216,6 +216,33 @@ Known costs:
 - Label and type names now live in the process-wide intern table, which
   never frees. D2's per-graph dictionary would bound that.
 
+### Stage 1, second slice: read views
+
+`GraphStorage::with_node` and `with_relationship` now pass a `NodeRef` /
+`RelRef` (`types/view.rs`) instead of `&NodeRecord` / `&RelationshipRecord`.
+A view exposes `id()`, `labels()`, `rel_type()`, endpoints and
+`properties()`, and a property reads as a `ValueRef`: scalars by value,
+strings by slice, every other kind through `ValueRef::Other`. The executor's
+readers (about 70 closures), the trait's default methods and the label,
+property and hydration helpers go through views. Storage is unchanged: a
+view wraps the record it was made from, and `NodeRef::from(&record)` serves
+backends that only have records.
+
+This differs from the §6 sketch in one way: the views are concrete types,
+not `NodeView` / `RelView` traits with associated types on `GraphStorage`.
+One type keeps the trait object-safe where it was and needs no defaulted
+associated type for backends that only implement `node()`. When the
+in-memory store encodes records, the encoded form becomes a second
+representation inside the same types.
+
+No measurable cost: over three interleaved pairs of `hop` and `scan` runs
+against the previous commit, reads moved between −5% and +3%.
+
+Still on records, to port when the encoding lands: index maintenance and
+constraint checks inside `lora-store`, the snapshot bridge, and the change
+feed (`BorrowedGraphStorage`). The owned `node()` / `relationship()` and
+their scan variants remain as the compatibility API.
+
 **Not done yet from Stage 0.**
 - Removing the lazy implicit indexes (D3 options b and c).
 

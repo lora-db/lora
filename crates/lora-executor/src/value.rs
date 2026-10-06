@@ -228,6 +228,21 @@ impl From<PropertyValue> for LoraValue {
 /// Build a `LoraValue` from a borrowed `PropertyValue` in a single walk. Lets
 /// callers that already hold `&PropertyValue` (property lookups on borrowed
 /// records) skip the `prop.clone().into()` double-traversal.
+impl From<lora_store::ValueRef<'_>> for LoraValue {
+    #[inline]
+    fn from(value: lora_store::ValueRef<'_>) -> Self {
+        use lora_store::ValueRef;
+        match value {
+            ValueRef::Null => LoraValue::Null,
+            ValueRef::Bool(v) => LoraValue::Bool(v),
+            ValueRef::Int(v) => LoraValue::Int(v),
+            ValueRef::Float(v) => LoraValue::Float(v),
+            ValueRef::String(v) => LoraValue::String(v.to_owned()),
+            ValueRef::Other(v) => LoraValue::from(v),
+        }
+    }
+}
+
 impl From<&PropertyValue> for LoraValue {
     fn from(value: &PropertyValue) -> Self {
         match value {

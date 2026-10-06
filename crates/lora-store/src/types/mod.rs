@@ -23,6 +23,7 @@ pub mod property_value;
 pub mod spatial;
 pub mod temporal;
 pub mod vector;
+pub mod view;
 
 pub use binary::LoraBinary;
 pub use graph::{
@@ -49,3 +50,4 @@ pub use vector::{
     ParseVectorCoordinateTypeError, RawCoordinate, VectorBuildError, VectorCoordinateType,
     VectorValues, MAX_VECTOR_DIMENSION,
 };
+pub use view::{LabelsRef, NodeRef, PropsIter, PropsRef, RelRef, ValueRef};

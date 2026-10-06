@@ -544,14 +544,14 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     fn hydrate_node(&self, id: u64) -> LoraValue {
         self.ctx
             .storage
-            .with_node(id, hydrate_node_record)
+            .with_node(id, |n| hydrate_node_record(n))
             .unwrap_or(LoraValue::Null)
     }
 
     fn hydrate_relationship(&self, id: u64) -> LoraValue {
         self.ctx
             .storage
-            .with_relationship(id, hydrate_relationship_record)
+            .with_relationship(id, |r| hydrate_relationship_record(r))
             .unwrap_or(LoraValue::Null)
     }
 
@@ -1129,7 +1129,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                     .with_relationship(rel_id, |rel_rec| {
                         expected_map.iter().all(|(key, expected_val)| {
                             rel_rec
-                                .properties
+                                .properties()
                                 .get(key.as_str())
                                 .map(|actual| value_matches_property_value(expected_val, actual))
                                 .unwrap_or(false)
@@ -1201,12 +1201,12 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         self.ctx
             .storage
             .with_node(id, |node| {
-                if !node_matches_label_groups(&node.labels, labels) {
+                if !node_matches_label_groups(node.labels(), labels) {
                     return false;
                 }
                 if let Some(LoraValue::Map(expected)) = expected_props {
                     return expected.iter().all(|(key, expected_value)| {
-                        node.properties
+                        node.properties()
                             .get(key.as_str())
                             .map(|actual| value_matches_property_value(expected_value, actual))
                             .unwrap_or(false)

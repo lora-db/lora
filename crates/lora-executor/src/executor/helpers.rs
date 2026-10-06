@@ -358,7 +358,7 @@ pub(super) fn node_by_label_scan_rows<S: GraphStorage>(
             if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
                 let labels_ok = storage
                     .with_node(existing_id, |n| {
-                        node_matches_label_groups(&n.labels, &op.labels)
+                        node_matches_label_groups(n.labels(), &op.labels)
                     })
                     .unwrap_or(false);
                 if labels_ok {
@@ -370,7 +370,7 @@ pub(super) fn node_by_label_scan_rows<S: GraphStorage>(
             for &id in &candidate_ids {
                 if !candidates_prefiltered {
                     let labels_ok = storage
-                        .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
+                        .with_node(id, |n| node_matches_label_groups(n.labels(), &op.labels))
                         .unwrap_or(false);
                     if !labels_ok {
                         continue;
@@ -389,7 +389,7 @@ pub(super) fn node_by_label_scan_rows<S: GraphStorage>(
         if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
             let labels_ok = storage
                 .with_node(existing_id, |n| {
-                    node_matches_label_groups(&n.labels, &op.labels)
+                    node_matches_label_groups(n.labels(), &op.labels)
                 })
                 .unwrap_or(false);
             if labels_ok {
@@ -402,7 +402,7 @@ pub(super) fn node_by_label_scan_rows<S: GraphStorage>(
             check_deadline_or_discard!(deadline, out);
             if !candidates_prefiltered {
                 let labels_ok = storage
-                    .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
+                    .with_node(id, |n| node_matches_label_groups(n.labels(), &op.labels))
                     .unwrap_or(false);
                 if !labels_ok {
                     continue;
@@ -577,7 +577,7 @@ fn count_rows_for_scan_subtree<S: GraphStorage>(
                     .filter(|&id| {
                         storage
                             .with_node(id, |node| {
-                                node_matches_label_groups(&node.labels, &op.labels)
+                                node_matches_label_groups(node.labels(), &op.labels)
                             })
                             .unwrap_or(false)
                     })
@@ -725,7 +725,7 @@ pub(super) fn expand_rows<S: GraphStorage>(
                     let matches = storage
                         .with_relationship(rel_id, |rel| {
                             map.iter().all(|(key, expected)| {
-                                rel.properties
+                                rel.properties()
                                     .get(key.as_str())
                                     .map(|actual| value_matches_property_value(expected, actual))
                                     .unwrap_or(false)
@@ -836,9 +836,9 @@ pub(super) fn expand_var_len_rows<S: GraphStorage>(
     Ok(out)
 }
 
-pub(super) fn properties_to_value_map(props: &Properties) -> LoraValue {
+pub(super) fn properties_to_value_map<'a>(props: impl Into<lora_store::PropsRef<'a>>) -> LoraValue {
     let mut map = BTreeMap::new();
-    for (k, v) in props.iter() {
+    for (k, v) in props.into() {
         map.insert(k.to_string(), LoraValue::from(v));
     }
     LoraValue::Map(map)
@@ -1232,7 +1232,27 @@ pub(crate) fn compare_values_total(a: &LoraValue, b: &LoraValue) -> Ordering {
     }
 }
 
-pub fn value_matches_property_value(expected: &LoraValue, actual: &PropertyValue) -> bool {
+/// Whether a stored value equals `expected` under property-match rules.
+/// Takes the stored value as a view or as a `&PropertyValue`.
+pub fn value_matches_property_value<'a>(
+    expected: &LoraValue,
+    actual: impl Into<lora_store::ValueRef<'a>>,
+) -> bool {
+    use lora_store::ValueRef;
+    match (expected, actual.into()) {
+        (LoraValue::Null, ValueRef::Null) => true,
+        (LoraValue::Bool(a), ValueRef::Bool(b)) => *a == b,
+        (LoraValue::Int(a), ValueRef::Int(b)) => *a == b,
+        (LoraValue::Float(a), ValueRef::Float(b)) => *a == b,
+        (LoraValue::Int(a), ValueRef::Float(b)) => (*a as f64) == b,
+        (LoraValue::Float(a), ValueRef::Int(b)) => *a == (b as f64),
+        (LoraValue::String(a), ValueRef::String(b)) => a == b,
+        (expected, ValueRef::Other(actual)) => owned_value_matches(expected, actual),
+        _ => false,
+    }
+}
+
+fn owned_value_matches(expected: &LoraValue, actual: &PropertyValue) -> bool {
     match (expected, actual) {
         (LoraValue::Null, PropertyValue::Null) => true,
         (LoraValue::Bool(a), PropertyValue::Bool(b)) => a == b,
@@ -1279,9 +1299,9 @@ pub(crate) fn node_matches_property_filter<S: GraphStorage>(
 ) -> bool {
     storage
         .with_node(node_id, |node| {
-            node_matches_label_groups(&node.labels, labels)
+            node_matches_label_groups(node.labels(), labels)
                 && node
-                    .properties
+                    .properties()
                     .get(key)
                     .map(|actual| value_matches_property_value(expected, actual))
                     .unwrap_or(false)
@@ -1478,7 +1498,14 @@ fn temporal_bound_kinds(bounds: [Option<&LoraValue>; 2]) -> Vec<(&'static str, &
 }
 
 /// Whether `value` is a temporal of a kind none of `kinds` is.
-fn is_other_temporal_kind(value: &PropertyValue, kinds: &[(&'static str, &LoraValue)]) -> bool {
+fn is_other_temporal_kind<'a>(
+    value: impl Into<lora_store::ValueRef<'a>>,
+    kinds: &[(&'static str, &LoraValue)],
+) -> bool {
+    // Temporals are never one of the scalar kinds a view carries inline.
+    let lora_store::ValueRef::Other(value) = value.into() else {
+        return false;
+    };
     temporal_kind_name(&LoraValue::from(value))
         .is_some_and(|kind| kinds.iter().any(|(k, _)| *k != kind))
 }
@@ -1553,7 +1580,7 @@ pub(crate) fn other_kind_node_ids<S: GraphStorage>(
                 .filter_map(|id| {
                     storage
                         .with_node(id, |n| {
-                            n.properties
+                            n.properties()
                                 .get(op.key.as_str())
                                 .and_then(|v| temporal_kind_name(&LoraValue::from(v)))
                         })
@@ -1569,7 +1596,7 @@ pub(crate) fn other_kind_node_ids<S: GraphStorage>(
         .filter(|id| {
             single
                 || storage
-                    .with_node(*id, |n| node_matches_label_groups(&n.labels, &op.labels))
+                    .with_node(*id, |n| node_matches_label_groups(n.labels(), &op.labels))
                     .unwrap_or(false)
         })
         .collect()
@@ -1588,8 +1615,8 @@ pub(crate) fn bound_node_has_other_kind<S: GraphStorage>(
     !kinds.is_empty()
         && storage
             .with_node(id, |n| {
-                node_matches_label_groups(&n.labels, &op.labels)
-                    && n.properties
+                node_matches_label_groups(n.labels(), &op.labels)
+                    && n.properties()
                         .get(op.key.as_str())
                         .is_some_and(|v| is_other_temporal_kind(v, &kinds))
             })
@@ -1629,7 +1656,7 @@ fn other_kind_rel_ids<S: GraphStorage>(
                 .filter_map(|id| {
                     storage
                         .with_relationship(id, |r| {
-                            r.properties
+                            r.properties()
                                 .get(op.key.as_str())
                                 .and_then(|v| temporal_kind_name(&LoraValue::from(v)))
                         })
@@ -1669,10 +1696,10 @@ fn node_matches_range_filter<S: GraphStorage>(
 ) -> bool {
     storage
         .with_node(id, |n| {
-            if !node_matches_label_groups(&n.labels, filter.labels) {
+            if !node_matches_label_groups(n.labels(), filter.labels) {
                 return false;
             }
-            let Some(actual) = n.properties.get(filter.key) else {
+            let Some(actual) = n.properties().get(filter.key) else {
                 return false;
             };
             let actual_lv = lora_store_property_to_value(actual);
@@ -1697,10 +1724,10 @@ fn node_matches_text_filter<S: GraphStorage>(
 ) -> bool {
     storage
         .with_node(id, |n| {
-            if !node_matches_label_groups(&n.labels, labels) {
+            if !node_matches_label_groups(n.labels(), labels) {
                 return false;
             }
-            let Some(PropertyValue::String(actual)) = n.properties.get(key) else {
+            let Some(lora_store::ValueRef::String(actual)) = n.properties().get(key) else {
                 return false;
             };
             text_predicate_holds(actual, predicate, query)
@@ -1765,8 +1792,8 @@ fn range_comparison(actual: &LoraValue, bound: &LoraValue) -> Option<Ordering> {
     }
 }
 
-fn lora_store_property_to_value(value: &PropertyValue) -> LoraValue {
-    LoraValue::from(value)
+fn lora_store_property_to_value<'a>(value: impl Into<lora_store::ValueRef<'a>>) -> LoraValue {
+    LoraValue::from(value.into())
 }
 
 pub(crate) fn node_by_point_scan_rows<S: GraphStorage>(
@@ -1887,10 +1914,12 @@ fn node_matches_point_filter<S: GraphStorage>(
 ) -> bool {
     storage
         .with_node(id, |n| {
-            if !node_matches_label_groups(&n.labels, labels) {
+            if !node_matches_label_groups(n.labels(), labels) {
                 return false;
             }
-            let Some(PropertyValue::Point(point)) = n.properties.get(key) else {
+            let Some(lora_store::ValueRef::Other(PropertyValue::Point(point))) =
+                n.properties().get(key)
+            else {
                 return false;
             };
             point_predicate_holds(point, probe)
@@ -2010,7 +2039,7 @@ pub(crate) fn property_scan_candidates<S: GraphStorage>(
                 .into_iter()
                 .filter(|&id| {
                     storage
-                        .with_node(id, |n| node_matches_label_groups(&n.labels, labels))
+                        .with_node(id, |n| node_matches_label_groups(n.labels(), labels))
                         .unwrap_or(false)
                 })
                 .collect(),
@@ -2040,7 +2069,7 @@ pub(crate) fn property_scan_matches<S: GraphStorage>(
                 && node_matches_property_filter(storage, node_id, labels, key, item)
         }),
         _ => storage
-            .with_node(node_id, |n| node_matches_label_groups(&n.labels, labels))
+            .with_node(node_id, |n| node_matches_label_groups(n.labels(), labels))
             .unwrap_or(false),
     }
 }
@@ -2154,13 +2183,14 @@ fn type_rank(v: &LoraValue) -> u8 {
 /// Check whether a node's labels satisfy all label groups.
 /// Each group is a disjunction (OR): the node must have at least one label
 /// from the group.  Groups are conjunctive (AND): all groups must be satisfied.
-pub(crate) fn node_matches_label_groups(
-    node_labels: &[lora_store::Name],
+pub(crate) fn node_matches_label_groups<'a>(
+    node_labels: impl Into<lora_store::LabelsRef<'a>>,
     groups: &[Vec<String>],
 ) -> bool {
+    let node_labels = node_labels.into();
     groups
         .iter()
-        .all(|group| group.iter().any(|l| node_labels.iter().any(|nl| nl == l)))
+        .all(|group| group.iter().any(|l| node_labels.has(l)))
 }
 
 /// Scan the graph for candidate node IDs matching the label groups. Uses the
@@ -2217,14 +2247,15 @@ fn label_group_candidate_ids<S: GraphStorage>(storage: &S, group: &[String]) -> 
     }
 }
 
-pub(crate) fn hydrate_node_record(node: &lora_store::NodeRecord) -> LoraValue {
+pub(crate) fn hydrate_node_record<'a>(node: impl Into<lora_store::NodeRef<'a>>) -> LoraValue {
+    let node = node.into();
     let mut map = BTreeMap::new();
     map.insert("kind".to_string(), LoraValue::String("node".to_string()));
-    map.insert("id".to_string(), LoraValue::Int(node.id as i64));
+    map.insert("id".to_string(), LoraValue::Int(node.id() as i64));
     map.insert(
         "labels".to_string(),
         LoraValue::List(
-            node.labels
+            node.labels()
                 .iter()
                 .map(|s| LoraValue::String(s.to_string()))
                 .collect(),
@@ -2232,27 +2263,28 @@ pub(crate) fn hydrate_node_record(node: &lora_store::NodeRecord) -> LoraValue {
     );
     map.insert(
         "properties".to_string(),
-        properties_to_value_map(&node.properties),
+        properties_to_value_map(node.properties()),
     );
     LoraValue::Map(map)
 }
 
-pub(crate) fn hydrate_relationship_record(rel: &lora_store::RelationshipRecord) -> LoraValue {
+pub(crate) fn hydrate_relationship_record<'a>(rel: impl Into<lora_store::RelRef<'a>>) -> LoraValue {
+    let rel = rel.into();
     let mut map = BTreeMap::new();
     map.insert(
         "kind".to_string(),
         LoraValue::String("relationship".to_string()),
     );
-    map.insert("id".to_string(), LoraValue::Int(rel.id as i64));
-    map.insert("startId".to_string(), LoraValue::Int(rel.src as i64));
-    map.insert("endId".to_string(), LoraValue::Int(rel.dst as i64));
+    map.insert("id".to_string(), LoraValue::Int(rel.id() as i64));
+    map.insert("startId".to_string(), LoraValue::Int(rel.src() as i64));
+    map.insert("endId".to_string(), LoraValue::Int(rel.dst() as i64));
     map.insert(
         "type".to_string(),
-        LoraValue::String(rel.rel_type.to_string()),
+        LoraValue::String(rel.rel_type().to_string()),
     );
     map.insert(
         "properties".to_string(),
-        properties_to_value_map(&rel.properties),
+        properties_to_value_map(rel.properties()),
     );
     LoraValue::Map(map)
 }
@@ -2479,15 +2511,27 @@ pub(crate) fn filter_shortest_paths(rows: Vec<Row>, path_var: VarId, all: bool) 
 // are swapped. With Direction::Undirected we emit both orientations
 // to preserve parity with the Expand-based plan it replaces.
 
+/// The ids `emit_rel_rows` binds.
+struct RelEnds {
+    id: lora_store::RelationshipId,
+    src: NodeId,
+    dst: NodeId,
+}
+
 fn emit_rel_rows(
     direction: Direction,
     src_var: VarId,
     rel_var: VarId,
     dst_var: VarId,
-    rel: &lora_store::RelationshipRecord,
+    rel: lora_store::RelRef<'_>,
     base: &Row,
     out: &mut Vec<Row>,
 ) -> ExecResult<()> {
+    let rel = RelEnds {
+        id: rel.id(),
+        src: rel.src(),
+        dst: rel.dst(),
+    };
     match direction {
         Direction::Right => {
             emit_one_rel_row(
@@ -2622,7 +2666,7 @@ pub(crate) fn rel_by_property_range_scan_rows<S: GraphStorage>(
         let bounds = [lo_value.as_ref(), hi_value.as_ref()];
         for rel_id in other_kind_rel_ids(storage, op, bounds, &mut other_kinds) {
             if let Some(result) = storage.with_relationship(rel_id, |rel| {
-                if !op.types.is_empty() && !op.types.iter().any(|t| t == &rel.rel_type) {
+                if !op.types.is_empty() && !op.types.iter().any(|t| t == rel.rel_type()) {
                     return Ok(());
                 }
                 emit_rel_rows(op.direction, op.src, op.rel, op.dst, rel, &row, &mut out)
@@ -2637,10 +2681,10 @@ pub(crate) fn rel_by_property_range_scan_rows<S: GraphStorage>(
         for rel_id in candidate_ids {
             check_optional_deadline(deadline)?;
             if let Some(result) = storage.with_relationship(rel_id, |rel| {
-                if !op.types.is_empty() && !op.types.iter().any(|t| t == &rel.rel_type) {
+                if !op.types.is_empty() && !op.types.iter().any(|t| t == rel.rel_type()) {
                     return Ok(());
                 }
-                let Some(actual) = rel.properties.get(op.key.as_str()) else {
+                let Some(actual) = rel.properties().get(op.key.as_str()) else {
                     return Ok(());
                 };
                 let actual_lv = LoraValue::from(actual);
@@ -2687,10 +2731,11 @@ pub(crate) fn rel_by_text_scan_rows<S: GraphStorage>(
         for rel_id in candidate_ids {
             check_optional_deadline(deadline)?;
             if let Some(result) = storage.with_relationship(rel_id, |rel| {
-                if !op.types.is_empty() && !op.types.iter().any(|t| t == &rel.rel_type) {
+                if !op.types.is_empty() && !op.types.iter().any(|t| t == rel.rel_type()) {
                     return Ok(());
                 }
-                let Some(PropertyValue::String(actual)) = rel.properties.get(op.key.as_str())
+                let Some(lora_store::ValueRef::String(actual)) =
+                    rel.properties().get(op.key.as_str())
                 else {
                     return Ok(());
                 };
@@ -2785,10 +2830,12 @@ pub(crate) fn rel_by_point_scan_rows<S: GraphStorage>(
         for rel_id in candidate_ids {
             check_optional_deadline(deadline)?;
             if let Some(result) = storage.with_relationship(rel_id, |rel| {
-                if !op.types.is_empty() && !op.types.iter().any(|t| t == &rel.rel_type) {
+                if !op.types.is_empty() && !op.types.iter().any(|t| t == rel.rel_type()) {
                     return Ok(());
                 }
-                let Some(PropertyValue::Point(actual)) = rel.properties.get(op.key.as_str()) else {
+                let Some(lora_store::ValueRef::Other(PropertyValue::Point(actual))) =
+                    rel.properties().get(op.key.as_str())
+                else {
                     return Ok(());
                 };
                 if !point_predicate_holds(actual, &probe) {
@@ -2928,7 +2975,9 @@ impl OrderedRangeCursor {
             .filter(|&id| node_matches_range_filter(storage, id, &filter))
             .map(|id| {
                 let value = storage
-                    .with_node(id, |n| n.properties.get(op.key.as_str()).cloned())
+                    .with_node(id, |n| {
+                        n.properties().get(op.key.as_str()).map(|v| v.to_owned())
+                    })
                     .flatten()
                     .map(LoraValue::from)
                     .unwrap_or(LoraValue::Null);
@@ -2985,7 +3034,9 @@ impl OrderedRangeCursor {
             }
             let last = *ids.last()?;
             let last_value = storage
-                .with_node(last, |n| n.properties.get(self.key.as_str()).cloned())
+                .with_node(last, |n| {
+                    n.properties().get(self.key.as_str()).map(|v| v.to_owned())
+                })
                 .flatten()?;
             *after = Some((last_value, last));
             *chunk = (*chunk * 2).min(4096);
@@ -3059,7 +3110,7 @@ pub(crate) fn node_by_id_seek_rows<S: GraphStorage>(
             storage.contains_node(id)
         } else {
             storage
-                .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
+                .with_node(id, |n| node_matches_label_groups(n.labels(), &op.labels))
                 .unwrap_or(false)
         }
     };
@@ -3108,7 +3159,7 @@ pub(crate) fn rel_by_id_seek_rows<S: GraphStorage>(
         for rel_id in ids {
             emitted.clear();
             if let Some(result) = storage.with_relationship(rel_id, |rel| {
-                if !op.types.is_empty() && !op.types.iter().any(|t| t == &rel.rel_type) {
+                if !op.types.is_empty() && !op.types.iter().any(|t| t == rel.rel_type()) {
                     return Ok(());
                 }
                 emit_rel_rows(
@@ -3130,7 +3181,7 @@ pub(crate) fn rel_by_id_seek_rows<S: GraphStorage>(
                     };
                     let labels_ok = storage
                         .with_node(src, |n| {
-                            node_matches_label_groups(&n.labels, &op.src_labels)
+                            node_matches_label_groups(n.labels(), &op.src_labels)
                         })
                         .unwrap_or(false);
                     if !labels_ok {

@@ -563,7 +563,7 @@ fn lat_mode(n: u64) {
     // --- raw store / facade -----------------------------------------
     let snap = db.snapshot();
     bench_batched("raw_with_node(borrow)", samples / 8, |r| {
-        let v = snap.with_node(r % n, |rec| rec.properties.len()).unwrap();
+        let v = snap.with_node(r % n, |rec| rec.properties().len()).unwrap();
         std::hint::black_box(v);
     });
     bench_batched("raw_node(clone record)", samples / 8, |r| {
@@ -595,8 +595,8 @@ fn lat_mode(n: u64) {
         let mut c = 0usize;
         for id in snap.node_ids_by_label("Person") {
             snap.with_node(id, |rec| {
-                if let Some(PropertyValue::Float(f)) = rec.properties.get("score") {
-                    if *f < -1.0 {
+                if let Some(lora_store::ValueRef::Float(f)) = rec.properties().get("score") {
+                    if f < -1.0 {
                         c += 1;
                     }
                 }
@@ -1016,7 +1016,7 @@ fn hop_mode(n: u64) {
         });
         let snap = db.snapshot();
         bench_batched("raw_with_node(borrow)", samples / 8, |r| {
-            let v = snap.with_node(r % n, |rec| rec.properties.len()).unwrap();
+            let v = snap.with_node(r % n, |rec| rec.properties().len()).unwrap();
             std::hint::black_box(v);
         });
         bench_batched("raw_1hop_ids", samples / 8, |r| {

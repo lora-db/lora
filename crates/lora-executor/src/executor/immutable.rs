@@ -394,7 +394,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                     .ctx
                     .storage
                     .with_node(existing_id, |n| {
-                        node_matches_label_groups(&n.labels, &op.labels)
+                        node_matches_label_groups(n.labels(), &op.labels)
                     })
                     .unwrap_or(false);
                 return Ok(if labels_ok { vec![row] } else { Vec::new() });
@@ -412,7 +412,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                         let labels_ok = self
                             .ctx
                             .storage
-                            .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
+                            .with_node(id, |n| node_matches_label_groups(n.labels(), &op.labels))
                             .unwrap_or(false);
                         if !labels_ok {
                             return None;
@@ -436,7 +436,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                         .ctx
                         .storage
                         .with_node(existing_id, |n| {
-                            node_matches_label_groups(&n.labels, &op.labels)
+                            node_matches_label_groups(n.labels(), &op.labels)
                         })
                         .unwrap_or(false);
                     return Ok(if labels_ok { vec![row] } else { Vec::new() });
@@ -451,7 +451,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                         let labels_ok = self
                             .ctx
                             .storage
-                            .with_node(id, |n| node_matches_label_groups(&n.labels, &op.labels))
+                            .with_node(id, |n| node_matches_label_groups(n.labels(), &op.labels))
                             .unwrap_or(false);
                         if !labels_ok {
                             continue;
@@ -969,14 +969,14 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
     fn hydrate_node(&self, id: u64) -> LoraValue {
         self.ctx
             .storage
-            .with_node(id, hydrate_node_record)
+            .with_node(id, |n| hydrate_node_record(n))
             .unwrap_or(LoraValue::Null)
     }
 
     fn hydrate_relationship(&self, id: u64) -> LoraValue {
         self.ctx
             .storage
-            .with_relationship(id, hydrate_relationship_record)
+            .with_relationship(id, |r| hydrate_relationship_record(r))
             .unwrap_or(LoraValue::Null)
     }
 

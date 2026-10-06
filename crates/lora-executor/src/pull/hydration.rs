@@ -48,10 +48,10 @@ pub fn hydrate_row<S: GraphStorage>(row: Row, storage: &S) -> Row {
 pub(crate) fn hydrate_value<S: GraphStorage>(value: LoraValue, storage: &S) -> LoraValue {
     match value {
         LoraValue::Node(id) => storage
-            .with_node(id, hydrate_node_record)
+            .with_node(id, |n| hydrate_node_record(n))
             .unwrap_or(LoraValue::Null),
         LoraValue::Relationship(id) => storage
-            .with_relationship(id, hydrate_relationship_record)
+            .with_relationship(id, |r| hydrate_relationship_record(r))
             .unwrap_or(LoraValue::Null),
         LoraValue::List(values) => LoraValue::List(
             values

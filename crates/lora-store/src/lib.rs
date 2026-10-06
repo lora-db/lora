@@ -33,6 +33,9 @@ pub use types::{
     SRID_CARTESIAN, SRID_CARTESIAN_3D, SRID_WGS84, SRID_WGS84_3D,
 };
 
+// Borrowed views handed to `with_node` / `with_relationship` readers.
+pub use types::{LabelsRef, NodeRef, PropsIter, PropsRef, RelRef, ValueRef};
+
 // ---------- Storage trait surface ----------
 pub use traits::{BorrowedGraphStorage, GraphCatalog, GraphStorage, GraphStorageMut};
 

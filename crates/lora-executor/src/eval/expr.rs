@@ -294,14 +294,14 @@ pub fn eval_expr<S: GraphStorage>(
                         match &*base_val {
                             LoraValue::Node(id) => {
                                 ctx.storage.with_node(*id, |node| {
-                                    for (k, v) in &node.properties {
+                                    for (k, v) in &node.properties() {
                                         result.insert(k.to_string(), LoraValue::from(v));
                                     }
                                 });
                             }
                             LoraValue::Relationship(id) => {
                                 ctx.storage.with_relationship(*id, |rel| {
-                                    for (k, v) in &rel.properties {
+                                    for (k, v) in &rel.properties() {
                                         result.insert(k.to_string(), LoraValue::from(v));
                                     }
                                 });
@@ -505,10 +505,10 @@ fn eval_exists_subquery<S: GraphStorage>(
                                                 .storage
                                                 .with_node(dst_id, |dst| {
                                                     node_matches_labels(
-                                                        &dst.labels,
+                                                        dst.labels(),
                                                         &step.node.labels,
                                                     ) && node_matches_properties(
-                                                        &dst.properties,
+                                                        dst.properties(),
                                                         &step.node.properties,
                                                         fr,
                                                         ctx,
@@ -658,10 +658,10 @@ fn eval_pattern_comprehension<S: GraphStorage>(
                                                 .storage
                                                 .with_node(dst_id, |dst| {
                                                     node_matches_labels(
-                                                        &dst.labels,
+                                                        dst.labels(),
                                                         &step.node.labels,
                                                     ) && node_matches_properties(
-                                                        &dst.properties,
+                                                        dst.properties(),
                                                         &step.node.properties,
                                                         fr,
                                                         ctx,
@@ -752,8 +752,8 @@ fn match_node_pattern<S: GraphStorage>(
             let matched = ctx
                 .storage
                 .with_node(*id, |n| {
-                    node_matches_labels(&n.labels, &node.labels)
-                        && node_matches_properties(&n.properties, &node.properties, row, ctx)
+                    node_matches_labels(n.labels(), &node.labels)
+                        && node_matches_properties(n.properties(), &node.properties, row, ctx)
                 })
                 .unwrap_or(false);
             if matched {
@@ -798,8 +798,8 @@ fn match_node_pattern<S: GraphStorage>(
         let matched = ctx
             .storage
             .with_node(id, |n| {
-                node_matches_labels(&n.labels, &node.labels)
-                    && node_matches_properties(&n.properties, &node.properties, row, ctx)
+                node_matches_labels(n.labels(), &node.labels)
+                    && node_matches_properties(n.properties(), &node.properties, row, ctx)
             })
             .unwrap_or(false);
         if !matched {
@@ -917,9 +917,9 @@ impl<S: GraphStorage> VarLengthWalk<'_, '_, S> {
             .ctx
             .storage
             .with_node(node, |n| {
-                node_matches_labels(&n.labels, &self.step.node.labels)
+                node_matches_labels(n.labels(), &self.step.node.labels)
                     && node_matches_properties(
-                        &n.properties,
+                        n.properties(),
                         &self.step.node.properties,
                         self.row,
                         self.ctx,
@@ -962,14 +962,18 @@ fn find_last_node_in_row(
     })
 }
 
-fn node_matches_labels(node_labels: &[lora_store::Name], groups: &[Vec<String>]) -> bool {
+fn node_matches_labels<'a>(
+    node_labels: impl Into<lora_store::LabelsRef<'a>>,
+    groups: &[Vec<String>],
+) -> bool {
+    let node_labels = node_labels.into();
     groups
         .iter()
-        .all(|group| group.iter().any(|l| node_labels.iter().any(|nl| nl == l)))
+        .all(|group| group.iter().any(|l| node_labels.has(l)))
 }
 
-fn node_matches_properties<S: GraphStorage>(
-    props: &lora_store::Properties,
+fn node_matches_properties<'a, S: GraphStorage>(
+    props: impl Into<lora_store::PropsRef<'a>>,
     expected: &Option<ResolvedExpr>,
     row: &Row,
     ctx: &EvalContext<'_, S>,
@@ -977,11 +981,10 @@ fn node_matches_properties<S: GraphStorage>(
     let Some(props_expr) = expected else {
         return true;
     };
+    let props = props.into();
     let expected = eval_expr(props_expr, row, ctx);
     if let LoraValue::Map(exp) = expected {
         exp.iter().all(|(k, v)| {
-            // BTreeMap<Arc<str>, _>::get accepts &str via Borrow; the
-            // expected key is `&String`, so deref to &str first.
             props
                 .get(k.as_str())
                 .map(|pv| crate::executor::value_matches_property_value(v, pv))
@@ -1005,7 +1008,7 @@ fn rel_matches_properties<S: GraphStorage>(
     }
     ctx.storage
         .with_relationship(rel_id, |rel| {
-            node_matches_properties(&rel.properties, expected, row, ctx)
+            node_matches_properties(rel.properties(), expected, row, ctx)
         })
         .unwrap_or(false)
 }
@@ -1069,7 +1072,7 @@ fn eval_property<S: GraphStorage>(
         LoraValue::Node(id) => ctx
             .storage
             .with_node(*id, |node| {
-                node.properties
+                node.properties()
                     .get(key)
                     .map(LoraValue::from)
                     .unwrap_or(LoraValue::Null)
@@ -1079,7 +1082,7 @@ fn eval_property<S: GraphStorage>(
         LoraValue::Relationship(id) => ctx
             .storage
             .with_relationship(*id, |rel| {
-                rel.properties
+                rel.properties()
                     .get(key)
                     .map(LoraValue::from)
                     .unwrap_or(LoraValue::Null)

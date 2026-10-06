@@ -65,7 +65,7 @@ fn keys<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> LoraVa
             .storage
             .with_node(*id, |n| {
                 LoraValue::List(
-                    n.properties
+                    n.properties()
                         .keys()
                         .map(|k| LoraValue::String(k.to_string()))
                         .collect(),
@@ -76,7 +76,7 @@ fn keys<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> LoraVa
             .storage
             .with_relationship(*id, |r| {
                 LoraValue::List(
-                    r.properties
+                    r.properties()
                         .keys()
                         .map(|k| LoraValue::String(k.to_string()))
                         .collect(),
@@ -94,7 +94,7 @@ fn properties<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> 
             .storage
             .with_node(*id, |n| {
                 LoraValue::Map(
-                    n.properties
+                    n.properties()
                         .iter()
                         .map(|(k, v)| (k.to_string(), LoraValue::from(v)))
                         .collect(),
@@ -105,7 +105,7 @@ fn properties<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> 
             .storage
             .with_relationship(*id, |r| {
                 LoraValue::Map(
-                    r.properties
+                    r.properties()
                         .iter()
                         .map(|(k, v)| (k.to_string(), LoraValue::from(v)))
                         .collect(),

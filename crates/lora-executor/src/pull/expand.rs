@@ -133,7 +133,7 @@ impl<'a, S: GraphStorage> RowSource for ExpandSource<'a, S> {
                         .storage
                         .with_relationship(rel_id, |rel| {
                             map.iter().all(|(k, v)| {
-                                rel.properties
+                                rel.properties()
                                     .get(k.as_str())
                                     .map(|actual| value_matches_property_value(v, actual))
                                     .unwrap_or(false)

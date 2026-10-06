@@ -37,7 +37,7 @@ fn edge_type<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> L
     match args.first() {
         Some(LoraValue::Relationship(id)) => ctx
             .storage
-            .with_relationship(*id, |r| LoraValue::String(r.rel_type.to_string()))
+            .with_relationship(*id, |r| LoraValue::String(r.rel_type().to_string()))
             .unwrap_or(LoraValue::Null),
         _ => LoraValue::Null,
     }
@@ -49,7 +49,7 @@ fn keys<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> LoraVa
             .storage
             .with_relationship(*id, |r| {
                 LoraValue::List(
-                    r.properties
+                    r.properties()
                         .keys()
                         .map(|k| LoraValue::String(k.to_string()))
                         .collect(),
@@ -66,7 +66,7 @@ fn properties<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> 
             .storage
             .with_relationship(*id, |r| {
                 LoraValue::Map(
-                    r.properties
+                    r.properties()
                         .iter()
                         .map(|(k, v)| (k.to_string(), LoraValue::from(v)))
                         .collect(),
@@ -81,7 +81,7 @@ fn start<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> LoraV
     match args.first() {
         Some(LoraValue::Relationship(id)) => ctx
             .storage
-            .with_relationship(*id, |r| LoraValue::Node(r.src))
+            .with_relationship(*id, |r| LoraValue::Node(r.src()))
             .unwrap_or(LoraValue::Null),
         _ => LoraValue::Null,
     }
@@ -91,7 +91,7 @@ fn end<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> LoraVal
     match args.first() {
         Some(LoraValue::Relationship(id)) => ctx
             .storage
-            .with_relationship(*id, |r| LoraValue::Node(r.dst))
+            .with_relationship(*id, |r| LoraValue::Node(r.dst()))
             .unwrap_or(LoraValue::Null),
         _ => LoraValue::Null,
     }

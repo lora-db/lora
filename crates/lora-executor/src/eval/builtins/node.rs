@@ -38,7 +38,7 @@ fn labels<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> Lora
             .storage
             .with_node(*id, |n| {
                 LoraValue::List(
-                    n.labels
+                    n.labels()
                         .iter()
                         .map(|s| LoraValue::String(s.to_string()))
                         .collect(),
@@ -54,7 +54,7 @@ fn has_label<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> L
         (Some(LoraValue::Node(id)), Some(LoraValue::String(label))) => ctx
             .storage
             .with_node(*id, |n| {
-                LoraValue::Bool(n.labels.iter().any(|l| l == label))
+                LoraValue::Bool(n.labels().iter().any(|l| l == label))
             })
             .unwrap_or(LoraValue::Null),
         _ => LoraValue::Null,
@@ -67,7 +67,7 @@ fn keys<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> LoraVa
             .storage
             .with_node(*id, |n| {
                 LoraValue::List(
-                    n.properties
+                    n.properties()
                         .keys()
                         .map(|k| LoraValue::String(k.to_string()))
                         .collect(),
@@ -84,7 +84,7 @@ fn properties<S: GraphStorage>(args: &[LoraValue], ctx: &EvalContext<'_, S>) -> 
             .storage
             .with_node(*id, |n| {
                 LoraValue::Map(
-                    n.properties
+                    n.properties()
                         .iter()
                         .map(|(k, v)| (k.to_string(), LoraValue::from(v)))
                         .collect(),

@@ -297,7 +297,7 @@ impl<'a, S: GraphStorage> RowSource for NodeByLabelScanSource<'a, S> {
                 self.cur_emitted = true;
                 let labels_ok = self
                     .storage
-                    .with_node(id, |n| node_matches_label_groups(&n.labels, self.labels))
+                    .with_node(id, |n| node_matches_label_groups(n.labels(), self.labels))
                     .unwrap_or(false);
                 if labels_ok {
                     let Some(row) = self.cur_row.take() else {
@@ -321,7 +321,7 @@ impl<'a, S: GraphStorage> RowSource for NodeByLabelScanSource<'a, S> {
                 if !self.candidates_prefiltered {
                     let labels_ok = self
                         .storage
-                        .with_node(id, |n| node_matches_label_groups(&n.labels, self.labels))
+                        .with_node(id, |n| node_matches_label_groups(n.labels(), self.labels))
                         .unwrap_or(false);
                     if !labels_ok {
                         continue;

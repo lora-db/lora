@@ -15,8 +15,8 @@ use crate::memory::{
     DropIndexError, DropIndexOutcome, GraphStats, IndexDefinition, IndexRequest,
 };
 use crate::types::{
-    ExpandedRelationship, LoraVector, NodeId, NodeRecord, Properties, PropertyValue,
-    RelationshipId, RelationshipRecord,
+    ExpandedRelationship, LoraVector, NodeId, NodeRecord, NodeRef, Properties, PropertyValue,
+    RelRef, RelationshipId, RelationshipRecord,
 };
 
 // ============================================================================
@@ -141,18 +141,20 @@ pub trait GraphStorage {
 
     fn with_node<F, R>(&self, id: NodeId, f: F) -> Option<R>
     where
-        F: FnOnce(&NodeRecord) -> R,
+        F: FnOnce(NodeRef<'_>) -> R,
         Self: Sized,
     {
-        self.node(id).as_ref().map(f)
+        self.node(id).as_ref().map(|node| f(NodeRef::from(node)))
     }
 
     fn with_relationship<F, R>(&self, id: RelationshipId, f: F) -> Option<R>
     where
-        F: FnOnce(&RelationshipRecord) -> R,
+        F: FnOnce(RelRef<'_>) -> R,
         Self: Sized,
     {
-        self.relationship(id).as_ref().map(f)
+        self.relationship(id)
+            .as_ref()
+            .map(|rel| f(RelRef::from(rel)))
     }
 
     // ---------- Defaulted: counts / existence aliases ----------
@@ -302,7 +304,7 @@ pub trait GraphStorage {
     where
         Self: Sized,
     {
-        self.with_node(node_id, |n| n.labels.iter().any(|l| l == label))
+        self.with_node(node_id, |n| n.labels().iter().any(|l| l == label))
             .unwrap_or(false)
     }
 
@@ -310,21 +312,21 @@ pub trait GraphStorage {
     where
         Self: Sized,
     {
-        self.with_node(node_id, |n| n.labels.to_strings())
+        self.with_node(node_id, |n| n.labels().to_strings())
     }
 
     fn node_properties(&self, node_id: NodeId) -> Option<Properties>
     where
         Self: Sized,
     {
-        self.with_node(node_id, |n| n.properties.clone())
+        self.with_node(node_id, |n| n.properties().to_owned())
     }
 
     fn node_property(&self, node_id: NodeId, key: &str) -> Option<PropertyValue>
     where
         Self: Sized,
     {
-        self.with_node(node_id, |n| n.properties.get(key).cloned())
+        self.with_node(node_id, |n| n.properties().get(key).map(|v| v.to_owned()))
             .flatten()
     }
 
@@ -334,21 +336,21 @@ pub trait GraphStorage {
     where
         Self: Sized,
     {
-        self.with_relationship(rel_id, |r| r.rel_type.to_string())
+        self.with_relationship(rel_id, |r| r.rel_type().to_string())
     }
 
     fn relationship_properties(&self, rel_id: RelationshipId) -> Option<Properties>
     where
         Self: Sized,
     {
-        self.with_relationship(rel_id, |r| r.properties.clone())
+        self.with_relationship(rel_id, |r| r.properties().to_owned())
     }
 
     fn relationship_property(&self, rel_id: RelationshipId, key: &str) -> Option<PropertyValue>
     where
         Self: Sized,
     {
-        self.with_relationship(rel_id, |r| r.properties.get(key).cloned())
+        self.with_relationship(rel_id, |r| r.properties().get(key).map(|v| v.to_owned()))
             .flatten()
     }
 
@@ -388,7 +390,7 @@ pub trait GraphStorage {
         let mut keys = BTreeSet::new();
         for id in self.all_node_ids() {
             self.with_node(id, |n| {
-                for key in n.properties.keys() {
+                for key in n.properties().keys() {
                     keys.insert(key.to_string());
                 }
             });
@@ -403,7 +405,7 @@ pub trait GraphStorage {
         let mut keys = BTreeSet::new();
         for id in self.all_rel_ids() {
             self.with_relationship(id, |r| {
-                for key in r.properties.keys() {
+                for key in r.properties().keys() {
                     keys.insert(key.to_string());
                 }
             });
@@ -443,7 +445,7 @@ pub trait GraphStorage {
         let mut keys = BTreeSet::new();
         for id in self.node_ids_by_label(label) {
             self.with_node(id, |n| {
-                for key in n.properties.keys() {
+                for key in n.properties().keys() {
                     keys.insert(key.to_string());
                 }
             });
@@ -458,7 +460,7 @@ pub trait GraphStorage {
         let mut keys = BTreeSet::new();
         for id in self.rel_ids_by_type(rel_type) {
             self.with_relationship(id, |r| {
-                for key in r.properties.keys() {
+                for key in r.properties().keys() {
                     keys.insert(key.to_string());
                 }
             });
@@ -471,7 +473,7 @@ pub trait GraphStorage {
         Self: Sized,
     {
         self.node_ids_by_label(label).into_iter().any(|id| {
-            self.with_node(id, |n| n.properties.contains_key(key))
+            self.with_node(id, |n| n.properties().contains_key(key))
                 .unwrap_or(false)
         })
     }
@@ -481,7 +483,7 @@ pub trait GraphStorage {
         Self: Sized,
     {
         self.rel_ids_by_type(rel_type).into_iter().any(|id| {
-            self.with_relationship(id, |r| r.properties.contains_key(key))
+            self.with_relationship(id, |r| r.properties().contains_key(key))
                 .unwrap_or(false)
         })
     }
@@ -505,7 +507,7 @@ pub trait GraphStorage {
         ids.into_iter()
             .filter_map(|id| {
                 let matches = self
-                    .with_node(id, |n| n.properties.get(key) == Some(value))
+                    .with_node(id, |n| n.properties().get(key).is_some_and(|v| v == *value))
                     .unwrap_or(false);
                 if matches {
                     self.node(id)
@@ -548,7 +550,7 @@ pub trait GraphStorage {
         ids.into_iter()
             .filter_map(|id| {
                 let matches = self
-                    .with_relationship(id, |r| r.properties.get(key) == Some(value))
+                    .with_relationship(id, |r| r.properties().get(key).is_some_and(|v| v == *value))
                     .unwrap_or(false);
                 if matches {
                     self.relationship(id)
@@ -584,7 +586,7 @@ pub trait GraphStorage {
         Self: Sized,
     {
         self.node_ids_by_label(label).into_iter().any(|id| {
-            self.with_node(id, |n| n.properties.get(key) == Some(value))
+            self.with_node(id, |n| n.properties().get(key).is_some_and(|v| v == *value))
                 .unwrap_or(false)
         })
     }
@@ -599,7 +601,7 @@ pub trait GraphStorage {
         Self: Sized,
     {
         self.rel_ids_by_type(rel_type).into_iter().any(|id| {
-            self.with_relationship(id, |r| r.properties.get(key) == Some(value))
+            self.with_relationship(id, |r| r.properties().get(key).is_some_and(|v| v == *value))
                 .unwrap_or(false)
         })
     }

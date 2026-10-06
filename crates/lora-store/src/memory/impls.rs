@@ -11,7 +11,8 @@ use crate::{
     CreateConstraintOutcome, CreateIndexError, CreateIndexOutcome, DropConstraintError,
     DropConstraintOutcome, DropIndexError, DropIndexOutcome, GraphStats, GraphStorage,
     GraphStorageMut, IndexDefinition, IndexRequest, LoraVector, MutationEvent, NodeId, NodeRecord,
-    Properties, PropertyValue, RelationshipId, RelationshipRecord, StoredIndexEntity,
+    NodeRef, Properties, PropertyValue, RelRef, RelationshipId, RelationshipRecord,
+    StoredIndexEntity,
 };
 
 use super::property_index::PropertyIndexKey;
@@ -592,18 +593,18 @@ impl GraphStorage for InMemoryGraph {
 
     fn with_node<F, R>(&self, id: NodeId, f: F) -> Option<R>
     where
-        F: FnOnce(&NodeRecord) -> R,
+        F: FnOnce(NodeRef<'_>) -> R,
         Self: Sized,
     {
-        self.node_at(id).map(f)
+        self.node_at(id).map(|node| f(NodeRef::from(node)))
     }
 
     fn with_relationship<F, R>(&self, id: RelationshipId, f: F) -> Option<R>
     where
-        F: FnOnce(&RelationshipRecord) -> R,
+        F: FnOnce(RelRef<'_>) -> R,
         Self: Sized,
     {
-        self.rel_at(id).map(f)
+        self.rel_at(id).map(|rel| f(RelRef::from(rel)))
     }
 
     // ---------- Overrides: counts + existence ----------
