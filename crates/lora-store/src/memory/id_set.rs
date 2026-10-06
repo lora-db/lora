@@ -57,14 +57,20 @@ type Group = Arc<Vec<Chunk>>;
 #[derive(Debug, Clone)]
 pub(super) enum IdSet {
     One(u64),
-    Small(Vec<u64>),
+    /// Boxed so the enum stays two words: an index holds one `IdSet` per
+    /// distinct value, and for a unique key every one of them is `One`.
+    #[allow(clippy::box_collection)]
+    Small(Box<Vec<u64>>),
     /// Non-empty groups of non-empty sorted chunks in ascending order;
-    /// `len` counts all ids.
+    /// `len` counts all ids (a `u32`, again for the enum's size: a set
+    /// cannot hold four billion ids in memory).
     Large {
         groups: Arc<Vec<Group>>,
-        len: usize,
+        len: u32,
     },
 }
+
+const _: () = assert!(std::mem::size_of::<IdSet>() == 16);
 
 impl PartialEq for IdSet {
     fn eq(&self, other: &Self) -> bool {
@@ -115,7 +121,7 @@ impl IdSet {
                 } else {
                     vec![id, existing]
                 };
-                *self = IdSet::Small(pair);
+                *self = IdSet::Small(Box::new(pair));
                 true
             }
             IdSet::Small(ids) => {
@@ -129,8 +135,8 @@ impl IdSet {
                     }
                 }
                 if ids.len() > SMALL_MAX {
-                    let len = ids.len();
-                    let chunk = Arc::new(std::mem::take(ids));
+                    let len = ids.len() as u32;
+                    let chunk = Arc::new(std::mem::take(&mut **ids));
                     let groups = Arc::new(vec![Arc::new(vec![chunk])]);
                     *self = IdSet::Large { groups, len };
                 }
@@ -221,7 +227,7 @@ impl IdSet {
         match self {
             IdSet::One(_) => 1,
             IdSet::Small(ids) => ids.len(),
-            IdSet::Large { len, .. } => *len,
+            IdSet::Large { len, .. } => *len as usize,
         }
     }
 
@@ -232,9 +238,9 @@ impl IdSet {
     pub(super) fn to_vec(&self) -> Vec<u64> {
         match self {
             IdSet::One(id) => vec![*id],
-            IdSet::Small(ids) => ids.clone(),
+            IdSet::Small(ids) => (**ids).clone(),
             IdSet::Large { groups, len } => {
-                let mut out = Vec::with_capacity(*len);
+                let mut out = Vec::with_capacity(*len as usize);
                 for chunk in groups.iter().flat_map(|group| group.iter()) {
                     out.extend_from_slice(chunk);
                 }
@@ -248,7 +254,7 @@ impl IdSet {
         match self {
             IdSet::One(id) => IdSetIter::slice(std::slice::from_ref(id)),
             IdSet::Small(ids) => IdSetIter::slice(ids),
-            IdSet::Large { groups, len } => IdSetIter::groups(groups, *len),
+            IdSet::Large { groups, len } => IdSetIter::groups(groups, *len as usize),
         }
     }
 
@@ -309,7 +315,9 @@ impl IdSet {
         const ARC_HEADER: usize = 2 * std::mem::size_of::<usize>();
         match self {
             IdSet::One(_) => 0,
-            IdSet::Small(ids) => ids.capacity() * std::mem::size_of::<u64>(),
+            IdSet::Small(ids) => {
+                std::mem::size_of::<Vec<u64>>() + ids.capacity() * std::mem::size_of::<u64>()
+            }
             IdSet::Large { groups, .. } => {
                 ARC_HEADER
                     + std::mem::size_of::<Vec<Group>>()
@@ -484,7 +492,7 @@ mod tests {
                     n += c.len();
                 }
             }
-            assert_eq!(n, *len);
+            assert_eq!(n, *len as usize);
         }
     }
 

@@ -176,6 +176,20 @@ relationships. A call to `find_nodes_by_property` or
 first time it can be indexed, then keeps the active index current on future
 mutations.
 
+The exact-match index keeps one hash map per scope (label or relationship
+type) and key: value to ids. An entity is listed under each of its labels, and
+a node without labels under a scope of its own. A lookup that names a label
+reads that label's map. The first lookup of a key that names none builds one
+more map for that key across all scopes, kept current from then on and not
+rebuilt after a restart until the next such lookup. A
+sorted (RANGE) index keeps the same value-to-ids entries in sorted arrays of at
+most 256 entries under two levels of tables.
+
+An entry is a 32-byte key and a 16-byte id set, which holds a single id
+inline. At 2M unique integer keys that comes to about 89 bytes per entry in the
+hash index and 49 in the sorted one, so a RANGE index or uniqueness constraint
+costs about 138 bytes per entry.
+
 Indexed values:
 
 - `null`, booleans, integers, strings, binary values

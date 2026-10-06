@@ -103,14 +103,15 @@ overhead on top.
 | Node, no properties, one label | ~80 |
 | Each property on a node or relationship | 2 for the key and kind, plus the value: 1-10 for an integer, 8 for a float, its length plus 1-2 for a string. Lists, maps, temporals, points and vectors are stored in the snapshot codec's form |
 | Relationship, no properties | ~35 to ~55. The higher figure applies once its endpoints have more than two relationships each: their adjacency entries (8-10 bytes each, two per relationship) then live on the heap |
-| Unique-valued entry in a RANGE index or uniqueness constraint | ~290 |
-| 20k festivals + 5k users + 100k relationships, no indexes | ~164 per element |
-| Same, with two uniqueness constraints, a full-text and a point index | ~231 per element |
+| Unique-valued entry in a RANGE index or uniqueness constraint | ~140 (about 90 for the exact-match half, 50 for the sorted half) |
+| 20k festivals + 5k users + 100k relationships, no declared indexes | ~112 per element |
+| Same, with two uniqueness constraints, a full-text and a point index | ~175 per element |
 
 Records are stored encoded: labels, relationship types and property keys as
 small numbers from per-graph dictionaries, values in as few bytes as they
-need. With records this small, declared indexes are now the larger share of
-an indexed graph's memory.
+need. With records this small, declared indexes are a large share of an
+indexed graph's memory: a unique key adds about twice what its node's record
+takes.
 
 Declaring indexes and constraints before a bulk load keeps the load
 linear: a uniqueness check looks the value up in its backing index rather

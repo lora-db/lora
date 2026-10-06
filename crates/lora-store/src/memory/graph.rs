@@ -30,9 +30,9 @@ use super::index_catalog::{
     IndexDefinition, IndexRequest, StoredIndexEntity, StoredIndexKind, StoredIndexState,
 };
 use super::point_index::PointRegistry;
-use super::property_index::PropertyIndexRegistry;
 #[cfg(test)]
 use super::property_index::PropertyIndexState;
+use super::property_index::{PropertyIndexRegistry, UNSCOPED};
 use super::secondary_index_maintenance::SecondaryIndexMutation;
 use super::sorted_property_index::SortedPropertyIndex;
 use super::stats::GraphStats;
@@ -784,6 +784,28 @@ impl InMemoryGraph {
     pub(super) fn relationship_property_index_is_active(&mut self, key: &str) -> bool {
         self.active_relationship_property_index_count() != 0
             && self.indexes_mut().relationship_properties.is_active(key)
+    }
+
+    /// Give `key` its across-labels map, for lookups that name no label.
+    /// Call after [`Self::ensure_node_property_index`].
+    pub(super) fn ensure_unscoped_node_property_index(&self, key: &str) {
+        if self.indexes_read().node_properties.unscoped_is_active(key) {
+            return;
+        }
+        self.indexes_write().node_properties.activate_unscoped(key);
+    }
+
+    pub(super) fn ensure_unscoped_relationship_property_index(&self, key: &str) {
+        if self
+            .indexes_read()
+            .relationship_properties
+            .unscoped_is_active(key)
+        {
+            return;
+        }
+        self.indexes_write()
+            .relationship_properties
+            .activate_unscoped(key);
     }
 
     pub(super) fn ensure_node_property_index(&self, key: &str) {
@@ -1841,6 +1863,10 @@ impl InMemoryGraph {
         Self::count_distinct_values(&mut self.distinct_stats.nodes, [label], &properties, true);
         if self.active_node_property_index_count() != 0 {
             self.index_node_scope_properties_if_active(node_id, label, &properties);
+            // Its first label: it was indexed as a node without any.
+            if self.node_at(node_id).is_some_and(|n| n.labels().len() == 1) {
+                self.unindex_node_scope_properties_if_active(node_id, UNSCOPED, &properties);
+            }
         }
         for (key, value) in &properties {
             self.update_secondary_property(
@@ -1866,6 +1892,10 @@ impl InMemoryGraph {
         Self::count_distinct_values(&mut self.distinct_stats.nodes, [label], &properties, false);
         if self.active_node_property_index_count() != 0 {
             self.unindex_node_scope_properties_if_active(node_id, label, &properties);
+            // Its last label: index it as a node without any.
+            if self.node_at(node_id).is_some_and(|n| n.labels().is_empty()) {
+                self.index_node_scope_properties_if_active(node_id, UNSCOPED, &properties);
+            }
         }
         for (key, value) in &properties {
             self.update_secondary_property(
@@ -2484,10 +2514,6 @@ impl InMemoryGraph {
             }
         }
         assert_eq!(
-            indexes.node_properties.values, expected_nodes.values,
-            "node property index values diverged from scan"
-        );
-        assert_eq!(
             indexes.node_properties.scoped_values, expected_nodes.scoped_values,
             "node property scoped index values diverged from scan"
         );
@@ -2508,10 +2534,6 @@ impl InMemoryGraph {
                 }
             }
         }
-        assert_eq!(
-            indexes.relationship_properties.values, expected_relationships.values,
-            "relationship property index values diverged from scan"
-        );
         assert_eq!(
             indexes.relationship_properties.scoped_values, expected_relationships.scoped_values,
             "relationship property scoped index values diverged from scan"

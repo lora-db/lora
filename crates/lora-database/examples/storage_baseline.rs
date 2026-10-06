@@ -1067,6 +1067,45 @@ fn hop_mode(n: u64) {
 }
 
 // ---------------------------------------------------------------------------
+// labels mode: equality lookups that name no label
+// ---------------------------------------------------------------------------
+
+/// `labels <L>`: `L` labels of 1000 nodes each, every node with a unique
+/// `k`. Times an indexed equality lookup on `k` with and without a label:
+/// the lookup without one has to consider every label's nodes.
+fn labels_mode(labels: u64) {
+    let per_label = 1000u64;
+    let mut g = InMemoryGraph::new();
+    for i in 0..labels * per_label {
+        let mut p = Properties::new();
+        p.insert(intern("k"), PropertyValue::Int(i as i64));
+        g.create_node(vec![format!("L{}", i % labels)], p);
+    }
+    let n = labels * per_label;
+    // Build the index before timing.
+    g.find_node_ids_by_property(None, "k", &PropertyValue::Int(0));
+    bench_batched("raw_find_by_prop(label)", 4_000, |r| {
+        let i = r % n;
+        let label = format!("L{}", i % labels);
+        let ids = g.find_node_ids_by_property(Some(&label), "k", &PropertyValue::Int(i as i64));
+        assert_eq!(ids.len(), 1);
+    });
+    bench_batched("raw_find_by_prop(no label)", 4_000, |r| {
+        let i = r % n;
+        let ids = g.find_node_ids_by_property(None, "k", &PropertyValue::Int(i as i64));
+        assert_eq!(ids.len(), 1);
+    });
+    let db = Database::from_graph(g);
+    let query = "MATCH (n {k: $k}) RETURN n.k AS k";
+    // A pattern without a label is planned as a scan of every node, so
+    // this row grows with the graph; keep its sample count in step.
+    let samples = (20_000_000 / n).clamp(20, 20_000) as usize;
+    bench("cy_seek(no label)", samples, |r| {
+        q(&db, query, params(&[("k", LoraValue::Int((r % n) as i64))]));
+    });
+}
+
+// ---------------------------------------------------------------------------
 // scan mode: scans that stop early, and one that does not
 // ---------------------------------------------------------------------------
 
@@ -1130,8 +1169,9 @@ fn main() {
         Some("idlat") => idlat_mode(args[2].parse().unwrap()),
         Some("hop") => hop_mode(args[2].parse().unwrap()),
         Some("scan") => scan_mode(args[2].parse().unwrap()),
+        Some("labels") => labels_mode(args[2].parse().unwrap()),
         _ => eprintln!(
-            "usage: storage_baseline mem <variant> <N> | lat <N> | wal <N> | restart <N> | idlat <N> | hop <N> | scan <N>"
+            "usage: storage_baseline mem <variant> <N> | lat <N> | wal <N> | restart <N> | idlat <N> | hop <N> | scan <N> | labels <L>"
         ),
     }
 }

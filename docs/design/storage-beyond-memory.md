@@ -305,9 +305,7 @@ one `mem` and `restart` per variant.
 Against the Stage 1 targets: T4 (≤ 100 B per element) is met at 72; T6 and
 T7 (hot reads within 10%, raw 1-hop no slower) are met with reads faster
 than before; T8 (fast-path writes within 20%) is met. T5 (RANGE index ≤ 80 B
-per entry) is not started: an index entry is still about 290 B, and indexes
-are now the larger share of an indexed graph (the Festimap schema adds 67 B
-per element over 164).
+per entry) is the subject of the fourth slice below.
 
 Known costs and what is left:
 - A write to an existing record decodes and re-encodes the whole record.
@@ -322,6 +320,61 @@ Known costs and what is left:
   a panic and not an error.
 - The interned-name table (labels, types) is still process-wide and never
   frees. The per-graph dictionaries hold the same names; the table could go.
+
+### Stage 1, fourth slice: smaller indexes
+
+With records at 72 B per element, an index entry (293 B in the exact-match
+index, 430 B for a RANGE index or uniqueness constraint) had become the
+largest thing in an indexed graph. Three changes, none to what an index
+answers:
+
+- **Smaller entries.** An entry is a key and an id set. The key went from 48
+  to 32 bytes (its temporal variant held an `i128`, which aligned the whole
+  enum to 16; it is now two words) and the id set from 32 to 16 (it holds one
+  id inline, which is every entry of a unique key).
+- **One exact-match map per label, not two.** Every active key was indexed
+  per label and again across all labels. The second map served only lookups
+  that name no label, and Cypher plans those as scans, so only the direct
+  `find_*_by_property(None, …)` API read it. It is now built for a key by the
+  first such lookup and kept current from then on. A node without labels is
+  indexed under a scope of its own, so the per-label maps cover every node.
+- **Sorted arrays in the RANGE index.** Its partitions (at most 256 entries)
+  were `BTreeMap`s, which spent about as much again on half-filled nodes. They
+  are sorted arrays: one allocation, copied in one pass when a write first
+  touches a shared partition, searched without pointer chasing.
+
+Same machine and shape (2M nodes, a unique integer `id`), against the
+previous commit: two interleaved pairs of `lat`, three of `hop`, one `mem`
+and `restart` per variant.
+
+| Measure | Before | After |
+|---|---|---|
+| Exact-match index, per entry (`mem hash_idx`) | 293 B | **89 B** |
+| RANGE index or uniqueness constraint, per entry (`mem range_idx`) | 430 B | **138 B** (89 exact-match + 49 sorted) |
+| RANGE index on an 8-byte string, per entry | 478 B | 186 B |
+| Live heap after a restart, 1M elements with one RANGE and one UNIQUE | 223 MB | 127 MB |
+| Festimap shape, plain / with schema (`heap_probe --festimap`) | 164 / 231 B per element | **112 / 175** |
+| `CREATE INDEX` backfill, 2M nodes | 2.05 s | 1.23 s |
+| `graph_create_node` of a node with an indexed unique `id` | 15.9 µs | 9.8 µs |
+| Staged `CREATE` on a constrained label | 15.9 µs | 12.8 µs |
+| Fast-path `CREATE` (the label has a RANGE index) | 10.6 µs | 5.6 µs |
+| Staged relationship `CREATE` | 64.9 µs | 59.3 µs |
+| Cypher index seek / range seek of 10 | 1.60 / 5.38 µs | 1.54 / 5.32 µs |
+| Raw exact-match lookup with a label | 316 ns | 282 ns |
+| Raw exact-match lookup without a label, 20 / 200 / 2000 labels sharing the key (`labels` mode) | 67 ns / n/a / n/a | 75 / 193 / 477 ns |
+| Snapshot load, 10M elements, one RANGE index | 10.9 s | 10.1 s |
+| Snapshot load / WAL replay, 1M elements | 0.89 / 1.21 s | 0.76 / 1.16 s |
+
+T5 (≤ 80 B per RANGE entry) is not met: 138 B. The sorted half alone is 49 B.
+The rest is the exact-match half, which a RANGE index keeps so that equality
+seeks stay one hash probe. Dropping it for declared RANGE keys would meet T5
+and send equality seeks through three binary searches instead. That trades
+the hottest read for memory and is left as a decision.
+
+A first version dropped the across-labels map outright and answered
+unlabelled lookups by asking every label's map and merging. That cost 25 ns
+per label: 8 µs with 200 labels sharing the key and 190 µs with 2000,
+against 70 ns before. Building the map on first use keeps that path O(1).
 
 **Not done yet from Stage 0.**
 - Removing the lazy implicit indexes (D3 options b and c).

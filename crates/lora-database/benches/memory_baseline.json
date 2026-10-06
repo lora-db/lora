@@ -2,7 +2,7 @@
   "_meta": {
     "default_tolerance_pct": 10,
     "last_updated": "2026-10-06",
-    "notes": "Captured from `cargo bench -p lora-database --bench memory -- --quick` on Apple Silicon. Numbers are bytes from `MemoryReport::total_bytes()` after the build phase (or after_query for chain/star/social which run a representative MATCH after building). Tolerance is per-scenario; a regression beyond `total * (1 + tolerance_pct/100)` fails the gate. Bump the baseline whenever an intentional storage-shape change shifts a scenario. 2026-09-29: property maps became key-sorted vectors, index postings inline single ids, adjacency lists inline two edges. These are MemoryReport estimates; `cargo run --release -p lora-database --example heap_probe` measures real allocations. Later the same day: slabs, adjacency and label indexes became chunked copy-on-write vectors and index maps copy-on-write shards (structural sharing for staged writes). 2026-10-06: labels and relationship types are interned (no per-record strings) and adjacency entries carry the type and neighbour inline. Later the same day: records are stored as encoded bytes with dictionary-numbered labels, types and keys."
+    "notes": "Captured from `cargo bench -p lora-database --bench memory -- --quick` on Apple Silicon. Numbers are bytes from `MemoryReport::total_bytes()` after the build phase (or after_query for chain/star/social which run a representative MATCH after building). Tolerance is per-scenario; a regression beyond `total * (1 + tolerance_pct/100)` fails the gate. Bump the baseline whenever an intentional storage-shape change shifts a scenario. 2026-09-29: property maps became key-sorted vectors, index postings inline single ids, adjacency lists inline two edges. These are MemoryReport estimates; `cargo run --release -p lora-database --example heap_probe` measures real allocations. Later the same day: slabs, adjacency and label indexes became chunked copy-on-write vectors and index maps copy-on-write shards (structural sharing for staged writes). 2026-10-06: labels and relationship types are interned (no per-record strings) and adjacency entries carry the type and neighbour inline. Later the same day: records are stored as encoded bytes with dictionary-numbered labels, types and keys. And index entries shrank (32-byte key, 16-byte id set, sorted-array RANGE partitions, no second exact-match map)."
   },
   "benchmarks": {
     "node_only_10k": {
@@ -11,19 +11,19 @@
       "tolerance_pct": 10
     },
     "chain_1000.build": {
-      "total_bytes": 309212,
+      "total_bytes": 187089,
       "bytes_per_node": 23.7,
       "bytes_per_rel": 22.1,
       "tolerance_pct": 10
     },
     "chain_10000.build": {
-      "total_bytes": 3049524,
+      "total_bytes": 1847401,
       "bytes_per_node": 23.5,
       "bytes_per_rel": 23.1,
       "tolerance_pct": 10
     },
     "chain_100000.build": {
-      "total_bytes": 30727187,
+      "total_bytes": 18660552,
       "bytes_per_node": 24,
       "bytes_per_rel": 24.6,
       "tolerance_pct": 10
@@ -47,7 +47,7 @@
       "tolerance_pct": 10
     },
     "social_20k_x8.build": {
-      "total_bytes": 14241645,
+      "total_bytes": 11775011,
       "bytes_per_node": 50.5,
       "bytes_per_rel": 26.3,
       "tolerance_pct": 10

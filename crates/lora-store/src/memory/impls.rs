@@ -809,6 +809,9 @@ impl GraphStorage for InMemoryGraph {
         }
 
         self.ensure_node_property_index(key);
+        if label.is_none() {
+            self.ensure_unscoped_node_property_index(key);
+        }
         let indexes = self.indexes_read();
 
         match label {
@@ -824,7 +827,6 @@ impl GraphStorage for InMemoryGraph {
                 .node_properties
                 .ids_for(key, value)
                 .into_iter()
-                .flat_map(|ids| ids.iter())
                 .filter_map(|id| self.node_at(id).map(|r| r.to_record()))
                 .collect(),
         }
@@ -844,6 +846,9 @@ impl GraphStorage for InMemoryGraph {
         }
 
         self.ensure_node_property_index(key);
+        if label.is_none() {
+            self.ensure_unscoped_node_property_index(key);
+        }
         let indexes = self.indexes_read();
 
         match label {
@@ -852,11 +857,7 @@ impl GraphStorage for InMemoryGraph {
                 .scoped_ids_for(label, key, value)
                 .map(|ids| ids.to_vec())
                 .unwrap_or_default(),
-            None => indexes
-                .node_properties
-                .ids_for(key, value)
-                .map(|ids| ids.to_vec())
-                .unwrap_or_default(),
+            None => indexes.node_properties.ids_for(key, value),
         }
     }
     // ---------- Overrides: schema introspection ----------
@@ -875,6 +876,9 @@ impl GraphStorage for InMemoryGraph {
         }
 
         self.ensure_relationship_property_index(key);
+        if rel_type.is_none() {
+            self.ensure_unscoped_relationship_property_index(key);
+        }
         let indexes = self.indexes_read();
 
         match rel_type {
@@ -893,7 +897,6 @@ impl GraphStorage for InMemoryGraph {
                 .relationship_properties
                 .ids_for(key, value)
                 .into_iter()
-                .flat_map(|ids| ids.iter())
                 .filter_map(|id| self.rel_at(id).map(|r| r.to_record()))
                 .collect(),
         }
@@ -913,6 +916,9 @@ impl GraphStorage for InMemoryGraph {
         }
 
         self.ensure_relationship_property_index(key);
+        if rel_type.is_none() {
+            self.ensure_unscoped_relationship_property_index(key);
+        }
         let indexes = self.indexes_read();
 
         match rel_type {
@@ -921,11 +927,7 @@ impl GraphStorage for InMemoryGraph {
                 .scoped_ids_for(rel_type, key, value)
                 .map(|ids| ids.to_vec())
                 .unwrap_or_default(),
-            None => indexes
-                .relationship_properties
-                .ids_for(key, value)
-                .map(|ids| ids.to_vec())
-                .unwrap_or_default(),
+            None => indexes.relationship_properties.ids_for(key, value),
         }
     }
 

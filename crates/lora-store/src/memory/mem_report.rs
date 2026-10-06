@@ -406,7 +406,7 @@ fn property_state_bytes(state: &PropertyIndexState) -> usize {
     for key in state.active_keys.iter() {
         total += BTREE_PER_ENTRY + size_of::<String>() + key.capacity();
     }
-    total += property_index_map_bytes(&state.values);
+    total += property_index_map_bytes(&state.unscoped);
     for (scope, by_property) in state.scoped_values.iter() {
         total += HASHMAP_PER_ENTRY + ARC_STR_BYTES + scope.len();
         total += ARC_HEADER + property_index_map_bytes(by_property);
@@ -433,11 +433,11 @@ fn property_buckets_bytes(key: &str, buckets: &PropertyValueBuckets) -> usize {
 }
 
 /// Bytes one active key holds in a [`PropertyIndexState`]: its
-/// active-key entry, its unscoped buckets and its buckets in every scope.
+/// active-key entry and its buckets in every scope.
 /// Per-scope map headers are shared by every key and not attributed.
 fn property_key_bytes(state: &PropertyIndexState, key: &String) -> usize {
     let mut total = BTREE_PER_ENTRY + size_of::<String>() + key.capacity();
-    if let Some(buckets) = state.values.get(key.as_str()) {
+    if let Some(buckets) = state.unscoped.get(key.as_str()) {
         total += property_buckets_bytes(key, buckets);
     }
     for by_property in state.scoped_values.values() {
@@ -489,11 +489,13 @@ fn sorted_one(index: &SortedPropertyIndex) -> usize {
     for (scope, sorted_scope) in &index.by_scope {
         total +=
             BTREE_PER_ENTRY + scoped_key_bytes(scope) + sorted_scope.by_value.structure_bytes();
+        // Entries sit in sorted arrays: charge every allocated slot, used
+        // or not. `property_index_key_bytes` covers a used slot's key.
+        let slots = sorted_scope.by_value.entry_slots();
+        let unused = slots.saturating_sub(sorted_scope.by_value.len());
+        total += slots * size_of::<IdSet>() + unused * size_of::<PropertyIndexKey>();
         for (indexed, ids) in sorted_scope.by_value.iter() {
-            total += BTREE_PER_ENTRY
-                + property_index_key_bytes(indexed)
-                + size_of::<IdSet>()
-                + ids.heap_bytes();
+            total += property_index_key_bytes(indexed) + ids.heap_bytes();
         }
     }
     total

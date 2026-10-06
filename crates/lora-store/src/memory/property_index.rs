@@ -82,8 +82,27 @@ impl Clone for PropertyIndexRegistry {
 #[derive(Debug, Default, Clone)]
 pub(super) struct PropertyIndexState {
     pub(super) active_keys: Arc<BTreeSet<String>>,
-    pub(super) values: Arc<PropertyIndex>,
     pub(super) scoped_values: Arc<ScopedPropertyIndex>,
+    /// Active keys that also keep a map across every scope, in
+    /// `unscoped`. Built by the first lookup of the key that names no
+    /// scope, and not restored by a restart: most keys are only ever
+    /// looked up under a label, and the second map would double their
+    /// index.
+    pub(super) unscoped_keys: Arc<BTreeSet<String>>,
+    pub(super) unscoped: Arc<PropertyIndex>,
+}
+
+/// The scope of an entity that has none: a node without labels. Labels
+/// are never empty, so this cannot collide with one. Every entity is
+/// indexed under each of its scopes, or under this one, so a lookup that
+/// names no scope finds it by asking every scope.
+pub(super) const UNSCOPED: &str = "";
+
+/// `scopes`, or [`UNSCOPED`] when there are none.
+fn or_unscoped<'a>(scopes: impl IntoIterator<Item = &'a str>) -> impl Iterator<Item = &'a str> {
+    let mut scopes = scopes.into_iter().peekable();
+    let unscoped = scopes.peek().is_none().then_some(UNSCOPED);
+    scopes.chain(unscoped)
 }
 
 impl PropertyIndexState {
@@ -96,6 +115,39 @@ impl PropertyIndexState {
             return false;
         }
         Arc::make_mut(&mut self.active_keys).insert(key.to_string())
+    }
+
+    pub(super) fn unscoped_is_active(&self, key: &str) -> bool {
+        self.unscoped_keys.contains(key)
+    }
+
+    /// Build the across-scopes map for `key` from the per-scope ones, and
+    /// keep it current from now on.
+    pub(super) fn activate_unscoped(&mut self, key: &str) {
+        if self.unscoped_keys.contains(key) {
+            return;
+        }
+        let mut merged = PropertyValueBuckets::default();
+        for values in self.scoped_values.values() {
+            let Some(buckets) = values.get(key) else {
+                continue;
+            };
+            for (value, ids) in buckets.iter() {
+                for id in ids.iter() {
+                    merged.upsert(
+                        value.clone(),
+                        || IdSet::new(id),
+                        |all| {
+                            all.insert(id);
+                        },
+                    );
+                }
+            }
+        }
+        if !merged.is_empty() {
+            Arc::make_mut(&mut self.unscoped).insert(Arc::from(key), merged);
+        }
+        Arc::make_mut(&mut self.unscoped_keys).insert(key.to_string());
     }
 
     /// The (copied-on-write) per-key index of `scope`, created if absent.
@@ -140,21 +192,15 @@ impl PropertyIndexState {
         I: Iterator<Item = (u64, S, crate::ValueRef<'a>)>,
         S: IntoIterator<Item = &'a str>,
     {
-        let mut flat = Vec::new();
         let mut scoped: FastHashMap<&'a str, Vec<u64>> = FastHashMap::default();
         for (_, scopes, value) in entries() {
             let Some(indexed_value) = PropertyIndexKey::from_value_ref(value) else {
                 continue;
             };
             let route = route(&indexed_value);
-            for scope in scopes {
+            for scope in or_unscoped(scopes) {
                 scoped.entry(scope).or_default().push(route);
             }
-            flat.push(route);
-        }
-        let values = Arc::make_mut(&mut self.values);
-        if !flat.is_empty() && !values.contains_key(key) {
-            values.insert(Arc::from(key), CowMap::with_shape(flat));
         }
         for (scope, routes) in scoped {
             let values = Self::scope_mut(&mut self.scoped_values, scope);
@@ -222,13 +268,15 @@ impl PropertyIndexState {
             return;
         };
 
-        Self::insert_value(
-            Arc::make_mut(&mut self.values),
-            entity_id,
-            key,
-            indexed_value.clone(),
-        );
-        for scope in scopes {
+        if self.unscoped_keys.contains(key) {
+            Self::insert_value(
+                Arc::make_mut(&mut self.unscoped),
+                entity_id,
+                key,
+                indexed_value.clone(),
+            );
+        }
+        for scope in or_unscoped(scopes) {
             let scoped = Self::scope_mut(&mut self.scoped_values, scope);
             Self::insert_value(scoped, entity_id, key, indexed_value.clone());
         }
@@ -286,24 +334,55 @@ impl PropertyIndexState {
             return;
         };
 
-        if Self::holds(&self.values, key, &indexed_value) {
+        if Self::holds(&self.unscoped, key, &indexed_value) {
             Self::remove_value(
-                Arc::make_mut(&mut self.values),
+                Arc::make_mut(&mut self.unscoped),
                 entity_id,
                 key,
                 &indexed_value,
             );
         }
-        for scope in scopes {
+        for scope in or_unscoped(scopes) {
             self.remove_from_scope(entity_id, scope, key, &indexed_value);
         }
     }
 
-    pub(super) fn ids_for(&self, key: &str, value: &PropertyValue) -> Option<&IdSet> {
-        let indexed_value = PropertyIndexKey::from_value(value)?;
-        self.values
-            .get(key)
-            .and_then(|values| values.get(&indexed_value))
+    /// Ids of every entity whose `key` equals `value`, whatever its scope,
+    /// in ascending order: from the across-scopes map when the key keeps
+    /// one (see [`Self::activate_unscoped`]), otherwise by asking each
+    /// scope and merging, since an entity with several labels is listed
+    /// under each.
+    pub(super) fn ids_for(&self, key: &str, value: &PropertyValue) -> Vec<u64> {
+        let Some(indexed_value) = PropertyIndexKey::from_value(value) else {
+            return Vec::new();
+        };
+        if self.unscoped_keys.contains(key) {
+            return self
+                .unscoped
+                .get(key)
+                .and_then(|values| values.get(&indexed_value))
+                .map(IdSet::to_vec)
+                .unwrap_or_default();
+        }
+        let mut hits = self
+            .scoped_values
+            .values()
+            .filter_map(|values| values.get(key))
+            .filter_map(|values| values.get(&indexed_value));
+        let Some(first) = hits.next() else {
+            return Vec::new();
+        };
+        let mut ids = first.to_vec();
+        let mut merged = false;
+        for more in hits {
+            ids.extend(more.iter());
+            merged = true;
+        }
+        if merged {
+            ids.sort_unstable();
+            ids.dedup();
+        }
+        ids
     }
 
     pub(super) fn scoped_ids_for(
@@ -349,12 +428,14 @@ pub(super) enum PropertyIndexKey {
     /// Shared so copying an index leaf or partition (a write's staged
     /// graph copy) bumps a refcount per key instead of reallocating it.
     String(std::sync::Arc<str>),
-    Binary(LoraBinary),
+    /// Boxed: a `LoraBinary` is four words, and the key should stay at
+    /// four with its tag.
+    Binary(Box<LoraBinary>),
     List(Vec<PropertyIndexKey>),
     Map(BTreeMap<String, PropertyIndexKey>),
     Temporal {
         kind: TemporalKind,
-        nanos: i128,
+        nanos: Nanos,
         offset: i32,
         /// A DATETIME's named zone: the same instant and offset in another
         /// zone is another value. Only breaks ties; range bounds use
@@ -362,6 +443,26 @@ pub(super) enum PropertyIndexKey {
         zone: Option<ZoneId>,
     },
 }
+
+/// A temporal's position on its kind's timeline, in nanoseconds: an `i128`
+/// kept as two words. An `i128` field would align the whole key to 16
+/// bytes and pad it from 32 to 48.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) struct Nanos {
+    high: i64,
+    low: u64,
+}
+
+impl From<i128> for Nanos {
+    fn from(nanos: i128) -> Self {
+        Self {
+            high: (nanos >> 64) as i64,
+            low: nanos as u64,
+        }
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<PropertyIndexKey>() == 32);
 
 /// Temporal key families. Values of different kinds never compare in
 /// Cypher, so each kind occupies its own contiguous run of the index.
@@ -465,7 +566,7 @@ impl PropertyIndexKey {
                 }
             }
             PropertyValue::String(v) => Some(Self::String(std::sync::Arc::from(v.as_str()))),
-            PropertyValue::Binary(v) => Some(Self::Binary(v.clone())),
+            PropertyValue::Binary(v) => Some(Self::Binary(Box::new(v.clone()))),
             PropertyValue::List(values) => values
                 .iter()
                 .map(Self::from_value)
@@ -492,7 +593,7 @@ impl PropertyIndexKey {
             )),
             PropertyValue::DateTime(v) => Some(Self::Temporal {
                 kind: TemporalKind::DateTime,
-                nanos: v.order_nanos(),
+                nanos: v.order_nanos().into(),
                 offset: v.offset_seconds,
                 zone: v.zone,
             }),
@@ -504,10 +605,10 @@ impl PropertyIndexKey {
         }
     }
 
-    fn temporal(kind: TemporalKind, nanos: i128, offset: i32) -> Self {
+    fn temporal(kind: TemporalKind, nanos: impl Into<Nanos>, offset: i32) -> Self {
         Self::Temporal {
             kind,
-            nanos,
+            nanos: nanos.into(),
             offset,
             zone: None,
         }

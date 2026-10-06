@@ -1179,3 +1179,62 @@ fn every_kind_of_value_survives_being_stored_updated_and_removed() {
     assert_eq!(g.node(a).unwrap().properties.len(), values.len() - 1);
     assert_eq!(g.relationship_endpoints(r), Some((a, b)));
 }
+
+#[test]
+fn a_lookup_without_a_label_finds_every_node_once_through_label_changes() {
+    let mut g = InMemoryGraph::new();
+    let v = PropertyValue::Int(7);
+    let bare = g.create_node(vec![], props(&[("k", v.clone())])).id;
+    let one = g
+        .create_node(vec!["A".into()], props(&[("k", v.clone())]))
+        .id;
+    let two = g
+        .create_node(vec!["A".into(), "B".into()], props(&[("k", v.clone())]))
+        .id;
+    let other = g
+        .create_node(vec!["A".into()], props(&[("k", PropertyValue::Int(8))]))
+        .id;
+    let find = |g: &InMemoryGraph, label: Option<&str>| g.find_node_ids_by_property(label, "k", &v);
+
+    // Label lookups first: no map across labels exists yet.
+    assert_eq!(find(&g, Some("A")), vec![one, two]);
+    // The first lookup without a label builds one over existing nodes.
+    assert_eq!(find(&g, None), vec![bare, one, two]);
+    assert_eq!(find(&g, Some("A")), vec![one, two]);
+    assert_eq!(find(&g, Some("B")), vec![two]);
+    assert_eq!(find(&g, Some("C")), Vec::<u64>::new());
+
+    // A node gains its first label, another loses its last.
+    assert!(g.add_node_label(bare, "C"));
+    assert!(g.remove_node_label(one, "A"));
+    assert_eq!(find(&g, None), vec![bare, one, two]);
+    assert_eq!(find(&g, Some("C")), vec![bare]);
+    assert_eq!(find(&g, Some("A")), vec![two]);
+
+    // And back; then a second label and its removal.
+    assert!(g.remove_node_label(bare, "C"));
+    assert!(g.add_node_label(one, "A"));
+    assert!(g.add_node_label(one, "B"));
+    assert!(g.remove_node_label(two, "B"));
+    assert_eq!(find(&g, None), vec![bare, one, two]);
+    assert_eq!(find(&g, Some("B")), vec![one]);
+
+    // Value changes and deletes reach unlabelled nodes too.
+    assert!(g.set_node_property(bare, "k".into(), PropertyValue::Int(8)));
+    assert_eq!(find(&g, None), vec![one, two]);
+    assert_eq!(
+        g.find_node_ids_by_property(None, "k", &PropertyValue::Int(8)),
+        vec![bare, other]
+    );
+    assert!(g.delete_node(bare));
+    assert!(g.delete_node(two));
+    assert_eq!(find(&g, None), vec![one]);
+    assert_eq!(
+        g.find_nodes_by_property(None, "k", &PropertyValue::Int(8))
+            .iter()
+            .map(|n| n.id)
+            .collect::<Vec<_>>(),
+        vec![other]
+    );
+    g.assert_property_indexes_match_scan();
+}

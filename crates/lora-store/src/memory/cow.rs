@@ -33,7 +33,7 @@
 //! that keys spread over evenly (hashed).
 
 use std::borrow::Borrow;
-use std::collections::{hash_map, BTreeMap, HashMap};
+use std::collections::{hash_map, HashMap};
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::sync::Arc;
 
@@ -597,14 +597,153 @@ const GROUP_MAX: usize = 128;
 /// in three quarters of [`GROUP_MAX`].
 const GROUP_MIN: usize = GROUP_MAX / 4;
 
-/// A partition: a sorted run of keys.
-type Part<K, V> = Arc<BTreeMap<K, V>>;
+/// A partition: a sorted run of keys in one array. A `BTreeMap` here
+/// spent about twice the entries' size on half-empty nodes, and copying
+/// one (a write's first touch of a shared partition) walked every node;
+/// an array is copied in one pass and searched without pointer chasing.
+/// An insert shifts the entries after it, at most [`PART_MAX`] of them.
+#[derive(Clone)]
+struct SortedPart<K, V> {
+    entries: Vec<(K, V)>,
+}
+
+impl<K: Ord, V> SortedPart<K, V> {
+    fn single(key: K, value: V) -> Self {
+        Self {
+            entries: vec![(key, value)],
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn position<Q>(&self, key: &Q) -> Result<usize, usize>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.entries.binary_search_by(|(k, _)| k.borrow().cmp(key))
+    }
+
+    fn get<Q>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.position(key).ok().map(|i| &self.entries[i].1)
+    }
+
+    fn get_mut<Q>(&mut self, key: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.position(key).ok().map(|i| &mut self.entries[i].1)
+    }
+
+    fn contains_key<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.position(key).is_ok()
+    }
+
+    #[cfg(test)]
+    fn keys(&self) -> impl DoubleEndedIterator<Item = &K> + '_ {
+        self.entries.iter().map(|(k, _)| k)
+    }
+
+    /// Insert `key`, replacing its value if the partition holds it.
+    fn insert(&mut self, key: K, value: V) {
+        // Ascending loads append.
+        if self.entries.last().is_none_or(|(last, _)| *last < key) {
+            self.entries.push((key, value));
+            return;
+        }
+        match self.position(&key) {
+            Ok(i) => self.entries[i].1 = value,
+            Err(i) => self.entries.insert(i, (key, value)),
+        }
+    }
+
+    fn remove<Q>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let i = self.position(key).ok()?;
+        Some(self.entries.remove(i).1)
+    }
+
+    fn first_key(&self) -> Option<&K> {
+        self.entries.first().map(|(k, _)| k)
+    }
+
+    fn last_key(&self) -> Option<&K> {
+        self.entries.last().map(|(k, _)| k)
+    }
+
+    fn key_at(&self, index: usize) -> Option<&K> {
+        self.entries.get(index).map(|(k, _)| k)
+    }
+
+    /// Move the entries with keys `>= key` into a new partition. Both
+    /// halves end up exactly sized: this one just outgrew its capacity
+    /// and would otherwise keep twice what it holds.
+    fn split_off(&mut self, key: &K) -> Self {
+        let at = self.entries.partition_point(|(k, _)| k < key);
+        let upper = self.entries.split_off(at);
+        self.entries.shrink_to_fit();
+        Self { entries: upper }
+    }
+
+    /// Append `other`, whose keys all follow this partition's.
+    fn append(&mut self, mut other: Self) {
+        self.entries.append(&mut other.entries);
+    }
+
+    fn iter(&self) -> impl DoubleEndedIterator<Item = (&K, &V)> + '_ {
+        self.entries.iter().map(|(k, v)| (k, v))
+    }
+
+    fn range(
+        &self,
+        lower: &std::ops::Bound<K>,
+        upper: &std::ops::Bound<K>,
+    ) -> impl DoubleEndedIterator<Item = (&K, &V)> + '_ {
+        use std::ops::Bound;
+        let from = match lower {
+            Bound::Included(l) => self.entries.partition_point(|(k, _)| k < l),
+            Bound::Excluded(l) => self.entries.partition_point(|(k, _)| k <= l),
+            Bound::Unbounded => 0,
+        };
+        let to = match upper {
+            Bound::Included(u) => self.entries.partition_point(|(k, _)| k <= u),
+            Bound::Excluded(u) => self.entries.partition_point(|(k, _)| k < u),
+            Bound::Unbounded => self.entries.len(),
+        };
+        self.entries[from..to.max(from)].iter().map(|(k, v)| (k, v))
+    }
+
+    /// Slots allocated, for the memory report.
+    fn capacity(&self) -> usize {
+        self.entries.capacity()
+    }
+}
+
+type Part<K, V> = Arc<SortedPart<K, V>>;
 /// Partitions in key order, each with its smallest key so a lookup binary
 /// searches a contiguous array instead of the partitions themselves.
 type Group<K, V> = Arc<Vec<(K, Part<K, V>)>>;
 
 /// An ordered map as a three-level B-tree of `Arc`-shared nodes: a root
-/// table of groups, each a table of partitions, each a `BTreeMap` (see
+/// table of groups, each a table of partitions, each a sorted array (see
 /// the module docs). Unlike [`CowMap`] it keeps key order, so range scans
 /// (the sorted property index behind RANGE indexes and uniqueness
 /// constraints, fulltext prefix terms) work in both directions.
@@ -641,7 +780,7 @@ impl<K: std::fmt::Debug, V: std::fmt::Debug> std::fmt::Debug for CowOrdMap<K, V>
                 self.groups
                     .iter()
                     .flat_map(|(_, group)| group.iter())
-                    .flat_map(|(_, part)| part.iter()),
+                    .flat_map(|(_, part)| part.entries.iter().map(|(k, v)| (k, v))),
             )
             .finish()
     }
@@ -682,7 +821,6 @@ fn merge_slot<K: Clone, X: Clone>(
 }
 
 impl<K: Ord + Clone, V: Clone> CowOrdMap<K, V> {
-    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.len
     }
@@ -760,7 +898,7 @@ impl<K: Ord + Clone, V: Clone> CowOrdMap<K, V> {
         self.len += 1;
         let root = Arc::make_mut(&mut self.groups);
         if root.is_empty() {
-            let part = Arc::new(BTreeMap::from([(key.clone(), value)]));
+            let part = Arc::new(SortedPart::single(key.clone(), value));
             root.push((key.clone(), Arc::new(vec![(key, part)])));
             return;
         }
@@ -783,19 +921,15 @@ impl<K: Ord + Clone, V: Clone> CowOrdMap<K, V> {
         // loads leave full partitions and a root a quarter the size.
         let append = last_group
             && p + 1 == group.len()
-            && group[p]
-                .1
-                .keys()
-                .next_back()
-                .is_some_and(|last| *last < key);
+            && group[p].1.last_key().is_some_and(|last| *last < key);
         let part = Arc::make_mut(&mut group[p].1);
         let split_at = if append { Some(key.clone()) } else { None };
         part.insert(key, value);
         if part.len() <= PART_MAX {
             return;
         }
-        let split_at = split_at
-            .unwrap_or_else(|| part.keys().nth(part.len() / 2).cloned().expect("non-empty"));
+        let split_at =
+            split_at.unwrap_or_else(|| part.key_at(part.len() / 2).cloned().expect("non-empty"));
         let upper = part.split_off(&split_at);
         group.insert(p + 1, (split_at, Arc::new(upper)));
         if group.len() > GROUP_MAX {
@@ -828,13 +962,13 @@ impl<K: Ord + Clone, V: Clone> CowOrdMap<K, V> {
             group.remove(p);
         } else {
             if part.len() < PART_MIN {
-                merge_slot(group, p, PART_MAX * 3 / 4, BTreeMap::len, |a, mut b| {
-                    a.append(&mut b)
+                merge_slot(group, p, PART_MAX * 3 / 4, SortedPart::len, |a, b| {
+                    a.append(b)
                 });
             }
             // Removing a partition's smallest key moves its minimum.
             let p = slot_for(group, key);
-            group[p].0 = group[p].1.keys().next().expect("non-empty").clone();
+            group[p].0 = group[p].1.first_key().expect("non-empty").clone();
         }
         if group.is_empty() {
             root.remove(g);
@@ -891,7 +1025,7 @@ impl<K: Ord + Clone, V: Clone> CowOrdMap<K, V> {
                 let to = if g == gl { pl } else { group.len() - 1 };
                 group[from..=to].iter()
             })
-            .flat_map(move |(_, part)| part.range((lower.clone(), upper.clone())))
+            .flat_map(move |(_, part)| part.range(&lower, &upper))
     }
 
     pub(super) fn iter(&self) -> impl DoubleEndedIterator<Item = (&K, &V)> + '_ {
@@ -916,14 +1050,24 @@ impl<K: Ord + Clone, V: Clone> CowOrdMap<K, V> {
                 .iter()
                 .map(|(_, group)| ARC_HEADER + group.capacity() * slot)
                 .sum::<usize>()
-            + parts * (ARC_HEADER + std::mem::size_of::<BTreeMap<K, V>>())
+            + parts * (ARC_HEADER + std::mem::size_of::<SortedPart<K, V>>())
+    }
+
+    /// Entry slots the partitions have allocated: at least [`Self::len`].
+    /// The memory report charges one entry per slot.
+    pub(super) fn entry_slots(&self) -> usize {
+        self.groups
+            .iter()
+            .flat_map(|(_, group)| group.iter())
+            .map(|(_, part)| part.capacity())
+            .sum()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     /// Deterministic xorshift so the model tests need no extra crate.
     fn rng(seed: &mut u64) -> u64 {
@@ -1441,7 +1585,7 @@ mod tests {
             base.get_or_insert_with(k * 2, || k);
         }
         assert!(base.groups.len() > 4, "{} groups", base.groups.len());
-        let parts = |m: &CowOrdMap<u64, u64>| -> Vec<*const BTreeMap<u64, u64>> {
+        let parts = |m: &CowOrdMap<u64, u64>| -> Vec<*const SortedPart<u64, u64>> {
             m.groups
                 .iter()
                 .flat_map(|(_, g)| g.iter().map(|(_, p)| Arc::as_ptr(p)))
