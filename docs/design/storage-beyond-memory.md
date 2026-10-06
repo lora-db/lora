@@ -1,8 +1,8 @@
 # Storage beyond memory
 
 Status: written 2026-10-05 against LoraDB v0.22.3 (`93dc8ff`) as a research
-proposal. **Stages 0 and 1 are implemented** (Stage 0 in v0.23.0, Stage 1 on
-branch `storage/stage1`); see [Implementation status](#implementation-status).
+proposal. **Stages 0 and 1 are implemented** (Stage 0 in v0.23.0, Stage 1 in
+v0.24.0); see [Implementation status](#implementation-status).
 The disk stages (2 and later) are deferred: the decision on 2026-10-06 was to
 stay in memory until a graph outgrows it. Sections 1 to 3 describe the engine
 as it was before this work.
@@ -34,10 +34,9 @@ The decisions this needs from you are collected in [§9](#9-decisions-and-open-q
 
 ## Implementation status
 
-**Stage 0** shipped in v0.23.0. **Stage 1** is complete on branch
-`storage/stage1`, not yet merged or released. Each slice below has its own
-before/after measurements; this is the sum, v0.23.0 against the branch head,
-on the §2 machine and shape (2M nodes / 8M relationships).
+**Stage 0** shipped in v0.23.0 and **Stage 1** in v0.24.0. Each slice below
+has its own before/after measurements; this is the sum, v0.23.0 against
+v0.24.0, on the §2 machine and shape (2M nodes / 8M relationships).
 
 | Measure | v0.23.0 | Stage 1 |
 |---|---|---|
