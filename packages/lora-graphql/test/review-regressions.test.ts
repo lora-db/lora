@@ -4,6 +4,7 @@ import { buildModel, type WriteChange } from "../src/index.js";
 import { festivalHarness, type Harness } from "./harness.js";
 
 const typeDefs = /* GraphQL */ `
+  extend schema @authorizationDefaults(requireAuthentication: false)
   type User @node @mutation @query(aggregate: true) {
     key: String! @key
     email: String @unique @sortable
@@ -17,14 +18,7 @@ const typeDefs = /* GraphQL */ `
   type Post
     @node
     @mutation
-    @authorization(
-      filter: [
-        {
-          where: { node: { published: { eq: true } } }
-          requireAuthentication: false
-        }
-      ]
-    ) {
+    @authorization(filter: [{ where: { node: { published: { eq: true } } } }]) {
     key: String! @key
     published: Boolean!
   }

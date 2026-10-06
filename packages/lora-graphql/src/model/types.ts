@@ -256,8 +256,13 @@ export type AuthorizationWhere = Record<string, unknown>;
 
 export interface AuthorizationFilterRule {
   operations: ReadonlySet<AuthOperation>;
+  /**
+   * Without a token the rule denies: the schema's
+   * `@authorizationDefaults(requireAuthentication:)`, and always true for
+   * a rule no anonymous request could pass.
+   */
   requireAuthentication: boolean;
-  /** `requireAuthentication` was left to its default (true). */
+  /** The schema left `requireAuthentication` to its default (true). */
   requireAuthenticationDefaulted?: boolean;
   where: AuthorizationWhere;
 }
@@ -265,8 +270,13 @@ export interface AuthorizationFilterRule {
 export interface AuthorizationValidateRule {
   operations: ReadonlySet<AuthOperation>;
   when: ReadonlySet<"BEFORE" | "AFTER">;
+  /**
+   * Without a token the rule denies: the schema's
+   * `@authorizationDefaults(requireAuthentication:)`, and always true for
+   * a rule no anonymous request could pass.
+   */
   requireAuthentication: boolean;
-  /** `requireAuthentication` was left to its default (true). */
+  /** The schema left `requireAuthentication` to its default (true). */
   requireAuthenticationDefaulted?: boolean;
   where: AuthorizationWhere;
 }

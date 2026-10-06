@@ -228,3 +228,126 @@ type G @node @mutation { key: String! @key }`,
   expect(codes(anonymous)).toEqual(["UNAUTHENTICATED"]);
   expect(t.statements).toHaveLength(0);
 });
+
+describe("requireAuthentication", () => {
+  const post = (rules: string) => `type Post @node @mutation
+  @authorization(${rules}) {
+  key: String! @key
+  published: Boolean!
+  tenant: String
+  owner: String!
+}`;
+  const rules = `
+    filter: [{ operations: [READ], where: { OR: [
+      { node: { published: { eq: true } } }
+      { node: { owner: { eq: "$jwt.sub" } } }
+      { AND: [{ jwt: { sub: { exists: true } } }, { node: { tenant: { eq: "acme" } } }] }
+    ] } }]
+    validate: [{ operations: [CREATE, UPDATE, DELETE], where: { node: { owner: { eq: "$jwt.sub" } } } }]`;
+  const posts = [
+    "CREATE (:Post {key: 'pub', published: true, owner: 'v'}), (:Post {key: 'mine', published: false, owner: 'u'}), (:Post {key: 'acme', published: false, owner: 'v', tenant: 'acme'}), (:Post {key: 'other', published: false, owner: 'v'})",
+  ];
+  const open =
+    "extend schema @authorizationDefaults(requireAuthentication: false)\n";
+  const keys = async (
+    t: Awaited<ReturnType<typeof createTestLoraGraphQL>>,
+    context?: Record<string, unknown>,
+  ) =>
+    (
+      await t.data<{ posts: Array<{ key: string }> }>(
+        "{ posts(sort: [{ key: ASC }]) { key } }",
+        {},
+        context,
+      )
+    ).posts.map((p) => p.key);
+  const problems = (sdl: string) => {
+    try {
+      buildModel(sdl);
+      return [];
+    } catch (err) {
+      if (err instanceof ModelError) return err.problems.map((p) => p.message);
+      throw err;
+    }
+  };
+
+  test("by default, without a token every rule denies", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: claims + post(rules),
+      seed: posts,
+    });
+    expect(await keys(t)).toEqual([]);
+    expect(await keys(t, user)).toEqual(["acme", "mine", "pub"]);
+  });
+
+  test("false: a branch that reads no claims decides for anonymous callers", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: claims + open + post(rules),
+      seed: posts,
+    });
+    // The tenant branch tests a claim beside the node, so it stays closed.
+    expect(await keys(t)).toEqual(["pub"]);
+    expect(await keys(t, user)).toEqual(["acme", "mine", "pub"]);
+  });
+
+  test("false: a rule that needs claims still asks for a token", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: claims + open + post(rules),
+      seed: posts,
+    });
+    t.statements.length = 0;
+    const anonymous = await t.run(
+      'mutation { deletePost(key: "pub") { nodesDeleted } }',
+    );
+    expect(codes(anonymous)).toEqual(["UNAUTHENTICATED"]);
+    expect(t.statements).toHaveLength(0);
+    expect(
+      codes(
+        await t.run(
+          'mutation { deletePost(key: "pub") { nodesDeleted } }',
+          {},
+          user,
+        ),
+      ),
+    ).toEqual(["FORBIDDEN"]);
+  });
+
+  test("false never lets NOT turn a missing claim into a grant", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs:
+        claims +
+        open +
+        post(
+          'filter: [{ where: { NOT: { node: { owner: { eq: "$jwt.sub" } } } } }]',
+        ),
+      seed: posts,
+    });
+    expect(await keys(t)).toEqual([]);
+    expect(await keys(t, user)).toEqual(["acme", "other", "pub"]);
+  });
+
+  test("it is the schema's setting, not a rule's", () => {
+    expect(
+      problems(
+        claims +
+          post(
+            "filter: [{ requireAuthentication: false, where: { node: { published: { eq: true } } } }]",
+          ),
+      ),
+    ).toEqual([
+      "@authorization: filter[0] sets requireAuthentication, which is no longer a rule's own setting; set @authorizationDefaults(requireAuthentication:) on `extend schema`, and use @authentication where one type differs",
+    ]);
+  });
+
+  test("a field a directive's input does not define is a model error", () => {
+    expect(
+      problems(
+        claims +
+          post(
+            "validate: [{ operation: [CREATE], where: { node: { published: { eq: true } } } }]",
+          ),
+      ),
+    ).toEqual([
+      "@authorization: validate[0] has no field operation (expected operations, when, where)",
+    ]);
+  });
+});

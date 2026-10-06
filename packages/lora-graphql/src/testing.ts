@@ -153,6 +153,8 @@ export interface AccessExpectations {
  * - `connect Trip.members lou:tomorrowland → f1` (also `->`)
  * - `disconnect Trip.members lou:tomorrowland → f1`
  * - `update-edge Trip.members lou:tomorrowland → f1 {"rsvp": "GOING"}`
+ *   (on a single relationship the edge is the current one, whichever
+ *   node the entry names)
  *
  * Denied means `FORBIDDEN`, `UNAUTHENTICATED` or `NOT_FOUND` (a node the
  * caller cannot see); any other error is reported as a mismatch either way.
@@ -346,7 +348,12 @@ function accessOperation(
         }
       : operation === "disconnect"
         ? { disconnect: field.list ? [other] : true }
-        : { update: [{ [targetKey]: other, edge: input }] };
+        : // A single relationship has one edge: the update names no key.
+          {
+            update: field.list
+              ? [{ [targetKey]: other, edge: input }]
+              : { edge: input },
+          };
   return {
     operation,
     source: `mutation($key: ${keyType}, $update: ${typeName}UpdateInput!) { update${typeName}(${node.key.name}: $key, update: $update) { ${lower} { __typename } info { relationshipsDeleted } } }`,

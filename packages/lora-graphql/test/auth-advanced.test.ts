@@ -2,6 +2,7 @@ import { buildModel } from "../src/index.js";
 import { festivalHarness, type Harness } from "./harness.js";
 
 const typeDefs = /* GraphQL */ `
+  extend schema @authorizationDefaults(requireAuthentication: false)
   type Claims @jwt {
     sub: String!
     roles: [String!] @jwtClaim(path: "app.roles")
@@ -12,12 +13,7 @@ const typeDefs = /* GraphQL */ `
     @node
     @mutation
     @authorization(
-      filter: [
-        {
-          where: { node: { tenant: { eq: "$context.tenant" } } }
-          requireAuthentication: false
-        }
-      ]
+      filter: [{ where: { node: { tenant: { eq: "$context.tenant" } } } }]
     ) {
     key: String! @key
     tenant: String!
@@ -47,11 +43,7 @@ const typeDefs = /* GraphQL */ `
     @authentication(operations: [CREATE], jwt: { roles: { includes: "admin" } })
     @authorization(
       filter: [
-        {
-          operations: [READ]
-          where: { node: { key: { startsWith: "" } } }
-          requireAuthentication: false
-        }
+        { operations: [READ], where: { node: { key: { startsWith: "" } } } }
         {
           operations: [CREATE_RELATIONSHIP, DELETE_RELATIONSHIP]
           where: { NOT: { node: { locked: { eq: true } } } }

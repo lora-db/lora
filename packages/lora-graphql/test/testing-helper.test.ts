@@ -93,6 +93,33 @@ type Trip @node @mutation
     expect(rows.rows).toEqual([{ k: "bo", rsvp: "INVITED", name: null }]);
   });
 
+  test("update-edge on a single relationship", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: `type Claims @jwt {
+  sub: String! @viewer(type: "Person", field: "key")
+  roles: [String!]
+}
+type Person @node { key: String! @key }
+type Lease @relationshipProperties { note: String }
+type Flat @node @mutation {
+  key: String! @key
+  tenant: Person @relationship(type: "RENTS", direction: IN, properties: "Lease")
+    @authorization(validate: [{ operations: [UPDATE_EDGE], where: { target: { isViewer: true } } }])
+}`,
+      seed: [
+        "CREATE (:Person {key: 'lou'})-[:RENTS {note: 'old'}]->(:Flat {key: 'f'}), (:Person {key: 'bo'})",
+      ],
+    });
+    const entry = 'update-edge Flat.tenant f → lou {"note": "new"}';
+    await expectAccess(t, { as: { sub: "lou", roles: [] }, allowed: [entry] });
+    await expectAccess(t, { as: { sub: "bo", roles: [] }, denied: [entry] });
+    await expectAccess(t, { as: undefined, denied: [entry] });
+    const rows = (await t.db.execute(
+      "MATCH (:Person)-[r:RENTS]->(:Flat) RETURN r.note AS note",
+    )) as { rows: Array<Record<string, unknown>> };
+    expect(rows.rows).toEqual([{ note: "old" }]);
+  });
+
   test("reports every mismatch at once", async () => {
     const t = await createTestLoraGraphQL({ typeDefs, seed });
     const failure = await expectAccess(t, {

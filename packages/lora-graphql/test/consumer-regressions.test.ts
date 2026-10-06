@@ -510,8 +510,8 @@ describe("G-19: claims inside rule strings", () => {
 
   test("context values interpolate into filter rules", async () => {
     const t = await createTestLoraGraphQL({
-      typeDefs: `type Doc @node @authorization(filter: [{ requireAuthentication: false,
-        where: { node: { key: { startsWith: "\${context.tenant}/" } } } }]) { key: String! @key }`,
+      typeDefs: `extend schema @authorizationDefaults(requireAuthentication: false)
+type Doc @node @authorization(filter: [{ where: { node: { key: { startsWith: "\${context.tenant}/" } } } }]) { key: String! @key }`,
       seed: [
         "CREATE (:Doc {key: 'acme/1'}), (:Doc {key: 'acme2/1'}), (:Doc {key: 'other/1'})",
       ],

@@ -270,6 +270,8 @@ export const directiveTypeDefs = /* GraphQL */ `
     bypass: AuthorizationWhere
     "The write rule of every @mutation type that declares no CREATE, UPDATE or DELETE rule of its own."
     mutations: AuthorizationWhere
+    "Default true: without a token every rule denies. false: a rule with a branch that reads no claims decides that branch for anonymous requests too; a rule that needs claims still asks for a token."
+    requireAuthentication: Boolean
   ) on SCHEMA
 
   input AuthorizationMask {
@@ -279,16 +281,12 @@ export const directiveTypeDefs = /* GraphQL */ `
 
   input AuthorizationFilterRule {
     operations: [AuthOperation!]! = [READ, UPDATE, DELETE]
-    "Default true: without a token the rule denies."
-    requireAuthentication: Boolean
     where: AuthorizationWhere!
   }
 
   input AuthorizationValidateRule {
     operations: [AuthOperation!]! = [READ, CREATE, UPDATE, DELETE]
     when: [AuthorizationWhen!]! = [BEFORE, AFTER]
-    "Default true: without a token the rule denies."
-    requireAuthentication: Boolean
     where: AuthorizationWhere!
   }
 

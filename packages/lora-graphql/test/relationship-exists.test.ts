@@ -11,9 +11,10 @@ const codes = (r: { errors?: ReadonlyArray<{ extensions?: unknown }> }) =>
     (e) => (e.extensions as Record<string, unknown> | undefined)?.["code"],
   );
 
-const typeDefs = `type Claims @jwt { sub: String!  roles: [String!] }
+const typeDefs = `extend schema @authorizationDefaults(requireAuthentication: false)
+type Claims @jwt { sub: String!  roles: [String!] }
 type Trip @node
-  @authorization(filter: [{ requireAuthentication: false, where: { node: { public: { eq: true } } } }]) {
+  @authorization(filter: [{ where: { node: { public: { eq: true } } } }]) {
   key: String! @key
   public: Boolean!
 }

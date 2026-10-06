@@ -2,18 +2,12 @@ import { parse, subscribe, type ExecutionResult } from "graphql";
 import { festivalHarness, type Harness } from "./harness.js";
 
 const typeDefs = /* GraphQL */ `
+  extend schema @authorizationDefaults(requireAuthentication: false)
   type Post
     @node
     @mutation
     @subscription
-    @authorization(
-      filter: [
-        {
-          where: { node: { published: { eq: true } } }
-          requireAuthentication: false
-        }
-      ]
-    ) {
+    @authorization(filter: [{ where: { node: { published: { eq: true } } } }]) {
     key: String! @key
     title: String! @filterable
     published: Boolean!

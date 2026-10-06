@@ -286,6 +286,18 @@ export function desugarNode(
         continue;
       }
     }
+    if (
+      ctx.viewer &&
+      node.name === ctx.viewer.type &&
+      key === ctx.viewer.field &&
+      isRecord(value) &&
+      value["eq"] === `$jwt.${ctx.viewer.claim}`
+    ) {
+      // One way to name the caller: the claim mapping lives in @viewer.
+      ctx.at(
+        `${node.name}.${key}: { eq: "$jwt.${ctx.viewer.claim}" } spells out the @viewer mapping; write isViewer: true`,
+      );
+    }
     out[key] = value;
   }
   if (extra.length > 0) {

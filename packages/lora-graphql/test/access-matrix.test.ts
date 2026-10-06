@@ -106,7 +106,7 @@ type E @relationshipProperties {
   marker: String
     @authentication(operations: [UPDATE])
     @authorization(validate: [
-      { operations: [READ], where: { jwt: { roles: { includes: "staff" } } }, requireAuthentication: false }
+      { operations: [READ], where: { jwt: { roles: { includes: "staff" } } } }
       { operations: [CREATE], where: { jwt: { roles: { includes: "admin" } } } }
     ])
 }
@@ -131,7 +131,7 @@ type Trip @node @mutation {
     expect(verdict("E.marker CREATE anonymous")).toBe("unauthenticated");
     expect(verdict("E.marker CREATE authenticated")).toBe("denied");
     expect(verdict("E.marker CREATE roles:admin")).toBe("allowed");
-    expect(verdict("E.marker READ anonymous")).toBe("denied");
+    expect(verdict("E.marker READ anonymous")).toBe("unauthenticated");
     expect(verdict("E.marker READ roles:staff")).toBe("allowed");
     expect(verdict("E.marker UPDATE anonymous")).toBe("unauthenticated");
     expect(verdict("E.marker UPDATE authenticated")).toBe("allowed");
@@ -144,6 +144,67 @@ type Trip @node @mutation {
     expect(verdict("Trip UPDATE anonymous")).toBe("allowed");
     expect(verdict("Trip.featured CREATE authenticated")).toBe("denied");
     expect(verdict("Trip.featured UPDATE roles:admin")).toBe("allowed");
+  });
+
+  test("viewer: the caller on nodes the rules name them for", async () => {
+    const typeDefs = `type Claims @jwt {
+  sub: String! @viewer(type: "Person", field: "key")
+  roles: [String!]
+}
+type Person @node @mutation
+  @authorization(validate: [{ operations: [UPDATE, DELETE], where: { node: { isViewer: true } } }]) {
+  key: String! @key
+  verified: Boolean
+  email: String @authorization(mask: [{ unless: { node: { isViewer: true } } }])
+  notes: String @authorization(mask: [{ unless: { node: { NOT: { isViewer: true } } } }])
+}
+type Trip @node @mutation
+  @authorization(
+    filter: [{ operations: [READ], where: { OR: [
+      { node: { owner: { isViewer: true } } }
+      { node: { members: { some: { isViewer: true } } } } ] } }]
+    validate: [
+      { operations: [UPDATE], where: { node: { owner: { isViewer: true }, open: { eq: true } } } }
+      { operations: [DELETE], where: { AND: [{ node: { owner: { isViewer: true } } }, { viewer: { verified: { eq: true } } }] } }
+    ]
+  ) {
+  key: String! @key
+  open: Boolean
+  owner: Person! @relationship(type: "OWNS", direction: IN)
+  members: [Person!]! @relationship(type: "MEMBER", direction: IN)
+    @authorization(validate: [{ operations: [DISCONNECT], where: { OR: [{ source: { owner: { isViewer: true } } }, { target: { isViewer: true } }] } }])
+}`;
+    const m = (await lora(typeDefs)).accessMatrix();
+    const verdicts = (principal: string) =>
+      Object.fromEntries(
+        m
+          .filter((e) => e.principal === principal)
+          .map((e) => [
+            `${e.field ? `${e.type}.${e.field}` : e.type} ${e.operation}`,
+            e.verdict,
+          ]),
+      );
+    expect(verdicts("authenticated")).toMatchObject({
+      "Person UPDATE": "validated",
+      "Person.email READ": "masked",
+      "Trip READ": "filtered",
+      "Trip.members DISCONNECT": "validated",
+    });
+    expect(verdicts("viewer")).toMatchObject({
+      "Person UPDATE": "allowed",
+      "Person DELETE": "allowed",
+      "Person.email READ": "allowed",
+      // Unless NOT them: on their own node the mask always applies.
+      "Person.notes READ": "masked",
+      "Trip READ": "allowed",
+      // Their trip, but the rule also tests the trip and their own node.
+      "Trip UPDATE": "validated",
+      "Trip DELETE": "validated",
+      "Trip.members DISCONNECT": "allowed",
+    });
+    // No rule names the caller's node: no such principal.
+    const plain = (await lora(post)).accessMatrix();
+    expect(plain.some((e) => e.principal === "viewer")).toBe(false);
   });
 
   test("lora-graphql access prints it", async () => {
@@ -192,15 +253,19 @@ describe("authorization lints", () => {
     const rule = `where: { OR: [{ node: { published: { eq: true } } }, { node: { owner: { eq: "$jwt.sub" } } }] }`;
     const typeDefs = (extra: string) =>
       claims +
-      `type Doc @node @authorization(filter: [{ ${extra}${rule} }]) { key: String! @key  published: Boolean!  owner: String! }`;
+      extra +
+      `type Doc @node @authorization(filter: [{ ${rule} }]) { key: String! @key  published: Boolean!  owner: String! }`;
     expect(await lint(typeDefs(""))).toContain(
-      "Doc: filter[0] has a branch that needs no claims (OR[0]), but requireAuthentication defaults to true, so anonymous callers are refused by the whole rule; set requireAuthentication: false if anonymous callers should get that branch",
+      "Doc: filter[0] has a branch that needs no claims (OR[0]), but requireAuthentication defaults to true, so anonymous callers are refused by the whole rule; set @authorizationDefaults(requireAuthentication: false) if anonymous callers should get such branches, or true to say they should not",
     );
-    expect(
-      (await lint(typeDefs("requireAuthentication: true, "))).some((l) =>
-        l.includes("requireAuthentication defaults"),
-      ),
-    ).toBe(false);
+    for (const said of [true, false]) {
+      const extra = `extend schema @authorizationDefaults(requireAuthentication: ${said})\n`;
+      expect(
+        (await lint(typeDefs(extra))).some((l) =>
+          l.includes("requireAuthentication defaults"),
+        ),
+      ).toBe(false);
+    }
   });
 
   test("a field rule the bypass skips", async () => {
@@ -213,6 +278,44 @@ type Doc @node { key: String! @key
     expect(found).toContain(
       "Doc.secret: the schema's bypass skips the rules of Doc.secret for callers passing it; add @authorization(bypass: false) to Doc if they must hold for everyone, or bypass: true to acknowledge it",
     );
+  });
+
+  test("every type the bypass reaches, in one line", async () => {
+    const typeDefs = (vault: string) =>
+      claims +
+      `extend schema @authorizationDefaults(bypass: { jwt: { roles: { includes: "admin" } } })
+type Open @node { key: String! @key }
+type Doc @node @authorization(filter: [{ where: { node: { owner: { eq: "$jwt.sub" } } } }]) {
+  key: String! @key  owner: String!
+  links: [Doc!]! @relationship(type: "LINKS", direction: OUT, properties: "Link")
+}
+type Link @relationshipProperties {
+  note: String @authorization(validate: [{ operations: [READ], where: { jwt: { roles: { includes: "auditor" } } } }])
+}
+type Masked @node { key: String! @key
+  secret: String @authorization(mask: [{ unless: { jwt: { roles: { includes: "auditor" } } } }]) }
+type Vault @node @authorization(${vault}filter: [{ where: { node: { owner: { eq: "$jwt.sub" } } } }]) {
+  key: String! @key  owner: String! }`;
+    const reach = (found: string[]) =>
+      found.filter((l) =>
+        l.includes("@authorizationDefaults(bypass:) reaches"),
+      );
+    // Masked acknowledges it and Open has no rules: neither is listed.
+    expect(reach(await lint(typeDefs("")))).toEqual([
+      "schema: @authorizationDefaults(bypass:) reaches the rules of 3 types that say neither bypass: true nor bypass: false (Doc, Masked, Vault), and the property rules of Link, which cannot opt out; callers passing it skip them",
+    ]);
+    expect(
+      reach(
+        await lint(
+          typeDefs("bypass: false, ").replace(
+            "type Masked @node {",
+            "type Masked @node @authorization(bypass: true) {",
+          ),
+        ),
+      ),
+    ).toEqual([
+      "schema: @authorizationDefaults(bypass:) reaches the rules of 1 type that says neither bypass: true nor bypass: false (Doc), and the property rules of Link, which cannot opt out; callers passing it skip them",
+    ]);
   });
 
   test("bypass: true acknowledges the bypass", async () => {

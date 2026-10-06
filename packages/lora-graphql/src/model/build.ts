@@ -4,6 +4,7 @@ import {
   getDirectiveValues,
   getNamedType,
   isEnumType,
+  isInputObjectType,
   isInterfaceType,
   isListType,
   isNonNullType,
@@ -170,6 +171,7 @@ export function buildModel(
   const defaults: {
     bypass?: AuthorizationWhere;
     mutations?: AuthorizationWhere;
+    requireAuthentication?: boolean;
   } = {};
   const defaultArgs = directive(d("authorizationDefaults"), schema, (message) =>
     problems.push({ type: "schema", message }),
@@ -178,6 +180,10 @@ export function buildModel(
     defaults.bypass = defaultArgs["bypass"] as AuthorizationWhere;
   if (defaultArgs?.["mutations"] != null)
     defaults.mutations = defaultArgs["mutations"] as AuthorizationWhere;
+  if (defaultArgs?.["requireAuthentication"] != null)
+    defaults.requireAuthentication = defaultArgs[
+      "requireAuthentication"
+    ] as boolean;
   // `extend schema @authorizationRules(rules: [...])`: claims-only rules.
   const schemaRules = new Map<string, AuthorizationWhere>();
   for (const { node: dir } of directiveNodes("authorizationRules", schema)) {
@@ -1015,6 +1021,19 @@ export function buildModel(
         rule.where,
         ends,
       );
+      if ("requireAuthentication" in rule) {
+        // A rule no anonymous request can pass asks for a token either
+        // way: the caller is told to sign in, not that they are refused.
+        const r = rule as {
+          requireAuthentication: boolean;
+          requireAuthenticationDefaulted?: boolean;
+        };
+        r.requireAuthentication =
+          (defaults.requireAuthentication ?? true) ||
+          !passableWithoutClaims(rule.where);
+        r.requireAuthenticationDefaulted =
+          defaults.requireAuthentication === undefined;
+      }
     }
   };
   for (const node of nodes.values()) {
@@ -1199,6 +1218,39 @@ export function buildModel(
           problems,
           jwtShape,
         );
+      }
+    }
+  }
+
+  // A relationship's rules hold from either side, so one side declares
+  // them: the same operation ruled on both would silently need both.
+  for (const node of nodes.values()) {
+    for (const f of node.fields.values()) {
+      if (f.kind !== "relationship") continue;
+      const own = relationshipRuleOperations(f);
+      if (own.size === 0) continue;
+      for (const g of nodes.get(f.target)?.fields.values() ?? []) {
+        if (
+          g.kind !== "relationship" ||
+          g === f ||
+          g.type !== f.type ||
+          g.target !== f.owner ||
+          g.direction === f.direction ||
+          // Each pair once: reported on the field that sorts first.
+          `${g.owner}.${g.name}` < `${f.owner}.${f.name}`
+        ) {
+          continue;
+        }
+        const both = [...relationshipRuleOperations(g)].filter((op) =>
+          own.has(op),
+        );
+        if (both.length > 0) {
+          problems.push({
+            type: node.name,
+            field: f.name,
+            message: `@authorization: ${both.join(", ")} ${both.length === 1 ? "rules are" : "rules are each"} declared on both ${f.owner}.${f.name} and ${g.owner}.${g.name}, the two sides of ${f.type}; a relationship's rules hold from either side, so declare each operation on one (combine with AND where both must pass)`,
+          });
+        }
       }
     }
   }
@@ -1994,6 +2046,30 @@ function readUniqueTogether(
  * non-repeatable one written more than once across them is a problem
  * naming each place. Repeatable directives are read with `directiveNodes`.
  */
+/** Input-object fields in a directive argument that its type lacks. */
+function unknownInputFields(
+  type: GraphQLInputType,
+  value: ConstValueNode,
+  path: string,
+): Array<{ path: string; name: string; known: string[] }> {
+  const named = isNonNullType(type) ? type.ofType : type;
+  if (isListType(named)) {
+    return value.kind === Kind.LIST
+      ? value.values.flatMap((v, i) =>
+          unknownInputFields(named.ofType, v, `${path}[${i}]`),
+        )
+      : unknownInputFields(named.ofType, value, path);
+  }
+  if (!isInputObjectType(named) || value.kind !== Kind.OBJECT) return [];
+  const fields = named.getFields();
+  return value.fields.flatMap((f) => {
+    const field = fields[f.name.value];
+    return field
+      ? unknownInputFields(field.type, f.value, `${path}.${f.name.value}`)
+      : [{ path, name: f.name.value, known: Object.keys(fields) }];
+  });
+}
+
 function directive(
   def: GraphQLDirective,
   node: { astNode?: unknown; extensionASTNodes?: unknown },
@@ -2006,6 +2082,27 @@ function directive(
       `@${def.name} is written ${found.length} times (${found.map((x) => x.place).join(", ")}); write it once`,
     );
   }
+  // graphql-js 16 drops input fields a directive's types do not define
+  // (17 refuses them): a misspelt `operations` would silently fall back
+  // to the default.
+  let unknown = false;
+  for (const arg of found[0]!.node.arguments ?? []) {
+    const type = def.args.find((a) => a.name === arg.name.value)?.type;
+    if (!type) continue;
+    for (const { path, name, known } of unknownInputFields(
+      type,
+      arg.value,
+      arg.name.value,
+    )) {
+      unknown = true;
+      at(
+        name === "requireAuthentication"
+          ? `@${def.name}: ${path} sets requireAuthentication, which is no longer a rule's own setting; set @authorizationDefaults(requireAuthentication:) on \`extend schema\`, and use @authentication where one type differs`
+          : `@${def.name}: ${path} has no field ${name} (expected ${known.join(", ")})`,
+      );
+    }
+  }
+  if (unknown) return undefined;
   try {
     return getDirectiveValues(def, { directives: [found[0]!.node] });
   } catch (err) {
@@ -2481,21 +2578,20 @@ function readAuthorization(
   if (!args) return undefined;
   type Raw = {
     operations: AuthOperation[];
-    requireAuthentication?: boolean;
     when?: Array<"BEFORE" | "AFTER">;
     where: AuthorizationWhere;
   };
   const filter = ((args["filter"] as Raw[] | undefined) ?? []).map((r) => ({
     operations: new Set(r.operations),
-    requireAuthentication: r.requireAuthentication ?? true,
-    requireAuthenticationDefaulted: r.requireAuthentication == null,
+    // Settled with the schema's default once the rule is desugared.
+    requireAuthentication: true,
     where: r.where,
   }));
   const validate = ((args["validate"] as Raw[] | undefined) ?? []).map((r) => ({
     operations: new Set(r.operations),
     when: new Set<"BEFORE" | "AFTER">(r.when ?? ["BEFORE", "AFTER"]),
-    requireAuthentication: r.requireAuthentication ?? true,
-    requireAuthenticationDefaulted: r.requireAuthentication == null,
+    // Settled with the schema's default once the rule is desugared.
+    requireAuthentication: true,
     where: r.where,
   }));
   return {
@@ -2540,6 +2636,40 @@ const JWT_OPS = new Set([...SCALAR_WHERE_OPS, "includes", "exists"]);
 const COUNT_WHERE_OPS = new Set(["eq", "lt", "lte", "gt", "gte"]);
 
 /** Keys of a rule that are not claim tests: `node`, `viewer`, … */
+/**
+ * Whether a request without a token could pass the rule: some branch
+ * reads no claim. A claim read without a token denies its branch (and
+ * the whole rule under NOT), so those branches never pass.
+ */
+function passableWithoutClaims(where: unknown): boolean {
+  if (!isRecord(where)) return false;
+  return Object.entries(where).every(([k, value]) => {
+    if (k === "AND") {
+      return Array.isArray(value) && value.every(passableWithoutClaims);
+    }
+    if (k === "OR") {
+      return Array.isArray(value) && value.some(passableWithoutClaims);
+    }
+    if (k === "jwt" || k === "viewer") return false;
+    return !readsClaims(value);
+  });
+}
+
+function readsClaims(value: unknown): boolean {
+  if (typeof value === "string") {
+    return (
+      value.startsWith("$jwt.") ||
+      value.includes("${jwt.") ||
+      value.includes("${viewer.")
+    );
+  }
+  if (Array.isArray(value)) return value.some(readsClaims);
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(
+    ([k, v]) => k === "jwt" || k === "viewer" || readsClaims(v),
+  );
+}
+
 function claimsOnlyViolations(where: unknown, path = ""): string[] {
   if (!isRecord(where)) return [];
   const out: string[] = [];
@@ -2555,6 +2685,15 @@ function claimsOnlyViolations(where: unknown, path = ""): string[] {
     else if (k !== "jwt") out.push(here);
   }
   return out;
+}
+
+/** The relationship operations a field's rules cover. */
+function relationshipRuleOperations(f: RelationshipField): Set<AuthOperation> {
+  return new Set(
+    (f.authorization?.validate ?? []).flatMap((r) =>
+      [...r.operations].filter((op) => RELATIONSHIP_OPERATIONS.has(op)),
+    ),
+  );
 }
 
 /** A rule over a relationship's source, target and edge. */

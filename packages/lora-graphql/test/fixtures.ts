@@ -135,6 +135,7 @@ export const appTypeDefs = /* GraphQL */ `
 
 /** Row-level authorization. */
 export const authTypeDefs = /* GraphQL */ `
+  extend schema @authorizationDefaults(requireAuthentication: false)
   type User @node {
     key: String! @key
     name: String
@@ -147,10 +148,7 @@ export const authTypeDefs = /* GraphQL */ `
     @authentication(operations: [CREATE, UPDATE, DELETE])
     @authorization(
       filter: [
-        {
-          where: { node: { published: { eq: true } } }
-          requireAuthentication: false
-        }
+        { where: { node: { published: { eq: true } } } }
         { where: { node: { author: { key: { eq: "$jwt.sub" } } } } }
         { where: { jwt: { roles: { includes: "admin" } } } }
       ]

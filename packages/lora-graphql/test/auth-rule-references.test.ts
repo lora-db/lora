@@ -87,13 +87,14 @@ describe("${node.path}", () => {
 
   test("works in filter rules: a row is visible by a relation between its own paths", async () => {
     const t = await createTestLoraGraphQL({
-      typeDefs: `type Person @node { key: String! @key }
+      typeDefs: `extend schema @authorizationDefaults(requireAuthentication: false)
+type Person @node { key: String! @key }
         type Project @node {
           key: String! @key
           members: [Person!]! @relationship(type: "MEMBER", direction: IN)
         }
         type Task @node
-          @authorization(filter: [{ requireAuthentication: false, where: { node: { project: { members: { some: { key: { eq: "\${node.assignee.key}" } } } } } } }]) {
+          @authorization(filter: [{ where: { node: { project: { members: { some: { key: { eq: "\${node.assignee.key}" } } } } } } }]) {
           key: String! @key
           project: Project! @relationship(type: "OF", direction: OUT)
           assignee: Person! @relationship(type: "ASSIGNED", direction: IN)

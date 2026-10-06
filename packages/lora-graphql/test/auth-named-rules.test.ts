@@ -29,8 +29,9 @@ type PackingItem @node
   key: String! @key
   trip: Trip! @relationship(type: "PACKS", direction: OUT)
 }`;
+// No @viewer here: with one, spelling its mapping out is a model error.
 const handWritten = `type Claims @jwt {
-  sub: String! @viewer(type: "Person", field: "key")
+  sub: String!
   roles: [String!]
 }
 type Person @node { key: String! @key }

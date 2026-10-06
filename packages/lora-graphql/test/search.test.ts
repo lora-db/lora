@@ -1,18 +1,12 @@
 import { festivalHarness, type Harness } from "./harness.js";
 
 const typeDefs = /* GraphQL */ `
+  extend schema @authorizationDefaults(requireAuthentication: false)
   type Event
     @node
     @mutation
     @fulltext(indexes: [{ fields: ["title", "summary"] }])
-    @authorization(
-      filter: [
-        {
-          where: { node: { hidden: { eq: false } } }
-          requireAuthentication: false
-        }
-      ]
-    ) {
+    @authorization(filter: [{ where: { node: { hidden: { eq: false } } } }]) {
     key: String! @key
     title: String!
     summary: String

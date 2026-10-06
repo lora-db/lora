@@ -37,6 +37,7 @@ import type {
   NestedOperation,
   NodeType,
   RelationshipOperation,
+  RelationshipPropertiesType,
 } from "../model/types.js";
 import { PLACEHOLDER } from "../model/types.js";
 import { lowerFirst } from "../model/build.js";
@@ -72,7 +73,23 @@ export interface AccessEntry {
 interface Principal {
   name: string;
   jwt: Record<string, unknown> | undefined;
+  /** The model this principal's verdicts are read off, when not the schema's. */
+  model?: GraphModel;
 }
+
+/** `node` (or its field, or a property type's field) as `p` sees the model. */
+const nodeAs = (p: Principal, node: NodeType): NodeType =>
+  p.model?.nodes.get(node.name) ?? node;
+const fieldAs = <F extends Field>(p: Principal, node: NodeType, f: F): F =>
+  (nodeAs(p, node).fields.get(f.name) as F | undefined) ?? f;
+const propertyAs = <F extends { name: string }>(
+  p: Principal,
+  props: RelationshipPropertiesType,
+  f: F,
+): F =>
+  (p.model?.relationshipProperties.get(props.name)?.fields.get(f.name) as
+    | F
+    | undefined) ?? f;
 
 /** One root field of an operation, as each kind of caller. */
 export interface RootFieldAccess {
@@ -210,7 +227,7 @@ export function operationAccess(
 ): OperationAccess {
   const principals = principalsOf(model);
   const context = (p: Principal) =>
-    newContext({ schema, fragments: {}, variables: {} }, model, {
+    newContext({ schema, fragments: {}, variables: {} }, p.model ?? model, {
       jwt: p.jwt,
     });
   const targets = rootTargets(model)[operation.operation];
@@ -237,14 +254,14 @@ export function operationAccess(
         for (const op of target.ops) {
           parts.push({
             ...(target.ops.length > 1 ? { label: op } : {}),
-            ...typeVerdict(context(p), target.node, op),
+            ...typeVerdict(context(p), nodeAs(p, target.node), op),
           });
         }
       } else {
         for (const member of target.members) {
           parts.push({
             label: member.name,
-            ...typeVerdict(context(p), member, "READ"),
+            ...typeVerdict(context(p), nodeAs(p, member), "READ"),
           });
         }
       }
@@ -321,7 +338,7 @@ export function accessMatrix(
   const principals = principalsOf(model);
   const out: AccessEntry[] = [];
   const context = (p: Principal) =>
-    newContext({ schema, fragments: {}, variables: {} }, model, {
+    newContext({ schema, fragments: {}, variables: {} }, p.model ?? model, {
       jwt: p.jwt,
     });
   for (const node of [...model.nodes.values()].sort(byName)) {
@@ -337,7 +354,7 @@ export function accessMatrix(
           type: node.name,
           operation: op,
           principal: p.name,
-          ...typeVerdict(context(p), node, op),
+          ...typeVerdict(context(p), nodeAs(p, node), op),
         });
       }
     }
@@ -363,7 +380,12 @@ export function accessMatrix(
               field: f.name,
               operation: op,
               principal: p.name,
-              ...relationshipVerdict(context(p), node, f, op),
+              ...relationshipVerdict(
+                context(p),
+                nodeAs(p, node),
+                fieldAs(p, node, f),
+                op,
+              ),
             });
           }
         }
@@ -380,7 +402,7 @@ export function accessMatrix(
             field: f.name,
             operation: "READ",
             principal: p.name,
-            ...fieldVerdict(context(p), node, f),
+            ...fieldVerdict(context(p), nodeAs(p, node), fieldAs(p, node, f)),
           });
         }
       }
@@ -394,7 +416,12 @@ export function accessMatrix(
             field: f.name,
             operation: op,
             principal: p.name,
-            ...fieldWriteVerdict(context(p), node, f, op),
+            ...fieldWriteVerdict(
+              context(p),
+              nodeAs(p, node),
+              fieldAs(p, node, f),
+              op,
+            ),
           });
         }
       }
@@ -411,7 +438,7 @@ export function accessMatrix(
             field: f.name,
             operation: op,
             principal: p.name,
-            ...propertyVerdict(context(p), f, op),
+            ...propertyVerdict(context(p), propertyAs(p, props, f), op),
           });
         }
       }
@@ -682,8 +709,9 @@ const byName = (a: { name: string }, b: { name: string }) =>
   a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
 
 /**
- * Anonymous, authenticated (a token with no roles), and one principal per
- * claim value the rules test with `includes`, `eq` or `in` (`roles:admin`).
+ * Anonymous, authenticated (a token with no roles), `viewer` when rules
+ * name the caller's node, and one principal per claim value the rules
+ * test with `includes`, `eq` or `in` (`roles:admin`).
  */
 function principalsOf(model: GraphModel): Principal[] {
   const subject = model.viewer?.claim ?? "sub";
@@ -741,9 +769,11 @@ function principalsOf(model: GraphModel): Principal[] {
     visit(rules(f.authorization));
     visit(f.authenticationJwt);
   }
+  const related = viewerModel(model);
   return [
     { name: "anonymous", jwt: undefined },
     { name: "authenticated", jwt: base },
+    ...(related ? [{ name: "viewer", jwt: base, model: related }] : []),
     ...[...tested.entries()]
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([name, t]) => ({
@@ -754,6 +784,149 @@ function principalsOf(model: GraphModel): Principal[] {
         }),
       })),
   ];
+}
+
+/**
+ * The model as the `viewer` principal meets it: an authenticated caller
+ * on nodes that are theirs, so every part of a rule that only names the
+ * caller's node (`isViewer`, alone or through relationships) passes. It
+ * shows the most a related caller gets, where `authenticated` shows what
+ * every signed-in caller gets. Undefined when no rule has such a part.
+ */
+function viewerModel(model: GraphModel): GraphModel | undefined {
+  const viewer = model.viewer;
+  if (!viewer) return undefined;
+  let found = false;
+  const always = { jwt: { [viewer.claim]: { exists: true } } };
+  const namesViewer = (node: NodeType | undefined, where: unknown): boolean => {
+    if (!node || !isRecord(where)) return false;
+    const entries = Object.entries(where);
+    if (entries.length !== 1) return false;
+    const [key, value] = entries[0]!;
+    if (key === "AND" || key === "OR") {
+      if (!Array.isArray(value) || value.length === 0) return false;
+      return key === "AND"
+        ? value.every((w) => namesViewer(node, w))
+        : value.some((w) => namesViewer(node, w));
+    }
+    if (node.name === viewer.type && key === viewer.field) {
+      return (
+        isRecord(value) &&
+        Object.keys(value).length === 1 &&
+        value["eq"] === `$jwt.${viewer.claim}`
+      );
+    }
+    const f = node.fields.get(key);
+    if (f?.kind !== "relationship") return false;
+    const target = model.nodes.get(f.target);
+    if (!f.list) return namesViewer(target, value);
+    return (
+      isRecord(value) &&
+      Object.keys(value).length === 1 &&
+      namesViewer(target, value["some"])
+    );
+  };
+  type Ends = Partial<
+    Record<"node" | "source" | "target", NodeType | undefined>
+  >;
+  const rewrite = (
+    where: AuthorizationWhere,
+    ends: Ends,
+  ): AuthorizationWhere => {
+    if (!isRecord(where)) return where;
+    const out: Record<string, unknown> = {};
+    let dropped = false;
+    for (const [key, value] of Object.entries(where)) {
+      if (key === "AND" || key === "OR") {
+        out[key] = Array.isArray(value)
+          ? value.map((w) => rewrite(w as AuthorizationWhere, ends))
+          : value;
+      } else if (key === "NOT") {
+        out[key] = rewrite(value as AuthorizationWhere, ends);
+      } else if (
+        (key === "node" || key === "source" || key === "target") &&
+        namesViewer(ends[key], value)
+      ) {
+        dropped = true;
+      } else out[key] = value;
+    }
+    if (!dropped) return out;
+    found = true;
+    // The part passes: it leaves the rule, or stands as a claim the
+    // caller has when nothing else is tested beside it.
+    return Object.keys(out).length === 0 ? always : out;
+  };
+  const authorization = <A extends NodeType["authorization"]>(
+    a: A,
+    ends: Ends,
+  ): A =>
+    a && {
+      ...a,
+      filter: a.filter.map((r) => ({ ...r, where: rewrite(r.where, ends) })),
+      validate: a.validate.map((r) => ({
+        ...r,
+        where: rewrite(r.where, ends),
+      })),
+      ...(a.mask
+        ? {
+            mask: a.mask.map((m) => ({
+              ...m,
+              unless: rewrite(m.unless, ends),
+            })),
+          }
+        : {}),
+    };
+  const nodes = new Map<string, NodeType>();
+  for (const node of model.nodes.values()) {
+    const fields = new Map<string, Field>();
+    for (const f of node.fields.values()) {
+      fields.set(
+        f.name,
+        f.authorization
+          ? ({
+              ...f,
+              authorization: authorization(f.authorization, {
+                node,
+                ...(f.kind === "relationship"
+                  ? { source: node, target: model.nodes.get(f.target) }
+                  : {}),
+              }),
+            } as Field)
+          : f,
+      );
+    }
+    nodes.set(node.name, {
+      ...node,
+      fields,
+      authorization: authorization(node.authorization, { node }),
+    });
+  }
+  const relationshipProperties = new Map<string, RelationshipPropertiesType>();
+  for (const props of model.relationshipProperties.values()) {
+    // Property rules test the ends of the relationship fields using them.
+    const user = [...model.nodes.values()]
+      .flatMap((n) => [...n.fields.values()])
+      .find((f) => f.kind === "relationship" && f.properties === props.name);
+    const ends: Ends =
+      user?.kind === "relationship"
+        ? {
+            source: model.nodes.get(user.owner),
+            target: model.nodes.get(user.target),
+          }
+        : {};
+    relationshipProperties.set(props.name, {
+      ...props,
+      fields: new Map(
+        [...props.fields.values()].map((f) => [
+          f.name,
+          f.authorization
+            ? { ...f, authorization: authorization(f.authorization, ends) }
+            : f,
+        ]),
+      ),
+    } as RelationshipPropertiesType);
+  }
+  return found ? { ...model, nodes, relationshipProperties } : undefined;
 }
 
 /**
@@ -822,7 +995,7 @@ export function accessLints(
       if (branch !== undefined) {
         out.push({
           type: node.name,
-          message: `${label} has a branch that needs no claims (${branch}), but requireAuthentication defaults to true, so anonymous callers are refused by the whole rule; set requireAuthentication: false if anonymous callers should get that branch`,
+          message: `${label} has a branch that needs no claims (${branch}), but requireAuthentication defaults to true, so anonymous callers are refused by the whole rule; set @authorizationDefaults(requireAuthentication: false) if anonymous callers should get such branches, or true to say they should not`,
         });
       }
     }
@@ -844,6 +1017,7 @@ export function accessLints(
     }
   }
   out.push(
+    ...bypassReach(model),
     ...rewritableRuleFields(model, authenticated),
     ...maskOracles(model, authenticated),
     ...refusedNestedWrites(model, () =>
@@ -853,6 +1027,56 @@ export function accessLints(
     ),
   );
   return out;
+}
+
+/**
+ * Every type whose rules the schema's bypass skips, in one line: the
+ * bypass is written once and reaches each type that has rules, so a new
+ * type joins it without a word. Types that say `bypass: true` or `false`
+ * have decided and are left out.
+ */
+function bypassReach(model: GraphModel): ModelWarning[] {
+  if (!model.bypass) return [];
+  const reached: string[] = [];
+  for (const node of model.nodes.values()) {
+    if (node.authorization?.bypass !== undefined) continue;
+    const ruled =
+      (node.authorization?.filter.length ?? 0) > 0 ||
+      (node.authorization?.validate.length ?? 0) > 0 ||
+      node.key.keyScope !== undefined ||
+      [...node.fields.values()].some(
+        (f) =>
+          (f.authorization?.filter.length ?? 0) > 0 ||
+          (f.authorization?.validate.length ?? 0) > 0 ||
+          (f.authorization?.mask?.length ?? 0) > 0,
+      );
+    if (ruled) reached.push(node.name);
+  }
+  // Property rules have no type to say `bypass: false` on.
+  const properties = [...model.relationshipProperties.values()]
+    .filter((p) =>
+      [...p.fields.values()].some(
+        (f) => (f.authorization?.validate.length ?? 0) > 0,
+      ),
+    )
+    .map((p) => p.name);
+  if (reached.length + properties.length === 0) return [];
+  const parts = [
+    ...(reached.length > 0
+      ? [
+          `the rules of ${reached.length} ${reached.length === 1 ? "type" : "types"} that ${reached.length === 1 ? "says" : "say"} neither bypass: true nor bypass: false (${reached.join(", ")})`,
+        ]
+      : []),
+    ...(properties.length > 0
+      ? [`the property rules of ${properties.join(", ")}, which cannot opt out`]
+      : []),
+  ];
+  return [
+    {
+      type: "schema",
+      message: `@authorizationDefaults(bypass:) reaches ${parts.join(", and ")}; callers passing it skip them`,
+    },
+  ];
 }
 
 const isRecord = (x: unknown): x is Record<string, unknown> =>

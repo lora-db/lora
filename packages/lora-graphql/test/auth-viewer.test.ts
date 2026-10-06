@@ -16,7 +16,8 @@ const claims = `type Claims @jwt {
 }
 `;
 // The key is a URL slug; the subject is the identity provider's opaque id.
-const people = `type Person @node @mutation
+const people = `extend schema @authorizationDefaults(requireAuthentication: false)
+type Person @node @mutation
   @authorization(validate: [{ operations: [UPDATE, DELETE], where: { node: { isViewer: true } } }]) {
   key: String! @key
   subject: String! @unique @settable(onUpdate: false)
@@ -25,7 +26,7 @@ const people = `type Person @node @mutation
 }
 type Post @node @mutation
   @authorization(
-    filter: [{ requireAuthentication: false, where: { OR: [{ node: { published: { eq: true } } }, { node: { author: { isViewer: true } } }] } }]
+    filter: [{ where: { OR: [{ node: { published: { eq: true } } }, { node: { author: { isViewer: true } } }] } }]
     validate: [{ operations: [CREATE], when: [AFTER], where: { AND: [{ node: { author: { isViewer: true } } }, { viewer: { verified: { eq: true } } }] } }]
   ) {
   key: String! @key
@@ -65,11 +66,18 @@ describe("isViewer", () => {
   });
 
   test("compiles to exactly the hand-written $jwt form", async () => {
-    const plain = people.replaceAll(
-      "isViewer: true",
-      'subject: { eq: "$jwt.sub" }',
+    // Without @viewer: with one, spelling its mapping out is a model error.
+    const plain = people
+      .replaceAll("isViewer: true", 'subject: { eq: "$jwt.sub" }')
+      .replace(
+        "{ viewer: { verified: { eq: true } } }",
+        '{ jwt: { sub: { eq: "x" } } }',
+      );
+    const plainClaims = claims.replace(
+      ' @viewer(type: "Person", field: "subject")',
+      "",
     );
-    await expectSameStatements(claims + people, claims + plain, [
+    await expectSameStatements(claims + people, plainClaims + plain, [
       { query: "{ posts { key } }", context: lou },
       { query: "{ posts { key } }" },
       { query: '{ post(key: "draft") { key author { key } } }', context: lou },
@@ -104,6 +112,31 @@ describe("isViewer", () => {
       "{ posts { key } }",
     );
     expect(r.posts.map((p) => p.key)).toEqual(["pub"]);
+  });
+});
+
+describe("the hand-written form", () => {
+  test("of isViewer is a model error once @viewer is declared", () => {
+    const sdl =
+      claims +
+      people.replaceAll("isViewer: true", 'subject: { eq: "$jwt.sub" }');
+    let messages: string[] = [];
+    try {
+      buildModel(sdl);
+    } catch (err) {
+      if (!(err instanceof ModelError)) throw err;
+      messages = err.problems.map((p) => p.message);
+    }
+    expect(messages).toContain(
+      '@authorization: Person.subject: { eq: "$jwt.sub" } spells out the @viewer mapping; write isViewer: true',
+    );
+    // Another claim, or another operator, is a different test.
+    expect(() =>
+      buildModel(
+        claims +
+          people.replaceAll("isViewer: true", 'subject: { in: "$jwt.roles" }'),
+      ),
+    ).not.toThrow();
   });
 });
 

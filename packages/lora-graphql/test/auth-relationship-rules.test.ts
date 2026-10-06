@@ -226,6 +226,53 @@ describe("model checks", () => {
   });
 });
 
+describe("rules on both sides of one relationship", () => {
+  const problems = (sdl: string) => {
+    try {
+      buildModel(sdl);
+      return [];
+    } catch (err) {
+      if (err instanceof ModelError) return err.problems.map((p) => p.message);
+      throw err;
+    }
+  };
+  const bothSides = (operations: string) =>
+    typeDefs.replace(
+      'trips: [Trip!]! @relationship(type: "MEMBER", direction: OUT, properties: "TripInvite")',
+      `trips: [Trip!]! @relationship(type: "MEMBER", direction: OUT, properties: "TripInvite")
+    @authorization(validate: [{ operations: [${operations}], where: { source: { isViewer: true } } }])`,
+    );
+
+  test("the same operation is a model error: one side declares it", () => {
+    expect(problems(bothSides("CONNECT, READ_EDGE"))).toEqual([
+      "@authorization: CONNECT, READ_EDGE rules are each declared on both Person.trips and Trip.members, the two sides of MEMBER; a relationship's rules hold from either side, so declare each operation on one (combine with AND where both must pass)",
+    ]);
+  });
+
+  test("different operations may sit on different sides", async () => {
+    // Trip.members rules everything but a hypothetical second READ_EDGE.
+    const sdl = typeDefs
+      .replace(
+        `      # a member's read marker is theirs alone
+      { operations: [READ_EDGE], where: { target: { isViewer: true } } }
+`,
+        "",
+      )
+      .replace(
+        'trips: [Trip!]! @relationship(type: "MEMBER", direction: OUT, properties: "TripInvite")',
+        `trips: [Trip!]! @relationship(type: "MEMBER", direction: OUT, properties: "TripInvite")
+    @authorization(validate: [{ operations: [READ_EDGE], where: { source: { isViewer: true } } }])`,
+      );
+    expect(problems(sdl)).toEqual([]);
+    const t = await createTestLoraGraphQL({ typeDefs: sdl, seed });
+    // Declared on Person.trips, it guards the edge read from Trip.members.
+    const q =
+      '{ trip(key: "t") { membersConnection { edges { properties { lastReadAt } } } } }';
+    expect(codes(await t.run(q, {}, as("lou")))).toBeUndefined();
+    expect(codes(await t.run(q, {}, as("bo")))).toEqual(["FORBIDDEN"]);
+  });
+});
+
 describe("READ_EDGE from either side", () => {
   const sides = (
     rule: "people" | "rooms",

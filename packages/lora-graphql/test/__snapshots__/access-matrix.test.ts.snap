@@ -42,7 +42,7 @@ exports[`accessMatrix > relationship properties, field writes and key scopes 1`]
   "Trip.featured UPDATE authenticated: denied (validate[0])",
   "Trip.featured UPDATE roles:admin: allowed (validate[0])",
   "Trip.featured UPDATE roles:staff: denied (validate[0])",
-  "E.marker READ anonymous: denied (validate[0])",
+  "E.marker READ anonymous: unauthenticated (validate[0])",
   "E.marker READ authenticated: denied (validate[0])",
   "E.marker READ roles:admin: denied (validate[0])",
   "E.marker READ roles:staff: allowed (validate[0])",

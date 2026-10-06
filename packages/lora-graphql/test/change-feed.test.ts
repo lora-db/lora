@@ -6,6 +6,7 @@ import { expect, test } from "vitest";
 import { LoraGraphQL, loraDriver } from "../src/index.js";
 
 const typeDefs = /* GraphQL */ `
+  extend schema @authorizationDefaults(requireAuthentication: false)
   type Post
     @node
     @mutation
@@ -15,7 +16,6 @@ const typeDefs = /* GraphQL */ `
         {
           operations: [READ, SUBSCRIBE]
           where: { node: { published: { eq: true } } }
-          requireAuthentication: false
         }
       ]
     ) {

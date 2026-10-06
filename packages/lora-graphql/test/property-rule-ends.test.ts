@@ -109,6 +109,8 @@ describe("relationship property rules over the ends", () => {
     expect(m.map((e) => `${e.principal}: ${e.verdict}`)).toEqual([
       "anonymous: unauthenticated",
       "authenticated: validated",
+      // The member the rule names reads their own marker.
+      "viewer: allowed",
     ]);
   });
 
