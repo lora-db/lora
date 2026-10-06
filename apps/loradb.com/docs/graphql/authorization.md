@@ -193,7 +193,8 @@ Rules can then say:
 - `{ node: { isViewer: true } }` on the viewer type, or
   `{ node: { author: { isViewer: true } } }` through a relationship. This
   expands at startup to `{ subject: { eq: "$jwt.sub" } }` and compiles to
-  exactly the same statement as writing that by hand.
+  exactly that statement. Once `@viewer` is declared, writing the
+  expansion out by hand is a model error: the mapping lives in one place.
 - `{ viewer: { verified: { eq: true } } }` to test the caller's own node,
   with one seek by the claim.
 
@@ -244,15 +245,24 @@ input, `CREATE_RELATIONSHIP` a `connect` or nested `create` through it, and
 ### @authorization
 
 ```graphql
+extend schema @authorizationDefaults(requireAuthentication: false)
+
 type Post
   @node
   @mutation
   @authentication(operations: [CREATE, UPDATE, DELETE])
   @authorization(
     filter: [
-      { where: { node: { published: { eq: true } } }, requireAuthentication: false }
+      { where: { node: { published: { eq: true } } } }
       { where: { node: { author: { key: { eq: "$jwt.sub" } } } } }
-      { where: { node: { tenant: { eq: "$context.tenant" } } } }
+      {
+        where: {
+          AND: [
+            { jwt: { sub: { exists: true } } }
+            { node: { tenant: { eq: "$context.tenant" } } }
+          ]
+        }
+      }
       { where: { jwt: { roles: { includes: "admin" } } } }
     ]
     validate: [
@@ -278,13 +288,32 @@ type Post
 
 Rule defaults:
 
-| Rule | `operations` | `when` | `requireAuthentication` |
-| --- | --- | --- | --- |
-| `filter` | `[READ, UPDATE, DELETE]` | | `true` |
-| `validate` | `[READ, CREATE, UPDATE, DELETE]` | `[BEFORE, AFTER]` | `true` |
+| Rule | `operations` | `when` |
+| --- | --- | --- |
+| `filter` | `[READ, UPDATE, DELETE]` | |
+| `validate` | `[READ, CREATE, UPDATE, DELETE]` | `[BEFORE, AFTER]` |
 
-A rule with `requireAuthentication: true` does not grant anything to an
-anonymous request.
+A rule takes `operations`, `when` (validate rules) and `where`. Any other
+field is a model error, so a misspelt `operations` cannot fall back to the
+default unnoticed.
+
+#### Anonymous callers {#anonymous-callers}
+
+Without a token every rule denies. That is the default, and it is one
+setting for the whole schema:
+`@authorizationDefaults(requireAuthentication: false)`. With `false`:
+
+- a rule with a branch that reads no claims decides that branch for
+  anonymous callers too (the published posts above);
+- a rule that needs claims still asks for a token, so an anonymous caller
+  gets `UNAUTHENTICATED`, not `FORBIDDEN`;
+- a claim read without a token denies its branch, also under `NOT`.
+
+To keep a claim-free branch for signed-in callers only, test a claim beside
+it, as the tenant rule above does with
+`{ jwt: { sub: { exists: true } } }`, or put `@authentication` on the type.
+`requireAuthentication` is not a rule's own setting: writing it on a rule
+is a model error that points here.
 
 A rule's `where` is `{ node, jwt, viewer, rule, AND, OR, NOT }`:
 
@@ -340,8 +369,9 @@ relationship filters, subscriptions, and as targets of updates, deletes and
 connects. A node the same mutation creates is not hidden from its own
 connects, so a filter that depends on the new relationship does not block
 a nested create. Filter rules for `CREATE_RELATIONSHIP` and `DELETE_RELATIONSHIP`
-guard both ends of connects and disconnects. `requireAuthentication: false`
-lets a rule apply to anonymous requests.
+guard both ends of connects and disconnects. Whether a rule applies to
+anonymous requests is the schema's setting: see
+[anonymous callers](#anonymous-callers).
 
 #### Validate rules fail the request
 
@@ -514,6 +544,12 @@ extend schema
   rule), so it is decided from the verified token before the statement is
   built. An admin's statement carries no rule predicate.
 - A type keeps its rules for everyone with `@authorization(bypass: false)`.
+  `check` lists, in one line, every type with rules that says neither
+  `bypass: false` nor `bypass: true`, and the relationship property types
+  whose rules the bypass skips (they cannot opt out), so a new type does
+  not join the bypass unnoticed.
+- `requireAuthentication` (default `true`) decides whether rules apply to
+  anonymous requests: see [anonymous callers](#anonymous-callers).
 - `mutations` is the write rule (`CREATE`, `UPDATE`, `DELETE`) of every
   `@mutation` type that declares no rule for those operations. A type's own
   rules replace it, they never merge with it.
@@ -566,7 +602,11 @@ type Trip @node @mutation {
 - The rules hold whichever side the write comes from: a connect through
   `Person.trips` (the same relationship type, the other direction) answers
   to `Trip.members`' rules, with source and target as declared on
-  `Trip.members`. If both fields carry rules, both apply.
+  `Trip.members`. Declare each operation's rules on one of the two
+  fields: the same operation ruled on both is a model error, since both
+  would have to pass without either saying so. Where two tests must both
+  hold, combine them with `AND` in one rule. Different operations may sit
+  on different sides.
 - A relationship failing `READ_EDGE` reads its properties as `FORBIDDEN`.
   Unless the claims alone settle the rule, nothing may filter, sort or
   aggregate by that relationship's properties, so a filter cannot probe a
@@ -644,16 +684,17 @@ whose claim is `lou`.
 
 - `lora-graphql access` (or `lora.accessMatrix()`) prints who may do what:
   for every type and guarded field, each operation as each kind of caller
-  (anonymous, authenticated, and each role the rules test, such as
-  `roles:admin`), with the verdict (`allowed`, `filtered`, `validated`,
+  (anonymous, authenticated, `viewer`, and each role the rules test, such
+  as `roles:admin`), with the verdict (`allowed`, `filtered`, `validated`,
   `masked`, `denied`, `unauthenticated`) and the rules that decide it. The
   order is stable, so a snapshot in CI turns access changes into diffs.
   See [the CLI](/docs/graphql/cli).
 - `lora-graphql check` fails on unguarded `@mutation` writes (see
   [defaults](#defaults)) and lints authorization: a filter rule every
-  signed-in caller passes, a rule whose default `requireAuthentication`
-  refuses anonymous callers a branch that needs no claims, and field rules
-  the schema's bypass skips.
+  signed-in caller passes, a rule with a branch that needs no claims in a
+  schema that leaves `requireAuthentication` unset, field rules the
+  schema's bypass skips, and one line naming every type the bypass
+  reaches.
 - `expectAccess` probes the database as a given caller, in transactions
   that are rolled back: `"read Trip lou:tomorrowland"`,
   `"connect Trip.members lou:tomorrowland → f1"`, and so on. See

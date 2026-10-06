@@ -216,7 +216,11 @@ accessMatrix(): AccessEntry[]
 
 Who may do what, read off the model: for every type and guarded field,
 each operation as each kind of caller (`anonymous`, `authenticated`, and
-one principal per claim value the rules test, such as `roles:admin`). The
+one principal per claim value the rules test, such as `roles:admin`). When
+rules name the caller's node (`isViewer`), `viewer` is the caller on nodes
+that are theirs: every rule part that only names them passes, so it shows
+the most a related caller gets, where `authenticated` shows what any
+signed-in caller gets. The
 `verdict` is `allowed`, `filtered`, `validated`, `masked`, `denied` or
 `unauthenticated`, and `by` names the rules that decide it (`filter[0]`,
 `validate[1]`, `@authentication`, `bypass`, `public`). The order is stable,

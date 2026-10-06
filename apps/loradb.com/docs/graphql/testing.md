@@ -201,7 +201,8 @@ a transaction that is rolled back, so probes leave no trace. Entries:
 - `read`, `create`, `update` or `delete` a `Type key`, with optional input
   as JSON (`create Trip lou:x {"name": "X"}`);
 - `connect`, `disconnect` or `update-edge` a `Type.field key → key`
-  (`->` works too), with optional edge properties as JSON.
+  (`->` works too), with optional edge properties as JSON. On a single
+  relationship, `update-edge` updates the one current edge.
 
 Denied means `FORBIDDEN`, `UNAUTHENTICATED`, `NOT_FOUND` (a node the
 caller cannot see) or, for `read`, not visible. Any other error is a

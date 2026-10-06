@@ -746,18 +746,24 @@ type Claims @jwt {
   roles: [String!] @jwtClaim(path: "app_metadata.roles")
 }
 
+extend schema @authorizationDefaults(requireAuthentication: false)
+
 type Post
   @node
   @mutation
   @authentication(operations: [CREATE, UPDATE, DELETE])
   @authorization(
     filter: [
-      {
-        where: { node: { published: { eq: true } } }
-        requireAuthentication: false
-      }
+      { where: { node: { published: { eq: true } } } }
       { where: { node: { author: { key: { eq: "$jwt.sub" } } } } }
-      { where: { node: { tenant: { eq: "$context.tenant" } } } }
+      {
+        where: {
+          AND: [
+            { jwt: { sub: { exists: true } } }
+            { node: { tenant: { eq: "$context.tenant" } } }
+          ]
+        }
+      }
       { where: { jwt: { roles: { includes: "admin" } } } }
     ]
     validate: [
@@ -791,19 +797,33 @@ type Post
 }
 ```
 
+- A rule takes `operations`, `when` (validate rules) and `where`; any
+  other field is a model error, so a misspelt `operations` cannot fall
+  back to the default unnoticed.
 - A rule is `{ node, jwt, AND, OR, NOT }`. `node` is a filter over the type
   (relationship properties included, through `<field>Connection: { some:
 { node, edge } }`), where `"$jwt.path"` strings become the caller's claims and
   `"$context.path"` strings values from the GraphQL context. `jwt` tests
   claims (`eq`, `in`, `includes`, `contains`, `startsWith`, `endsWith`,
   `lt`, `lte`, `gt`, `gte`, `exists`).
+- **Anonymous callers.** Without a token every rule denies, unless the
+  schema says `@authorizationDefaults(requireAuthentication: false)`. Then
+  a rule with a branch that reads no claims decides that branch for
+  anonymous callers too (the published posts above), while a rule that
+  needs claims still asks for a token: `UNAUTHENTICATED`, not `FORBIDDEN`.
+  It is one setting for the schema, not one per rule. To keep a
+  claim-free branch for signed-in callers, test a claim beside it
+  (`{ jwt: { sub: { exists: true } } }`, as the tenant rule above does),
+  or put `@authentication` on the type.
 - **The caller's own node.** Mark the claim that identifies the caller
   with `@viewer(type: "Person", field: "subject")` (the field is `@key` or
   `@unique`), so the key can stay a slug while the subject is an identity
   provider's opaque id. Rules then say `{ node: { isViewer: true } }` on
   the viewer type, or `{ node: { author: { isViewer: true } } }` through a
   relationship; this expands to `{ subject: { eq: "$jwt.sub" } }` at
-  startup and compiles to exactly the same statement. `viewer: { verified:
+  startup and compiles to exactly the same statement. With `@viewer`
+  declared, writing that expansion out by hand is a model error: the
+  mapping lives in one place. `viewer: { verified:
 { eq: true } }` tests the caller's own node: one seek by the claim. Both
   are unknown without the claim, so `NOT { isViewer: true }` never grants a
   signed-out caller. `isViewer` takes `true` only; use `NOT` for the
@@ -1019,6 +1039,8 @@ deleted: Org.docs has onDelete: RESTRICT`. Replacing a single
   covers an operation, it replaces the default for that operation, never
   merges with it. `check()` fails on a `@mutation` type whose
   writes nothing guards, unless it says `@authorization(public: [...])`.
+  `requireAuthentication` (see "Anonymous callers" above) is the third
+  setting here.
 
 Relationship and `@cypher` fields take field-level `@authorization`
 with READ validate rules: a row failing the rule reads the field as
@@ -1105,7 +1127,10 @@ type Trip @node @mutation {
 - The rules hold whichever side the write comes from: a connect through
   `Person.trips` (the same relationship type, the other direction)
   answers to `Trip.members`' rules, with source and target as declared on
-  `Trip.members`. If both fields carry rules, both apply.
+  `Trip.members`. Declare each operation's rules on one of the two
+  fields: the same operation ruled on both is a model error (combine
+  with `AND` where both must pass); different operations may sit on
+  different sides.
 - A relationship failing `READ_EDGE` reads its properties as `FORBIDDEN`.
   Unless the claims alone settle the rule, nothing may filter, sort or
   aggregate by that relationship's properties.
@@ -1417,7 +1442,11 @@ relationship property (READ, CREATE, UPDATE) and root `@cypher` field,
 each operation as each kind of caller (anonymous, authenticated, and each role
 the rules test, such as `roles:admin`), with the verdict (`allowed`,
 `filtered`, `validated`, `masked`, `denied`, `unauthenticated`) and the
-rules that decide it. A `@key(scope: VIEWER)` type's CREATE reads
+rules that decide it. When rules name the caller's node (`isViewer`),
+`viewer` is the caller on nodes that are theirs: every rule part that
+only names them passes, so it shows the most a related caller gets,
+where `authenticated` shows what any signed-in caller gets. A
+`@key(scope: VIEWER)` type's CREATE reads
 `unauthenticated` for anonymous callers and `validated` by `key scope`
 for the rest.
 
@@ -1441,10 +1470,13 @@ order is stable, so a snapshot in CI turns access changes into diffs.
 `check` lints authorization too:
 
 - a filter rule every signed-in caller passes;
-- a rule whose default `requireAuthentication` refuses anonymous callers
-  a branch that needs no claims;
+- a rule with a branch that needs no claims, in a schema that leaves
+  `@authorizationDefaults(requireAuthentication:)` unset: anonymous
+  callers are refused that branch by default, so say which was meant;
 - field rules the schema's bypass skips, on a type that says neither
-  `@authorization(bypass: false)` nor `bypass: true`;
+  `@authorization(bypass: false)` nor `bypass: true`, and one line naming
+  every type with rules the bypass reaches that way (plus relationship
+  property types, whose rules cannot opt out);
 - an UPDATE rule testing a single relationship the update input can
   re-point (`connect`, `disconnect`, `create`): the rule sees the node
   before (and, validated `AFTER`, after) the write, so a caller passing it

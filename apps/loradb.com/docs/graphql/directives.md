@@ -215,7 +215,7 @@ with `@mutation(CREATE)`; declare it nullable there.)
 | `@authorization(filter:, validate:, bypass:, public:, mask:)` | type (filter, validate, bypass, public), field (validate, mask) | Row-level rules, compiled into statements. See [below](#authorization-arguments) |
 | `@authorizationRules(rules: [{ name, where }])` | `extend schema` | Named claims-only rules, used in any rule as `{ rule: "name" }` |
 | `@authorizationRule(name:, where:)` | `@node` type, repeatable | A named rule of this type, found before the schema's rules |
-| `@authorizationDefaults(bypass:, mutations:)` | `extend schema` | A claims-only test that skips every filter and validate rule, and the default write rule of `@mutation` types that declare none |
+| `@authorizationDefaults(bypass:, mutations:, requireAuthentication:)` | `extend schema` | A claims-only test that skips every filter and validate rule, the default write rule of `@mutation` types that declare none, and whether rules deny without a token (default `true`) |
 | `@jwt`, `@jwtClaim(path:)` | type, field | The claims shape; rules may only use declared claims |
 | `@viewer(type:, field:)` | `@jwt` claim | The claim naming the caller's node, by a `@key` or `@unique` field of `type`. Enables `isViewer` and `viewer` in rules |
 
@@ -232,9 +232,11 @@ authorization directives in depth.
 | `public` | `@mutation` type | Operations deliberately open to every caller, so `check()` does not report them as unguarded |
 | `mask` | scalar field of a `@node` type (not the `@key`) | `[{ unless, value }]`: a row failing `unless` reads the field as `value` (`null` when left out) instead of failing the request. See [field masks](/docs/graphql/authorization#field-masks) |
 
-Each `filter` and `validate` rule takes `requireAuthentication`. It has no
-default in the SDL, but a rule that leaves it out still behaves as `true`:
-without a token the rule denies.
+A `filter` or `validate` rule takes `operations`, `when` (validate) and
+`where`; any other field is a model error. Whether rules apply without a
+token is the schema's `@authorizationDefaults(requireAuthentication:)`,
+not a rule's own setting. See
+[anonymous callers](/docs/graphql/authorization#anonymous-callers).
 
 `AuthOperation` values:
 
