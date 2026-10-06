@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 
 use crate::{SnapshotError, SnapshotMeta, SnapshotPayload};
 
+use super::distinct_stats::DistinctBuilder;
 use super::index_catalog::StoredIndexEntity;
 use super::InMemoryGraph;
 
@@ -67,9 +68,16 @@ impl InMemoryGraph {
         rebuilt.next_node_id = payload.next_node_id;
         rebuilt.next_rel_id = payload.next_rel_id;
 
+        let mut node_distinct = DistinctBuilder::default();
+        let mut rel_distinct = DistinctBuilder::default();
         for node in payload.nodes {
             let id = node.id;
             let labels = node.labels.clone();
+            // Distinct-value sketches are not persisted: count the record
+            // as a live create would, through the bulk builder.
+            for label in &labels {
+                node_distinct.add_all(label, &node.properties);
+            }
             if rebuilt.node_at(id).is_some() {
                 return Err(SnapshotError::Decode(format!(
                     "duplicate node id {id} in snapshot payload"
@@ -107,7 +115,10 @@ impl InMemoryGraph {
                 .put_rel_checked(id, rel.clone())
                 .map_err(SnapshotError::Decode)?;
             rebuilt.attach_relationship(&rel);
+            rel_distinct.add_all(&rel.rel_type, &rel.properties);
         }
+        rebuilt.distinct_stats.nodes = node_distinct.finish();
+        rebuilt.distinct_stats.relationships = rel_distinct.finish();
         // No hash property index is built here. Restart reproduces the
         // state of a fresh process: the declared RANGE indexes and the
         // uniqueness/key constraints below activate (and backfill) the

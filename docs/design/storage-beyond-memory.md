@@ -50,7 +50,7 @@ RANGE index on `Person.id` and one UNIQUE constraint. Values are medians.
 | Live bytes per element, graph only | 247.2 | 247.2 |
 | …with a hash index / a RANGE index | 315.1 / 342.2 | 305.8 / 333.2 |
 | Cypher index seek, 1-hop, range seek; fast-path writes | — | unchanged (within run-to-run noise) |
-| Cypher 2-hop | 15.7–16.0 µs | 16.8–17.5 µs (+6–10%; not investigated) |
+| Cypher 2-hop | 16.3 µs | 16.1 µs (an earlier +6–10% reading was noise: 11 interleaved process pairs, ±10% per process; the extra tree level costs ~1–2 ns per lookup) |
 | Raw `with_node`, find-by-property, 1-hop | — | unchanged |
 
 `tests/write_scaling.rs` now checks that the clone, staged writes and
@@ -58,18 +58,83 @@ indexed creates are independent of graph size. Its 1M-node case is
 `#[ignore]`d; run it with `cargo test --release -p lora-database --test
 write_scaling -- --include-ignored`. The old code fails that test.
 
-**Behaviour change.** After a restart the planner has distinct-value counts
-only for declared indexes, the same as a process that never restarted. An
-equality on an undeclared key can therefore plan differently from the old
-eager-restart behaviour. For example,
-`MATCH (p:Person)-[:KNOWS]->(q:Person {name:$n})` becomes a label scan from `p`.
-Stats that don't depend on an active index (Stage 4: HyperLogLog or sampling)
-remove this.
+**Behaviour change (resolved).** Stage 0 left the planner with distinct-value
+counts only for keys whose hash index was active, so a restarted process
+planned some equalities on undeclared keys differently from the writer (e.g.
+`MATCH (p:Person)-[:KNOWS]->(q:Person {name:$n})` became a label scan from
+`p`), and a running process planned differently depending on which lookups
+had run before. The Stage 4 statistics item is now done: distinct counts
+come from a sketch kept for every `(label or type, property key)`
+(`memory/distinct_stats.rs`), not from the hash indexes.
+
+- **Sketch.** A counting multi-resolution bitmap: the value's hash picks a
+  level (trailing zero bits) and one of 64 buckets; each bucket counts the
+  entities hashed there, and the estimate linear-counts the unsaturated top
+  levels. Unlike HyperLogLog it decrements, so after any mix of creates,
+  updates, label changes and deletes the sketch equals one built from the
+  surviving data. Writer, snapshot restart, WAL replay and a process with
+  any lookup history therefore get identical `GraphStats` and plans
+  (`tests/planner_stats.rs`, `tests/restart_index_state.rs`).
+- **Accuracy.** Exact up to about 12 distinct values. Past that, 6–16% RMS
+  error, worst seen about 36%, unbiased, from 100 to 1.5M values. Not
+  clamped to the row count, because a clamp would move a unique key's
+  estimate on every insert and defeat the stats cache. A unique key can
+  therefore read above its row count.
+- **Cost.** O(1) per property write: a hash and a counter. Sketches are
+  `Arc` copy-on-write, so a graph clone shares them. The first write to a
+  sketch after a clone copies it: two allocations, ≤3 KB `memcpy`, no
+  refcount storm. `graph_stats` reuses its last map while the estimates
+  don't change. Sketches are not persisted: snapshot load rebuilds them
+  with a bulk builder, and WAL replay through the normal create path.
+- **Memory.** 128 B per level up to the highest occupied one, plus ~80 B per
+  sketch; counters widen to `u32` once a bucket passes 65 535 entities.
+  `MemoryReport::distinct_stats_bytes` reports the total.
+- **Plans.** With 600 `:Person`s, the pattern above starts with a seek on
+  `q.name`, and `WHERE p.city = $a AND p.team = $b` seeks on `team`
+  (150 values) rather than `city` (3), in either conjunct order. Plans don't
+  depend on restart or prior lookups. EXPLAIN `estimated_rows` for an
+  undeclared key is rows / distinct, no longer the label count.
+- **Consequence.** A seek the planner now picks on an undeclared key builds
+  that key's implicit hash index on first execution. That is the existing
+  lazy behaviour, and it matches pre-0.23 restart planning. At 200k
+  `:Person` with unique 40-byte `bio` strings, that first execution takes
+  ~134 ms and retains ~56 MB, the same before and after this change
+  (`storage_baseline lat 200000`, `cy_eq_unindexed_bio first_call`).
+- **API.** `GraphStats::{node,relationship}_distinct_values` are now
+  `Arc<DistinctValues>`, the same `BTreeMap<(String, String), usize>` behind
+  an `Arc`.
+
+Before/after numbers are in [Distinct-count sketches: measurements](#distinct-count-sketches-measurements).
 
 **Festimap P2-5.** On v0.22.3, the native probe (`heap_probe --festimap`)
 measures 336 B per element live with no indexes and 439 B with the schema,
 and the process peaks at 102 MB RSS. P2-5 measured ~2.7 / 3.5 KB per element
 on 0.15 through Node. A like-for-like Node RSS measurement is still to do.
+
+### Distinct-count sketches: measurements
+
+All numbers are medians of interleaved runs of the v0.23.0 binary and the
+branch binary on the §2 machine: five runs each for `lat`/`restart`, two
+for `mem`.
+
+| Measure | Before | After |
+|---|---|---|
+| Retained heap, `mem relprops 2000000` (10M elements; 5 sketches: `Person.{id,name,score,bio}`, `KNOWS.w`) | 2,471,576,026 B | 2,471,595,882 B (**+19.9 KB total, ~4 KB per sketch**, +0.0008%) |
+| `cy_create_node(fast path)`, 200k | 5.38 µs | 5.21 µs |
+| `cy_set_prop(fast path)` | 4.58 µs | 4.46 µs |
+| `cy_create_rel(staged)` | 40.8 µs | 40.8 µs |
+| `cy_create_unique(staged)` | 14.75 µs | 14.83 µs |
+| `cy_set_prop(staged: constraint)` | 9.50 µs | 9.50 µs |
+| `db.graph_create_node(api)` | 12.58 µs | 12.79 µs (+1.7%) |
+| Snapshot load (`restart 200000`, ~1M elements) | 0.790 s | 0.818 s (+3.5%) |
+| WAL replay (`restart 200000`) | 1.124 s | 1.146 s (+2.0%) |
+| Direct-API bulk build, 10M elements (no Cypher) | 4.96 s | 5.39 s (+8.7%) |
+| Reads (seek, 1-/2-hop, range, scans) | — | unchanged (within noise) |
+
+The stats cache matters. Without it, a Cypher write followed by a re-plan
+paid ~450 ns to rebuild the distinct map (two `String`s per key). An
+earlier version that clamped estimates to the row count missed the cache on
+every insert of a unique key.
 
 **Not done in Stage 0.**
 - Streaming id scans: `node_ids_by_label` still returns a `Vec`.
@@ -230,11 +295,13 @@ are already chunked:
 
 **Statistics:**
 
-- `GraphStats` (`stats.rs:19-49`, built at `graph.rs:1649-1725`) holds exact
-  label and type counts, plus distinct counts read as **the bucket count of
-  the scoped hash index**. Distinct counts therefore exist only for keys
-  whose hash index happens to be active. `stats.rs:9-12` marks this as the
-  seam for HyperLogLog.
+- `GraphStats` (`stats.rs`, built by `InMemoryGraph::graph_stats`) holds exact
+  label and type counts. Its distinct counts are estimates from the
+  per-`(label or type, key)` sketches in `memory/distinct_stats.rs`, which
+  exist for every key and depend only on the live data. (Until the Stage 4
+  stats change they were **the bucket count of the scoped hash index**, so
+  they existed only for keys whose hash index happened to be active; see
+  the resolved behaviour change under Implementation status.)
 - Stats are rebuilt on a plan-cache miss (`database/compile.rs:62-87`). The
   cache key includes the write epoch, so every write invalidates every
   cached plan.
@@ -1142,8 +1209,9 @@ user-visible win.
 **Stage 4: index residency and statistics.**
 - Index leaves (`CowOrdMap` partitions, `IdSet` chunks, trigram shards)
   become `ChunkCell`s too.
-- Distinct counts move to HyperLogLog (the seam at `stats.rs:9-12`), so stats
-  no longer depend on which hash indexes are active.
+- ~~Distinct counts move to HyperLogLog, so stats no longer depend on which
+  hash indexes are active.~~ Done, with deletable counting sketches instead
+  of HyperLogLog (see Implementation status).
 - HNSW stays resident or uses its own quantised in-RAM graph. That is a
   separate decision.
 
@@ -1373,8 +1441,9 @@ deployment on network storage (EBS gp3 ≈ 0.5–1 ms) needs its own targets.
   - **Recommendation:** (a) now. Then (c) behind a config flag, with
     lora-graphql's inferred indexes made explicit (the TODO :72 already
     wants a warning on them).
-  - Note that distinct-count stats currently *depend* on these indexes, so
-    HyperLogLog stats (Stage 4) or sampled stats must come first for (c).
+  - Distinct-count stats no longer depend on these indexes (sketches per
+    `(label, key)`, see Implementation status), so nothing in the planner
+    blocks (c).
 - **D4: How do storage I/O errors reach queries?**
   - (a) `StoreResult` through every executor read path. This is the correct
     option and the most churn.

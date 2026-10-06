@@ -16,6 +16,7 @@ mod chunked_vec;
 mod constraint_catalog;
 mod constraint_enforce;
 mod cow;
+mod distinct_stats;
 mod entity_index_store;
 #[allow(dead_code)]
 mod fulltext_index;
@@ -51,5 +52,5 @@ pub use index_catalog::{
     StoredIndexState,
 };
 pub use mem_report::{property_value_heap_bytes, MemoryReport, PropertyIndexKeyUsage};
-pub use stats::GraphStats;
+pub use stats::{DistinctValues, GraphStats};
 pub use vector_index::{VectorBackendSnapshot, VectorIndexSnapshot};

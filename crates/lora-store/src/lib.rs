@@ -55,8 +55,8 @@ pub use intern::{intern, intern_owned};
 
 // ---------- Index catalog (CREATE INDEX surface) ----------
 pub use memory::{
-    CreateIndexError, CreateIndexOutcome, DropIndexError, DropIndexOutcome, GraphStats,
-    IndexCatalog, IndexConfigValue, IndexDefinition, IndexRequest, StoredIndexEntity,
+    CreateIndexError, CreateIndexOutcome, DistinctValues, DropIndexError, DropIndexOutcome,
+    GraphStats, IndexCatalog, IndexConfigValue, IndexDefinition, IndexRequest, StoredIndexEntity,
     StoredIndexKind, StoredIndexState, VectorBackendSnapshot, VectorIndexSnapshot,
 };
 

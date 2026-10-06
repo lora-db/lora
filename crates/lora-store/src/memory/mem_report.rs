@@ -107,6 +107,14 @@ pub struct MemoryReport {
     pub index_catalog_bytes: usize,
     pub constraint_catalog_bytes: usize,
 
+    /// Planner distinct-value sketches: one per (label / type, property
+    /// key) that any live entity carries (see `GraphStats`).
+    #[serde(default)]
+    pub distinct_stats_bytes: usize,
+    /// Number of those sketches.
+    #[serde(default)]
+    pub distinct_stats_sketches: usize,
+
     /// Per-key breakdown of [`Self::property_index_bytes`]: one entry per
     /// active hash property index (node and relationship keys), with
     /// whether a declaration keeps it active. Implicit (`declared ==
@@ -176,7 +184,10 @@ impl MemoryReport {
     }
 
     pub fn total_bytes(&self) -> usize {
-        self.graph_core_bytes() + self.secondary_index_bytes() + self.catalog_bytes()
+        self.graph_core_bytes()
+            + self.secondary_index_bytes()
+            + self.catalog_bytes()
+            + self.distinct_stats_bytes
     }
 
     /// Average retained bytes per live node, including its share of
@@ -195,7 +206,7 @@ impl MemoryReport {
     pub fn summary(&self) -> String {
         format!(
             "total={} graph={} (nodes={} rels={} out={} in={} labels={} types={}) idx={} \
-             implicit_idx={} ({} keys) cat={}",
+             implicit_idx={} ({} keys) cat={} stats={}",
             self.total_bytes(),
             self.graph_core_bytes(),
             self.nodes_bytes,
@@ -208,6 +219,7 @@ impl MemoryReport {
             self.implicit_property_index_bytes(),
             self.implicit_property_index_keys().count(),
             self.catalog_bytes(),
+            self.distinct_stats_bytes,
         )
     }
 }
@@ -238,6 +250,10 @@ pub(super) fn estimate(graph: &super::InMemoryGraph) -> MemoryReport {
     report.incoming_bytes = adjacency_bytes(&graph.incoming);
     report.label_index_bytes = label_or_type_bytes(&graph.nodes_by_label);
     report.type_index_bytes = label_or_type_bytes(&graph.relationships_by_type);
+    let sketches = &graph.distinct_stats;
+    report.distinct_stats_bytes = sketches.nodes.heap_bytes() + sketches.relationships.heap_bytes();
+    report.distinct_stats_sketches =
+        sketches.nodes.sketch_count() + sketches.relationships.sketch_count();
 
     let bundle = &graph.indexes;
     if let Ok(props) = bundle.properties.read() {

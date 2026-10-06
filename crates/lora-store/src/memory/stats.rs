@@ -1,18 +1,21 @@
 //! Lightweight cardinality stats used by the cost model.
 //!
-//! Today the stats are exact, derived in O(labels + types) from the
-//! existing `nodes_by_label` / `relationships_by_type` maps and a
-//! tally of indexed property cardinality from the property-index
-//! buckets. Cheap to build, cheap to keep current — no separate
-//! ANALYZE phase, no background sampling.
-//!
-//! When the graph grows beyond what an exact `BTreeMap<String,
-//! usize>` can serve from RAM, this is the seam where a HyperLogLog
-//! sketch will replace the per-(label, property) distinct counts.
-//! The public surface (`GraphStats`) stays the same.
+//! Label and type counts are exact, derived in O(labels + types) from
+//! the existing `nodes_by_label` / `relationships_by_type` maps. The
+//! per-(label / type, property) distinct counts are estimates from the
+//! counting multi-resolution bitmaps in `memory::distinct_stats`, kept
+//! for every property key on every write (deletes included) and
+//! rebuilt on snapshot load / WAL replay. No separate ANALYZE phase, no
+//! background sampling, and no dependence on which hash property indexes
+//! happen to be active.
 
 use std::collections::{hash_map::DefaultHasher, BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
+/// `(label or relationship type, property key) → estimated distinct
+/// values`.
+pub type DistinctValues = BTreeMap<(String, String), usize>;
 
 /// Snapshot of graph cardinality. Populated by the storage backend
 /// (see [`super::InMemoryGraph::stats`]).
@@ -26,11 +29,18 @@ pub struct GraphStats {
     pub nodes_by_label: BTreeMap<String, usize>,
     /// Per-rel-type relationship count. `relationships_by_type[type].len()`.
     pub relationships_by_type: BTreeMap<String, usize>,
-    /// Per-(label, property) approximate distinct value count, when
-    /// a property index is active. Empty for non-indexed columns —
-    /// the optimizer falls back to "all rows distinct" for those.
-    pub node_distinct_values: BTreeMap<(String, String), usize>,
-    pub relationship_distinct_values: BTreeMap<(String, String), usize>,
+    /// Per-(label, property) approximate distinct value count, for
+    /// every property key that a live node with that label carries,
+    /// indexed or not. Estimated from a distinct-value sketch kept on
+    /// every write (see `memory::distinct_stats`): a function of the live
+    /// data alone, so a restarted process, the writer and a process with
+    /// a different lookup history get the same numbers. Absent only for
+    /// keys no node of the label has (or whose values the hash index
+    /// can't key: NaN, durations, points, vectors). Shared: the store
+    /// reuses one map while the estimates don't change.
+    pub node_distinct_values: Arc<DistinctValues>,
+    /// Per-(relationship type, property) distinct value count; as above.
+    pub relationship_distinct_values: Arc<DistinctValues>,
     /// Online catalog-backed range indexes by `(label_or_type, property)`.
     pub node_range_indexes: BTreeSet<(String, String)>,
     pub relationship_range_indexes: BTreeSet<(String, String)>,

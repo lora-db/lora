@@ -18,6 +18,7 @@ use super::constraint_catalog::{
     ConstraintCatalog, ConstraintRequest, CreateConstraintError, CreateConstraintOutcome,
     DropConstraintError, DropConstraintOutcome,
 };
+use super::distinct_stats::DistinctStatsRegistry;
 use super::entity_index_store::{
     read_shared, share, write_shared, IndexBundle, IndexRead, IndexWrite,
 };
@@ -98,6 +99,13 @@ pub struct InMemoryGraph {
     /// every field accessed through `self.indexes.<x>` lives at the
     /// same address it would have as a top-level field.
     pub(super) indexes: IndexBundle,
+
+    /// Per-(label / type, property key) distinct-value sketches for the
+    /// planner (see [`super::distinct_stats`]). Kept for every key, not
+    /// only indexed ones, and a function of the live data alone, so
+    /// plans don't depend on index activation, lookup history or
+    /// restarts. Cloning is four refcount bumps.
+    pub(super) distinct_stats: DistinctStatsRegistry,
 
     /// Catalog of explicitly-created constraints (CREATE CONSTRAINT).
     /// Deliberately not part of [`IndexBundle`] — constraints describe
@@ -180,6 +188,7 @@ impl Clone for InMemoryGraph {
             // Shares every registry and catalog; each is copied on its
             // first write (see `IndexBundle`).
             indexes: self.indexes.clone(),
+            distinct_stats: self.distinct_stats.clone(),
             constraint_catalog: share(&self.constraint_catalog),
             active_constraints: AtomicUsize::new(self.active_constraint_count()),
             recorder: None,
@@ -1643,9 +1652,10 @@ impl InMemoryGraph {
     }
 
     /// Snapshot of cardinality stats. Cheap: derived from already-tracked
-    /// `nodes_by_label` / `relationships_by_type` lengths and the active
-    /// property-index buckets. The cost model uses this to populate
-    /// `estimated_rows` on plan-tree nodes.
+    /// `nodes_by_label` / `relationships_by_type` lengths and the
+    /// distinct-value sketches (a cached estimate per (scope, key), and
+    /// the previous map reused while those don't change). The cost model
+    /// uses this to populate `estimated_rows` on plan-tree nodes.
     pub fn graph_stats(&self) -> GraphStats {
         let mut stats = GraphStats {
             node_count: self.live_node_count,
@@ -1660,26 +1670,14 @@ impl InMemoryGraph {
                 .relationships_by_type
                 .insert(rel_type.clone(), ids.len());
         }
-        // Distinct values per (label, property): pulled from the
-        // property-index scoped buckets, where we already track the
-        // per-scope value distribution. Empty for properties without
-        // an active hash-index — the cost model falls back to a
-        // conservative estimate in that case.
-        let prop_indexes = self.indexes_read();
-        for (scope, props) in prop_indexes.node_properties.scoped_values.iter() {
-            for (key, values) in props.iter() {
-                stats
-                    .node_distinct_values
-                    .insert((scope.to_string(), key.to_string()), values.len());
-            }
-        }
-        for (scope, props) in prop_indexes.relationship_properties.scoped_values.iter() {
-            for (key, values) in props.iter() {
-                stats
-                    .relationship_distinct_values
-                    .insert((scope.to_string(), key.to_string()), values.len());
-            }
-        }
+        // Distinct values per (label / type, property): estimated from
+        // the distinct-value sketches, which exist for every key and are
+        // a function of the live data alone. Deliberately *not* the
+        // exact bucket counts of active hash indexes: which keys are
+        // active depends on lookup history and on whether the process
+        // restarted, and plans must not.
+        stats.node_distinct_values = self.distinct_stats.nodes.distinct_values();
+        stats.relationship_distinct_values = self.distinct_stats.relationships.distinct_values();
 
         for def in self.index_catalog_read().list() {
             if def.state != StoredIndexState::Online {
@@ -1730,10 +1728,38 @@ impl InMemoryGraph {
         super::mem_report::estimate(self)
     }
 
+    /// Count (or uncount) every property of an entity under each of its
+    /// scopes in the distinct-value sketches.
+    pub(super) fn count_distinct_values<'a>(
+        stats: &mut super::distinct_stats::DistinctStats,
+        scopes: impl IntoIterator<Item = &'a str>,
+        properties: &Properties,
+        add: bool,
+    ) {
+        if properties.is_empty() {
+            return;
+        }
+        for scope in scopes {
+            if add {
+                stats.add_all(scope, properties);
+            } else {
+                for (key, value) in properties {
+                    stats.remove(scope, key, value);
+                }
+            }
+        }
+    }
+
     pub(super) fn on_node_created(&mut self, node: &NodeRecord) {
         for label in &node.labels {
             self.insert_node_label_index(node.id, label);
         }
+        Self::count_distinct_values(
+            &mut self.distinct_stats.nodes,
+            node.labels.iter().map(String::as_str),
+            &node.properties,
+            true,
+        );
         self.index_node_properties_if_active(
             node.id,
             node.labels.iter().map(String::as_str),
@@ -1752,6 +1778,9 @@ impl InMemoryGraph {
         let Some(labels) = self.node_at(node_id).map(|node| node.labels.clone()) else {
             return;
         };
+        for label in &labels {
+            self.distinct_stats.nodes.replace(label, key, old, new);
+        }
 
         if self.node_property_index_is_active(key) {
             if let Some(old) = old {
@@ -1789,6 +1818,9 @@ impl InMemoryGraph {
         let Some(labels) = self.node_at(node_id).map(|node| node.labels.clone()) else {
             return;
         };
+        for label in &labels {
+            self.distinct_stats.nodes.remove(label, key, old);
+        }
         if self.node_property_index_is_active(key) {
             self.unindex_node_property_if_active(
                 node_id,
@@ -1813,6 +1845,7 @@ impl InMemoryGraph {
         let Some(properties) = self.node_at(node_id).map(|node| node.properties.clone()) else {
             return;
         };
+        Self::count_distinct_values(&mut self.distinct_stats.nodes, [label], &properties, true);
         if self.active_node_property_index_count() != 0 {
             self.index_node_scope_properties_if_active(node_id, label, &properties);
         }
@@ -1834,6 +1867,7 @@ impl InMemoryGraph {
         let Some(properties) = self.node_at(node_id).map(|node| node.properties.clone()) else {
             return;
         };
+        Self::count_distinct_values(&mut self.distinct_stats.nodes, [label], &properties, false);
         if self.active_node_property_index_count() != 0 {
             self.unindex_node_scope_properties_if_active(node_id, label, &properties);
         }
@@ -1853,6 +1887,12 @@ impl InMemoryGraph {
         for label in &node.labels {
             self.remove_node_label_index(node.id, label);
         }
+        Self::count_distinct_values(
+            &mut self.distinct_stats.nodes,
+            node.labels.iter().map(String::as_str),
+            &node.properties,
+            false,
+        );
         self.unindex_active_node_properties(
             node.id,
             node.labels.iter().map(String::as_str),
@@ -1863,6 +1903,12 @@ impl InMemoryGraph {
 
     pub(super) fn on_relationship_created(&mut self, rel: &RelationshipRecord) {
         self.attach_relationship(rel);
+        Self::count_distinct_values(
+            &mut self.distinct_stats.relationships,
+            [rel.rel_type.as_str()],
+            &rel.properties,
+            true,
+        );
         self.index_relationship_properties_if_active(
             rel.id,
             [rel.rel_type.as_str()],
@@ -1881,6 +1927,9 @@ impl InMemoryGraph {
         let Some(rel_type) = self.rel_at(rel_id).map(|rel| rel.rel_type.clone()) else {
             return;
         };
+        self.distinct_stats
+            .relationships
+            .replace(&rel_type, key, old, new);
 
         if self.relationship_property_index_is_active(key) {
             if let Some(old) = old {
@@ -1908,6 +1957,9 @@ impl InMemoryGraph {
         let Some(rel_type) = self.rel_at(rel_id).map(|rel| rel.rel_type.clone()) else {
             return;
         };
+        self.distinct_stats
+            .relationships
+            .remove(&rel_type, key, old);
         if self.relationship_property_index_is_active(key) {
             self.unindex_relationship_property_if_active(rel_id, [rel_type.as_str()], key, old);
         }
@@ -1923,6 +1975,12 @@ impl InMemoryGraph {
 
     pub(super) fn on_relationship_deleted(&mut self, rel: &RelationshipRecord) {
         self.detach_relationship_indexes(rel);
+        Self::count_distinct_values(
+            &mut self.distinct_stats.relationships,
+            [rel.rel_type.as_str()],
+            &rel.properties,
+            false,
+        );
         self.unindex_active_relationship_properties(
             rel.id,
             [rel.rel_type.as_str()],

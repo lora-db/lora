@@ -118,8 +118,11 @@ export interface IndexScope {
 
 /**
  * Per-`(label, property)` distinct-value count surfaced by `GraphStats`.
- * Populated for properties that have an active hash index; missing
- * entries mean "fall back to assume-all-distinct".
+ * An estimate (a few percent off past a dozen values, exact below) kept
+ * for every property key that a live node / relationship of the label or
+ * type carries, indexed or not. It depends only on the data: a reloaded
+ * database reports the same counts. A missing entry means no entity of
+ * that label has the key.
  */
 export interface DistinctValueRecord {
   label: string;

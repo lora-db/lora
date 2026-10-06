@@ -977,6 +977,95 @@ fn idlat_mode(n: u64) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// hop mode: the traversal reads only, repeated in rounds, then a few writes
+// ---------------------------------------------------------------------------
+
+/// `hop <N>`: build the `lat` graph, then run `ROUNDS` rounds (default 5)
+/// of the point and traversal reads, so one process gives several
+/// medians per row to compare A/B builds with. `WRITES=1` adds the
+/// staged-write rows once at the end.
+fn hop_mode(n: u64) {
+    let samples: usize = std::env::var("SAMPLES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20_000);
+    let rounds: usize = std::env::var("ROUNDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
+    let g = build(n, Props::All, true, true);
+    let db = Database::from_graph(g);
+    run(&db, "CREATE INDEX person_id FOR (p:Person) ON (p.id)");
+    let pid = |r: u64| LoraValue::Int((r % n) as i64);
+    let seek = "MATCH (p:Person {id: $id}) RETURN p.name AS name";
+    let hop1 = "MATCH (p:Person {id: $id})-[:KNOWS]->(m) RETURN m.id AS id";
+    let hop2 = "MATCH (p:Person {id: $id})-[:KNOWS]->()-[:KNOWS]->(m) RETURN m.id AS id";
+    q(&db, seek, params(&[("id", pid(1))]));
+    let types = vec!["KNOWS".to_string()];
+    for round in 0..rounds {
+        println!("round {round}");
+        bench("cy_index_seek", samples, |r| {
+            q(&db, seek, params(&[("id", pid(r))]));
+        });
+        bench("cy_1hop", samples, |r| {
+            q(&db, hop1, params(&[("id", pid(r))]));
+        });
+        bench("cy_2hop", samples, |r| {
+            q(&db, hop2, params(&[("id", pid(r))]));
+        });
+        let snap = db.snapshot();
+        bench_batched("raw_with_node(borrow)", samples / 8, |r| {
+            let v = snap.with_node(r % n, |rec| rec.properties.len()).unwrap();
+            std::hint::black_box(v);
+        });
+        bench_batched("raw_1hop_ids", samples / 8, |r| {
+            std::hint::black_box(snap.expand_ids(r % n, Direction::Right, &types));
+        });
+        bench_batched("raw_2hop_ids", samples / 8, |r| {
+            let mut c = 0usize;
+            for (_, m) in snap.expand_ids(r % n, Direction::Right, &types) {
+                c += snap.expand_ids(m, Direction::Right, &types).len();
+            }
+            std::hint::black_box(c);
+        });
+    }
+    if std::env::var("WRITES").is_err() {
+        return;
+    }
+    let write_samples: usize = std::env::var("WRITE_SAMPLES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2_000);
+    let rel_q = "MATCH (a:Person {id: $a}), (b:Person {id: $b}) CREATE (a)-[:KNOWS {w: 1}]->(b)";
+    bench("cy_create_rel(staged)", write_samples, |r| {
+        q(
+            &db,
+            rel_q,
+            params(&[("a", pid(r)), ("b", pid(splitmix(r)))]),
+        );
+    });
+    let mut next = n;
+    bench("db.graph_create_node(api)", write_samples, |_| {
+        let mut p = BTreeMap::new();
+        p.insert("id".to_string(), LoraValue::Int(next as i64));
+        next += 1;
+        db.graph_create_node(vec!["Person".into()], p).unwrap();
+    });
+    run(
+        &db,
+        "CREATE CONSTRAINT acct_key FOR (a:Account) REQUIRE a.key IS UNIQUE",
+    );
+    let set_q = "MATCH (p:Person {id: $id}) SET p.score = $v";
+    bench("cy_set_prop(staged: constraint)", write_samples, |r| {
+        q(
+            &db,
+            set_q,
+            params(&[("id", pid(r)), ("v", LoraValue::Float(2.5))]),
+        );
+    });
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let _ = Arc::new(0); // keep `Arc` import meaningful under cfg churn
@@ -987,6 +1076,9 @@ fn main() {
         Some("wal") => wal_mode(args[2].parse().unwrap()),
         Some("restart") => restart_mode(args[2].parse().unwrap()),
         Some("idlat") => idlat_mode(args[2].parse().unwrap()),
-        _ => eprintln!("usage: storage_baseline mem <variant> <N> | lat <N> | wal <N> | restart <N> | idlat <N>"),
+        Some("hop") => hop_mode(args[2].parse().unwrap()),
+        _ => eprintln!(
+            "usage: storage_baseline mem <variant> <N> | lat <N> | wal <N> | restart <N> | idlat <N> | hop <N>"
+        ),
     }
 }

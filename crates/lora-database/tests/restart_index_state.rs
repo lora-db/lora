@@ -6,7 +6,9 @@
 //!
 //! Each test compares the writer with the restarted database on: the
 //! active hash-index keys (from `MemoryReport`), `list_indexes`, the
-//! planner statistics (`graph_stats`, which decide plans), EXPLAIN output,
+//! planner statistics (`graph_stats`, which decide plans; their distinct
+//! counts come from sketches kept for every key, so they never depend on
+//! which hash indexes are active), EXPLAIN output,
 //! query results, and constraint enforcement.
 
 use std::path::{Path, PathBuf};
@@ -379,12 +381,14 @@ fn snapshot_restart_drops_implicit_indexes() {
     let restarted = Database::in_memory_from_snapshot(&path).unwrap();
     assert!(active_keys(&restarted).is_empty());
     assert_eq!(report(&restarted).property_index_bytes, 0);
-    // Without the implicit index the planner has no distinct count for
-    // `city`, exactly like a fresh process.
-    assert!(restarted
-        .with_store(|g| g.graph_stats())
-        .node_distinct_values
-        .is_empty());
+    // The planner's distinct counts don't come from the hash indexes: the
+    // restarted process has the writer's, implicit index or not.
+    let stats = restarted.with_store(|g| g.graph_stats());
+    assert_eq!(stats, writer.with_store(|g| g.graph_stats()));
+    assert_eq!(
+        stats.node_distinct_values[&("Person".to_string(), "city".to_string())],
+        3
+    );
 
     let after = rows(
         &restarted,

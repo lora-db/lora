@@ -1560,7 +1560,7 @@ mod tests {
         };
         s.nodes_by_label.insert(label.to_string(), total);
         if let Some(d) = distinct {
-            s.node_distinct_values
+            std::sync::Arc::make_mut(&mut s.node_distinct_values)
                 .insert((label.to_string(), "id".to_string()), d);
         }
         s
