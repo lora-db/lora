@@ -27,6 +27,11 @@ impl Name {
         Self(intern(name))
     }
 
+    /// Wrap a buffer that is already shared, without interning it again.
+    pub fn from_arc(name: Arc<str>) -> Self {
+        Self(name)
+    }
+
     #[inline]
     pub fn as_str(&self) -> &str {
         &self.0

@@ -50,4 +50,4 @@ pub use vector::{
     ParseVectorCoordinateTypeError, RawCoordinate, VectorBuildError, VectorCoordinateType,
     VectorValues, MAX_VECTOR_DIMENSION,
 };
-pub use view::{LabelsRef, NodeRef, PropsIter, PropsRef, RelRef, ValueRef};
+pub use view::{LabelsRef, NodeRef, OtherValue, PropsIter, PropsRef, RelRef, ValueRef};

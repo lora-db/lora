@@ -2,64 +2,64 @@
   "_meta": {
     "default_tolerance_pct": 10,
     "last_updated": "2026-10-06",
-    "notes": "Captured from `cargo bench -p lora-database --bench memory -- --quick` on Apple Silicon. Numbers are bytes from `MemoryReport::total_bytes()` after the build phase (or after_query for chain/star/social which run a representative MATCH after building). Tolerance is per-scenario; a regression beyond `total * (1 + tolerance_pct/100)` fails the gate. Bump the baseline whenever an intentional storage-shape change shifts a scenario. 2026-09-29: property maps became key-sorted vectors, index postings inline single ids, adjacency lists inline two edges. These are MemoryReport estimates; `cargo run --release -p lora-database --example heap_probe` measures real allocations. Later the same day: slabs, adjacency and label indexes became chunked copy-on-write vectors and index maps copy-on-write shards (structural sharing for staged writes). 2026-10-06: labels and relationship types are interned (no per-record strings) and adjacency entries carry the type and neighbour inline."
+    "notes": "Captured from `cargo bench -p lora-database --bench memory -- --quick` on Apple Silicon. Numbers are bytes from `MemoryReport::total_bytes()` after the build phase (or after_query for chain/star/social which run a representative MATCH after building). Tolerance is per-scenario; a regression beyond `total * (1 + tolerance_pct/100)` fails the gate. Bump the baseline whenever an intentional storage-shape change shifts a scenario. 2026-09-29: property maps became key-sorted vectors, index postings inline single ids, adjacency lists inline two edges. These are MemoryReport estimates; `cargo run --release -p lora-database --example heap_probe` measures real allocations. Later the same day: slabs, adjacency and label indexes became chunked copy-on-write vectors and index maps copy-on-write shards (structural sharing for staged writes). 2026-10-06: labels and relationship types are interned (no per-record strings) and adjacency entries carry the type and neighbour inline. Later the same day: records are stored as encoded bytes with dictionary-numbered labels, types and keys."
   },
   "benchmarks": {
     "node_only_10k": {
-      "total_bytes": 3393610,
-      "bytes_per_node": 281.2,
+      "total_bytes": 969208,
+      "bytes_per_node": 38.7,
       "tolerance_pct": 10
     },
     "chain_1000.build": {
-      "total_bytes": 496084,
-      "bytes_per_node": 144.3,
-      "bytes_per_rel": 88.3,
+      "total_bytes": 309212,
+      "bytes_per_node": 23.7,
+      "bytes_per_rel": 22.1,
       "tolerance_pct": 10
     },
     "chain_10000.build": {
-      "total_bytes": 4917588,
-      "bytes_per_node": 144.3,
-      "bytes_per_rel": 89.2,
+      "total_bytes": 3049524,
+      "bytes_per_node": 23.5,
+      "bytes_per_rel": 23.1,
       "tolerance_pct": 10
     },
     "chain_100000.build": {
-      "total_bytes": 49168020,
-      "bytes_per_node": 144.1,
-      "bytes_per_rel": 88.9,
+      "total_bytes": 30727187,
+      "bytes_per_node": 24,
+      "bytes_per_rel": 24.6,
       "tolerance_pct": 10
     },
     "star_1000.build": {
-      "total_bytes": 310455,
-      "bytes_per_node": 144.3,
-      "bytes_per_rel": 88.3,
+      "total_bytes": 122523,
+      "bytes_per_node": 23.6,
+      "bytes_per_rel": 21.2,
       "tolerance_pct": 10
     },
     "star_10000.build": {
-      "total_bytes": 3141751,
-      "bytes_per_node": 145.2,
-      "bytes_per_rel": 89.2,
+      "total_bytes": 1263627,
+      "bytes_per_node": 24.4,
+      "bytes_per_rel": 22.2,
       "tolerance_pct": 10
     },
     "star_100000.build": {
-      "total_bytes": 31569287,
-      "bytes_per_node": 145,
-      "bytes_per_rel": 88.9,
+      "total_bytes": 12944780,
+      "bytes_per_node": 24.9,
+      "bytes_per_rel": 22.8,
       "tolerance_pct": 10
     },
     "social_20k_x8.build": {
-      "total_bytes": 40573564,
-      "bytes_per_node": 353.9,
-      "bytes_per_rel": 152.9,
+      "total_bytes": 14241645,
+      "bytes_per_node": 50.5,
+      "bytes_per_rel": 26.3,
       "tolerance_pct": 10
     },
     "vector_flat_5k_d128": {
-      "total_bytes": 6490220,
-      "bytes_per_node": 656.3,
+      "total_bytes": 5975474,
+      "bytes_per_node": 553.3,
       "tolerance_pct": 10
     },
     "vector_hnsw_5k_d128": {
-      "total_bytes": 10171700,
-      "bytes_per_node": 656.3,
+      "total_bytes": 9656954,
+      "bytes_per_node": 553.3,
       "tolerance_pct": 15
     }
   }

@@ -16,23 +16,18 @@
 //! type id, neighbour, relationship id: little-endian, widths as above
 //! ```
 //!
-//! Relationship types are numbered by the graph's [`TypeDict`]. The ids
-//! are private to one process: snapshots and the WAL keep writing names.
-
-use std::collections::HashMap;
-use std::sync::Arc;
+//! Relationship types are numbered by the graph's type dictionary
+//! ([`crate::dict`]). The numbers are private to one process: snapshots
+//! and the WAL keep writing names.
 
 use smallvec::SmallVec;
 
-use crate::{Name, NodeId, RelationshipId};
+use crate::dict::NameDict;
+use crate::{NodeId, RelationshipId};
 
 /// Bytes kept inline before a list spills to the heap: two entries of a
 /// graph with up to 16M nodes and relationships.
 const INLINE_BYTES: usize = 16;
-
-/// Dictionaries up to this size are searched linearly: comparing a
-/// handful of short names beats hashing one.
-const LINEAR_LOOKUP_MAX: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct AdjEntry {
@@ -184,68 +179,6 @@ impl Iterator for AdjIter<'_> {
     }
 }
 
-/// The graph's relationship types, numbered in first-use order. Ids are
-/// never reused: a type whose last relationship was deleted keeps its
-/// number.
-#[derive(Clone, Default)]
-pub(super) struct TypeDict {
-    inner: Arc<TypeDictInner>,
-}
-
-#[derive(Clone, Default)]
-struct TypeDictInner {
-    names: Vec<Name>,
-    ids: HashMap<Name, u32>,
-}
-
-impl TypeDict {
-    #[inline]
-    pub(super) fn id_of(&self, name: &str) -> Option<u32> {
-        let inner = &*self.inner;
-        if inner.names.len() <= LINEAR_LOOKUP_MAX {
-            inner
-                .names
-                .iter()
-                .position(|n| n.as_str() == name)
-                .map(|i| i as u32)
-        } else {
-            inner.ids.get(name).copied()
-        }
-    }
-
-    /// The id for `name`, assigning the next one on first use.
-    pub(super) fn id_or_insert(&mut self, name: &Name) -> u32 {
-        if let Some(id) = self.id_of(name) {
-            return id;
-        }
-        let inner = Arc::make_mut(&mut self.inner);
-        let id = inner.names.len() as u32;
-        inner.names.push(name.clone());
-        inner.ids.insert(name.clone(), id);
-        id
-    }
-
-    /// Resolve a traversal's type list once, before walking entries.
-    #[inline]
-    pub(super) fn filter(&self, types: &[String]) -> TypeFilter {
-        match types {
-            [] => TypeFilter::Any,
-            [single] => match self.id_of(single) {
-                Some(id) => TypeFilter::One(id),
-                None => TypeFilter::Nothing,
-            },
-            many => {
-                let ids: SmallVec<u32, 4> = many.iter().filter_map(|t| self.id_of(t)).collect();
-                match ids.as_slice() {
-                    [] => TypeFilter::Nothing,
-                    [one] => TypeFilter::One(*one),
-                    _ => TypeFilter::Many(ids),
-                }
-            }
-        }
-    }
-}
-
 /// Which relationship types a traversal accepts.
 pub(super) enum TypeFilter {
     Any,
@@ -256,6 +189,26 @@ pub(super) enum TypeFilter {
 }
 
 impl TypeFilter {
+    /// Resolve a traversal's type list once, before walking entries.
+    #[inline]
+    pub(super) fn resolve(dict: &NameDict, types: &[String]) -> Self {
+        match types {
+            [] => TypeFilter::Any,
+            [single] => match dict.id_of(single) {
+                Some(id) => TypeFilter::One(id),
+                None => TypeFilter::Nothing,
+            },
+            many => {
+                let ids: SmallVec<u32, 4> = many.iter().filter_map(|t| dict.id_of(t)).collect();
+                match ids.as_slice() {
+                    [] => TypeFilter::Nothing,
+                    [one] => TypeFilter::One(*one),
+                    _ => TypeFilter::Many(ids),
+                }
+            }
+        }
+    }
+
     #[inline]
     pub(super) fn matches(&self, type_id: u32) -> bool {
         match self {
@@ -363,30 +316,20 @@ mod tests {
     }
 
     #[test]
-    fn dictionary_numbers_types_once_and_filters() {
-        let mut dict = TypeDict::default();
-        let names: Vec<Name> = (0..20).map(|i| Name::new(&format!("T{i}"))).collect();
-        for (i, name) in names.iter().enumerate() {
-            assert_eq!(dict.id_or_insert(name), i as u32);
-            // Both the linear and the hashed lookup see every earlier name.
-            for (j, earlier) in names[..=i].iter().enumerate() {
-                assert_eq!(dict.id_of(earlier), Some(j as u32));
-            }
+    fn a_type_filter_resolves_names_once() {
+        let mut dict = NameDict::default();
+        for i in 0..20 {
+            dict.id_or_insert_str(&format!("T{i}"));
         }
-        assert_eq!(dict.id_or_insert(&names[3]), 3);
-        assert_eq!(dict.id_of("missing"), None);
-
-        assert!(dict.filter(&[]).matches(19));
-        let one = dict.filter(&["T4".to_string()]);
+        let filter = |types: &[&str]| {
+            let types: Vec<String> = types.iter().map(|t| t.to_string()).collect();
+            TypeFilter::resolve(&dict, &types)
+        };
+        assert!(filter(&[]).matches(19));
+        let one = filter(&["T4"]);
         assert!(one.matches(4) && !one.matches(5));
-        let many = dict.filter(&["T4".to_string(), "nope".to_string(), "T9".to_string()]);
+        let many = filter(&["T4", "nope", "T9"]);
         assert!(many.matches(4) && many.matches(9) && !many.matches(5));
-        assert!(!dict.filter(&["nope".to_string()]).matches(0));
-
-        // A clone shares the dictionary until one side adds a type.
-        let mut copy = dict.clone();
-        let added = copy.id_or_insert(&Name::new("New"));
-        assert_eq!(added, 20);
-        assert_eq!(dict.id_of("New"), None);
+        assert!(!filter(&["nope"]).matches(0));
     }
 }

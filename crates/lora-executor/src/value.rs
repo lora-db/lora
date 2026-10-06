@@ -238,7 +238,10 @@ impl From<lora_store::ValueRef<'_>> for LoraValue {
             ValueRef::Int(v) => LoraValue::Int(v),
             ValueRef::Float(v) => LoraValue::Float(v),
             ValueRef::String(v) => LoraValue::String(v.to_owned()),
-            ValueRef::Other(v) => LoraValue::from(v),
+            ValueRef::Other(v) => match v.get() {
+                std::borrow::Cow::Borrowed(v) => LoraValue::from(v),
+                std::borrow::Cow::Owned(v) => LoraValue::from(v),
+            },
         }
     }
 }

@@ -5,6 +5,8 @@
 //! readable in one place.
 
 pub mod codec;
+mod dict;
+mod encoded;
 pub mod intern;
 mod lock_table;
 mod memory;
@@ -34,7 +36,7 @@ pub use types::{
 };
 
 // Borrowed views handed to `with_node` / `with_relationship` readers.
-pub use types::{LabelsRef, NodeRef, PropsIter, PropsRef, RelRef, ValueRef};
+pub use types::{LabelsRef, NodeRef, OtherValue, PropsIter, PropsRef, RelRef, ValueRef};
 
 // ---------- Storage trait surface ----------
 pub use traits::{BorrowedGraphStorage, GraphCatalog, GraphStorage, GraphStorageMut};

@@ -37,7 +37,6 @@ use std::sync::Arc;
 
 use super::cow::{CowMap, CowOrdMap};
 use super::id_map::CowIdMap;
-use crate::Properties;
 
 use super::StoredIndexEntity;
 
@@ -396,16 +395,21 @@ pub(super) fn tokenize_to_term_counts(value: &str) -> TermCounts {
     out
 }
 
-pub(super) fn string_property_term_counts(properties: &Properties) -> PropertyTermCounts {
+pub(super) fn string_property_term_counts<'a>(
+    properties: impl Into<crate::PropsRef<'a>>,
+) -> PropertyTermCounts {
     let mut out = PropertyTermCounts::new();
-    for (key, value) in properties {
+    for (key, value) in properties.into() {
         match value {
-            crate::PropertyValue::String(value) => {
+            crate::ValueRef::String(value) => {
                 out.insert(key.to_string(), tokenize_to_term_counts(value));
             }
             // A list property indexes each of its strings, like Lucene's
             // multi-valued fields; other elements are skipped.
-            crate::PropertyValue::List(items) => {
+            crate::ValueRef::Other(other) => {
+                let crate::PropertyValue::List(items) = &*other.get() else {
+                    continue;
+                };
                 let mut counts = TermCounts::new();
                 for item in items {
                     if let crate::PropertyValue::String(text) = item {
@@ -423,8 +427,8 @@ pub(super) fn string_property_term_counts(properties: &Properties) -> PropertyTe
     out
 }
 
-pub(super) fn term_counts_for_properties(
-    properties: &Properties,
+pub(super) fn term_counts_for_properties<'a>(
+    properties: impl Into<crate::PropsRef<'a>>,
     selected_properties: &[String],
 ) -> TermCounts {
     let by_property = string_property_term_counts(properties);

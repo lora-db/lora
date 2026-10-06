@@ -136,10 +136,15 @@ impl InMemoryGraph {
         let label = def.label.as_str();
         let mut seen: HashSet<String> = HashSet::new();
         for (_, node) in self.iter_nodes() {
-            if !node.labels.iter().any(|l| l == label) {
+            if !node.labels().iter().any(|l| l == label) {
                 continue;
             }
-            validate_record_against_constraint(def, &node.properties, &mut seen, true)?;
+            validate_record_against_constraint(
+                def,
+                &node.properties().to_owned(),
+                &mut seen,
+                true,
+            )?;
         }
         Ok(())
     }
@@ -151,10 +156,10 @@ impl InMemoryGraph {
         let rel_type = def.label.as_str();
         let mut seen: HashSet<String> = HashSet::new();
         for (_, rel) in self.iter_rels() {
-            if rel.rel_type != rel_type {
+            if rel.rel_type() != rel_type {
                 continue;
             }
-            validate_record_against_constraint(def, &rel.properties, &mut seen, true)?;
+            validate_record_against_constraint(def, &rel.properties().to_owned(), &mut seen, true)?;
         }
         Ok(())
     }
@@ -608,14 +613,14 @@ pub(crate) fn check_node_existence(
     for def in catalog.iter() {
         if def.entity != StoredIndexEntity::Node
             || !def.kind.requires_existence()
-            || !node.labels.iter().any(|l| l == &def.label)
+            || !node.labels().iter().any(|l| l == def.label)
         {
             continue;
         }
         if let Some(missing) = def
             .properties
             .iter()
-            .find(|p| !node.properties.contains_key(p.as_str()))
+            .find(|p| !node.properties().contains_key(p.as_str()))
         {
             return Err(missing_property_violation(def, missing));
         }
@@ -635,14 +640,14 @@ pub(crate) fn check_relationship_existence(
     for def in catalog.iter() {
         if def.entity != StoredIndexEntity::Relationship
             || !def.kind.requires_existence()
-            || rel.rel_type != def.label
+            || rel.rel_type() != def.label
         {
             continue;
         }
         if let Some(missing) = def
             .properties
             .iter()
-            .find(|p| !rel.properties.contains_key(p.as_str()))
+            .find(|p| !rel.properties().contains_key(p.as_str()))
         {
             return Err(missing_property_violation(def, missing));
         }
@@ -665,13 +670,12 @@ fn any_other_node_with_tuple(
     target: &[PropertyValue],
     skip: Option<NodeId>,
 ) -> bool {
-    let tuple_matches = |node: &crate::NodeRecord| {
-        node.labels.iter().any(|l| l == label)
+    let tuple_matches = |node: crate::NodeRef<'_>| {
+        node.has_label(label)
             && keys.iter().enumerate().all(|(idx, key)| {
-                node.properties
+                node.properties()
                     .get(key.as_str())
-                    .map(|v| v == &target[idx])
-                    .unwrap_or(false)
+                    .is_some_and(|v| v == target[idx])
             })
     };
     let candidates = match (keys.first(), target.first()) {
@@ -694,13 +698,12 @@ fn any_other_rel_with_tuple(
     target: &[PropertyValue],
     skip: Option<RelationshipId>,
 ) -> bool {
-    let tuple_matches = |rel: &crate::RelationshipRecord| {
-        rel.rel_type == rel_type
+    let tuple_matches = |rel: crate::RelRef<'_>| {
+        rel.rel_type() == rel_type
             && keys.iter().enumerate().all(|(idx, key)| {
-                rel.properties
+                rel.properties()
                     .get(key.as_str())
-                    .map(|v| v == &target[idx])
-                    .unwrap_or(false)
+                    .is_some_and(|v| v == target[idx])
             })
     };
     let candidates = match (keys.first(), target.first()) {
@@ -796,7 +799,7 @@ pub(crate) fn check_node_set_property(
         if def.entity != StoredIndexEntity::Node {
             continue;
         }
-        if !node.labels.iter().any(|l| l == &def.label) {
+        if !node.labels().iter().any(|l| l == def.label) {
             continue;
         }
         if !def.properties.iter().any(|p| p == key) {
@@ -817,7 +820,9 @@ pub(crate) fn check_node_set_property(
         // Uniqueness: build the post-set tuple and search the rest of
         // the graph for an identical one.
         if def.kind.requires_uniqueness() {
-            if let Some(tuple) = constrained_tuple_after_set(def, &node.properties, key, value) {
+            if let Some(tuple) =
+                constrained_tuple_after_set(def, &node.properties().to_owned(), key, value)
+            {
                 if any_other_node_with_tuple(
                     graph,
                     &def.label,
@@ -849,7 +854,7 @@ pub(crate) fn check_node_remove_property(
         if def.entity != StoredIndexEntity::Node {
             continue;
         }
-        if !node.labels.iter().any(|l| l == &def.label) {
+        if !node.labels().iter().any(|l| l == def.label) {
             continue;
         }
         if !def.kind.requires_existence() {
@@ -894,15 +899,15 @@ fn check_node_replace_properties_with(
     properties: &Properties,
     check_existence: bool,
 ) -> Result<(), ConstraintViolation> {
-    let node = match graph.node_at(node_id) {
-        Some(n) => n,
+    let labels = match graph.node_at(node_id) {
+        Some(node) => node.labels().to_owned(),
         None => return Ok(()),
     };
     check_record_constraints_with(
         catalog,
         graph,
         ConstraintRecord::Node {
-            labels: NodeLabelMatcher::Names(&node.labels),
+            labels: NodeLabelMatcher::Names(&labels),
             properties,
             skip: Some(node_id),
         },
@@ -925,7 +930,7 @@ pub(crate) fn check_relationship_set_property(
         if def.entity != StoredIndexEntity::Relationship {
             continue;
         }
-        if def.label != rel.rel_type {
+        if def.label != rel.rel_type() {
             continue;
         }
         if !def.properties.iter().any(|p| p == key) {
@@ -943,7 +948,9 @@ pub(crate) fn check_relationship_set_property(
             }
         }
         if def.kind.requires_uniqueness() {
-            if let Some(tuple) = constrained_tuple_after_set(def, &rel.properties, key, value) {
+            if let Some(tuple) =
+                constrained_tuple_after_set(def, &rel.properties().to_owned(), key, value)
+            {
                 if any_other_rel_with_tuple(
                     graph,
                     &def.label,
@@ -973,7 +980,7 @@ pub(crate) fn check_relationship_remove_property(
         if def.entity != StoredIndexEntity::Relationship {
             continue;
         }
-        if def.label != rel.rel_type {
+        if def.label != rel.rel_type() {
             continue;
         }
         if !def.kind.requires_existence() {
@@ -1024,7 +1031,7 @@ fn check_relationship_replace_properties_with(
         catalog,
         graph,
         ConstraintRecord::Relationship {
-            rel_type: &rel.rel_type,
+            rel_type: rel.rel_type(),
             properties,
             skip: Some(rel_id),
         },
@@ -1051,7 +1058,7 @@ pub(crate) fn check_node_add_label(
         graph,
         ConstraintRecord::Node {
             labels: NodeLabelMatcher::One(label),
-            properties: &node.properties,
+            properties: &node.properties().to_owned(),
             skip: Some(node_id),
         },
     )
@@ -1074,7 +1081,7 @@ pub(crate) fn check_node_add_label_deferred(
         graph,
         ConstraintRecord::Node {
             labels: NodeLabelMatcher::One(label),
-            properties: &node.properties,
+            properties: &node.properties().to_owned(),
             skip: Some(node_id),
         },
         false,

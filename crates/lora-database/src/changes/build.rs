@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
 use lora_store::{
-    BorrowedGraphStorage, DeletedRecordSink, InMemoryGraph, MutationEvent, NodeId, NodeRecord,
+    DeletedRecordSink, GraphStorage, InMemoryGraph, MutationEvent, NodeId, NodeRecord,
     RelationshipId, RelationshipRecord,
 };
 
@@ -39,16 +39,16 @@ impl PreImages {
                 MutationEvent::DeleteNode { node_id }
                 | MutationEvent::DetachDeleteNode { node_id } => {
                     if let (Entry::Vacant(slot), Some(record)) =
-                        (out.nodes.entry(*node_id), graph.node_ref(*node_id))
+                        (out.nodes.entry(*node_id), graph.node(*node_id))
                     {
-                        slot.insert(record.clone());
+                        slot.insert(record);
                     }
                 }
                 MutationEvent::DeleteRelationship { rel_id } => {
                     if let (Entry::Vacant(slot), Some(record)) =
-                        (out.rels.entry(*rel_id), graph.relationship_ref(*rel_id))
+                        (out.rels.entry(*rel_id), graph.relationship(*rel_id))
                     {
-                        slot.insert(record.clone());
+                        slot.insert(record);
                     }
                 }
                 _ => {}
@@ -274,21 +274,21 @@ fn node_change(
             })
         }
         (true, false) => {
-            let record = post.node_ref(id)?;
+            let record = post.node(id)?;
             Some(Change::NodeCreated {
                 id,
                 labels: record.labels.to_strings(),
-                properties: record.properties.clone(),
+                properties: record.properties,
             })
         }
         (false, false) => {
-            let record = post.node_ref(id)?;
+            let record = post.node(id)?;
             let (set_keys, removed_keys) = split_ops(touch.keys);
             let (added_labels, removed_labels) = split_ops(touch.labels);
             Some(Change::NodeUpdated {
                 id,
                 labels: record.labels.to_strings(),
-                properties: record.properties.clone(),
+                properties: record.properties,
                 set_keys,
                 removed_keys,
                 added_labels,
@@ -317,24 +317,24 @@ fn rel_change(
             })
         }
         (true, false) => {
-            let record = post.relationship_ref(id)?;
+            let record = post.relationship(id)?;
             Some(Change::RelationshipCreated {
                 id,
                 rel_type: record.rel_type.to_string(),
                 start: record.src,
                 end: record.dst,
-                properties: record.properties.clone(),
+                properties: record.properties,
             })
         }
         (false, false) => {
-            let record = post.relationship_ref(id)?;
+            let record = post.relationship(id)?;
             let (set_keys, removed_keys) = split_ops(touch.keys);
             Some(Change::RelationshipUpdated {
                 id,
                 rel_type: record.rel_type.to_string(),
                 start: record.src,
                 end: record.dst,
-                properties: record.properties.clone(),
+                properties: record.properties,
                 set_keys,
                 removed_keys,
             })

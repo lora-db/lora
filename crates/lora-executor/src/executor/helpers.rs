@@ -1247,7 +1247,7 @@ pub fn value_matches_property_value<'a>(
         (LoraValue::Int(a), ValueRef::Float(b)) => (*a as f64) == b,
         (LoraValue::Float(a), ValueRef::Int(b)) => *a == (b as f64),
         (LoraValue::String(a), ValueRef::String(b)) => a == b,
-        (expected, ValueRef::Other(actual)) => owned_value_matches(expected, actual),
+        (expected, ValueRef::Other(actual)) => owned_value_matches(expected, &actual.get()),
         _ => false,
     }
 }
@@ -1506,7 +1506,7 @@ fn is_other_temporal_kind<'a>(
     let lora_store::ValueRef::Other(value) = value.into() else {
         return false;
     };
-    temporal_kind_name(&LoraValue::from(value))
+    temporal_kind_name(&LoraValue::from(value.to_owned()))
         .is_some_and(|kind| kinds.iter().any(|(k, _)| *k != kind))
 }
 
@@ -1917,12 +1917,13 @@ fn node_matches_point_filter<S: GraphStorage>(
             if !node_matches_label_groups(n.labels(), labels) {
                 return false;
             }
-            let Some(lora_store::ValueRef::Other(PropertyValue::Point(point))) =
-                n.properties().get(key)
-            else {
+            let Some(lora_store::ValueRef::Other(value)) = n.properties().get(key) else {
                 return false;
             };
-            point_predicate_holds(point, probe)
+            match &*value.get() {
+                PropertyValue::Point(point) => point_predicate_holds(point, probe),
+                _ => false,
+            }
         })
         .unwrap_or(false)
 }
@@ -2833,12 +2834,16 @@ pub(crate) fn rel_by_point_scan_rows<S: GraphStorage>(
                 if !op.types.is_empty() && !op.types.iter().any(|t| t == rel.rel_type()) {
                     return Ok(());
                 }
-                let Some(lora_store::ValueRef::Other(PropertyValue::Point(actual))) =
+                let Some(lora_store::ValueRef::Other(value)) =
                     rel.properties().get(op.key.as_str())
                 else {
                     return Ok(());
                 };
-                if !point_predicate_holds(actual, &probe) {
+                let holds = match &*value.get() {
+                    PropertyValue::Point(actual) => point_predicate_holds(actual, &probe),
+                    _ => false,
+                };
+                if !holds {
                     return Ok(());
                 }
                 emit_rel_rows(op.direction, op.src, op.rel, op.dst, rel, &row, &mut out)

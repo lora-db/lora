@@ -22,13 +22,13 @@ lock. Explicit read-write transactions also serialize through the writer mutex.
 InMemoryGraph
 ├── next_node_id:           u64
 ├── next_rel_id:            u64
-├── nodes:                  ChunkedVec<Option<Arc<NodeRecord>>>
-├── relationships:          ChunkedVec<Option<Arc<RelationshipRecord>>>
+├── nodes:                  ChunkedVec<Option<Blob>>   // encoded records
+├── relationships:          ChunkedVec<Option<Blob>>
+├── dicts:                  Dicts                      // label, type and key numbers
 ├── live_node_count:        usize
 ├── live_rel_count:         usize
 ├── outgoing:               ChunkedVec<AdjList>      // (type, neighbour, relationship id) entries
 ├── incoming:               ChunkedVec<AdjList>
-├── rel_types:              TypeDict                 // relationship type -> number, for AdjList
 ├── nodes_by_label:         BTreeMap<String, ChunkedVec<NodeId>>
 ├── relationships_by_type:  BTreeMap<String, ChunkedVec<RelationshipId>>
 ├── indexes:                IndexBundle
@@ -51,15 +51,44 @@ persistent radix tree: 512-entry leaf chunks shared by `Arc`, 128 leaves per
 interior node, one shared root. Cloning it bumps one refcount, so cloning the
 graph is O(#labels + #relationship types), and a write copies only the root
 table, interior node and chunk on its path. The index and constraint catalogs
-are shared the same way. Records are also held behind `Arc`, so a
-staged writer shares unchanged records with the current published snapshot;
-property, label, and relationship changes use `Arc::make_mut`, so only touched
-records are cloned. Secondary indexes are copy-on-write too (`memory/cow.rs`),
+are shared the same way. Each record is an immutable, reference-counted byte
+string, so a staged writer shares unchanged records with the current published
+snapshot; a property or label change stores a new encoding of that one record.
+Secondary indexes are copy-on-write too (`memory/cow.rs`),
 so write cost stays flat as the graph grows.
 
 `recorder` and `deleted_sink` are not part of the graph's identity and are
 dropped on clone. `deleted_sink` sees each record just before a delete drops
 it, so change feeds can report deleted entities without copying the graph.
+
+### Stored records
+
+A node or relationship is stored as one compact byte string (`encoded.rs`),
+behind an 8-byte slot and an 8-byte header:
+
+```text
+node:         label count, label numbers...,  properties
+relationship: source id, target id, type number,  properties
+properties:   count, then per property in key-name order:
+                key number, tag byte, payload
+payload:      null / false / true   nothing
+              int                   zigzag varint
+              float                 8 bytes
+              string                length, UTF-8 bytes
+              other                 length, `codec` bytes (lists, maps,
+                                    temporals, points, vectors, binary)
+```
+
+Integers are varints. Labels, relationship types and property keys are stored
+as numbers from the graph's dictionaries (`dict.rs`), assigned in first-use
+order and never reused. A clone shares the dictionaries until one side meets a
+new name. The numbers are not persisted: snapshots and the WAL store names.
+
+Readers never see the bytes. `with_node` and `with_relationship` pass a
+`NodeRef` / `RelRef` view (`types/view.rs`) that reads labels and properties in
+place: scalars by value, strings as slices, other kinds decoded when asked for.
+`node()` and `relationship()` decode a whole record into the structs below,
+which are also what the write API, the WAL and snapshots exchange.
 
 ### Node record
 
@@ -188,8 +217,7 @@ entries: one header byte, then the type number and the two ids in as many
 bytes as each needs. That is 8 bytes per entry while ids fit in three bytes
 (16M nodes and relationships) and 10 bytes up to 4 billion. Two such entries
 fit inline; longer lists spill to the heap. Relationship types are numbered
-per graph by `rel_types`. The numbers are not persisted: snapshots and the WAL
-store names.
+per graph by the type dictionary, the same numbers relationship records use.
 
 Deleting a relationship removes its entry from both endpoint lists. Deleting a
 node clears the node's lists; the outer adjacency vectors are not shrunk. A

@@ -34,8 +34,8 @@ impl InMemoryGraph {
         SnapshotPayload {
             next_node_id: self.next_node_id,
             next_rel_id: self.next_rel_id,
-            nodes: self.iter_node_records().cloned().collect(),
-            relationships: self.iter_rel_records().cloned().collect(),
+            nodes: self.iter_node_records().map(|r| r.to_record()).collect(),
+            relationships: self.iter_rel_records().map(|r| r.to_record()).collect(),
             indexes: self.index_catalog_read().list(),
             constraints: self.constraint_catalog_read().list(),
             vector_indexes,
@@ -84,7 +84,7 @@ impl InMemoryGraph {
                 )));
             }
             rebuilt
-                .put_node_checked(id, node)
+                .put_node_checked(id, &node)
                 .map_err(SnapshotError::Decode)?;
             for label in &labels {
                 rebuilt.insert_node_label_index(id, label);
@@ -112,7 +112,7 @@ impl InMemoryGraph {
             }
             let id = rel.id;
             rebuilt
-                .put_rel_checked(id, rel.clone())
+                .put_rel_checked(id, &rel)
                 .map_err(SnapshotError::Decode)?;
             rebuilt.attach_relationship(&rel);
             rel_distinct.add_all(&rel.rel_type, &rel.properties);

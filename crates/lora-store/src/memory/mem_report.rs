@@ -25,7 +25,7 @@
 use std::collections::BTreeMap;
 use std::mem::size_of;
 
-use crate::{LoraBinary, LoraPoint, LoraVector, NodeRecord, PropertyValue, RelationshipRecord};
+use crate::{LoraBinary, LoraPoint, LoraVector, PropertyValue};
 
 use super::chunked_vec::ChunkedVec;
 use super::entity_index_store::{IndexBundle, ScopedPropertyKey};
@@ -244,8 +244,8 @@ pub(super) fn estimate(graph: &super::InMemoryGraph) -> MemoryReport {
         ..MemoryReport::default()
     };
 
-    report.nodes_bytes = node_slab_bytes(&graph.nodes);
-    report.relationships_bytes = rel_slab_bytes(&graph.relationships);
+    report.nodes_bytes = record_slab_bytes(&graph.nodes) + graph.dicts.heap_bytes();
+    report.relationships_bytes = record_slab_bytes(&graph.relationships);
     report.outgoing_bytes = adjacency_bytes(&graph.outgoing);
     report.incoming_bytes = adjacency_bytes(&graph.incoming);
     report.label_index_bytes = label_or_type_bytes(&graph.nodes_by_label);
@@ -303,32 +303,15 @@ fn chunked_outer_bytes<T>(v: &ChunkedVec<T>) -> usize {
         + v.tree_overhead_bytes()
 }
 
-fn node_slab_bytes(slab: &ChunkedVec<Option<std::sync::Arc<NodeRecord>>>) -> usize {
-    let outer = chunked_outer_bytes(slab);
-    let mut payload = 0;
-    for arc in slab.iter().flatten() {
-        payload += ARC_HEADER + size_of::<NodeRecord>() + node_record_heap_bytes(arc);
-    }
-    outer + payload
-}
-
-fn rel_slab_bytes(slab: &ChunkedVec<Option<std::sync::Arc<RelationshipRecord>>>) -> usize {
-    let outer = chunked_outer_bytes(slab);
-    let mut payload = 0;
-    for arc in slab.iter().flatten() {
-        payload += ARC_HEADER + size_of::<RelationshipRecord>() + rel_record_heap_bytes(arc);
-    }
-    outer + payload
-}
-
-fn node_record_heap_bytes(record: &NodeRecord) -> usize {
-    // Label names are interned and shared; only a spilled list is owned.
-    record.labels.heap_bytes() + properties_heap_bytes(&record.properties)
-}
-
-fn rel_record_heap_bytes(record: &RelationshipRecord) -> usize {
-    // The type name is interned and shared.
-    properties_heap_bytes(&record.properties)
+/// A slab of encoded records: the chunk tree plus each record's
+/// allocation (an 8-byte header and its bytes).
+fn record_slab_bytes(slab: &ChunkedVec<Option<crate::encoded::Blob>>) -> usize {
+    chunked_outer_bytes(slab)
+        + slab
+            .iter()
+            .flatten()
+            .map(|blob| blob.alloc_bytes())
+            .sum::<usize>()
 }
 
 fn adjacency_bytes(adj: &ChunkedVec<super::adjacency::AdjList>) -> usize {
@@ -410,18 +393,6 @@ fn vector_heap_bytes(v: &LoraVector) -> usize {
         VectorValues::Integer16(xs) => xs.capacity() * size_of::<i16>(),
         VectorValues::Integer8(xs) => xs.capacity() * size_of::<i8>(),
     }
-}
-
-fn properties_heap_bytes(properties: &crate::Properties) -> usize {
-    // `PropertyMap` is one contiguous slab of `(Arc<str>, PropertyValue)`
-    // slots. Keys are interned and shared across every record, so only
-    // the slot is charged here, not the key's own allocation.
-    let slots = properties.capacity() * size_of::<(std::sync::Arc<str>, PropertyValue)>();
-    slots
-        + properties
-            .values()
-            .map(property_value_heap_bytes)
-            .sum::<usize>()
 }
 
 // ---------------- secondary indexes ----------------

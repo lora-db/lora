@@ -137,13 +137,13 @@ impl PropertyIndexState {
     /// existing data this way allocates every leaf table once.
     pub(super) fn insert_bulk<'a, I, S>(&mut self, key: &str, entries: impl Fn() -> I)
     where
-        I: Iterator<Item = (u64, S, &'a PropertyValue)>,
+        I: Iterator<Item = (u64, S, crate::ValueRef<'a>)>,
         S: IntoIterator<Item = &'a str>,
     {
         let mut flat = Vec::new();
         let mut scoped: FastHashMap<&'a str, Vec<u64>> = FastHashMap::default();
         for (_, scopes, value) in entries() {
-            let Some(indexed_value) = PropertyIndexKey::from_value(value) else {
+            let Some(indexed_value) = PropertyIndexKey::from_value_ref(value) else {
                 continue;
             };
             let route = route(&indexed_value);
@@ -163,7 +163,7 @@ impl PropertyIndexState {
             }
         }
         for (entity_id, scopes, value) in entries() {
-            self.insert_with_scopes(entity_id, scopes, key, value);
+            self.insert_with_scopes(entity_id, scopes, key, &value.to_owned());
         }
     }
 
@@ -439,6 +439,19 @@ impl Ord for PropertyIndexKey {
 }
 
 impl PropertyIndexKey {
+    /// As [`Self::from_value`], for a value read through a view.
+    pub(super) fn from_value_ref(value: crate::ValueRef<'_>) -> Option<Self> {
+        use crate::ValueRef;
+        match value {
+            ValueRef::Null => Some(Self::Null),
+            ValueRef::Bool(v) => Some(Self::Bool(v)),
+            ValueRef::Int(v) => Some(Self::Int(v)),
+            ValueRef::Float(v) => Self::from_value(&PropertyValue::Float(v)),
+            ValueRef::String(v) => Some(Self::String(std::sync::Arc::from(v))),
+            ValueRef::Other(v) => Self::from_value(&v.get()),
+        }
+    }
+
     pub(super) fn from_value(value: &PropertyValue) -> Option<Self> {
         match value {
             PropertyValue::Null => Some(Self::Null),

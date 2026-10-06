@@ -4,8 +4,7 @@ use lora_ast::Direction;
 
 use super::InMemoryGraph;
 use crate::{
-    BorrowedGraphStorage, GraphStorage, GraphStorageMut, MutationEvent, MutationRecorder,
-    Properties, PropertyValue,
+    GraphStorage, GraphStorageMut, MutationEvent, MutationRecorder, Properties, PropertyValue,
 };
 
 fn props(pairs: &[(&str, PropertyValue)]) -> Properties {
@@ -34,11 +33,6 @@ fn create_and_lookup_nodes() {
     assert_eq!(g.all_nodes().len(), 2);
     assert_eq!(g.nodes_by_label("Person").len(), 2);
     assert_eq!(g.nodes_by_label("Employee").len(), 1);
-    assert_eq!(BorrowedGraphStorage::node_refs(&g).count(), 2);
-    assert_eq!(
-        BorrowedGraphStorage::node_refs_by_label(&g, "Person").count(),
-        2
-    );
     assert!(g.node_has_label(a.id, "Person"));
     assert_eq!(
         g.node_property(a.id, "name"),
@@ -63,11 +57,6 @@ fn create_and_expand_relationships() {
 
     assert_eq!(g.all_relationships().len(), 2);
     assert_eq!(g.relationships_by_type("KNOWS").len(), 1);
-    assert_eq!(BorrowedGraphStorage::relationship_refs(&g).count(), 2);
-    assert_eq!(
-        BorrowedGraphStorage::relationship_refs_by_type(&g, "KNOWS").count(),
-        1
-    );
     assert_eq!(g.outgoing_relationships(a.id).len(), 2);
     assert_eq!(g.incoming_relationships(b.id).len(), 1);
 
@@ -1011,4 +1000,182 @@ fn expand_filters_by_type_without_the_relationship_records() {
         vec![(likes, a), (hates, a)]
     );
     assert_eq!(snapshot.expand_ids(b, Direction::Left, &[]).len(), 2);
+}
+
+#[test]
+fn a_clone_and_its_original_number_new_names_independently() {
+    // Records store label, type and key numbers from the graph's
+    // dictionaries. A staged copy and the graph it was cloned from may
+    // each meet a new name first and give it the same number; each must
+    // keep reading its own records correctly.
+    let mut original = InMemoryGraph::new();
+    let a = original
+        .create_node(
+            vec!["Person".into()],
+            props(&[("name", PropertyValue::String("Ada".into()))]),
+        )
+        .id;
+    let mut copy = original.clone();
+
+    let b = copy
+        .create_node(
+            vec!["City".into()],
+            props(&[("population", PropertyValue::Int(5))]),
+        )
+        .id;
+    assert!(copy.set_node_property(a, "born".into(), PropertyValue::Int(1815)));
+    let knows = copy
+        .create_relationship(a, b, "LIVES_IN", props(&[("since", PropertyValue::Int(1))]))
+        .unwrap()
+        .id;
+
+    let c = original
+        .create_node(
+            vec!["Company".into()],
+            props(&[("founded", PropertyValue::Int(9))]),
+        )
+        .id;
+    assert!(original.set_node_property(
+        a,
+        "title".into(),
+        PropertyValue::String("Countess".into())
+    ));
+    let works = original
+        .create_relationship(a, c, "WORKS_AT", props(&[("role", PropertyValue::Int(2))]))
+        .unwrap()
+        .id;
+
+    let node = copy.node(b).unwrap();
+    assert_eq!(node.labels, ["City"]);
+    assert_eq!(
+        node.properties.get("population"),
+        Some(&PropertyValue::Int(5))
+    );
+    let node = copy.node(a).unwrap();
+    assert_eq!(
+        node.properties.keys().map(|k| &**k).collect::<Vec<_>>(),
+        ["born", "name"]
+    );
+    let rel = copy.relationship(knows).unwrap();
+    assert_eq!(rel.rel_type, "LIVES_IN");
+    assert_eq!(rel.properties.get("since"), Some(&PropertyValue::Int(1)));
+    assert_eq!(
+        copy.expand_ids(a, Direction::Right, &["LIVES_IN".to_string()]),
+        vec![(knows, b)]
+    );
+    assert!(copy
+        .expand_ids(a, Direction::Right, &["WORKS_AT".to_string()])
+        .is_empty());
+
+    let node = original.node(c).unwrap();
+    assert_eq!(node.labels, ["Company"]);
+    assert_eq!(node.properties.get("founded"), Some(&PropertyValue::Int(9)));
+    let node = original.node(a).unwrap();
+    assert_eq!(
+        node.properties.keys().map(|k| &**k).collect::<Vec<_>>(),
+        ["name", "title"]
+    );
+    assert_eq!(original.node_property(a, "born"), None);
+    let rel = original.relationship(works).unwrap();
+    assert_eq!(rel.rel_type, "WORKS_AT");
+    assert_eq!(rel.properties.get("role"), Some(&PropertyValue::Int(2)));
+    assert_eq!(
+        original.expand_ids(a, Direction::Right, &["WORKS_AT".to_string()]),
+        vec![(works, c)]
+    );
+}
+
+#[test]
+fn every_kind_of_value_survives_being_stored_updated_and_removed() {
+    use crate::{LoraDate, LoraVector};
+    let values = vec![
+        ("null", PropertyValue::Null),
+        ("flag", PropertyValue::Bool(true)),
+        ("int", PropertyValue::Int(i64::MIN)),
+        ("float", PropertyValue::Float(-0.25)),
+        ("empty", PropertyValue::String(String::new())),
+        ("text", PropertyValue::String("naïve café".into())),
+        (
+            "list",
+            PropertyValue::List(vec![
+                PropertyValue::Int(1),
+                PropertyValue::String("x".into()),
+            ]),
+        ),
+        (
+            "map",
+            PropertyValue::Map(
+                [("k".to_string(), PropertyValue::Bool(false))]
+                    .into_iter()
+                    .collect(),
+            ),
+        ),
+        (
+            "date",
+            PropertyValue::Date(LoraDate {
+                year: 2026,
+                month: 10,
+                day: 6,
+            }),
+        ),
+        (
+            "vector",
+            PropertyValue::Vector(
+                LoraVector::try_new(
+                    vec![
+                        crate::RawCoordinate::Float(1.0),
+                        crate::RawCoordinate::Float(2.0),
+                    ],
+                    2,
+                    crate::VectorCoordinateType::Float32,
+                )
+                .unwrap(),
+            ),
+        ),
+    ];
+    let mut g = InMemoryGraph::new();
+    let a = g.create_node(vec!["N".into()], Properties::new()).id;
+    let b = g.create_node(vec!["N".into()], Properties::new()).id;
+    let r = g
+        .create_relationship(a, b, "R", Properties::new())
+        .unwrap()
+        .id;
+    for (key, value) in &values {
+        assert!(g.set_node_property(a, key.to_string(), value.clone()));
+        assert!(g.set_relationship_property(r, key.to_string(), value.clone()));
+    }
+    for (key, value) in &values {
+        assert_eq!(g.node_property(a, key).as_ref(), Some(value), "{key}");
+        assert_eq!(
+            g.relationship_property(r, key).as_ref(),
+            Some(value),
+            "{key}"
+        );
+        let seen = g
+            .with_node(a, |n| n.property(key).map(|v| v.to_owned()))
+            .flatten();
+        assert_eq!(seen.as_ref(), Some(value), "{key}");
+    }
+    let mut keys: Vec<&str> = values.iter().map(|(k, _)| *k).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        g.with_node(a, |n| n
+            .properties()
+            .keys()
+            .map(str::to_string)
+            .collect::<Vec<_>>())
+            .unwrap(),
+        keys
+    );
+
+    // Overwrite with another kind, then remove.
+    assert!(g.set_node_property(a, "list".into(), PropertyValue::Int(7)));
+    assert_eq!(g.node_property(a, "list"), Some(PropertyValue::Int(7)));
+    assert!(g.remove_node_property(a, "list"));
+    assert!(!g.remove_node_property(a, "list"));
+    assert_eq!(g.node_property(a, "list"), None);
+    assert!(g.remove_relationship_property(r, "text"));
+    assert_eq!(g.relationship_property(r, "text"), None);
+    assert_eq!(g.node(a).unwrap().properties.len(), values.len() - 1);
+    assert_eq!(g.relationship_endpoints(r), Some((a, b)));
 }

@@ -224,14 +224,14 @@ impl InMemoryGraph {
                 // Map property -> term counts for that property; we'll
                 // pick the relevant subset per matching index below.
                 (
-                    node.labels.to_strings(),
-                    string_property_term_counts(&node.properties),
+                    node.labels().to_strings(),
+                    string_property_term_counts(node.properties()),
                 )
             }),
             StoredIndexEntity::Relationship => self.rel_at(entity_id).map(|rel| {
                 (
-                    vec![rel.rel_type.to_string()],
-                    string_property_term_counts(&rel.properties),
+                    vec![rel.rel_type().to_string()],
+                    string_property_term_counts(rel.properties()),
                 )
             }),
         };

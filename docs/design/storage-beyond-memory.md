@@ -243,6 +243,86 @@ constraint checks inside `lora-store`, the snapshot bridge, and the change
 feed (`BorrowedGraphStorage`). The owned `node()` / `relationship()` and
 their scan variants remain as the compatibility API.
 
+### Stage 1, third slice: encoded records
+
+The in-memory store now keeps each node and relationship as one compact byte
+string instead of an `Arc<NodeRecord>` / `Arc<RelationshipRecord>`.
+
+- **Dictionaries (D2, accepted).** Each graph numbers its labels,
+  relationship types and property keys in first-use order (`dict.rs`).
+  Numbers are never reused. A clone shares the tables until one side meets a
+  new name, so a staged copy and its original can give the same number to
+  different new names; each only ever reads records it wrote or inherited
+  (`a_clone_and_its_original_number_new_names_independently`). Adjacency
+  entries use the same type numbers. Nothing is persisted: the WAL and
+  snapshots keep writing names.
+- **Record format** (`encoded.rs`). A node is `label count, label numbers,
+  properties`; a relationship is `source, target, type number, properties`;
+  properties are `count`, then `key number, tag, payload` in key-name order.
+  Integers are varints (zigzag for values), floats 8 bytes, strings
+  length-prefixed. Lists, maps, temporals, points, vectors and binary are
+  stored in the snapshot codec's form and decoded when read.
+- **One allocation per record**, behind a thin pointer: an 8-byte slot and an
+  8-byte header (count and length) in place of an 8-byte slot, a 16-byte
+  `Arc` header and a 56- or 64-byte struct. Records are immutable. A
+  property or label change decodes the record, edits it and stores a new
+  encoding, so snapshots sharing the old one are unaffected.
+- **Readers use the views from the second slice**, which gained an encoded
+  representation: labels and properties are read in place, a property lookup
+  resolves the key to its number and walks the entries. `ValueRef::Other`
+  now hands out a value that is borrowed or decoded (`OtherValue::get`).
+- **`BorrowedGraphStorage` is no longer implemented by `InMemoryGraph`**:
+  there is no `&NodeRecord` to lend. The change feed reads owned records.
+
+This is the per-record form of §5.1's chunk encoding, not the chunk arena:
+each record is its own allocation. It keeps copy-on-write exactly as it was
+(copying a chunk bumps one count per record) and needs no arena compaction.
+An arena would save the header and slot, about 16 B per record.
+
+Medians against the previous commit, same machine and shape (2M nodes / 8M
+relationships): three interleaved pairs of `hop` and `scan`, two of `lat`,
+one `mem` and `restart` per variant.
+
+| Measure | Before | After |
+|---|---|---|
+| Live bytes per element, whole graph (`mem relprops`) | 230.8 | **71.9** (T4: ≤ 100) |
+| RSS per element, same run | 237.1 | 85.8 |
+| Node, one label, no properties (`mem bare`) | 136.4 B | 75.4 B |
+| Same graph as an uncompressed snapshot | 71.1 B per element | 71.1 |
+| Festimap shape, plain / with schema (`heap_probe --festimap`) | 316 / 384 | **164 / 231** |
+| Cypher 1-hop / 2-hop | 4.48 / 13.3 µs | **3.61 / 10.4 µs** |
+| Cypher index seek | 1.67 µs | 1.58 µs |
+| Label scan with a filter, 2M nodes (`scan` mode) | 256 ms | 225 ms |
+| Raw 1-hop / 2-hop ids | 334 ns / 1.64 µs | 321 ns / 1.63 µs |
+| Raw `with_node` reading the property count | 18 ns | 40 ns |
+| Raw `node(id)` (owned record) | 634 ns | 356 ns |
+| Fast-path `CREATE` / `SET` | 11.1 / 5.48 µs | 8.7 / 5.52 µs |
+| Staged `SET` (constraint) / `graph_create_node` | 12.2 / 18.9 µs | 10.8 / 19.7 µs |
+| Staged relationship `CREATE` | 63–66 µs | 68–71 µs (+8%) |
+| Direct-API bulk build / snapshot load, 10M elements | 6.0 / 11.5 s | 5.9 / 11.7 s |
+| Snapshot load / WAL replay, 1M elements (`restart`) | 0.85 / 1.18 s | 0.94 / 1.27 s (+8–11%, one run) |
+
+Against the Stage 1 targets: T4 (≤ 100 B per element) is met at 72; T6 and
+T7 (hot reads within 10%, raw 1-hop no slower) are met with reads faster
+than before; T8 (fast-path writes within 20%) is met. T5 (RANGE index ≤ 80 B
+per entry) is not started: an index entry is still about 290 B, and indexes
+are now the larger share of an indexed graph (the Festimap schema adds 67 B
+per element over 164).
+
+Known costs and what is left:
+- A write to an existing record decodes and re-encodes the whole record.
+  Invisible at four properties; a node with hundreds of properties pays for
+  all of them on each `SET`. Splicing the changed entry would fix it.
+- Constraint checks on a write copy the record's properties into an owned
+  map first. They could read through the view.
+- A value that is not a scalar or string is decoded on each read. A filter
+  over a point or temporal property decodes it per candidate.
+- A stored value that fails to decode panics. It was encoded by the same
+  process with the snapshot codec, so this should be unreachable, but it is
+  a panic and not an error.
+- The interned-name table (labels, types) is still process-wide and never
+  frees. The per-graph dictionaries hold the same names; the table could go.
+
 **Not done yet from Stage 0.**
 - Removing the lazy implicit indexes (D3 options b and c).
 
