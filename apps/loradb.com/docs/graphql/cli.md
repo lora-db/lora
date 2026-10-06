@@ -166,9 +166,14 @@ The authorization lints (they do not fail the run) flag:
 
 - a filter rule every signed-in caller passes, which only keeps out
   anonymous callers;
-- a rule with an `OR` branch that needs no claims, in a schema that
-  leaves `@authorizationDefaults(requireAuthentication:)` unset: anonymous
-  callers are refused that branch by default, so say which was meant;
+- a rule that needs no claims, as a whole or in one `OR` branch, on a type
+  or a field, in a schema that leaves
+  `@authorizationDefaults(requireAuthentication:)` unset: anonymous
+  callers are refused it by default, so say which was meant;
+- once that setting is `false`, each write rule (CREATE, UPDATE, DELETE,
+  CONNECT, DISCONNECT, UPDATE_EDGE) a signed-out caller can pass and no
+  `@authentication` covers; READ rules and operations a type lists in
+  `public` are left alone;
 - field rules the schema's bypass skips for the callers passing it;
 - every type the schema's bypass reaches without saying `bypass: true` or
   `bypass: false`, in one line.

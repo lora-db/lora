@@ -547,11 +547,16 @@ export class LoraGraphQL {
    * of caller, from the same rules as `accessMatrix()`, plus the most
    * restrictive verdict per caller. Takes a document (source or parsed)
    * or the id of a persisted operation; `operationName` picks one of
-   * several operations.
+   * several operations. A mutation's inputs are read for the
+   * relationship writes they make (a nested connect, disconnect, create,
+   * update or delete), which count towards its root field's verdict.
+   * Pass `variables` for inputs the document takes as variables; a
+   * variable without a value is listed in the field's `unresolved`.
    */
   operationAccess(
     document: string | DocumentNode,
     operationName?: string,
+    variables?: Readonly<Record<string, unknown>>,
   ): OperationAccess {
     const doc =
       typeof document !== "string"
@@ -570,7 +575,13 @@ export class LoraGraphQL {
       if (def.kind === Kind.FRAGMENT_DEFINITION)
         fragments.set(def.name.value, def);
     }
-    return operationAccess(this.model, this.getSchema(), operation, fragments);
+    return operationAccess(
+      this.model,
+      this.getSchema(),
+      operation,
+      fragments,
+      variables,
+    );
   }
 
   /**

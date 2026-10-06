@@ -242,17 +242,42 @@ export function fieldVerdict(
   return { verdict: "allowed", by };
 }
 
+/**
+ * The `@authentication` operation a relationship operation answers to: a
+ * connect is checked as CREATE_RELATIONSHIP on the field, a disconnect as
+ * DELETE_RELATIONSHIP. Edge reads and updates have none of their own.
+ */
+export function relationshipAuthentication(
+  op: RelationshipOperation,
+): AuthOperation | undefined {
+  return op === "CONNECT"
+    ? "CREATE_RELATIONSHIP"
+    : op === "DISCONNECT"
+      ? "DELETE_RELATIONSHIP"
+      : undefined;
+}
+
 export function relationshipVerdict(
   ctx: CompileContext,
   node: NodeType,
   field: Parameters<typeof relationshipRules>[1],
   op: RelationshipOperation,
 ): Pick<AccessEntry, "verdict" | "by"> {
-  const by = (field.authorization?.validate ?? []).flatMap((r, i) =>
-    r.operations.has(op) ? [`validate[${i}]`] : [],
-  );
-  if (bypassed(ctx, node)) return { verdict: "allowed", by: ["bypass"] };
+  const authentication = relationshipAuthentication(op);
+  const authenticated =
+    authentication !== undefined && field.authentication?.has(authentication);
+  const by = [
+    ...(authenticated ? ["@authentication"] : []),
+    ...(field.authorization?.validate ?? []).flatMap((r, i) =>
+      r.operations.has(op) ? [`validate[${i}]`] : [],
+    ),
+  ];
   try {
+    // Like a field's READ: `@authentication` is asked before the bypass.
+    if (authentication) {
+      checkFieldAuthentication(ctx, node.name, field, authentication);
+    }
+    if (bypassed(ctx, node)) return { verdict: "allowed", by: ["bypass"] };
     const rule = relationshipRules(ctx, field, op, {
       owner: "a",
       target: "b",

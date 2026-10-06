@@ -207,6 +207,230 @@ type Trip @node @mutation
     expect(plain.some((e) => e.principal === "viewer")).toBe(false);
   });
 
+  test("@authentication on a relationship field guards connecting through it (G-43)", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: `type Claims @jwt { sub: String! }
+extend schema @authorizationDefaults(requireAuthentication: false)
+type Room @node @mutation(operations: [CREATE, UPDATE]) @authorization(public: [CREATE, UPDATE]) {
+  key: String! @key
+  kind: String!
+  chan: Chan @relationship(type: "IN", direction: OUT, nestedOperations: [CONNECT, DISCONNECT])
+    @authentication(operations: [CREATE_RELATIONSHIP])
+    @authorization(validate: [
+      { operations: [CONNECT], where: { source: { kind: { eq: "CHANNEL" } } } }
+      { operations: [DISCONNECT], where: { source: { kind: { eq: "CHANNEL" } } } }
+    ])
+  # No rule beside it: the guard alone decides, for both operations.
+  hall: Chan @relationship(type: "AT", direction: OUT, nestedOperations: [CONNECT, DISCONNECT])
+    @authentication(operations: [CREATE_RELATIONSHIP, DELETE_RELATIONSHIP])
+}
+type Chan @node { key: String! @key }`,
+    });
+    await t.db.execute("CREATE (:Chan {key: 'c'})");
+    const create = `mutation { createRooms(input: [{ key: "r", kind: "CHANNEL", chan: { connect: { key: "c" } } }]) { rooms { key } } }`;
+    // What the matrix has to agree with: the request is refused.
+    const anonymous = await t.run(create);
+    expect(anonymous.errors?.[0]?.extensions?.["code"]).toBe("UNAUTHENTICATED");
+    expect(await t.data(create, {}, { jwt: { sub: "u" } })).toEqual({
+      createRooms: { rooms: [{ key: "r" }] },
+    });
+
+    const m = t.lora.accessMatrix();
+    const row = (field: string, operation: string, principal: string) => {
+      const e = m.find(
+        (x) =>
+          x.type === "Room" &&
+          x.field === field &&
+          x.operation === operation &&
+          x.principal === principal,
+      );
+      return e && { verdict: e.verdict, by: e.by };
+    };
+    expect(row("chan", "CONNECT", "anonymous")).toEqual({
+      verdict: "unauthenticated",
+      by: ["@authentication", "validate[0]"],
+    });
+    expect(row("chan", "CONNECT", "authenticated")).toEqual({
+      verdict: "validated",
+      by: ["@authentication", "validate[0]"],
+    });
+    // DISCONNECT answers to DELETE_RELATIONSHIP, which `chan` does not list.
+    expect(row("chan", "DISCONNECT", "anonymous")).toEqual({
+      verdict: "validated",
+      by: ["validate[1]"],
+    });
+    for (const op of ["CONNECT", "DISCONNECT"]) {
+      expect(row("hall", op, "anonymous")).toEqual({
+        verdict: "unauthenticated",
+        by: ["@authentication"],
+      });
+      expect(row("hall", op, "authenticated")).toEqual({
+        verdict: "allowed",
+        by: ["@authentication"],
+      });
+    }
+  });
+
+  test("a relationship field's @authentication(jwt:) is asked like a type's (G-43)", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: `type Claims @jwt { sub: String!  roles: [String!] }
+extend schema @authorizationDefaults(requireAuthentication: false)
+type F @node @mutation(operations: [UPDATE]) @authorization(public: [UPDATE]) {
+  key: String! @key
+  score: Int @authentication(operations: [READ])
+  tags: [T!]! @relationship(type: "TAGGED", direction: OUT, nestedOperations: [CONNECT, DISCONNECT])
+    @authentication(operations: [CREATE_RELATIONSHIP, DELETE_RELATIONSHIP], jwt: { roles: { includes: "editor" } })
+}
+type T @node { key: String! @key }`,
+    });
+    await t.db.execute(
+      "CREATE (:F {key: 'f'})-[:TAGGED]->(:T {key: 't'}), (:T {key: 'u'})",
+    );
+    const connect = `mutation { updateF(key: "f", update: { tags: { connect: [{ key: "u" }] } }) { f { key } } }`;
+    const code = async (jwt?: Record<string, unknown>) =>
+      (await t.run(connect, {}, jwt ? { jwt } : {})).errors?.[0]?.extensions?.[
+        "code"
+      ];
+    // Enforcement, which the rows below have to match.
+    expect(await code()).toBe("UNAUTHENTICATED");
+    expect(await code({ sub: "u" })).toBe("UNAUTHENTICATED");
+    expect(await code({ sub: "u", roles: ["editor"] })).toBeUndefined();
+
+    const rows = t.lora
+      .accessMatrix()
+      .filter((e) => e.type === "F" && e.field !== undefined)
+      .map((e) => `${e.field} ${e.operation} ${e.principal}: ${e.verdict}`);
+    expect(rows).toEqual([
+      // A scalar field's READ guard keeps its rows, before the
+      // relationship field's, in field-name order.
+      "score READ anonymous: unauthenticated",
+      "score READ authenticated: allowed",
+      "score READ roles:editor: allowed",
+      // A token without the claim is refused like no token, as for a
+      // type's @authentication(jwt:); the claim it asks for has a
+      // principal of its own.
+      "tags CONNECT anonymous: unauthenticated",
+      "tags CONNECT authenticated: unauthenticated",
+      "tags CONNECT roles:editor: allowed",
+      "tags DISCONNECT anonymous: unauthenticated",
+      "tags DISCONNECT authenticated: unauthenticated",
+      "tags DISCONNECT roles:editor: allowed",
+    ]);
+  });
+
+  test("viewer never reads below authenticated under NOT isViewer (G-44)", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: `type Claims @jwt { sub: String! @viewer(type: "P", field: "key") }
+type P @node @mutation(operations: [UPDATE])
+  @authorization(validate: [{ operations: [UPDATE], where: { AND: [
+    { node: { isViewer: true } }
+    { NOT: { node: { following: { some: { isViewer: true } } } } } ] } }]) {
+  key: String! @key
+  bio: String
+  following: [P!]! @relationship(type: "FOLLOWS", direction: OUT)
+}
+type Q @node @mutation(operations: [UPDATE])
+  @authorization(validate: [{ operations: [UPDATE], where: { NOT: { NOT: { node: { owner: { isViewer: true } } } } } }]) {
+  key: String! @key
+  owner: P! @relationship(type: "OWNS", direction: IN)
+}`,
+    });
+    await t.db.execute("CREATE (:P {key: 'p'})");
+    // The viewer does pass at run time.
+    expect(
+      await t.data(
+        `mutation { updatePs(where: { key: { eq: "p" } }, update: { bio: "hi" }) { ps { bio } } }`,
+        {},
+        { jwt: { sub: "p" } },
+      ),
+    ).toEqual({ updatePs: { ps: [{ bio: "hi" }] } });
+
+    const verdicts = (type: string) =>
+      t.lora
+        .accessMatrix()
+        .filter((e) => e.type === type && e.operation === "UPDATE")
+        .map((e) => [e.principal, e.verdict]);
+    // Their own node passes; not following themselves is still per row.
+    expect(verdicts("P")).toEqual([
+      ["anonymous", "unauthenticated"],
+      ["authenticated", "validated"],
+      ["viewer", "validated"],
+    ]);
+    // Negated twice is not negated: the part passes as it does bare.
+    expect(verdicts("Q")).toEqual([
+      ["anonymous", "unauthenticated"],
+      ["authenticated", "validated"],
+      ["viewer", "allowed"],
+    ]);
+  });
+
+  test("NOT isViewer inside OR / AND and in filter rules stays per row (G-44)", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: `type Claims @jwt { sub: String! @viewer(type: "P", field: "key") }
+type P @node { key: String! @key }
+type D @node @mutation(operations: [UPDATE, DELETE])
+  @authorization(
+    filter: [
+      # Theirs, and not shared with themselves.
+      { operations: [READ], where: { AND: [
+        { node: { owner: { isViewer: true } } }
+        { NOT: { node: { readers: { some: { isViewer: true } } } } } ] } }
+      # The negation alone: nothing passes for being the viewer.
+      { operations: [DELETE], where: { NOT: { node: { owner: { isViewer: true } } } } }
+    ]
+    validate: [
+      # One branch is theirs outright, the other is a negation.
+      { operations: [UPDATE], where: { OR: [
+        { NOT: { node: { readers: { some: { isViewer: true } } } } }
+        { AND: [{ node: { open: { eq: true } } }, { NOT: { node: { owner: { isViewer: true } } } }] } ] } }
+      { operations: [DELETE], where: { OR: [
+        { node: { owner: { isViewer: true } } }
+        { NOT: { node: { owner: { isViewer: true } } } } ] } }
+    ]
+  ) {
+  key: String! @key
+  open: Boolean
+  owner: P! @relationship(type: "OWNS", direction: IN)
+  readers: [P!]! @relationship(type: "READS", direction: IN)
+}`,
+    });
+    const m = t.lora.accessMatrix();
+    const verdict = (operation: string, principal: string) =>
+      m.find(
+        (e) =>
+          e.type === "D" &&
+          e.field === undefined &&
+          e.operation === operation &&
+          e.principal === principal,
+      )?.verdict;
+    const rank = [
+      "denied",
+      "unauthenticated",
+      "validated",
+      "filtered",
+      "allowed",
+    ];
+    for (const op of ["READ", "UPDATE", "DELETE"]) {
+      // The claim itself: never below what any signed-in caller gets.
+      expect(
+        rank.indexOf(verdict(op, "viewer")!),
+        `${op}: viewer ${verdict(op, "viewer")} vs authenticated ${verdict(op, "authenticated")}`,
+      ).toBeGreaterThanOrEqual(rank.indexOf(verdict(op, "authenticated")!));
+    }
+    expect({
+      READ: verdict("READ", "viewer"),
+      UPDATE: verdict("UPDATE", "viewer"),
+      DELETE: verdict("DELETE", "viewer"),
+    }).toEqual({
+      // The owner part passes; the negation still filters rows.
+      READ: "filtered",
+      // Both branches hang on a negation.
+      UPDATE: "validated",
+      // The filter is a bare negation: per row, as for anyone signed in.
+      DELETE: "filtered",
+    });
+  });
+
   test("lora-graphql access prints it", async () => {
     const dir = await mkdtemp(join(tmpdir(), "lora-graphql-access-"));
     await writeFile(join(dir, "schema.graphql"), post);
@@ -265,6 +489,126 @@ describe("authorization lints", () => {
           l.includes("requireAuthentication defaults"),
         ),
       ).toBe(false);
+    }
+  });
+
+  // Festimap G-45 / G-46: one schema, three settings of the default.
+  const openOrOwned = (extra: string, typeLevel = "") =>
+    `${extra}type Claims @jwt { sub: String! @viewer(type: "P", field: "key") }
+type P @node { key: String! @key }
+type F @node @mutation(operations: [CREATE, UPDATE]) ${typeLevel} @authorization(
+  filter: [
+    { operations: [READ], where: { node: { owner: { isViewer: true } } } }
+    { operations: [READ], where: { node: { open: { eq: true } } } }]
+  validate: [
+    { operations: [CREATE], where: { node: { open: { eq: true } } } }
+    { operations: [UPDATE], where: { OR: [{ node: { owner: { isViewer: true } } }, { node: { open: { eq: true } } }] } }]) {
+  key: String! @key
+  open: Boolean!
+  owner: P @relationship(type: "OWNS", direction: IN)
+  watchers: [P!]! @relationship(type: "WATCHES", direction: IN, nestedOperations: [CONNECT, DISCONNECT])
+    @authorization(validate: [{ operations: [CONNECT, DISCONNECT], where: { source: { open: { eq: true } } } }])
+}`;
+  const off =
+    "extend schema @authorizationDefaults(requireAuthentication: false)\n";
+
+  test("a rule that needs no claims at all, while the default is unset (G-45)", async () => {
+    const found = (await lint(openOrOwned(""))).filter((l) =>
+      l.includes("needs no claims"),
+    );
+    const whole = (label: string) =>
+      `${label} needs no claims, but requireAuthentication defaults to true, so anonymous callers are refused by it; set @authorizationDefaults(requireAuthentication: false) if anonymous callers should get such rules, or true to say they should not`;
+    expect(found).toEqual([
+      `F: ${whole("filter[1]")}`,
+      `F: ${whole("validate[0]")}`,
+      "F: validate[1] has a branch that needs no claims (OR[1]), but requireAuthentication defaults to true, so anonymous callers are refused by the whole rule; set @authorizationDefaults(requireAuthentication: false) if anonymous callers should get such branches, or true to say they should not",
+      // On a field too: a CONNECT rule over `source` alone.
+      `F.watchers: ${whole("validate[0]")}`,
+    ]);
+    // Said either way, the question is answered.
+    for (const said of [true, false]) {
+      const extra = `extend schema @authorizationDefaults(requireAuthentication: ${said})\n`;
+      expect(
+        (await lint(openOrOwned(extra))).filter((l) =>
+          l.includes("needs no claims, but"),
+        ),
+      ).toEqual([]);
+    }
+  });
+
+  test("the writes a signed-out caller passes once the default is false (G-46)", async () => {
+    const signedOut = async (typeDefs: string) =>
+      (await lint(typeDefs)).filter((l) => l.includes("signed-out caller"));
+    const fix = (ops: string, guard: string, on = " to F") =>
+      `lets a signed-out caller ${ops}: it needs no claims and requireAuthentication is false for the whole schema; test { jwt: { sub: { exists: true } } } beside it, or add @authentication(operations: [${guard}])${on}`;
+    // READ rules are what the setting is for: silent.
+    expect(await signedOut(openOrOwned(off))).toEqual([
+      `F: validate[0] ${fix("CREATE", "CREATE")}`,
+      `F: validate[1] ${fix("UPDATE", "UPDATE")}`,
+      `F.watchers: validate[0] ${fix("CONNECT, DISCONNECT", "CREATE_RELATIONSHIP, DELETE_RELATIONSHIP", "")}`,
+    ]);
+    // What the lint describes does happen.
+    const t = await createTestLoraGraphQL({ typeDefs: openOrOwned(off) });
+    expect(
+      await t.data(
+        `mutation { createFs(input: [{ key: "n", open: true }]) { fs { key } } }`,
+      ),
+    ).toEqual({ createFs: { fs: [{ key: "n" }] } });
+
+    // @authentication on the type covers its operations, and every
+    // mutation a connect or disconnect can be written in.
+    expect(
+      await signedOut(
+        openOrOwned(off, "@authentication(operations: [CREATE, UPDATE])"),
+      ),
+    ).toEqual([]);
+    // Covering only the type's own writes leaves nothing to say about
+    // them, and the relationship's operations guarded by name.
+    expect(
+      await signedOut(
+        openOrOwned(
+          off,
+          "@authentication(operations: [CREATE, UPDATE, CREATE_RELATIONSHIP, DELETE_RELATIONSHIP])",
+        ),
+      ),
+    ).toEqual([]);
+    expect(
+      await signedOut(
+        openOrOwned(off, "@authentication(operations: [CREATE])"),
+      ),
+    ).toEqual([
+      `F: validate[1] ${fix("UPDATE", "UPDATE")}`,
+      `F.watchers: validate[0] ${fix("CONNECT, DISCONNECT", "CREATE_RELATIONSHIP, DELETE_RELATIONSHIP", "")}`,
+    ]);
+    // A claim beside the rule, the other fix the message names.
+    const guarded = openOrOwned(off)
+      .replace(
+        "{ operations: [CREATE], where: { node: { open: { eq: true } } } }",
+        "{ operations: [CREATE], where: { jwt: { sub: { exists: true } }, node: { open: { eq: true } } } }",
+      )
+      .replace(
+        "where: { source: { open: { eq: true } } }",
+        "where: { jwt: { sub: { exists: true } }, source: { open: { eq: true } } }",
+      );
+    expect(await signedOut(guarded)).toEqual([
+      `F: validate[1] ${fix("UPDATE", "UPDATE")}`,
+    ]);
+    // An operation the type lists as public was opened on purpose.
+    const publicType = `${off}type Claims @jwt { sub: String! }
+type G @node @mutation(operations: [CREATE, UPDATE])
+  @authorization(public: [CREATE], validate: [{ operations: [CREATE, UPDATE], where: { node: { open: { eq: true } } } }]) {
+  key: String! @key
+  open: Boolean!
+}`;
+    expect(await signedOut(publicType)).toEqual([
+      `G: validate[0] ${fix("UPDATE", "UPDATE", " to G")}`,
+    ]);
+    // With the default true or unset, no rule is open to them.
+    for (const extra of [
+      "",
+      "extend schema @authorizationDefaults(requireAuthentication: true)\n",
+    ]) {
+      expect(await signedOut(openOrOwned(extra))).toEqual([]);
     }
   });
 

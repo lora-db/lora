@@ -220,7 +220,11 @@ one principal per claim value the rules test, such as `roles:admin`). When
 rules name the caller's node (`isViewer`), `viewer` is the caller on nodes
 that are theirs: every rule part that only names them passes, so it shows
 the most a related caller gets, where `authenticated` shows what any
-signed-in caller gets. The
+signed-in caller gets. A part under `NOT` stays as written and is decided
+per row, so `viewer` never reads below `authenticated`. A relationship field
+has a CONNECT row when a rule or
+`@authentication(operations: [CREATE_RELATIONSHIP])` guards it, and a
+DISCONNECT row for a rule or `DELETE_RELATIONSHIP`. The
 `verdict` is `allowed`, `filtered`, `validated`, `masked`, `denied` or
 `unauthenticated`, and `by` names the rules that decide it (`filter[0]`,
 `validate[1]`, `@authentication`, `bypass`, `public`). The order is stable,

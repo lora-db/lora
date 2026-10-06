@@ -13,6 +13,7 @@ import type {
   NestedOperation,
   NodeType,
 } from "../model/types.js";
+import { passableWithoutClaims } from "../model/build/authorization.js";
 import { PLACEHOLDER } from "../model/types.js";
 import { isRecord, token } from "./principals.js";
 import { typeVerdict } from "./verdicts.js";
@@ -50,22 +51,10 @@ export function accessLints(
         });
       }
     });
-    const rules = [
-      ...filters.map((r, i) => ({ r, label: `filter[${i}]` })),
-      ...(node.authorization?.validate ?? []).map((r, i) => ({
-        r,
-        label: `validate[${i}]`,
-      })),
-    ];
-    for (const { r, label } of rules) {
-      if (!r.requireAuthenticationDefaulted) continue;
-      const branch = claimFreeBranch(r.where);
-      if (branch !== undefined) {
-        out.push({
-          type: node.name,
-          message: `${label} has a branch that needs no claims (${branch}), but requireAuthentication defaults to true, so anonymous callers are refused by the whole rule; set @authorizationDefaults(requireAuthentication: false) if anonymous callers should get such branches, or true to say they should not`,
-        });
-      }
+    out.push(...anonymousLints(node, undefined, node.authorization));
+    for (const f of node.fields.values()) {
+      if (f.kind === "custom") continue;
+      out.push(...anonymousLints(node, f, f.authorization));
     }
     // `bypass: true` (or `false`) on the type says it was decided.
     if (model.bypass && node.authorization?.bypass === undefined) {
@@ -484,6 +473,122 @@ function refusedNestedWrites(
     }
   }
   return out;
+}
+
+/** Write operations of a type's rules, and of a relationship field's. */
+const TYPE_WRITES = ["CREATE", "UPDATE", "DELETE"] as const;
+const RELATIONSHIP_WRITES = ["CONNECT", "DISCONNECT", "UPDATE_EDGE"] as const;
+
+/**
+ * What the rules of `node` (or of its `field`) mean for a request without
+ * a token, which depends on one schema-wide setting.
+ *
+ * While `@authorizationDefaults(requireAuthentication:)` is unset, a rule
+ * that needs no claims, as a whole or in one OR branch, is refused for
+ * anonymous callers by the default: say which was meant.
+ *
+ * Once it is `false`, such a rule decides for anonymous callers too. For a
+ * read that is the point of the setting. For a write it is easy to turn on
+ * by accident, since the setting is one for the schema: name every write
+ * rule a signed-out caller can pass and that no `@authentication` covers.
+ */
+function anonymousLints(
+  node: NodeType,
+  field: Field | undefined,
+  authorization: NodeType["authorization"],
+): ModelWarning[] {
+  const out: ModelWarning[] = [];
+  const at = field
+    ? { type: node.name, field: field.name }
+    : { type: node.name };
+  const rules = [
+    ...(authorization?.filter ?? []).map((r, i) => ({
+      r,
+      label: `filter[${i}]`,
+    })),
+    ...(authorization?.validate ?? []).map((r, i) => ({
+      r,
+      label: `validate[${i}]`,
+    })),
+  ];
+  const advice =
+    "set @authorizationDefaults(requireAuthentication: false) if anonymous callers should get such";
+  for (const { r, label } of rules) {
+    if (r.requireAuthenticationDefaulted) {
+      const branch = claimFreeBranch(r.where);
+      if (branch !== undefined) {
+        out.push({
+          ...at,
+          message: `${label} has a branch that needs no claims (${branch}), but requireAuthentication defaults to true, so anonymous callers are refused by the whole rule; ${advice} branches, or true to say they should not`,
+        });
+      } else if (passableWithoutClaims(r.where)) {
+        out.push({
+          ...at,
+          message: `${label} needs no claims, but requireAuthentication defaults to true, so anonymous callers are refused by it; ${advice} rules, or true to say they should not`,
+        });
+      }
+      continue;
+    }
+    // The schema said `false`, and the rule reads no claims on some path.
+    if (r.requireAuthentication) continue;
+    const open = (
+      field?.kind === "relationship" ? RELATIONSHIP_WRITES : TYPE_WRITES
+    ).filter(
+      (op) =>
+        r.operations.has(op) &&
+        !authorization?.public?.has(op) &&
+        !node.authorization?.public?.has(op) &&
+        !authenticationCovers(node, field, op),
+    );
+    if (open.length === 0) continue;
+    const guard = open.map(guardOf).join(", ");
+    out.push({
+      ...at,
+      message: `${label} lets a signed-out caller ${open.join(", ")}: it needs no claims and requireAuthentication is false for the whole schema; test { jwt: { sub: { exists: true } } } beside it, or add @authentication(operations: [${guard}])${field ? "" : ` to ${node.name}`}`,
+    });
+  }
+  return out;
+}
+
+/** The `@authentication` operation that guards `op` most directly. */
+const guardOf = (op: string): string =>
+  op === "CONNECT"
+    ? "CREATE_RELATIONSHIP"
+    : op === "DISCONNECT"
+      ? "DELETE_RELATIONSHIP"
+      : op === "UPDATE_EDGE"
+        ? "UPDATE"
+        : op;
+
+/**
+ * Whether `@authentication`, on the field or on its type, refuses a
+ * request without a token before a rule for `op` is asked.
+ *
+ * A type's operation is guarded by the type, a field's write by the field
+ * or the type. A relationship operation is guarded by its own operation
+ * (CONNECT by CREATE_RELATIONSHIP, DISCONNECT by DELETE_RELATIONSHIP), or
+ * by every mutation it can be written in: a connect in a create or an
+ * update, a disconnect or an edge update in an update.
+ */
+function authenticationCovers(
+  node: NodeType,
+  field: Field | undefined,
+  op: string,
+): boolean {
+  const has = (o: string) =>
+    (node.authentication?.has(o as never) ?? false) ||
+    (field?.kind !== "custom" &&
+      (field?.authentication?.has(o as never) ?? false));
+  if (field?.kind !== "relationship") return has(op);
+  const own =
+    op === "CONNECT"
+      ? "CREATE_RELATIONSHIP"
+      : op === "DISCONNECT"
+        ? "DELETE_RELATIONSHIP"
+        : undefined;
+  if (own && has(own)) return true;
+  const within = op === "CONNECT" ? ["CREATE", "UPDATE"] : ["UPDATE"];
+  return within.every(has);
 }
 
 /** The path of an OR branch that tests no claim, if the rule has one. */

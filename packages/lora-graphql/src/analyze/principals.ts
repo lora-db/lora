@@ -74,6 +74,9 @@ export function principalsOf(model: GraphModel): Principal[] {
       } else visit(value);
     }
   };
+  // `@authentication(jwt:)` holds the claims without the `jwt` key a
+  // rule writes them under.
+  const claims = (where: unknown) => (where ? { jwt: where } : undefined);
   const rules = (a: NodeType["authorization"]) => [
     ...(a?.filter ?? []).map((r) => r.where),
     ...(a?.validate ?? []).map((r) => r.where),
@@ -82,10 +85,10 @@ export function principalsOf(model: GraphModel): Principal[] {
   visit(model.bypass);
   for (const node of model.nodes.values()) {
     visit(rules(node.authorization));
-    visit(node.authenticationJwt);
+    visit(claims(node.authenticationJwt));
     for (const f of node.fields.values()) {
       visit(rules(f.authorization));
-      visit(f.authenticationJwt);
+      visit(claims(f.authenticationJwt));
     }
   }
   for (const props of model.relationshipProperties.values()) {
@@ -93,7 +96,7 @@ export function principalsOf(model: GraphModel): Principal[] {
   }
   for (const f of [...model.queries, ...model.mutations]) {
     visit(rules(f.authorization));
-    visit(f.authenticationJwt);
+    visit(claims(f.authenticationJwt));
   }
   const related = viewerModel(model);
   return [
@@ -118,6 +121,11 @@ export function principalsOf(model: GraphModel): Principal[] {
  * caller's node (`isViewer`, alone or through relationships) passes. It
  * shows the most a related caller gets, where `authenticated` shows what
  * every signed-in caller gets. Undefined when no rule has such a part.
+ *
+ * A part under `NOT` is left as written. "Not following themselves" does
+ * not fail for the viewer because the viewer is who it names: it depends
+ * on the rows, as it does for any signed-in caller, and passing the part
+ * and then negating it would read the viewer below `authenticated`.
  */
 function viewerModel(model: GraphModel): GraphModel | undefined {
   const viewer = model.viewer;
@@ -158,6 +166,7 @@ function viewerModel(model: GraphModel): GraphModel | undefined {
   const rewrite = (
     where: AuthorizationWhere,
     ends: Ends,
+    negated = false,
   ): AuthorizationWhere => {
     if (!isRecord(where)) return where;
     const out: Record<string, unknown> = {};
@@ -165,11 +174,12 @@ function viewerModel(model: GraphModel): GraphModel | undefined {
     for (const [key, value] of Object.entries(where)) {
       if (key === "AND" || key === "OR") {
         out[key] = Array.isArray(value)
-          ? value.map((w) => rewrite(w as AuthorizationWhere, ends))
+          ? value.map((w) => rewrite(w as AuthorizationWhere, ends, negated))
           : value;
       } else if (key === "NOT") {
-        out[key] = rewrite(value as AuthorizationWhere, ends);
+        out[key] = rewrite(value as AuthorizationWhere, ends, !negated);
       } else if (
+        !negated &&
         (key === "node" || key === "source" || key === "target") &&
         namesViewer(ends[key], value)
       ) {

@@ -809,12 +809,18 @@ type Post
 - **Anonymous callers.** Without a token every rule denies, unless the
   schema says `@authorizationDefaults(requireAuthentication: false)`. Then
   a rule with a branch that reads no claims decides that branch for
-  anonymous callers too (the published posts above), while a rule that
-  needs claims still asks for a token: `UNAUTHENTICATED`, not `FORBIDDEN`.
-  It is one setting for the schema; a rule has no such field. To keep a
-  claim-free branch for signed-in callers, test a claim beside it
+  anonymous callers too (the published posts above). A rule that needs
+  claims still denies them, and how depends on the kind of rule: a
+  validate rule asks for a token (`UNAUTHENTICATED`, not `FORBIDDEN`),
+  while a READ filter admits no row, so a signed-out caller reads an
+  empty list and the access matrix calls it `denied`.
+  It is one setting for the schema; a rule has no such field, and it
+  reaches every rule: a CREATE, UPDATE, DELETE or CONNECT rule that
+  reads no claims decides for signed-out callers as well. `check` names
+  each such write rule that no `@authentication` covers. To keep a
+  claim-free rule or branch for signed-in callers, test a claim beside it
   (`{ jwt: { sub: { exists: true } } }`, as the tenant rule above does),
-  or put `@authentication` on the type.
+  or put `@authentication` on the type or the relationship field.
 - **The caller's own node.** Mark the claim that identifies the caller
   with `@viewer(type: "Person", field: "subject")` (the field is `@key` or
   `@unique`), so the key can stay a slug while the subject is an identity
@@ -1445,18 +1451,29 @@ the rules test, such as `roles:admin`), with the verdict (`allowed`,
 rules that decide it. When rules name the caller's node (`isViewer`),
 `viewer` is the caller on nodes that are theirs: every rule part that
 only names them passes, so it shows the most a related caller gets,
-where `authenticated` shows what any signed-in caller gets. A
+where `authenticated` shows what any signed-in caller gets. A part under
+`NOT` stays as written and is decided per row, so `viewer` never reads
+below `authenticated`. A relationship field has a CONNECT row when a
+rule or `@authentication(operations: [CREATE_RELATIONSHIP])` guards it,
+and a DISCONNECT row for a rule or `DELETE_RELATIONSHIP`. A
 `@key(scope: VIEWER)` type's CREATE reads
 `unauthenticated` for anonymous callers and `validated` by `key scope`
 for the rest.
 
-`lora.operationAccess(document | persistedId, operationName?)` answers
-the same question for one operation: each root field (fragments
+`lora.operationAccess(document | persistedId, operationName?, variables?)`
+answers the same question for one operation: each root field (fragments
 followed) with its type, the operations it needs (an upsert needs
 `CREATE` and `UPDATE`) and the verdict per caller, plus the most
 restrictive verdict per caller over all root fields. A field over
 several types (`node`, a union) reports the most restrictive member.
-Root fields only: nested selections answer to their own types' rules.
+A mutation's inputs are read for what they write through relationship
+fields: a nested connect or create counts as that field's CONNECT (and
+the target's CREATE), a disconnect or nested delete as its DISCONNECT, an
+`update: { edge }` as UPDATE_EDGE, each named in `by`
+(`Room.chan CONNECT: @authentication`). Pass `variables` for inputs the
+document takes as variables; a variable without a value is not read and
+is listed in the field's `unresolved`. Selections below a root field
+answer to their own types' READ rules.
 To keep admin-only operations out of client bundles:
 
 ````ts
@@ -1470,9 +1487,15 @@ order is stable, so a snapshot in CI turns access changes into diffs.
 `check` lints authorization too:
 
 - a filter rule every signed-in caller passes;
-- a rule with a branch that needs no claims, in a schema that leaves
+- a rule that needs no claims, as a whole or in one `OR` branch, on a
+  type or a field, in a schema that leaves
   `@authorizationDefaults(requireAuthentication:)` unset: anonymous
-  callers are refused that branch by default, so say which was meant;
+  callers are refused it by default, so say which was meant;
+- once that setting is `false`, each write rule (CREATE, UPDATE, DELETE,
+  CONNECT, DISCONNECT, UPDATE_EDGE) a signed-out caller can pass and no
+  `@authentication` covers. READ rules and operations the type lists in
+  `public` are left alone: those are what the setting and the list are
+  for;
 - field rules the schema's bypass skips, on a type that says neither
   `@authorization(bypass: false)` nor `bypass: true`, and one line naming
   every type with rules the bypass reaches that way (plus relationship

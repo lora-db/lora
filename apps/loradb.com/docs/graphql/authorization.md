@@ -305,13 +305,21 @@ setting for the whole schema:
 
 - a rule with a branch that reads no claims decides that branch for
   anonymous callers too (the published posts above);
-- a rule that needs claims still asks for a token, so an anonymous caller
-  gets `UNAUTHENTICATED`, not `FORBIDDEN`;
+- a validate rule that needs claims still asks for a token, so an
+  anonymous caller gets `UNAUTHENTICATED`, not `FORBIDDEN`;
+- a READ filter that needs claims admits no row for them: they read an
+  empty list, and the access matrix calls it `denied`;
 - a claim read without a token denies its branch, also under `NOT`.
 
-To keep a claim-free branch for signed-in callers only, test a claim beside
-it, as the tenant rule above does with
-`{ jwt: { sub: { exists: true } } }`, or put `@authentication` on the type.
+The setting reaches every rule, writes included: a CREATE, UPDATE, DELETE
+or CONNECT rule that reads no claims decides for signed-out callers too.
+`lora-graphql check` names each such write rule that no `@authentication`
+covers.
+
+To keep a claim-free rule or branch for signed-in callers only, test a
+claim beside it, as the tenant rule above does with
+`{ jwt: { sub: { exists: true } } }`, or put `@authentication` on the type
+or on the relationship field.
 `requireAuthentication` is not a rule's field: on a rule it is a model
 error, like any field a rule does not define.
 
@@ -691,8 +699,9 @@ whose claim is `lou`.
   See [the CLI](/docs/graphql/cli).
 - `lora-graphql check` fails on unguarded `@mutation` writes (see
   [defaults](#defaults)) and lints authorization: a filter rule every
-  signed-in caller passes, a rule with a branch that needs no claims in a
-  schema that leaves `requireAuthentication` unset, field rules the
+  signed-in caller passes, a rule that needs no claims in a schema that
+  leaves `requireAuthentication` unset, a write rule a signed-out caller
+  passes once it is `false`, field rules the
   schema's bypass skips, and one line naming every type the bypass
   reaches.
 - `expectAccess` probes the database as a given caller, in transactions

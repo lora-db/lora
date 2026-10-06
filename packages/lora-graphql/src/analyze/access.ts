@@ -6,6 +6,8 @@
 
 import {
   Kind,
+  valueFromASTUntyped,
+  visit,
   type FragmentDefinitionNode,
   type GraphQLSchema,
   type OperationDefinitionNode,
@@ -15,6 +17,7 @@ import { newContext } from "../compile/context.js";
 import type {
   AuthOperation,
   CypherField,
+  Field,
   GraphModel,
   NodeType,
   RelationshipOperation,
@@ -24,6 +27,7 @@ import { names } from "../schema/names.js";
 import { mutationNames } from "../schema/mutations.js";
 import {
   fieldAs,
+  isRecord,
   nodeAs,
   principalsOf,
   propertyAs,
@@ -35,6 +39,7 @@ import {
   fieldWriteGuarded,
   fieldWriteVerdict,
   propertyVerdict,
+  relationshipAuthentication,
   relationshipVerdict,
   rootFieldVerdict,
   typeVerdict,
@@ -61,6 +66,11 @@ export interface RootFieldAccess {
    * reports the most restrictive of them, `by` naming each part.
    */
   access: Record<string, { verdict: AccessVerdict; by: string[] }>;
+  /**
+   * Variables in the field's arguments that were given no value: what
+   * they would write through relationship fields is not in `access`.
+   */
+  unresolved?: string[];
 }
 
 export interface OperationAccess {
@@ -165,16 +175,132 @@ function rootTargets(
   return { query, mutation, subscription };
 }
 
+/** One write a mutation's input makes below its root field. */
+type NestedWrite =
+  | {
+      kind: "relationship";
+      node: NodeType;
+      field: Field & { kind: "relationship" };
+      op: RelationshipOperation;
+    }
+  | { kind: "type"; node: NodeType; op: AuthOperation };
+
+/** `x` when a list, `[x]` when one value, nothing when absent. */
+const asList = (x: unknown): unknown[] =>
+  Array.isArray(x) ? x : x === undefined || x === null ? [] : [x];
+
+/** A type has `@authentication` or a rule for `op`. */
+const ruled = (node: NodeType, op: AuthOperation): boolean =>
+  (node.authentication?.has(op) ?? false) ||
+  [
+    ...(node.authorization?.filter ?? []),
+    ...(node.authorization?.validate ?? []),
+  ].some((r) => r.operations.has(op));
+
+/**
+ * The relationship writes in `input` (a create or update input of `node`),
+ * as the mutation planner reads them: a connect or nested create is a
+ * CONNECT, a disconnect or nested delete a DISCONNECT, as is re-pointing a
+ * single relationship in an update; `update: { edge }` is an UPDATE_EDGE;
+ * nested creates, updates and deletes are that operation on the target,
+ * and are read on in turn.
+ */
+function nestedWrites(
+  model: GraphModel,
+  node: NodeType,
+  input: unknown,
+  update: boolean,
+  out: NestedWrite[],
+): void {
+  if (!isRecord(input)) return;
+  for (const field of node.fields.values()) {
+    if (field.kind !== "relationship") continue;
+    const value = input[field.name];
+    if (!isRecord(value)) continue;
+    const relationship = (op: RelationshipOperation) =>
+      out.push({ kind: "relationship", node, field, op });
+    // Unions and interfaces take their writes keyed by member type.
+    const targets = model.abstracts.has(field.target)
+      ? (model.abstracts.get(field.target)?.members ?? [])
+      : [field.target];
+    const parts = (key: string): Array<[NodeType, unknown]> =>
+      targets.flatMap((name) => {
+        const target = model.nodes.get(name);
+        if (!target) return [];
+        const given = model.abstracts.has(field.target)
+          ? isRecord(value[key])
+            ? (value[key] as Record<string, unknown>)[name]
+            : undefined
+          : value[key];
+        return asList(given).map((v): [NodeType, unknown] => [target, v]);
+      });
+    const connect = parts("connect");
+    const create = parts("create");
+    const adds = connect.length + create.length > 0;
+    if (adds) {
+      relationship("CONNECT");
+      for (const end of new Set([
+        node,
+        ...connect.concat(create).map(([t]) => t),
+      ])) {
+        if (ruled(end, "CREATE_RELATIONSHIP")) {
+          out.push({ kind: "type", node: end, op: "CREATE_RELATIONSHIP" });
+        }
+      }
+    }
+    const given = (key: string) =>
+      value[key] !== undefined && value[key] !== null && value[key] !== false;
+    if (update) {
+      const removes =
+        given("disconnect") || given("delete") || (!field.list && adds);
+      if (removes) {
+        relationship("DISCONNECT");
+        if (ruled(node, "DELETE_RELATIONSHIP")) {
+          out.push({ kind: "type", node, op: "DELETE_RELATIONSHIP" });
+        }
+      }
+      if (given("delete")) {
+        for (const name of targets) {
+          const target = model.nodes.get(name);
+          if (target) out.push({ kind: "type", node: target, op: "DELETE" });
+        }
+      }
+    }
+    for (const [target, item] of create) {
+      out.push({ kind: "type", node: target, op: "CREATE" });
+      nestedWrites(
+        model,
+        target,
+        isRecord(item) ? item["node"] : undefined,
+        false,
+        out,
+      );
+    }
+    for (const [target, item] of parts("update")) {
+      if (!isRecord(item)) continue;
+      if (isRecord(item["edge"])) relationship("UPDATE_EDGE");
+      if (isRecord(item["node"])) {
+        out.push({ kind: "type", node: target, op: "UPDATE" });
+        nestedWrites(model, target, item["node"], true, out);
+      }
+    }
+  }
+}
+
 /**
  * Who may run `operation`: each root field's verdict per principal, read
- * off the same rules as `accessMatrix`. Root fields only: nested
- * selections answer to their own types' READ rules (see the matrix).
+ * off the same rules as `accessMatrix`. A mutation's inputs are read for
+ * the relationship writes they make, each a part of its root field's
+ * verdict; an input given as a variable is read when `variables` has its
+ * value and listed in `unresolved` when it does not. Selections below a
+ * root field answer to their own types' READ rules (see the matrix).
  */
 export function operationAccess(
   model: GraphModel,
   schema: GraphQLSchema,
   operation: OperationDefinitionNode,
   fragments: ReadonlyMap<string, FragmentDefinitionNode>,
+  variables: Readonly<Record<string, unknown>> = {},
 ): OperationAccess {
   const principals = principalsOf(model);
   const context = (p: Principal) =>
@@ -195,6 +321,29 @@ export function operationAccess(
     const access: RootFieldAccess["access"] = {};
     let type: string;
     let operations: RootFieldAccess["operations"];
+    // What the field's inputs write through relationship fields.
+    const nested: NestedWrite[] = [];
+    const unresolved = new Set<string>();
+    if (operation.operation === "mutation" && target.kind === "node") {
+      const creates = target.ops.includes("CREATE");
+      const updates = target.ops.includes("UPDATE");
+      for (const arg of sel.arguments ?? []) {
+        if (arg.name.value !== "input" && arg.name.value !== "update") continue;
+        visit(arg.value, {
+          Variable(v) {
+            if (!(v.name.value in variables)) unresolved.add(v.name.value);
+          },
+        });
+        const value = valueFromASTUntyped(
+          arg.value,
+          variables as Record<string, unknown>,
+        );
+        for (const item of asList(value)) {
+          // An upsert may do either; an update re-points and removes.
+          nestedWrites(model, target.node, item, updates || !creates, nested);
+        }
+      }
+    }
     for (const p of principals) {
       const parts: Array<
         { label?: string } & Pick<AccessEntry, "verdict" | "by">
@@ -206,6 +355,26 @@ export function operationAccess(
           parts.push({
             ...(target.ops.length > 1 ? { label: op } : {}),
             ...typeVerdict(context(p), nodeAs(p, target.node), op),
+          });
+        }
+        const seen = new Set<string>();
+        for (const w of nested) {
+          const label =
+            w.kind === "relationship"
+              ? `${w.node.name}.${w.field.name} ${w.op}`
+              : `${w.node.name} ${w.op}`;
+          if (seen.has(label)) continue;
+          seen.add(label);
+          parts.push({
+            label,
+            ...(w.kind === "relationship"
+              ? relationshipVerdict(
+                  context(p),
+                  nodeAs(p, w.node),
+                  fieldAs(p, w.node, w.field),
+                  w.op,
+                )
+              : typeVerdict(context(p), nodeAs(p, w.node), w.op)),
           });
         }
       } else {
@@ -242,6 +411,7 @@ export function operationAccess(
       type,
       operations,
       access,
+      ...(unresolved.size > 0 ? { unresolved: [...unresolved].sort() } : {}),
     });
   }
   const verdicts: Record<string, AccessVerdict> = {};
@@ -323,6 +493,12 @@ export function accessMatrix(
               ruleOps.add(op);
             }
           }
+        }
+        // `@authentication` on the field guards connecting and
+        // disconnecting through it, with or without a rule beside it.
+        for (const op of ["CONNECT", "DISCONNECT"] as const) {
+          const guard = relationshipAuthentication(op);
+          if (guard && f.authentication?.has(guard)) ruleOps.add(op);
         }
         for (const op of [...ruleOps].sort()) {
           for (const p of principals) {
