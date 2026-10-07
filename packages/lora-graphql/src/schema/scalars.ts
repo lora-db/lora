@@ -12,6 +12,19 @@ type TemporalKind =
   | "localdatetime"
   | "duration";
 
+/**
+ * A value this scalar refuses. Coded here, so that it is BAD_USER_INPUT
+ * whichever way it arrived: as a variable, as a literal in the document
+ * (which fails GraphQL validation, before any resolver), through
+ * `execute()` or through another server on `getSchema()`.
+ */
+export function badInput(message: string, nodes?: ValueNode): GraphQLError {
+  return new GraphQLError(message, {
+    ...(nodes ? { nodes } : {}),
+    extensions: { code: "BAD_USER_INPUT" },
+  });
+}
+
 function temporal(
   name: string,
   kind: TemporalKind,
@@ -19,7 +32,7 @@ function temporal(
 ): GraphQLScalarType {
   const parse = (value: unknown) => {
     if (typeof value !== "string" || value.length === 0) {
-      throw new GraphQLError(`${name} must be an ISO-8601 string`);
+      throw badInput(`${name} must be an ISO-8601 string`);
     }
     return { kind, iso: value };
   };
@@ -40,9 +53,7 @@ function temporal(
     parseValue: parse,
     parseLiteral(ast: ValueNode) {
       if (ast.kind !== Kind.STRING) {
-        throw new GraphQLError(`${name} must be an ISO-8601 string`, {
-          nodes: ast,
-        });
+        throw badInput(`${name} must be an ISO-8601 string`, ast);
       }
       return parse(ast.value);
     },
@@ -80,9 +91,6 @@ export const GraphQLDuration = temporal(
   "An ISO-8601 duration, e.g. `P1DT2H`.",
 );
 
-const MIN_SAFE = BigInt(Number.MIN_SAFE_INTEGER);
-const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
-
 function parseBigInt(value: unknown): bigint {
   try {
     if (typeof value === "bigint") return value;
@@ -95,12 +103,18 @@ function parseBigInt(value: unknown): bigint {
   } catch {
     // fall through
   }
-  throw new GraphQLError("BigInt must be an integer or a decimal string");
+  throw badInput("BigInt must be an integer or a decimal string");
 }
 
-/** Pass safe integers as numbers; only true 64-bit values as bigint. */
+// The Node binding types a JavaScript number as an INTEGER only inside
+// [-2^31, 2^32): a larger one, although an integer, is stored as a FLOAT.
+// So only values in that range travel as numbers, and the rest as bigint,
+// which the binding always takes as an INTEGER.
+const NUMBER_MIN = -(2n ** 31n);
+const NUMBER_END = 2n ** 32n;
+
 function toParam(n: bigint): number | bigint {
-  return n >= MIN_SAFE && n <= MAX_SAFE ? Number(n) : n;
+  return n >= NUMBER_MIN && n < NUMBER_END ? Number(n) : n;
 }
 
 export const GraphQLBigInt = new GraphQLScalarType({
@@ -118,9 +132,7 @@ export const GraphQLBigInt = new GraphQLScalarType({
     if (ast.kind === Kind.INT || ast.kind === Kind.STRING) {
       return toParam(parseBigInt(ast.value));
     }
-    throw new GraphQLError("BigInt must be an integer or a decimal string", {
-      nodes: ast,
-    });
+    throw badInput("BigInt must be an integer or a decimal string", ast);
   },
 });
 

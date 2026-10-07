@@ -3,6 +3,7 @@
 // and the GraphQL type of a stored field.
 
 import {
+  GraphQLError,
   GraphQLBoolean,
   GraphQLEnumType,
   GraphQLFloat,
@@ -121,13 +122,41 @@ export function buildBaseTypes(model: GraphModel, hooks: SchemaHooks) {
       const documented = model.scalarDescriptions.get(name);
       const given = hooks.scalars?.[name];
       if (given) {
-        t =
-          documented === undefined || documented === given.description
-            ? given
-            : new GraphQLScalarType({
-                ...given.toConfig(),
-                description: documented,
-              });
+        // A value the implementation refuses is BAD_USER_INPUT, as a
+        // literal and as a variable, like the built-in scalars.
+        const config = given.toConfig();
+        const coded =
+          <A extends unknown[], R>(parse: (...args: A) => R) =>
+          (...args: A): R => {
+            try {
+              return parse(...args);
+            } catch (err) {
+              if (
+                err instanceof GraphQLError &&
+                err.extensions["code"] === undefined
+              ) {
+                throw new GraphQLError(err.message, {
+                  ...(err.nodes ? { nodes: err.nodes } : {}),
+                  originalError: err,
+                  extensions: { ...err.extensions, code: "BAD_USER_INPUT" },
+                });
+              }
+              if (err instanceof GraphQLError) throw err;
+              throw new GraphQLError(
+                err instanceof Error ? err.message : String(err),
+                {
+                  originalError: err instanceof Error ? err : undefined,
+                  extensions: { code: "BAD_USER_INPUT" },
+                },
+              );
+            }
+          };
+        t = new GraphQLScalarType({
+          ...config,
+          description: documented ?? config.description,
+          parseValue: coded(config.parseValue),
+          parseLiteral: coded(config.parseLiteral),
+        });
       } else {
         const base = baseType(stored, undefined) as GraphQLScalarType;
         t = new GraphQLScalarType({

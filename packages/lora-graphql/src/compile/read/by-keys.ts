@@ -58,5 +58,13 @@ export function compileByKeys(
 }
 
 export function keyOf(value: unknown): string {
-  return typeof value === "bigint" ? `n${value}` : JSON.stringify(value);
+  // The same integer may arrive as a number from the database and as a
+  // bigint from an argument: within the safe range they are one key.
+  if (typeof value === "bigint") {
+    return value >= BigInt(Number.MIN_SAFE_INTEGER) &&
+      value <= BigInt(Number.MAX_SAFE_INTEGER)
+      ? value.toString()
+      : `n${value}`;
+  }
+  return JSON.stringify(value);
 }
