@@ -5,6 +5,7 @@
 // response printed under the request.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { parse, validate } from "graphql";
 import { describe, expect, test } from "vitest";
 import { buildModel } from "../src/index.js";
 import { createTestLoraGraphQL } from "../src/testing.js";
@@ -111,6 +112,53 @@ describe.skipIf(!present)("website docs", () => {
       readFileSync(new URL(name, tutorial), "utf8");
     expect(schema?.body).toBe(project("schema.graphql"));
     expect(seed?.body).toBe(project("seed.cypher"));
+  });
+
+  // The directive reference gives every directive an example: each SDL
+  // block must build without a model warning, and each operation must be
+  // valid against the schema of the SDL block before it.
+  test("directives.md: every example builds, every operation is valid", async () => {
+    const examples = blocks(read("directives.md")).filter(
+      (b) => b.language === "graphql",
+    );
+    let schema:
+      | ReturnType<
+          Awaited<ReturnType<typeof createTestLoraGraphQL>>["lora"]["getSchema"]
+        >
+      | undefined;
+    let schemas = 0;
+    let operations = 0;
+    for (const { body } of examples) {
+      if (/^\s*(\{|query\b|mutation\b|subscription\b)/.test(body)) {
+        expect(schema, `no schema before:\n${body}`).toBeDefined();
+        const errors = validate(schema!, parse(body)).map((e) => e.message);
+        expect(errors, body).toEqual([]);
+        operations++;
+        continue;
+      }
+      // Stand-ins for what the options would supply.
+      const callbacks = Object.fromEntries(
+        [...body.matchAll(/callback: "(\w+)"/g)].map((m) => [m[1]!, () => "x"]),
+      );
+      const resolvers: Record<string, Record<string, () => string>> = {};
+      let type = "";
+      for (const line of body.split("\n")) {
+        type = /^type (\w+)/.exec(line)?.[1] ?? type;
+        const field = /^\s+(\w+)[^\n]*@customResolver/.exec(line)?.[1];
+        if (field) (resolvers[type] ??= {})[field] = () => "x";
+      }
+      const t = await createTestLoraGraphQL({
+        typeDefs: body,
+        callbacks,
+        resolvers,
+      });
+      expect(t.lora.model.warnings, body).toEqual([]);
+      schema = t.lora.getSchema();
+      t.close();
+      schemas++;
+    }
+    expect(schemas).toBeGreaterThanOrEqual(40);
+    expect(operations).toBeGreaterThanOrEqual(15);
   });
 
   test("the many-to-many guide runs as written", async () => {
