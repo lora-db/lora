@@ -14,6 +14,9 @@ next, **P2** planned, **P3** when convenient.
 
 ## Engine — Cypher correctness
 
+- [ ] P1 A failing expression inside a write is dropped instead of raised: `SET n.x = 1/0` and `CREATE (:T {d: date('2020-13-01')})` succeed and leave the property absent (the same expressions in `RETURN` raise `LORA_VALIDATION`). Found 2026-10-07, see `docs/design/graphql-input-validation.md`.
+- [ ] P1 Auto-commit `execute` without `timeoutMs` keeps the writes of a statement that then errors (`UNWIND [1,2] AS i CREATE (n:P {id:i}) WITH n WHERE n.id > 1 RETURN 1/0` leaves 2 nodes; with a timeout, 0): the live fast path has no rollback (`lora-database/src/database/occ.rs:56-66`).
+- [ ] P2 `=~` with an invalid or oversized pattern is `null`, not an error, and a failed compile is not cached (`lora-executor/src/eval/regex.rs:27`): 100 rows of `=~ '\\pL{1,300}'` took 4.26 s.
 - [ ] P3 A function with two or more arguments (`coalesce(big, [])`), an operator
       (`big + [x]`) or a map/list literal still copies a carried list per call; a lone
       variable argument (`size(big)`) and row clones share it (`value.rs` `SlotValue`).
@@ -54,6 +57,7 @@ next, **P2** planned, **P3** when convenient.
 
 ## lora-graphql
 
+- [ ] P2 Input validation, phases 2 and 3 (`docs/design/graphql-input-validation.md`): `@normalize`, rules on custom scalars, a Standard Schema `validators` hook, custom formats and a `regexEngine` hook, the new arguments on `@cypher` arguments; then lints, `diff` awareness of tightened rules, a `check --database` scan of stored values, JSON Schema export, rules in input descriptions.
 - [ ] P2 Relationship rules on interface / union targets (refused today).
 - [ ] P2 FULLTEXT: say when an index skips a value type (non-string list elements and properties are skipped silently).
 - [ ] P1 Mutations make several JS round trips under the writer lock — use `tx.executeMany`, fold validation and read-back into the last write (no `executeMany` in `src/`).
@@ -77,6 +81,7 @@ next, **P2** planned, **P3** when convenient.
 
 ## Server and bindings
 
+- [ ] P1 Node binding: a JS `number` parameter is INTEGER only in `[-2^31, 2^32)`; larger integers (`4294967296`, `2**53-1`) arrive as FLOAT, so `CREATE (n {v: $x})` with `5000000000` stores a float (`lora-node/src/json.rs:48-62`).
 - [ ] P1 HTTP server: no auth, TLS or rate limiting.
 - [ ] P1 HTTP `/query` has no timeout/deadline; Python, Go and Ruby pass none either.
 - [ ] P2 `tracing-subscriber` + configurable log level in `lora-server` (logs are invisible today).
