@@ -1,0 +1,166 @@
+// Join table vs relationship figure. Every colour is a theme token so
+// the drawing follows light and dark mode without a second asset.
+
+.figure {
+  margin: 1.75rem 0 2rem;
+}
+
+.panels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+
+  @media (max-width: 720px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  padding: 1rem 1rem 0.9rem;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 10px;
+  background: var(--brand-surface-c, var(--ifm-color-emphasis-0));
+
+  svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-width: 400px;
+    margin: auto;
+    overflow: visible;
+  }
+}
+
+.eyebrow {
+  margin: 0 0 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.note {
+  margin: 0.75rem 0 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.caption {
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--ifm-color-emphasis-700);
+}
+
+// --- tables -----------------------------------------------------------
+
+.box {
+  fill: var(--ifm-background-color);
+  stroke: var(--ifm-color-emphasis-400);
+  stroke-width: 1.25;
+}
+
+.header {
+  fill: var(--ifm-color-emphasis-200);
+}
+
+.tableName {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 13px;
+  font-weight: 700;
+  fill: var(--ifm-font-color-base);
+}
+
+.column {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 12.5px;
+  fill: var(--ifm-font-color-base);
+}
+
+.tag {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 10.5px;
+  font-weight: 700;
+  fill: var(--ifm-color-emphasis-600);
+}
+
+.accent {
+  .box {
+    stroke: var(--brand-accent-b);
+    stroke-width: 1.75;
+  }
+
+  .header {
+    fill: var(--brand-accent-b-soft);
+  }
+
+  .tableName,
+  .tag {
+    fill: var(--brand-accent-b);
+  }
+}
+
+.link {
+  fill: none;
+  stroke: var(--ifm-color-emphasis-500);
+  stroke-width: 1.25;
+  stroke-dasharray: 4 3;
+}
+
+.dot {
+  fill: var(--ifm-color-emphasis-500);
+}
+
+// --- graph ------------------------------------------------------------
+
+.node {
+  fill: var(--ifm-background-color);
+  stroke: var(--ifm-color-emphasis-400);
+  stroke-width: 1.5;
+}
+
+.nodeLabel {
+  font-size: 15px;
+  font-weight: 700;
+  fill: var(--ifm-font-color-base);
+}
+
+.nodeSub {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 11px;
+  fill: var(--ifm-color-emphasis-700);
+}
+
+.edge {
+  fill: none;
+  stroke: var(--brand-accent-b);
+  stroke-width: 2;
+}
+
+.arrowHead {
+  fill: var(--brand-accent-b);
+}
+
+.edgeLabelBox {
+  fill: var(--brand-accent-b-soft);
+  stroke: var(--brand-accent-b);
+  stroke-width: 1.25;
+}
+
+.edgeLabel {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 12px;
+  font-weight: 700;
+  fill: var(--brand-accent-b);
+}
+
+.edgeProps {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 12.5px;
+  fill: var(--ifm-font-color-base);
+}

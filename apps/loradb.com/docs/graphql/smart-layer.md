@@ -94,9 +94,12 @@ operation files, and exits non-zero on any finding. Options:
 - `--database dir [--name app]`: checks an existing database as it is, and
   reports indexes it has that the API does not use.
 
-`check` also prints lint notes that do not fail the run: types with
-mutations but no rules, filters no index applies to, and list
-relationships without `@cardinality` or statistics.
+`check` also prints lint notes that do not fail the run: filters no index
+applies to (`CASE_INSENSITIVE`, `IS_NULL`), list relationships without
+`@cardinality` or statistics, and label scans inside a `CALL { }` body
+such as a `@cypher` statement's own `MATCH` (a plan report's `notes`). A
+`@mutation` type whose writes no rule guards is not a note: it is a
+`security` finding and fails the run.
 
 `check` plans queries. Mutation statements need the data they write
 against, so they are not plan-checked.
@@ -111,9 +114,17 @@ that where it can:
   parsing or validation.
 - Ad hoc documents passed to `execute({ source })` are cached by source
   text.
-- Each read root field caches its compiled statements per field node,
-  exact variables, claims, and the `$context` values the compile read. A
-  repeated `festivals(limit: 20)` drops from 0.14 ms to 0.06 ms end to end.
+- Each read root field caches its compiled statements per field node, on
+  what the compile read: the variables the field uses, and the claims and
+  `$context` values it looked up. A claim used only as a rule's filter
+  value (`"$jwt.sub"`) is bound as a parameter, so different users share
+  one compile. A repeated `festivals(limit: 20)` drops from 0.14 ms to
+  0.06 ms end to end.
+- The cache is bounded: 16 entries per field node, 4096 in total, and
+  `compileCacheBytes` (default 64 MiB; the parsed document cache has the
+  same cap again). A field whose variables exceed 16 KiB, such as a long
+  `in` list or an embedding vector, is compiled but not cached. Changing
+  statistics clears it.
 - Statement text depends only on the shape of the input, not on values, so
   LoraDB's own plan cache is hit for every repeat.
 
@@ -128,7 +139,8 @@ produce new field nodes each time and miss the per-field cache; use
 
 `@cypher` statements are checked, not trusted blindly:
 
-- **At startup:** every `$parameter` must be a field argument or `$jwt`,
+- **At startup:** every `$parameter` must be a field argument, `$jwt` or
+  `$viewer`,
   and statements on `Query` and object fields may not contain write
   clauses. Unused arguments, `OPTIONAL MATCH` and statements that never use
   `this` are warnings in `lora.model.warnings`.
@@ -158,7 +170,7 @@ commit it reports a `WriteChange`:
 | `connected`, `disconnected` | Relationships, by declaring field and both keys |
 | `entities` | Every node whose observable state changed, relationship ends included |
 | `types`, `relationshipTypes` | The node and relationship types touched |
-| `broad` | `true` for `@cypher` mutations, whose write-set is unknown |
+| `broad` | `true` when the write-set is unknown: a `@cypher` mutation, or an engine reset seen through the change feed |
 | `timestamp` | When the write was committed |
 | `before` | Stored values before the write, for types with `@subscription(previousState: true)` |
 
@@ -189,9 +201,12 @@ Limits worth knowing:
   `@cypher` mutations, other instances), with keys and relationship fields
   resolved. A database directory is open in one process at a time, so this
   is not a cross-process feed. If the library's reader falls behind the
-  engine, it resumes from the last position it read. The position is kept
-  in memory only: a new instance starts at the current commit, and writes
-  made while no instance was running are not replayed. `onWrite` still
+  engine, it resumes from the last position it read. The feed opens with
+  the first `changes()` consumer or subscriber and starts at the commit
+  current then. The position is kept in memory only, so writes made while
+  nothing was listening are not replayed. A feed error is reported to
+  `onError` with `field: "changeFeed"`, and the feed reopens after a
+  backoff of 100 ms up to 10 s. `onWrite` still
   reports this instance's mutations. Call `lora.close()` to stop the feed.
 - A `changes()` consumer that falls `maxQueuedChanges` (default 1000)
   behind is ended with an error rather than buffered without bound.
@@ -208,10 +223,24 @@ tag), a cache per token, and a TTL for writes the library cannot see.
 ## S6: statistics and cost {#s6-statistics-and-cost}
 
 Every operation gets a cost estimate before it runs: the rows it touches,
-multiplying page sizes through nested lists, capped by `@cardinality`, and
 summed across root fields. An operation over `maxCost` (default 50 000)
 fails with `COST_EXCEEDED` and runs nothing. A subscription is charged per
-event.
+event, and its `where` once when it starts.
+
+The estimate has three parts:
+
+- **Projected rows.** Page sizes multiply through nested lists, each level
+  capped by the relationship's `@cardinality` or measured degree.
+- **Filters.** A root filter no index answers is charged the label's node
+  count (the page size without statistics). `CONTAINS` and `ENDS_WITH`
+  are charged as scans even with a TEXT index. Each relationship a filter
+  follows is charged its degree per candidate, per level, which is why
+  `maxFilterDepth` (default 2) caps the nesting.
+- **Totals.** `totalCount`, aggregates and grouped reads are charged every
+  match, not the page.
+
+`@cypher` fields are not part of the estimate: see
+[their cost](/docs/graphql/cypher-fields#cost).
 
 ```ts
 const lora = new LoraGraphQL({
@@ -228,10 +257,14 @@ const lora = new LoraGraphQL({
   field's estimate; see [observability](/docs/graphql/observability).
 - `execute()` returns the estimate in `extensions.cost`, so clients can
   tune their queries.
-- `lora.analyze()` (or `lora-graphql analyze schema.graphql --database dir`) samples node
-  counts and relationship degrees. Pass the result to
-  `lora.useStatistics()` and estimates use the measured p99 degree instead
-  of the page size.
+- `lora.analyze()` (or `lora-graphql analyze schema.graphql --database dir`)
+  counts nodes and measures relationship degrees, and applies the result.
+  Estimates then use each relationship's measured maximum degree instead
+  of the page size. The maximum and not a percentile, because callers pick
+  the parent they nest under: an estimate from the p99 degree of one test
+  graph came to 22,621 rows for a query that returned 537,790 objects when
+  rooted at a hub. Run it in production, on a schedule, or load a saved
+  result with `lora.useStatistics()`.
 
 Statistics also shape plans: a relationship filter that names a related
 node by key starts from that node and expands instead of scanning the

@@ -195,7 +195,9 @@ test("trip members", async () => {
 ```
 
 `expectAccess(t, { as, context?, allowed?, denied? })` runs each entry as
-the caller (`as` is the claims; leave it out to act anonymously), each in
+the caller (`as` is the claims; write `as: undefined` to act anonymously,
+which is required so a forgotten `as` is a type error and not a silent
+anonymous test), each in
 a transaction that is rolled back, so probes leave no trace. Entries:
 
 - `read`, `create`, `update` or `delete` a `Type key`, with optional input
@@ -205,8 +207,15 @@ a transaction that is rolled back, so probes leave no trace. Entries:
   relationship, `update-edge` updates the one current edge.
 
 Denied means `FORBIDDEN`, `UNAUTHENTICATED`, `NOT_FOUND` (a node the
-caller cannot see) or, for `read`, not visible. Any other error is a
-mismatch either way. When entries disagree, it throws once, listing every
+caller cannot see), or an operation that did nothing: a `read` that
+returns no node, an `update` that returns `null`, a `delete` with
+`nodesDeleted: 0`, a `disconnect` that removed nothing. Any other error is
+a mismatch either way.
+
+`expectAccess` runs through `lora.execute()` and `lora.begin()`, so the
+document guards and `persistedOnly` apply to its probes and the driver
+needs transactions. Its first argument is the test database or any
+`LoraGraphQL` instance. When entries disagree, it throws once, listing every
 mismatch:
 
 ```text
@@ -229,5 +238,10 @@ For the whole picture rather than chosen entries, snapshot
   production, so tests hit the same limits and code paths.
 - **Change events.** `t.lora.onWrite(fn)` and `t.lora.changes()` work in
   tests, so you can assert the exact write-set of a mutation.
+- **`run()` and `data()` call `graphql-js` directly.** They skip what
+  `execute()` adds: the document guards, `extensions.cost` and
+  `extensions.timing`, collapsed errors, `BAD_USER_INPUT` on variable
+  errors and operation-level transactions. Use `t.lora.execute()` to test
+  those.
 - **Keep versions in lockstep.** Test against the same
   `@loradb/lora-node` version you deploy.

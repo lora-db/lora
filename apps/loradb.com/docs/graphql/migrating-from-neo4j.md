@@ -46,9 +46,12 @@ prints the rewritten SDL on standard output, preceded by one
 `# TODO(migrate): ...` line per decision left to you:
 
 - `@id` becomes `@key(generate: true)`, and `@node` is added where it is
-  missing.
-- `@fulltext`, `@subscription(events:)` and the `@relationship`
-  arguments (`queryDirection`, `nestedOperations`) are translated.
+  missing. A type with no `@id` field, or with several, gets a TODO to
+  choose its key, and a `@unique` beside `@id` is dropped as redundant.
+- `@fulltext` (its `indexName` becomes `name`), `@subscription(events:)`
+  (relationship events become `relationships: true`) and the
+  `@relationship` arguments are translated. `queryDirection` is kept only
+  where it was undirected.
 - `@mutation`, `@filterable` and `@sortable` are opt-in here. With
   `--operations` (your client operations, in either the neo4j 5
   `title_CONTAINS` or the neo4j 6 `{ title: { contains } }` form), they
@@ -100,9 +103,9 @@ bite:
 6. **Math and list operators move to `adjust`.**
 7. **Errors carry codes.** `extensions.code` is one of `BAD_USER_INPUT`,
    `INVALID_CURSOR`, `LIMIT_EXCEEDED`, `COST_EXCEEDED`, `UNAUTHENTICATED`,
-   `FORBIDDEN`, `NOT_FOUND`, `CONSTRAINT_VIOLATION` or `DATABASE_ERROR`,
-   plus `PERSISTED_QUERY_ONLY` when the server accepts persisted
-   operations only. See [errors](/docs/graphql/errors).
+   `TIMEOUT`, `FORBIDDEN`, `NOT_FOUND`, `CONSTRAINT_VIOLATION` or
+   `DATABASE_ERROR`, plus `PERSISTED_QUERY_ONLY` and `WRONG_OPERATION_TYPE`
+   from `execute()` and `subscribe()`. See [errors](/docs/graphql/errors).
 
 ## What changes on the server
 

@@ -6,8 +6,32 @@ description: Production security for @loradb/lora-graphql (verified JWTs, masked
 
 # Authorization and security
 
+This page is the reference: the production settings every deployment
+needs, then every rule, operator and default. Two companion pages show
+them at work:
+
+- [Authentication](/docs/graphql/authentication) covers verifying tokens
+  in your server and requiring a signed-in caller.
+- [Authorization recipes](/docs/graphql/authorization-recipes) has
+  complete schemas for common access models (private records, public
+  reads, roles, tenants, teams, private fields), each with the real
+  response every caller gets.
+
 Read the first half of this page before you deploy. The rules in the
 second half are only as good as the claims you give them.
+
+## Which rule does what
+
+| You want | Use | A caller who fails gets |
+| --- | --- | --- |
+| A signed-in caller, or one with a role, for a whole operation | [`@authentication`](#authentication) | `UNAUTHENTICATED` |
+| Rows the caller should not know exist | [`filter`](#filter-rules-hide-nodes) | Nothing: the rows are absent |
+| A write that must satisfy a condition | [`validate`](#validate-rules-fail-the-request) | `FORBIDDEN`, and the write is rolled back |
+| One field refused on some rows | [Field-level `validate`](#field-level-rules) | `FORBIDDEN` on that field |
+| One field blanked on some rows | [`mask`](#field-masks) | A substitute value, no error |
+| Control over who links what | [Rules on the relationship field](#relationship-rules) | `FORBIDDEN` |
+| A role that skips every rule | [`bypass`](#defaults) | |
+| A write rule for every type at once | [`mutations`](#defaults) | `FORBIDDEN` |
 
 ## Before you deploy
 
@@ -39,6 +63,10 @@ async function verifiedClaims(request: Request) {
 A request without `jwt` in the context is unauthenticated. If your claims
 live somewhere else in the context, pass `jwt: (context) => claims` to
 `new LoraGraphQL`.
+
+[Authentication](/docs/graphql/authentication#step-1-verify-the-token-in-your-server)
+has the same for a remote key set, the context function for each server,
+and what to do with an expired token.
 
 ### Mask database errors {#mask-database-errors}
 
@@ -122,10 +150,21 @@ not issue is rejected.
 | --- | --- | --- |
 | `maxCost` | 50 000 | Estimated rows per operation, checked before it runs |
 | `budget(context)` | | The same limit, per request |
-| `timeoutMs` | 10 000 | Every statement; a `signal` in the context cancels |
-| `maxBatch` | 1000 | Nodes one mutation creates or deletes; bulk `limit` |
+| `timeoutMs` | 10 000 | Every statement, and a write's wait for the writer lock; a `signal` in the context cancels |
+| `operationTimeoutMs` | 2 × `timeoutMs` | All root fields of one query together; past it they fail with `TIMEOUT` |
+| `maxConcurrentStatements` | 2 | Statements one operation runs at once, so aliased root fields cannot take every worker |
+| `maxBatch` | 1000 | Nodes one mutation creates, updates or deletes, and ten times as many relationships; bulk `limit` |
 | `maxLimit` | 100 | Page size; more is `LIMIT_EXCEEDED`, not a clamp |
+| `maxFilterDepth` | 2 | Relationship levels in one `where` |
+| `maxListFilter`, `maxStringFilter` | 1000, 10 000 | Items in an `in` list, characters in a string operand |
+| `maxListArgument` | 1000 | Items in a list argument of a `@cypher` field |
+| `maxSubscriptions` | 100 | Live subscriptions per connection or user |
 | `maxQueuedChanges` | 1000 | How far a subscriber may fall behind |
+
+The estimate behind `maxCost` assumes full pages until you give it better
+numbers. Run `lora.analyze()` in production, or declare `@cardinality`, and
+lower `maxCost` on public endpoints. See
+[limits and scaling](/docs/graphql/limitations).
 
 ### Checklist
 
@@ -228,19 +267,29 @@ claim.
 the listed operations, and optionally claims that satisfy `jwt`:
 
 ```graphql
-type Report @node @authentication(operations: [READ], jwt: { roles: { includes: "analyst" } }) {
+type Report
+  @node
+  @authentication(
+    operations: [READ]
+    jwt: { roles: { includes: "analyst" } }
+  ) {
   key: String! @key
 }
 ```
 
 Operations are `READ`, `CREATE`, `UPDATE`, `DELETE`, `CREATE_RELATIONSHIP`,
-`DELETE_RELATIONSHIP` and `SUBSCRIBE`. A failure is `UNAUTHENTICATED` or
-`FORBIDDEN`.
+`DELETE_RELATIONSHIP` and `SUBSCRIBE`; without `operations`, all seven. A
+failure is `UNAUTHENTICATED`, both for a request without claims and for
+one whose claims do not satisfy `jwt`.
 
 On a relationship field, `@authentication` guards writes through the
 field too: `CREATE` and `UPDATE` cover setting it in a create or update
 input, `CREATE_RELATIONSHIP` a `connect` or nested `create` through it, and
 `DELETE_RELATIONSHIP` a `disconnect` or nested `delete`.
+
+[Authentication](/docs/graphql/authentication#step-3-require-a-caller)
+shows each placement with the response an anonymous and a signed-in
+caller get.
 
 ### @authorization
 
@@ -285,6 +334,13 @@ type Post
   author: User! @relationship(type: "WROTE", direction: IN)
 }
 ```
+
+That schema combines four access paths in one type. The
+[recipes](/docs/graphql/authorization-recipes) take them one at a time:
+[private records](/docs/graphql/authorization-recipes#private-records),
+[public read, owner write](/docs/graphql/authorization-recipes#public-read-owner-write),
+[roles](/docs/graphql/authorization-recipes#roles) and
+[tenants](/docs/graphql/authorization-recipes#multi-tenant).
 
 Rule defaults:
 
@@ -392,12 +448,34 @@ anonymous requests is the schema's setting: see
 
 They do not hide nodes from filters. Use `filter` rules for that.
 
+A common pairing is a `filter` for reads, updates and deletes plus a
+`validate` for `CREATE`, where there is no row to filter yet. Without the
+second, a caller could create a row they would then not be allowed to
+see, such as a note owned by someone else. The
+[private records recipe](/docs/graphql/authorization-recipes#private-records)
+shows both, and what each refusal looks like to the client.
+
 #### How rules are evaluated
 
 - **Claim tests run in JavaScript at compile time.** An admin's statement
   carries no filter at all, so statements stay specialised and
   index-friendly. Node conditions are compiled into the statement and run
   in the database.
+- **The rule's own node.** `"${node.path}"` in a `node` part reads the
+  node the rule is about, so a rule can relate two of its paths. "The
+  request's recipient is in the conversation it gates" is
+  `{ node: { conversation: { participants: { some: { key: { eq: "${node.to.key}" } } } } } }`.
+  The path steps through single relationships only and ends on a scalar
+  field; the value is read in the statement and stands for one value, not
+  inside a list. In a relationship field's rules, `${source.path}`,
+  `${target.path}` and `${edge.property}` read its ends and properties the
+  same way.
+- **Claim operators.** `eq`, `in` and `includes` compare structurally.
+  `lt`, `lte`, `gt` and `gte` only match number claims, and `contains`,
+  `startsWith` and `endsWith` only string claims. `exists` is the only
+  test that can decide on an absent claim, and even `exists: false` denies
+  a request with no token at all. A `jwt` test compares with literals: a
+  `${...}` placeholder in its operand is a model error.
 - **A test that needs a claim or context value the request lacks is
   unknown.** It is false where it stands, and a `NOT` over it is false too,
   so negation can never turn a missing claim into a grant.
@@ -417,7 +495,10 @@ type Post @node {
   royalties: Int
     @authorization(
       validate: [
-        { operations: [READ], where: { node: { author: { key: { eq: "$jwt.sub" } } } } }
+        {
+          operations: [READ]
+          where: { node: { author: { key: { eq: "$jwt.sub" } } } }
+        }
       ]
     )
   author: User! @relationship(type: "WROTE", direction: IN)
@@ -471,7 +552,8 @@ type ConnectionRequest @node {
 
 type Person @node {
   key: String! @key
-  lastSeenAt: DateTime @authorization(mask: [{ unless: { node: { isViewer: true } } }])
+  lastSeenAt: DateTime
+    @authorization(mask: [{ unless: { node: { isViewer: true } } }])
 }
 ```
 
@@ -485,6 +567,9 @@ type Person @node {
   the claims settle the mask, so row order cannot hint at hidden values.
 - Masks sit on scalar fields of `@node` types, other than the `@key`.
 
+The [private fields recipe](/docs/graphql/authorization-recipes#private-fields)
+puts a mask and a field rule side by side, with the response each gives.
+
 ### Named rules {#named-rules}
 
 Define a rule once and use it as `{ rule: "name" }` wherever a rule part
@@ -493,7 +578,9 @@ may stand:
 ```graphql
 extend schema
   @authorizationRules(
-    rules: [{ name: "admin", where: { jwt: { roles: { includes: "admin" } } } }]
+    rules: [
+      { name: "admin", where: { jwt: { roles: { includes: "admin" } } } }
+    ]
   )
 
 type Trip
@@ -507,7 +594,9 @@ type Trip
       ]
     }
   )
-  @authorization(filter: [{ where: { OR: [{ rule: "member" }, { rule: "admin" }] } }]) {
+  @authorization(
+    filter: [{ where: { OR: [{ rule: "member" }, { rule: "admin" }] } }]
+  ) {
   key: String! @key
   owner: Person! @relationship(type: "OWNS", direction: IN)
   members: [Person!]! @relationship(type: "MEMBER", direction: IN)
@@ -516,7 +605,13 @@ type Trip
 type PackingItem
   @node
   @authorization(
-    filter: [{ where: { OR: [{ node: { trip: { rule: "member" } } }, { rule: "admin" }] } }]
+    filter: [
+      {
+        where: {
+          OR: [{ node: { trip: { rule: "member" } } }, { rule: "admin" }]
+        }
+      }
+    ]
   ) {
   key: String! @key
   trip: Trip! @relationship(type: "PACKED_FOR", direction: OUT)
@@ -534,6 +629,9 @@ type PackingItem
 - An unknown name, a type rule shadowing a schema rule, and a cycle
   (reported with its chain) are model errors.
 - `bypass` and `mutations` in `@authorizationDefaults` may name rules too.
+
+The [teams recipe](/docs/graphql/authorization-recipes#teams-and-membership)
+uses a named rule from two types.
 
 ### Schema-wide defaults and bypass {#defaults}
 
@@ -559,8 +657,16 @@ extend schema
 - `requireAuthentication` (default `true`) decides whether rules apply to
   anonymous requests: see [anonymous callers](#anonymous-callers).
 - `mutations` is the write rule (`CREATE`, `UPDATE`, `DELETE`) of every
-  `@mutation` type that declares no rule for those operations. A type's own
-  rules replace it, they never merge with it.
+  `@mutation` type, per operation: it guards each of those operations that
+  none of the type's own rules covers. A `validate` rule covers the
+  operations it lists. A `filter` rule covers `UPDATE` and `DELETE` when it
+  lists them (by default it does), never `CREATE`, since there is no node
+  to filter before it exists. So a type with only a `filter` rule keeps the
+  default on `CREATE`, and one with a `validate` rule for `UPDATE` keeps it
+  on `CREATE` and `DELETE`. Where a type's rule covers an operation it
+  replaces the default for that operation; they never merge.
+- The bypass also skips rules on root `@cypher` fields, which cannot opt
+  out.
 - `check()` fails on a `@mutation` type whose generated writes nothing
   guards: no `@authentication` or `@authorization` rule for them and no
   `mutations` default. Declare writes every caller may make with
@@ -580,16 +686,25 @@ type Trip @node @mutation {
     @authorization(
       validate: [
         # the owner invites
-        { operations: [CONNECT], where: { source: { owner: { isViewer: true } } } }
+        {
+          operations: [CONNECT]
+          where: { source: { owner: { isViewer: true } } }
+        }
         # the owner removes anyone; a member removes only themselves
         {
           operations: [DISCONNECT]
           where: {
-            OR: [{ source: { owner: { isViewer: true } } }, { target: { isViewer: true } }]
+            OR: [
+              { source: { owner: { isViewer: true } } }
+              { target: { isViewer: true } }
+            ]
           }
         }
         # only the member answers their own invitation, and reads its marker
-        { operations: [UPDATE_EDGE, READ_EDGE], where: { target: { isViewer: true } } }
+        {
+          operations: [UPDATE_EDGE, READ_EDGE]
+          where: { target: { isViewer: true } }
+        }
       ]
     )
 }
@@ -621,6 +736,13 @@ type Trip @node @mutation {
   hidden value.
 - Deleting a node removes its relationships without `DISCONNECT` rules:
   who may delete the node is the type's `DELETE` rule.
+- A connect or disconnect goes through an update of the declaring node,
+  so the caller must first pass that type's `UPDATE` filter. A member who
+  may remove themselves from a project has to be admitted by the
+  project's `UPDATE` filter; narrow what else they can change with
+  field-level rules. The
+  [teams recipe](/docs/graphql/authorization-recipes#teams-and-membership)
+  works through exactly this.
 
 ### Relationship properties
 
@@ -633,7 +755,10 @@ type Membership @relationshipProperties {
   role: String
     @authorization(
       validate: [
-        { operations: [CREATE, UPDATE], where: { jwt: { roles: { includes: "admin" } } } }
+        {
+          operations: [CREATE, UPDATE]
+          where: { jwt: { roles: { includes: "admin" } } }
+        }
       ]
     )
   joinedAt: DateTime! @settable(onUpdate: false)
@@ -641,9 +766,25 @@ type Membership @relationshipProperties {
 ```
 
 - One `@relationshipProperties` type can serve fields on both ends, so
-  these property rules test claims (`jwt`) only, and a `node` part is a
-  model error. To test the ends of the relationship, use `UPDATE_EDGE` and
-  `READ_EDGE` [on the relationship field](#relationship-rules).
+  `CREATE` and `UPDATE` rules on a property test claims (`jwt`) only, and
+  a `node` part is a model error. To test the ends of the relationship on
+  a write, use `UPDATE_EDGE` [on the relationship field](#relationship-rules).
+- `READ` rules may also test the relationship's `source`, `target` and
+  `edge`, and `viewer`, when every relationship field that uses the
+  properties type declares the same two node types. They are decided per
+  relationship: below, every member reads `rsvp`, and only the member
+  themselves reads their own `lastReadAt`. A relationship that fails reads
+  that property as `FORBIDDEN` while the others still read.
+
+  ```graphql
+  type Membership @relationshipProperties {
+    rsvp: String
+    lastReadAt: String
+      @authorization(
+        validate: [{ operations: [READ], where: { target: { isViewer: true } } }]
+      )
+  }
+  ```
 - Setting the property on connect or nested create checks `CREATE` for a
   new relationship and `UPDATE` for one that already exists.
   `update: { edge }` checks `UPDATE`.
@@ -678,6 +819,9 @@ whose claim is `lou`.
 - Keys shared by two owners (`f1:lou`) stay hand-written rules, written
   with `${viewer.key}`.
 
+See it run in the
+[owner-scoped keys recipe](/docs/graphql/authorization-recipes#owner-scoped-keys).
+
 ### What a refused write reveals
 
 - A write whose rules the claims alone settle against (a role check, the
@@ -686,7 +830,22 @@ whose claim is `lou`.
 - A create under CREATE rules answers the same whether its key or a
   `@unique` value is taken by a node the caller may not create: it gets
   the answer a free value gets. A create that would succeed answers
-  `CONSTRAINT_VIOLATION`.
+  `CONSTRAINT_VIOLATION`. On a type with no CREATE `validate` rule, a
+  `@unique` value held by a hidden node still reads as taken.
+- Update and delete targets, by key, bulk or nested, must pass the type's
+  `READ` filter as well as its `UPDATE` or `DELETE` filter. A key the
+  caller cannot read answers like a missing one (`null`, or
+  `nodesDeleted: 0`), never `FORBIDDEN`.
+- Write errors never name a node the caller cannot read. A delete that
+  would leave such a node without a required relationship fails with
+  `a Secret the caller can't read requires a Person (Secret.holder)`.
+- Replacing a single relationship whose current target the caller cannot
+  read is `FORBIDDEN` (`not allowed to replace F.genre`) and leaves it in
+  place: a caller cannot remove a relationship of a node they cannot see.
+- A field-rule filter is false, never null, on rows that fail the rule, so
+  `NOT` over it reveals no more than the filter itself. The same holds for
+  relationship and `@cypher` fields with READ rules, `<field>Exists` and
+  `<field>Connection`.
 
 ### Checking access {#checking-access}
 
@@ -697,13 +856,25 @@ whose claim is `lou`.
   `masked`, `denied`, `unauthenticated`) and the rules that decide it. The
   order is stable, so a snapshot in CI turns access changes into diffs.
   See [the CLI](/docs/graphql/cli).
+- `lora.operationAccess(document)` answers the same question for one
+  operation: which kinds of caller can run it, root field by root field,
+  nested relationship writes included. Use it to check a client bundle at
+  build time. See the [API reference](/docs/graphql/api-reference#operationaccessdocument-operationname-variables).
 - `lora-graphql check` fails on unguarded `@mutation` writes (see
-  [defaults](#defaults)) and lints authorization: a filter rule every
-  signed-in caller passes, a rule that needs no claims in a schema that
-  leaves `requireAuthentication` unset, a write rule a signed-out caller
-  passes once it is `false`, field rules the
-  schema's bypass skips, and one line naming every type the bypass
-  reaches.
+  [defaults](#defaults)) and lints authorization:
+  - a filter rule every signed-in caller passes;
+  - a rule that needs no claims in a schema that leaves
+    `requireAuthentication` unset, and a write rule a signed-out caller
+    passes once it is `false`;
+  - an `UPDATE` rule that tests a single relationship the update input can
+    re-point, and a `CREATE` rule that tests a field `UPDATE` can change:
+    the caller passes the rule, then changes what it tested;
+  - a write rule that tests a masked field, which lets a caller probe the
+    hidden value by whether the write succeeds;
+  - nested creates, updates or deletes offered into a type whose rules
+    refuse everyone but admins;
+  - field rules the schema's bypass skips, and one line naming every type
+    the bypass reaches.
 - `expectAccess` probes the database as a given caller, in transactions
   that are rolled back: `"read Trip lou:tomorrowland"`,
   `"connect Trip.members lou:tomorrowland → f1"`, and so on. See
@@ -718,6 +889,14 @@ whose claim is `lou`.
 - Cypher you run yourself with `tx.execute`, including relationship
   writes that relationship rules would otherwise check.
 - `onWrite` and `changes()`. They see every committed write.
-- Deleted nodes in subscriptions. A deletion cannot be checked after the
-  fact, so it goes only to subscribers following that `key` without a
-  `where`.
+- Relationships removed by deleting a node. Relationship rules check
+  connects and disconnects, not the relationships a delete takes with it.
+- Deleted nodes in subscriptions, in part. On a type with READ or
+  SUBSCRIBE rules a deletion goes only to subscribers following that
+  `key`, checked on the node as it was inside the deleting transaction.
+  With `changeFeed: true` only followers whose claims alone settle the
+  rules get it.
+- Relationship rules (`CONNECT`, `DISCONNECT`, `UPDATE_EDGE`, `READ_EDGE`)
+  on a field whose target is an interface or union. They are refused at
+  startup; guard such a field with `@authentication` or rules on the
+  member types.

@@ -22,9 +22,25 @@ reports exactly what every mutation wrote. The
 :::note Scope
 The generated API is deliberately small. Reads are on by default; writes
 and subscriptions are opt in per type; a field is filterable or sortable
-only when you say so. See [what is not supported](#what-is-not-supported)
+only when you say so. See [limits and scaling](/docs/graphql/limitations)
 before you plan a migration.
 :::
+
+## Find your way
+
+| You want to | Read |
+| --- | --- |
+| Learn it by building something | [The tutorial](/docs/graphql/tutorial): a blog API from an empty directory |
+| Get a server running | This page, then [serving the schema](/docs/graphql/serving) |
+| Model data you know from SQL | [Many-to-many relationships](/docs/graphql/many-to-many), then [relationships](/docs/graphql/relationships) |
+| Look up a directive | [Directive reference](/docs/graphql/directives) |
+| See what clients can query and write | [Queries and mutations by example](/docs/graphql/examples), then [the generated API](/docs/graphql/generated-api) |
+| Write a query the generator does not cover | [@cypher fields](/docs/graphql/cypher-fields) |
+| Sign callers in | [Authentication](/docs/graphql/authentication) |
+| Decide who may see and change what | [Authorization recipes](/docs/graphql/authorization-recipes), then the [reference](/docs/graphql/authorization) |
+| Gate a schema in CI | [The CLI](/docs/graphql/cli) and [testing](/docs/graphql/testing) |
+| Go to production | [Limits and scaling](/docs/graphql/limitations) and [observability](/docs/graphql/observability) |
+| Move from `@neo4j/graphql` | [Migrating](/docs/graphql/migrating-from-neo4j) |
 
 ## Install
 
@@ -80,6 +96,11 @@ A few things to notice:
 - `@filterable(byValue: [...])` and `@sortable` decide what clients may
   filter and sort by. Nothing else is filterable.
 - `@query(aggregate: true)` adds aggregate root fields.
+
+`Festival.followers` and its `Follows` properties are a many-to-many: the
+relationship plays the part a join table plays in SQL.
+[Many-to-many relationships](/docs/graphql/many-to-many) walks through
+that from the relational side.
 
 The [directive reference](/docs/graphql/directives) lists every directive,
 and [the generated API](/docs/graphql/generated-api) shows what each type
@@ -145,8 +166,9 @@ createServer(yoga).listen(4000);
 
 The library never verifies tokens. `verifiedClaims` stands for your own
 verification (for example `jose`'s `jwtVerify`): put only verified claims in
-the context. The [authorization](/docs/graphql/authorization) page covers
-this and the other production settings.
+the context. [Authentication](/docs/graphql/authentication) has that
+function in full, and [authorization](/docs/graphql/authorization) the
+other production settings.
 
 `lora.envelopPlugin()` brings the document guards (depth, aliases, root
 fields, lexer tokens, introspection) to GraphQL Yoga and other Envelop
@@ -257,6 +279,9 @@ installed.
 
 ## What is not supported
 
+The short list. [Limits and scaling](/docs/graphql/limitations) has the
+full one, with every bound and its default.
+
 - Offset pagination. Connections use keyset cursors only.
 - `update` and `delete` with an optional, unbounded `where`. Bulk writes
   need a `where` and are bounded by `limit`.
@@ -264,27 +289,48 @@ installed.
   per type and per field.
 - JWT verification. Your server verifies the token.
 - Federation.
-- Subscriptions over writes made outside the library, by default.
-  Without options, subscriptions and change events see only the writes
-  made through this `LoraGraphQL` instance. With `changeFeed: true`
-  (lora-node) they are fed by the engine's committed change feed and see
-  every committed write to that database, whichever path in the owning
-  process made it (raw Cypher, `@cypher` mutations, other instances), in
-  commit order. A database directory is open in one process at a time, so
-  there are no cross-process subscriptions. See
+- Subscriptions over writes made outside the library, by default. With
+  `changeFeed: true` (lora-node) they see every committed write made in
+  the owning process. A database directory is open in one process at a
+  time, so there are no cross-process subscriptions. See
   [change tracking](/docs/graphql/smart-layer#s5-write-sets-and-change-tracking).
 
 ## Next
 
+**Start**
+
+- [Tutorial: build a GraphQL API](/docs/graphql/tutorial)
 - [Serving the schema](/docs/graphql/serving)
+
+**Model**
+
 - [Directive reference](/docs/graphql/directives)
+- [Relationships](/docs/graphql/relationships)
+- [Many-to-many relationships](/docs/graphql/many-to-many)
+- [@cypher fields](/docs/graphql/cypher-fields)
+
+**The API**
+
 - [The generated API](/docs/graphql/generated-api)
+- [Queries and mutations by example](/docs/graphql/examples)
+
+**Access control**
+
+- [Authentication](/docs/graphql/authentication)
+- [Authorization and security](/docs/graphql/authorization)
+- [Authorization recipes](/docs/graphql/authorization-recipes)
+
+**Operate**
+
 - [The smart layer](/docs/graphql/smart-layer)
-- [Authorization](/docs/graphql/authorization)
 - [Observability](/docs/graphql/observability)
 - [Testing](/docs/graphql/testing)
 - [CLI](/docs/graphql/cli)
+
+**Reference**
+
 - [API reference](/docs/graphql/api-reference)
 - [Errors](/docs/graphql/errors)
 - [Translation rules](/docs/graphql/translation-rules)
+- [Limits and scaling](/docs/graphql/limitations)
 - [Migrating from @neo4j/graphql](/docs/graphql/migrating-from-neo4j)

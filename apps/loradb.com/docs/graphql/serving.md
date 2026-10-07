@@ -23,7 +23,11 @@ The package ships runnable versions of these servers in
 | Document guards | Wire them in (see [below](#document-guards)) | Applied |
 | Parsed document cache | The server's, if any | Built in, by source text (500 documents) |
 | Persisted operations | The server's mechanism | `persist()`, `loadManifest()`, `persistedOnly` |
-| Cost in `extensions.cost` | No | Yes |
+| Cost in `extensions.cost`, timing in `extensions.timing` | No | Yes |
+| Variable errors coded `BAD_USER_INPUT` | No | Yes |
+| [Repeated errors collapsed](/docs/graphql/errors#repeated-errors) | With `lora.envelopPlugin()` | Yes |
+| `mutationTransaction: "operation"` | With `lora.envelopPlugin()`, or a `transaction` in the context | Yes |
+| Read-sets for cache invalidation (`readSet: true`) | No | Yes |
 | Subscriptions | Yes, through the server's `subscribe` | `subscribe()`; `execute()` runs queries and mutations |
 
 Both run the same resolvers, so authorization, limits, cost checks and
@@ -64,8 +68,8 @@ decoded but unverified claims into `jwt` grants whatever they say.
 
 The document guards bound the document before anything is compiled:
 nesting depth (12), aliases (30), root fields (20), lexer tokens (5000),
-and introspection (off when `NODE_ENV` is `production`). `execute()` and
-`persist()` apply them. Every other server needs them wired in, and the
+and introspection (off when `NODE_ENV` is `production`). `execute()`,
+`subscribe()` and `persist()` apply them. Every other server needs them wired in, and the
 table shows how:
 
 | Server | Wiring |
@@ -81,8 +85,14 @@ standalone export: pass it the same `guards` object (or nothing, for the
 defaults). With `guards: false`, `validationRules()` returns no rules and
 `envelopPlugin()` applies no limits.
 
-A guard failure is `LIMIT_EXCEEDED`; a blocked introspection query is
-`FORBIDDEN`.
+A depth, alias or root field failure is `LIMIT_EXCEEDED`, and a blocked
+introspection query is `FORBIDDEN`. The token limit stops the parser, so a
+document over it comes back as a syntax error without a code.
+
+`lora.envelopPlugin()` also checks, once, that the server executes with
+the same copy of `graphql` the library loaded, and logs an error when it
+does not. Two copies in `node_modules` make schema checks fail in ways
+that are hard to trace; `npm ls graphql` shows them.
 
 ## Cancellation and timeouts
 
@@ -96,7 +106,24 @@ statements instead of letting them run to the timeout:
 
 The signal also ends the request's subscription streams.
 
+Two more limits keep one request from holding the database:
+
+- **`operationTimeoutMs`** (default twice `timeoutMs`) is a deadline for
+  all root fields of a query together. Past it, running statements are
+  aborted and unfinished fields fail with `TIMEOUT`. Without it, twenty
+  aliased root fields could run for twenty times `timeoutMs`.
+- **`maxConcurrentStatements`** (default 2) is how many statements one
+  operation runs at once. Reads run on Node's worker pool, four threads
+  by default; this keeps one request's aliases from taking all of them.
+
+A write also waits for LoraDB's single writer lock, for at most
+`timeoutMs`, and then fails with `DATABASE_ERROR`.
+
 ## GraphQL Yoga
+
+A complete, tested project with each of the servers below is in
+[`examples/tutorial`](https://github.com/lora-db/lora/tree/main/packages/lora-graphql/examples/tutorial),
+and the [tutorial](/docs/graphql/tutorial) builds it step by step.
 
 ```ts title="server.ts"
 import { createServer } from "node:http";
@@ -247,6 +274,15 @@ useServer(
 );
 ```
 
+`maxSubscriptions` (default 100) counts live subscriptions per context
+object. `graphql-ws` calls a `context` function once per subscription, so
+with the code above every subscription has its own context and the limit
+never applies. Count per connection instead: put the connection in the
+context (`connection: ctx`) and pass
+`subscriptionScope: (context) => context.connection` to `new LoraGraphQL`.
+Returning the user's id holder works the same way when a user may open
+several connections.
+
 `graphql-ws` does not apply the document guards itself. Validate
 subscription documents with `[...specifiedRules, ...lora.validationRules()]`
 in its `onSubscribe` hook if clients can send arbitrary documents.
@@ -322,6 +358,12 @@ does all three with `@graphql-yoga/plugin-response-cache`. Types need a
 - Run `lora.assertSchema({ create: true })` at startup, or apply
   `lora-graphql requirements --ddl` in your migrations.
 - Key any response cache per caller.
+- Set `subscriptionScope` if your transport builds a context per
+  subscription.
+- Run `lora.analyze()` on production data, or declare `@cardinality`, so
+  the cost limit reflects the real graph.
+- Size the worker pool for your read load: see
+  [limits and scaling](/docs/graphql/limitations#scaling).
 - Call `lora.close()` on shutdown when `changeFeed` is on.
 
 The [authorization](/docs/graphql/authorization#before-you-deploy) page

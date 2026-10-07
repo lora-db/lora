@@ -118,6 +118,7 @@ projects. See [Queries → Overview](/docs/queries) or jump into the
 | Ship a Ruby app or Rails service | [Ruby binding](/docs/getting-started/ruby) |
 | Embed inline in a Rust binary | [Rust crate](/docs/getting-started/rust) |
 | Want a polyglot HTTP service | [HTTP server](/docs/getting-started/server) + [HTTP API reference](/docs/api/http) |
+| Want a typed GraphQL API over the graph | [GraphQL for LoraDB](/docs/graphql), on the Node binding |
 
 All bindings share the same query language and result shapes — see
 [Result formats](/docs/concepts/result-formats) for the four response

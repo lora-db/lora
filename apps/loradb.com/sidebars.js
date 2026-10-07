@@ -93,26 +93,11 @@ module.exports = {
       type: 'category',
       label: 'API',
       collapsed: false,
-      items: ['api/http'],
-    },
-    {
-      type: 'category',
-      label: 'GraphQL',
-      collapsed: true,
       items: [
-        'graphql/index',
-        'graphql/serving',
-        'graphql/directives',
-        'graphql/generated-api',
-        'graphql/smart-layer',
-        'graphql/authorization',
-        'graphql/observability',
-        'graphql/testing',
-        'graphql/cli',
-        'graphql/api-reference',
-        'graphql/errors',
-        'graphql/translation-rules',
-        'graphql/migrating-from-neo4j',
+        'api/http',
+        // The GraphQL layer has its own navbar tab and sidebar (below);
+        // this link keeps it reachable from the main docs tree.
+        { type: 'link', label: 'GraphQL', href: '/docs/graphql' },
       ],
     },
     {
@@ -126,6 +111,66 @@ module.exports = {
       label: 'Developer',
       collapsed: true,
       items: ['developer/functions'],
+    },
+  ],
+  // Rendered under the "GraphQL" navbar tab. Pages stay at
+  // /docs/graphql/*, so existing links keep working.
+  graphql: [
+    {
+      type: 'category',
+      label: 'Start',
+      collapsed: false,
+      items: ['graphql/index', 'graphql/tutorial', 'graphql/serving'],
+    },
+    {
+      type: 'category',
+      label: 'Model',
+      collapsed: false,
+      items: [
+        'graphql/directives',
+        'graphql/relationships',
+        'graphql/many-to-many',
+        'graphql/cypher-fields',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'The API',
+      collapsed: false,
+      items: ['graphql/generated-api', 'graphql/examples'],
+    },
+    {
+      type: 'category',
+      label: 'Access control',
+      collapsed: false,
+      items: [
+        'graphql/authentication',
+        'graphql/authorization',
+        'graphql/authorization-recipes',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Operate',
+      collapsed: false,
+      items: [
+        'graphql/smart-layer',
+        'graphql/observability',
+        'graphql/testing',
+        'graphql/cli',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Reference',
+      collapsed: false,
+      items: [
+        'graphql/api-reference',
+        'graphql/errors',
+        'graphql/translation-rules',
+        'graphql/limitations',
+        'graphql/migrating-from-neo4j',
+      ],
     },
   ],
 };

@@ -31,8 +31,11 @@ installed (a dev dependency is enough). The other commands work
 offline.
 
 **Exit codes.** `0` on success. `1` when a check fails, a diff has
-breaking changes, the SDL is invalid, or a file cannot be read. `2` for
-a usage error, with the usage text on standard error.
+breaking changes or a destructive database statement, the SDL is invalid,
+or a file cannot be read. `2` for a usage error or an unknown command,
+with the usage text on standard error. There is no `--help` flag: run
+`lora-graphql` with no arguments for the usage. Flags a command does not
+know are ignored, so check the spelling when one seems to have no effect.
 
 An invalid SDL prints the same `ModelError` the constructor throws, with
 every problem located:
@@ -124,6 +127,7 @@ repeatedly. It is the offline equivalent of
 lora-graphql check schema.graphql \
   [--operations <file|dir>]... \
   [--variables vars.json] \
+  [--context ctx.json] \
   [--baseline plans.json [--update-baseline]] \
   [--row-budget <n>] \
   [--database <dir> [--name <db>]] \
@@ -200,6 +204,22 @@ object keyed by operation name, either the full `<path>#<Name>` or just
 }
 ```
 
+### Contexts
+
+Rules are compiled into statements, so the plan an operation gets depends
+on who runs it. `--context ctx.json` gives the GraphQL context per
+operation name, with `*` for every other operation:
+
+```json title="ctx.json"
+{
+  "*": { "jwt": { "sub": "u1" } },
+  "AdminReport": { "jwt": { "sub": "a1", "roles": ["admin"] } }
+}
+```
+
+Without it, operations are planned as an anonymous caller.
+`check({ operations })` takes the same as `context` on each operation.
+
 ### Plan baselines
 
 ```bash
@@ -231,12 +251,6 @@ With `--database`, `check` opens that database (`--name` defaults to
 requirements as errors, and lists indexes the API does not use. Plans
 then reflect the real data. The database must not be open in another
 process.
-
-:::note
-In 0.16.2 and earlier, the backing index of a `NODE KEY` or `UNIQUE`
-constraint is also listed as `unused`. Those lines are harmless and do
-not fail the run.
-:::
 
 ### JSON output
 
@@ -311,14 +325,15 @@ output at startup:
 lora.useStatistics(JSON.parse(await readFile("stats.json", "utf8")));
 ```
 
-Cost estimates then use each relationship's measured p99 degree instead
-of the page size. Rerun it when the shape of the data changes. See
+Cost estimates then use each relationship's measured maximum degree
+instead of the page size. Rerun it when the shape of the data changes. See
 [statistics and cost](/docs/graphql/smart-layer#s6-statistics-and-cost).
 
 ## diff
 
 ```bash
 lora-graphql diff old.graphql new.graphql [--allow-breaking] [--json]
+lora-graphql diff --base <git-ref> <file|dir>... [--allow-breaking] [--json]
 ```
 
 Compares two SDLs and prints what the database and the API need:
@@ -337,9 +352,29 @@ dangerous  An optional field seats on input type FestivalWhere was added.
 ```
 
 Database statements are in the order to run them, and destructive ones
-(drops, data migrations) are flagged. It exits `1` when the API has
-breaking changes, unless `--allow-breaking` is set, so it can gate a
-pull request. `--json` prints the full `SchemaDiff`.
+(a dropped constraint or index, a relabel, a moved property) are flagged.
+It exits `1` when the API has breaking changes or the database needs a
+destructive statement, so it can gate a pull request; `--allow-breaking`
+accepts both, for example when the pull request is labelled for it.
+`--json` prints the full `SchemaDiff`. Things the diff cannot act on, such
+as a removed type whose nodes stay in the database, are printed as `note`
+lines, and identical schemas print `no changes`.
+
+`--base <git-ref>` compares the schema at a git ref with the working tree,
+so a schema split over many files needs no script:
+
+```bash
+lora-graphql diff --base origin/main src/schema
+```
+
+It takes files or directories (searched recursively for `.graphql` and
+`.gql`), concatenates each side in path order, and compares the two. A ref
+that has none of the paths has nothing to compare and exits `0`; a ref
+that is not a commit is an error.
+
+With `graphql` 17 installed the API comparison is unavailable (that
+version removed the function it relies on) and is reported as a single
+breaking `UNSUPPORTED` change. Run `diff` with `graphql` 16 in CI.
 
 Renaming a field is a remove plus an add. To rename the API field while
 keeping the stored property, use `@alias(property:)`: the diff then

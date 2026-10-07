@@ -525,4 +525,5 @@ For the engine-level cases see the
 - [**Cookbook**](../cookbook) — scenario-based recipes.
 - [**Data Types**](../data-types/overview) — host-value mapping.
 - [**WASM guide**](./wasm) — same API, browser target.
+- [**GraphQL for LoraDB**](/docs/graphql): a schema-first GraphQL API on top of this binding.
 - [**Troubleshooting**](../troubleshooting).

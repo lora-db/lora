@@ -33,6 +33,10 @@ function tierForUrl(url) {
     return { priority: 0.8, changefreq: "monthly" };
   }
 
+  if (p === "/docs/graphql") {
+    return { priority: 0.8, changefreq: "weekly" };
+  }
+
   if (p.startsWith("/docs/concepts/")) {
     return { priority: 0.7, changefreq: "monthly" };
   }
@@ -505,6 +509,12 @@ module.exports = {
           label: "Docs",
           position: "left",
         },
+        {
+          type: "docSidebar",
+          sidebarId: "graphql",
+          label: "GraphQL",
+          position: "left",
+        },
         { to: "/blog", label: "Blog", position: "left" },
         { to: "/features", label: "Features", position: "left" },
         { to: "/benchmarks", label: "Benchmarks", position: "left" },
@@ -559,6 +569,7 @@ module.exports = {
           title: "Reference",
           items: [
             { label: "Queries", to: "/docs/queries" },
+            { label: "GraphQL", to: "/docs/graphql" },
             { label: "Functions", to: "/docs/functions/overview" },
             { label: "Data types", to: "/docs/data-types/overview" },
             { label: "Concepts", to: "/docs/concepts/graph-model" },
@@ -610,6 +621,7 @@ module.exports = {
         "rust",
         "ruby",
         "go",
+        "sql",
         "cypher",
       ],
     },

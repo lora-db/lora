@@ -28,12 +28,22 @@ html[data-theme='dark'] {
       width: initial;
       flex-grow: 1;
       flex-wrap: nowrap;
+      // Without this the row refuses to go below its content width, so
+      // the right group can never shrink (see the 997–1199px rule below).
+      min-width: 0;
     }
 
     &__items {
       min-width: auto;
 
       &:not(.navbar__items--right) {
+        // Size the left group by its content. Infima gives it a zero
+        // flex-basis, which splits the row evenly with the right group
+        // and, with five links, squeezed the brand title to "L…".
+        @media (min-width: 996px) {
+          flex: 0 0 auto;
+        }
+
         .navbar__link {
           @media (max-width: 996px) {
             display: none;
@@ -76,6 +86,19 @@ html[data-theme='dark'] {
 
       &--right {
         flex-grow: 1;
+
+        // Just above the desktop breakpoint the six left links, the
+        // search and the icons do not fit side by side. Let the search
+        // give up width there instead of pushing the icons off-screen.
+        @media (min-width: 997px) and (max-width: 1199px) {
+          flex-shrink: 1;
+          min-width: 0;
+
+          [class^='navbarSearchContainer_'] {
+            flex-shrink: 1;
+            min-width: 2.5rem;
+          }
+        }
 
         // On mobile the brand is hidden and the search fills the row —
         // allow this group (and its search child) to shrink so icons

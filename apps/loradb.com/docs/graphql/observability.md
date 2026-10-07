@@ -10,7 +10,10 @@ Every GraphQL root field becomes one or a few Cypher statements, so the
 useful questions are about statements: which ran, how long they took, how
 many rows they returned, and what they were estimated to cost. The
 library reports these through hooks, spans and metrics. None of them is
-on by default, and a failing hook never fails a request.
+on by default. A throwing `onStatementEnd`, `onCost`, `onError` or metrics
+call never fails a request. `onStatement` and a `timing` function are
+called inline: an exception from one of those fails the field or the
+`execute()` call, so keep them trivial.
 
 | Option | Fires | Use it for |
 | --- | --- | --- |

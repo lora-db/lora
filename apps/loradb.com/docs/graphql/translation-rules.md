@@ -8,7 +8,9 @@ description: How @loradb/lora-graphql compiles GraphQL operations into LoraDB Cy
 
 Every read root field compiles to one Cypher statement, except a
 connection that also asks for `totalCount` or `aggregate`: those are
-counted by a second statement in the same read transaction. Every mutation
+counted by a second statement in the same read transaction. A root
+`@cypher` field guarded by a `viewer` rule runs one seek for the guard
+first. Every mutation
 compiles to a short sequence of statements in one interactive
 transaction. This page shows the shapes the compiler chooses and why. You
 do not need it to use the library, but it helps when you read a plan, a
@@ -19,7 +21,10 @@ do not need it to use the library, but it helps when you read a plan, a
 ```graphql
 {
   festivals(
-    where: { capacity: { gte: 1000 }, followers: { some: { key: { eq: "u1" } } } }
+    where: {
+      capacity: { gte: 1000 }
+      followers: { some: { key: { eq: "u1" } } }
+    }
     sort: [{ name: ASC }]
     limit: 10
   ) {

@@ -40,24 +40,27 @@ is the full table.
 | `@node(labels:, plural:)` | type | A node label set. Default: the type name. The first label is the primary one: reads match on it, indexes and constraints go on it, and no two types may share it. Creates set every label. `plural` names the root fields |
 | `@key(generate:, scope:, separator:)` | field | Required, unique and immutable. A non-null `String`, `ID`, `Int` or `BigInt`, exactly one per type. The sort tie-breaker, cursor anchor and mutation address. `generate: true` (on `ID` or `String`) fills a UUID on create when the input leaves it out. `scope: VIEWER` makes a created key start with the caller's `@viewer` claim and `separator` (default `:`), as in `lou:tomorrowland`. See [owner-scoped keys](/docs/graphql/authorization#owner-scoped-keys) |
 | `@unique` | field | A uniqueness constraint |
+| `@uniqueTogether(fields:, where:)` | type, repeatable | No two nodes share the values of `fields`: scalars, single relationships (by the target's key) and at most one list relationship (as a set). Enforced by every generated mutation. See [uniqueness across relationships](/docs/graphql/relationships#uniqueness-across-relationships) |
 | `@index(kind: RANGE \| TEXT \| POINT)` | field | An explicit index. Usually inferred from `@filterable` and `@sortable` |
-| `@relationship(...)` | field | An edge to a `@node` type, interface or union. See [below](#relationship) |
+| `@relationship(...)` | field | An edge to a `@node` type, interface or union. See [below](#relationship) and the [relationships](/docs/graphql/relationships) page |
 | `@declareRelationship` | interface field | Every implementation declares this relationship (type and direction may differ), so clients can select it on the interface |
 | `@relationshipProperties` | type | Properties carried by a relationship type |
 | `@alias(property:)` | field | The API name differs from the stored property |
 | `@private` | field | Stored, never exposed |
-| `@readonly` | field | Exposed, never client-settable |
+| `@readonly` | field | Exposed, never client-settable. On a relationship: the field is left out of the create and update inputs |
 | `@settable(onCreate:, onUpdate:)` | field | Which mutations may set it, for example set once on create. On a relationship: whether the inputs offer it. On a relationship property: `onUpdate: false` also refuses a re-connect that would change it |
 | `@selectable(onRead:, onAggregate:)` | field | `onRead: false` makes a field write-only. On a relationship property it leaves the edge type too (`onAggregate: false`: the edge aggregates); with every property hidden, the edge has no `properties` |
-| `@default(value:)` | field | Stored on create when the input leaves the field out |
-| `@timestamp(operations: [CREATE, UPDATE])` | field | Set to the current time; never client-settable. On `DateTime`, `LocalDateTime` or `Date` |
-| `@populatedBy(callback:, operations: [CREATE, UPDATE])` | field | Computed on write by a named callback from the `callbacks` option; never client-settable. See [below](#populatedby) |
+| `@default(value:)` | field | Stored on create when the input leaves the field out. On a relationship property: when the relationship is created |
+| `@timestamp(operations: [CREATE, UPDATE])` | field | Set to the current time; not in the inputs unless you [opt in](#supplying-a-computed-field). On `DateTime`, `LocalDateTime` or `Date` |
+| `@populatedBy(callback:, operations: [CREATE, UPDATE])` | field | Computed on write by a named callback from the `callbacks` option; not in the inputs unless you [opt in](#supplying-a-computed-field). Not on relationship properties. See [below](#populatedby) |
 | `@cardinality(max:)` | list relationship | Declared fan-out, used by cost estimates |
 | `@cypher(statement:, columnName:)` | field | A field backed by a Cypher statement. See [below](#cypher) |
+| `@size(max:)` | argument of a `@cypher` field | The most items a list argument takes. Without it, `maxListArgument` (1000) applies |
+| `@range(min:, max:)` | argument of a `@cypher` field | Inclusive bounds of an `Int` or `Float` argument, or of each item of a list |
 | `@customResolver(requires:)` | field | A field computed in JavaScript by a resolver from the `resolvers` option |
 | `@storedAs(type:)` | custom scalar | How a custom scalar is stored: `STRING`, `INT`, `FLOAT`, `BOOLEAN`, `DATETIME` or `DATE` |
-| `@fulltext(indexes: [{ name, fields, analyzer, queryName }])` | type | FULLTEXT indexes over `String` fields, each with a search root field. `analyzer`: `STANDARD` (default) or `SIMPLE`. The first index defaults to `name: "<label>_search"` and `search<Plural>`; later ones need a `name` and get `search<Plural>By<Name>` |
-| `@vector(dimensions:, similarity:, queryName:)` | `[Float!]` field | A VECTOR index and a similarity root field. `dimensions` 1 to 4096; `similarity`: `COSINE` (default) or `EUCLIDEAN`; the root field defaults to `similar<Plural>` |
+| `@fulltext(indexes: [{ name, fields, analyzer, queryName }])` | type | FULLTEXT indexes over `String` and `ID` fields and lists of them, each with a search root field. A field with a mask, a READ `validate` rule or READ `@authentication` cannot be indexed. `analyzer`: `STANDARD` (default) or `SIMPLE`. The first index defaults to `name: "<label>_search"` and `search<Plural>`; later ones need a `name` and get `search<Plural>By<Name>` |
+| `@vector(dimensions:, similarity:, queryName:)` | `[Float!]` field | A VECTOR index and a similarity root field. `dimensions` 1 to 4096; `similarity`: `COSINE` (default) or `EUCLIDEAN`; the root field defaults to `similar<Plural>`, or `similar<Plural>By<Field>` when the type has several vector fields |
 | `@plural(value:)` | interface, union | The root field's name |
 
 ### @relationship
@@ -82,13 +85,18 @@ followers: [User!]!
 | `properties` | none | A `@relationshipProperties` type for properties on the edge |
 | `queryDirection` | `DIRECTED` | `UNDIRECTED` reads follow the relationship both ways; writes use `direction` |
 | `onDelete` | `DETACH` | Deleting this node: `DETACH` removes the relationships, `CASCADE` deletes the related nodes too, `RESTRICT` refuses while related nodes remain |
-| `nestedOperations` | all | Which nested writes mutation inputs offer: `CREATE`, `CONNECT`, `DISCONNECT`, `UPDATE`, `DELETE` |
+| `nestedOperations` | `[CREATE, CONNECT, DISCONNECT, UPDATE, DELETE]` | Which nested writes mutation inputs offer. A sixth value, `UPDATE_EDGE`, offers updating the relationship's properties without the connected node |
 | `aggregate` | `true` | `false` drops the field's aggregates and aggregate filter |
 
 A single relationship (`genre: Genre`) holds at most one node, and a
 required one (`author: User!`) must stay set. Both are enforced from both
 sides on every write, not only declared. List relationships are written
 `[T!]!`, and the relationship type must be `SCREAMING_SNAKE_CASE`.
+
+The [relationships](/docs/graphql/relationships) page covers everything
+this directive generates, and
+[many-to-many relationships](/docs/graphql/many-to-many) walks through it
+from a relational join table.
 
 ### @cypher
 
@@ -107,32 +115,24 @@ type Festival @node {
 }
 ```
 
-- `this` is the parent node, field arguments are `$parameters`, and `$jwt`
-  holds the request's claims.
-- `columnName` is inferred from `RETURN x` or `RETURN ... AS x`.
+- `this` is the parent node, field arguments are `$parameters`, `$jwt`
+  holds the request's claims and `$viewer` the key of the caller's node.
+- `columnName` is inferred when the last `RETURN` has one item.
 - A `@cypher` field may return scalars, `@node` types, interfaces or unions
   over them, or an object type without `@node` whose fields are read from a
   returned map.
-- Arguments must be scalars or enums, and `jwt` is reserved.
-- SDL argument defaults (`peers(limit: Int = 2)`) are kept in the
-  published schema and applied at execution, on graphql 16 and 17. The
-  engine refuses <CypherCode code="LIMIT null" /> and
-  <CypherCode code="SKIP null" />, so a client passing an explicit
-  `limit: null` gets an error instead of every row.
+- Arguments must be scalars or enums; `jwt` and `viewer` are reserved
+  names. `@size(max:)` and `@range(min:, max:)` bound list and number
+  arguments.
 - On `Query` and object types the statement may not write. On `Mutation` it
-  may, but the library cannot know what it wrote: its `onWrite` event is
-  broad, and so are its subscription events unless `changeFeed: true`
-  feeds them from the engine.
-- A scalar, non-list `@cypher` field of a `@node` type may take
-  `@filterable` and `@sortable` when every argument has a default. The
-  statement then runs per node before the filter, in root fields only, and
-  no index applies.
+  may, but the library cannot know what it wrote.
+- `@authentication` and `@authorization(validate:)` guard a root `@cypher`
+  field.
 - Statements are trusted server code. They run with the database's full
   access, and rules on the owning type do not reach inside them.
 
-The library checks statements at startup (every `$parameter` must be an
-argument or `$jwt`, no writes outside `Mutation`) and plans each one with
-`explain()` in `check()`. See [the smart layer](/docs/graphql/smart-layer#s4-cypher-checks).
+The [@cypher fields](/docs/graphql/cypher-fields) page covers all of this
+in detail, including what the library checks at startup and in `check()`.
 
 ### @customResolver and @storedAs
 
@@ -199,14 +199,44 @@ mutation with `CONSTRAINT_VIOLATION` and writes nothing. (In 0.16.2 and
 earlier, a non-null `@populatedBy` field is refused at startup on a type
 with `@mutation(CREATE)`; declare it nullable there.)
 
+### Supplying a computed field
+
+`@timestamp` and `@populatedBy` fields are computed, so they are not in the
+create and update inputs. To let some callers supply the value (a seed
+script backfilling history, an import that keeps its dates), opt in with
+`@settable(onCreate: true)` or `onUpdate: true` **and** a field-level
+`validate` rule for that operation that says who may:
+
+```graphql
+createdAt: DateTime!
+  @timestamp(operations: [CREATE])
+  @settable(onCreate: true)
+  @authorization(
+    validate: [{ operations: [CREATE], where: { jwt: { roles: { includes: "admin" } } } }]
+  )
+```
+
+A supplied value is stored as given; an omitted one is computed as before.
+Without the rule the combination is a model error, so a computed field
+never becomes client-settable by accident. The schema's bypass and
+`@authentication` do not count as the rule, and relationship properties
+cannot opt in.
+
+### Directives on extensions
+
+A directive on `extend type`, `extend interface`, `extend union`,
+`extend scalar` or `extend schema` counts as one on the definition.
+Repeatable directives add up; a non-repeatable directive written on both
+is an error.
+
 ## API directives
 
 | Directive | On | Meaning |
 | --- | --- | --- |
-| `@query(read:, aggregate:)` | type, interface, union | Generated reads. On by default; `aggregate: true` adds aggregate and grouped roots |
+| `@query(read:, aggregate:)` | type, interface, union | Generated reads. On by default; `read: false` also removes the type's search and subscription fields. `aggregate: true` adds aggregate and grouped roots on a node type; interfaces and unions have no aggregates, and the argument has no effect there |
 | `@mutation(operations: [CREATE, UPDATE, DELETE])` | type | Generated mutations. None without it |
 | `@subscription(operations:, relationships:, previousState:)` | type | Generated subscriptions. None without it |
-| `@filterable(byValue: [...])` | field | Filter operators. Bare: `EQ` and `IN` (lists: `INCLUDES`). On a relationship: enables relationship filters |
+| `@filterable(byValue: [...])` | field | Filter operators. Bare: `EQ` and `IN` (lists: `INCLUDES`). On a relationship: enables relationship filters, and takes no `byValue` |
 | `@sortable` | field | Sort and keyset-paginate by this field. Not on lists, points or durations. On a relationship property: `sort: [{ edge: { ... } }]` |
 | `@groupBy` | field | A grouping key of `<plural>Grouped(by:)`: a readable, non-list, non-point field. Needs `@query(aggregate: true)` |
 | `@limit(default:, max:)` | type, interface, union, list relationship | Page size bounds. May only lower the global `max` |
@@ -244,7 +274,7 @@ not a rule's own setting. See
 | --- | --- |
 | `READ`, `CREATE`, `UPDATE`, `DELETE` | The node operations |
 | `CREATE_RELATIONSHIP`, `DELETE_RELATIONSHIP` | Connects and disconnects, for filter rules on both ends and for `@authentication` |
-| `SUBSCRIBE` | Subscriptions (`@authentication`) |
+| `SUBSCRIBE` | Subscriptions: for `@authentication`, and for `filter` and `validate` rules that apply to subscription events on top of the `READ` rules |
 | `CONNECT` | On a relationship field: creating one of its relationships (connect, nested create) |
 | `DISCONNECT` | On a relationship field: removing one of its relationships (disconnect) |
 | `UPDATE_EDGE` | On a relationship field: setting properties on an existing relationship (edge update, re-connect) |
