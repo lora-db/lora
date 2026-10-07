@@ -422,8 +422,15 @@ the keyed path, so their write-sets are exact too.
 
 ### What every mutation guarantees
 
-Each mutation runs in one interactive transaction and checks, before it
-commits, that:
+Before a mutation opens its transaction, its input is checked against
+the fields' [validation rules](/docs/graphql/directives#validation)
+(`@length`, `@pattern`, `@format`, `@range`, `@multipleOf`, `@size`). A
+bad value is `BAD_USER_INPUT` with
+[every violation listed](/docs/graphql/errors#validation-errors), and
+nothing runs.
+
+Each mutation then runs in one interactive transaction and checks, before
+it commits, that:
 
 - every `connect` target exists and is visible to the caller (`NOT_FOUND`);
 - a single relationship stays single and a required one stays set, even
@@ -431,7 +438,10 @@ commits, that:
   (`CONSTRAINT_VIOLATION`);
 - every [`@uniqueTogether`](/docs/graphql/relationships#uniqueness-across-relationships)
   holds (`CONSTRAINT_VIOLATION`);
-- `@authorization` validate rules hold, type and field level (`FORBIDDEN`).
+- `@authorization` validate rules hold, type and field level (`FORBIDDEN`);
+- a value computed during the write, by `adjust` or a `@populatedBy`
+  callback, still satisfies the field's validation rules
+  (`CONSTRAINT_VIOLATION`).
 
 Any failure rolls the whole mutation back.
 

@@ -55,6 +55,14 @@ is an error.
 [`@selectable`](#selectable) ·
 [`@storedAs`](#storedas)
 
+**Validation:**
+[`@length`](#length) ·
+[`@pattern`](#pattern) ·
+[`@format`](#format) ·
+[`@range`](#range) ·
+[`@multipleOf`](#multipleof) ·
+[`@size`](#size)
+
 **Relationships:**
 [`@relationship`](#relationship) ·
 [`@relationshipProperties`](#relationshipproperties) ·
@@ -63,8 +71,6 @@ is an error.
 
 **Computed fields:**
 [`@cypher`](#cypher) ·
-[`@size`](#size) ·
-[`@range`](#range) ·
 [`@customResolver`](#customresolver)
 
 **Reading:**
@@ -489,6 +495,227 @@ new LoraGraphQL({
 });
 ```
 
+## Validation
+
+These directives say which values a field accepts. A mutation whose input
+breaks one is refused with `BAD_USER_INPUT` before anything is written,
+and the error lists every broken rule at once: see
+[validation errors](/docs/graphql/errors#validation-errors).
+
+Write a rule once, on the field. It applies wherever the field is set:
+create, update, upsert and nested creates, and for relationship
+properties on connect and on edge updates. Three things hold for all of
+them:
+
+- `null` and absent values pass. Whether a value is required is the
+  type's business (`String!`).
+- On a list field, [`@size`](#size) is about the list and every other
+  rule applies to each item.
+- Every directive takes `message:`, which replaces the default message.
+
+They validate what clients send through the generated API. Raw Cypher and
+`@cypher` mutations are not checked, and adding a rule does not revisit
+values already stored.
+
+### @length {#length}
+
+How long a `String` or `ID` may be.
+
+```graphql
+type Person @node @mutation {
+  key: String! @key
+  name: String! @length(min: 1, max: 80)
+  bio: String @length(max: 2000, message: "keep it under 2000 characters")
+}
+```
+
+Arguments:
+
+- `min`, `max`: inclusive, either or both.
+
+Length is counted in characters as people see them in most scripts:
+Unicode code points, not bytes and not JavaScript's UTF-16 units. An emoji
+is one. This is also how LoraDB's `size()` counts.
+
+### @pattern {#pattern}
+
+An expression the whole value must match.
+
+```graphql
+type Product @node @mutation {
+  sku: String! @key @length(max: 12) @pattern(regex: "[A-Z]{3}-[0-9]{4,8}")
+  name: String!
+}
+```
+
+Arguments:
+
+- `regex` (required): a JavaScript regular expression, compiled with the
+  `u` flag. In SDL a backslash is written twice: `"\\d+"`.
+
+Two rules keep a pattern safe to run on input you do not control:
+
+- **The whole value must match.** `"[a-z]+"` refuses `"abc1"`, with no
+  need for `^` and `$`. This is how Cypher's `=~` works, and it differs
+  from JSON Schema, where a pattern may match anywhere.
+- **The field needs `@length(max:)`.** A pattern is only ever run on a
+  value within that length.
+
+At startup each pattern is also run against inputs built to make it
+backtrack, and a pattern such as `(a+)+` that takes too long is refused.
+That check finds the usual repetition mistakes; it is not a proof.
+
+### @format {#format}
+
+A named shape a `String` or `ID` must have.
+
+```graphql
+type Person @node @mutation {
+  key: String! @key
+  email: String @format(as: "email")
+  website: String @format(as: "url")
+  phone: String @format(as: "e164", message: "use the form +31201234567")
+}
+```
+
+Argument:
+
+- `as` (required): one of the formats below. An unknown name is an error
+  at startup.
+
+The formats:
+
+- `email`: the rule browsers apply to an email input, at most 254
+  characters. `email-strict` also requires a top-level domain, so
+  `ada@localhost` is refused. Neither proves the address exists.
+- `url`: an absolute `http` or `https` URL. Other schemes are refused on
+  purpose: a stored `javascript:` or `file:` URL is an attack waiting for
+  the page that renders it.
+- `uuid`: the 8-4-4-4-12 shape, in either case, any version.
+- `hostname`, `ipv4`, `ipv6`.
+- `slug`: lower-case letters and digits separated by single hyphens.
+- `hex-color`: `#` and 3, 4, 6 or 8 hex digits.
+- `ulid`.
+- `e164`: the shape of an international phone number, `+` and 7 to 15
+  digits. A shape, not proof the number is assigned.
+
+Dates and times need no format: `Date`, `Time`, `DateTime` and `Duration`
+are types.
+
+### @range {#range}
+
+The bounds of an `Int`, `Float` or `BigInt`.
+
+```graphql
+type Product @node @mutation {
+  sku: String! @key
+  stock: Int! @range(min: 0)
+  discount: Float @range(min: 0, exclusiveMax: 1)
+  rating: Float @range(min: 1, max: 5)
+}
+```
+
+Arguments:
+
+- `min`, `max`: inclusive bounds.
+- `exclusiveMin`, `exclusiveMax`: bounds the value may not equal.
+
+`0` is a value like any other: `stock: 0` passes `min: 0`, and
+`discount: 1` fails `exclusiveMax: 1`. A `BigInt` beyond 2^53 is compared
+approximately, since the bounds are floats.
+
+An [`adjust`](/docs/graphql/generated-api#updates-and-adjust) is computed
+in the database, so its result is checked there: an adjustment that
+leaves the range fails with `CONSTRAINT_VIOLATION` and is rolled back.
+
+```graphql
+mutation {
+  updateProduct(sku: "ABC-1234", adjust: { stock: { subtract: 3 } }) {
+    product {
+      stock
+    }
+  }
+}
+```
+
+On an `Int` or `Float` argument of a [`@cypher`](#cypher) field, `@range`
+takes `min` and `max` and is checked before the statement runs:
+
+```graphql
+type Festival @node {
+  key: String! @key
+  capacity: Int
+}
+
+type Query {
+  largest(count: Int = 10 @range(min: 1, max: 100)): [Festival!]!
+    @cypher(
+      statement: """
+      MATCH (f:Festival)
+      RETURN f ORDER BY f.capacity DESC LIMIT $count
+      """
+    )
+}
+```
+
+### @multipleOf {#multipleof}
+
+An `Int` or `Float` must be a whole multiple of a value.
+
+```graphql
+type Product @node @mutation {
+  sku: String! @key
+  price: Float @range(min: 0) @multipleOf(value: 0.01)
+  packSize: Int @multipleOf(value: 6)
+}
+```
+
+Argument:
+
+- `value` (required): greater than zero, and an integer on an `Int`
+  field.
+
+Floating point is handled with a tolerance, so `0.3` is a multiple of
+`0.1` here although `0.3 % 0.1` is not zero. For money, storing an
+integer number of cents is still the more robust choice.
+
+### @size {#size}
+
+How many items a list field holds.
+
+```graphql
+type Post @node @mutation {
+  slug: String! @key
+  tags: [String!] @size(max: 5, unique: true) @length(max: 20)
+}
+```
+
+Arguments:
+
+- `min`, `max`: inclusive, either or both.
+- `unique`: `true` refuses the same item twice.
+
+`@size` is about the list, and `@length` here is about each tag. A
+violation of an item rule carries the item's index in its path.
+
+A list grown with `adjust: { tags: { push: [...] } }` is checked after
+the push, like a `@range`.
+
+On a list argument of a [`@cypher`](#cypher) field, `@size(max:)` is the
+most items the argument takes, checked before the statement runs. Without
+it the `maxListArgument` option applies (1000 by default).
+
+```graphql
+type Festival @node {
+  key: String! @key
+}
+
+type Query {
+  festivalsByKeys(keys: [String!]! @size(max: 50)): [Festival!]!
+    @cypher(statement: "MATCH (f:Festival) WHERE f.key IN $keys RETURN f")
+}
+```
+
 ## Relationships
 
 The [relationships](/docs/graphql/relationships) page covers everything
@@ -742,54 +969,6 @@ code: they run with the database's full access, and rules on the types
 they touch do not apply inside them. The
 [@cypher fields](/docs/graphql/cypher-fields) page covers return types,
 `$viewer`, guarding root fields and what the library checks.
-
-### @size {#size}
-
-On a list argument of a `@cypher` field: the most items it takes. More is
-`BAD_USER_INPUT` before the statement runs.
-
-```graphql
-type Festival @node {
-  key: String! @key
-}
-
-type Query {
-  festivalsByKeys(keys: [String!]! @size(max: 50)): [Festival!]!
-    @cypher(statement: "MATCH (f:Festival) WHERE f.key IN $keys RETURN f")
-}
-```
-
-Without it, the `maxListArgument` option applies (1000 by default).
-
-### @range {#range}
-
-On an `Int` or `Float` argument of a `@cypher` field: inclusive bounds,
-checked before the statement runs. For a list, each item.
-
-```graphql
-type Festival @node {
-  key: String! @key
-  capacity: Int
-}
-
-type Query {
-  largest(
-    count: Int = 10 @range(min: 1, max: 100)
-    minCapacity: Int = 0 @range(min: 0)
-  ): [Festival!]!
-    @cypher(
-      statement: """
-      MATCH (f:Festival)
-      WHERE f.capacity >= $minCapacity
-      RETURN f ORDER BY f.capacity DESC LIMIT $count
-      """
-    )
-}
-```
-
-Arguments:
-
-- `min`, `max`: either or both.
 
 ### @customResolver {#customresolver}
 

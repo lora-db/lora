@@ -121,6 +121,76 @@ several root fields commits each on its own unless you set
 [`mutationTransaction: "operation"`](/docs/graphql/api-reference#security),
 which makes the whole operation one transaction.
 
+### Validation errors {#validation-errors}
+
+A mutation whose input breaks a field's
+[validation rule](/docs/graphql/directives#validation) is refused before
+anything is written, with every broken rule in one error:
+
+```json
+{
+  "errors": [
+    {
+      "message": "2 values are not valid: input[0].name must be at most 5 characters; input[0].email must be an email address",
+      "path": ["createPersons"],
+      "extensions": {
+        "code": "BAD_USER_INPUT",
+        "violations": [
+          {
+            "path": ["input", 0, "name"],
+            "coordinate": "Person.name",
+            "rule": "maxLength",
+            "params": { "limit": 5 },
+            "message": "must be at most 5 characters"
+          },
+          {
+            "path": ["input", 0, "email"],
+            "coordinate": "Person.email",
+            "rule": "format",
+            "params": { "format": "email" },
+            "message": "must be an email address"
+          }
+        ]
+      }
+    }
+  ],
+  "data": null
+}
+```
+
+Each violation has:
+
+- `path`: where the value is in the mutation's arguments, as keys and
+  list indices. Use it to put the message next to the right form field.
+- `coordinate`: the field whose rule it is, as `Type.field`.
+- `rule` and `params`: the rule and its numbers, named as in JSON Schema.
+  They are enough to write the message in the user's language.
+- `message`: the default English message, or the one the schema gave with
+  `message:`.
+
+The rejected value is never in the error: a rule is often on a password
+or an address, and errors end up in logs.
+
+| `rule` | `params` | From |
+| --- | --- | --- |
+| `minLength`, `maxLength` | `limit` | `@length` |
+| `pattern` | `pattern` | `@pattern` |
+| `format` | `format` | `@format` |
+| `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` | `limit`, `comparison` | `@range` |
+| `multipleOf` | `multipleOf` | `@multipleOf` |
+| `minItems`, `maxItems` | `limit` | `@size` |
+| `uniqueItems` | | `@size(unique: true)` |
+
+At most 100 violations are listed; when there are more,
+`extensions.violationCount` holds the total.
+
+A value computed during the write is checked inside the transaction and
+fails with `CONSTRAINT_VIOLATION` and the same `violations` list: the
+result of an `adjust` (path `["adjust", "<field>"]`), and the value a
+`@populatedBy` callback returned.
+
+The HTTP status is 200, as for every error raised while a mutation runs.
+
 ### Telling library errors apart
 
 ```ts
@@ -170,6 +240,11 @@ example:
   string operand is longer than `maxStringFilter` (10,000 characters);
 - a list argument of a `@cypher` field is longer than its `@size(max:)` or
   `maxListArgument` (1000), or a number is outside its `@range`;
+- a value breaks a field's `@length`, `@pattern`, `@format`, `@range`,
+  `@multipleOf` or `@size`: see [validation errors](#validation-errors);
+- a scalar refuses a value, as a variable or as a literal in the document
+  (an ISO date that is not a string, a `BigInt` that is not an integer, a
+  custom scalar's own check);
 - a vector the engine rejects as invalid.
 
 `execute()` also gives this code to variables that fail coercion (a string

@@ -34,6 +34,7 @@ before you plan a migration.
 | Get a server running | This page, then [serving the schema](/docs/graphql/serving) |
 | Model data you know from SQL | [Many-to-many relationships](/docs/graphql/many-to-many), then [relationships](/docs/graphql/relationships) |
 | Look up a directive | [Directive reference](/docs/graphql/directives) |
+| Validate what clients send | [Validation directives](/docs/graphql/directives#validation) |
 | See what clients can query and write | [Queries and mutations by example](/docs/graphql/examples), then [the generated API](/docs/graphql/generated-api) |
 | Write a query the generator does not cover | [@cypher fields](/docs/graphql/cypher-fields) |
 | Sign callers in | [Authentication](/docs/graphql/authentication) |

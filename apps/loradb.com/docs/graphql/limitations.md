@@ -32,6 +32,11 @@ you plan a production deployment.
   relationships have a connection. See
   [relationships](/docs/graphql/relationships#reading).
 - **Relationship rules on a relationship to an interface or union.**
+- **Validation of stored data.** `@length`, `@range` and the other
+  [validation rules](/docs/graphql/directives#validation) check what
+  clients send through the generated API. Raw Cypher and `@cypher`
+  mutations are not checked, a rule added later does not revisit stored
+  values, and there are no cross-field rules yet.
 - **Plan checks for mutations and subscriptions.** `check` plans queries.
 - **Mutations in the browser.** `@loradb/lora-wasm` serves reads;
   mutations, `explain()`, `check()` and the change feed need
