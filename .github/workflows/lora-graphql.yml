@@ -19,6 +19,8 @@ on:
     branches: [main]
     paths:
       - "packages/lora-graphql/**"
+      # test/docs.test.ts runs the website's GraphQL guide.
+      - "apps/loradb.com/docs/graphql/**"
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -32,6 +34,8 @@ on:
   pull_request:
     paths:
       - "packages/lora-graphql/**"
+      # test/docs.test.ts runs the website's GraphQL guide.
+      - "apps/loradb.com/docs/graphql/**"
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -98,6 +102,19 @@ jobs:
       - name: Inspect publish payload (npm pack --dry-run)
         working-directory: packages/lora-graphql
         run: npm pack --dry-run
+
+      # The project the website tutorial builds: starts its servers and
+      # calls them over HTTP and WebSocket with signed tokens. It installs
+      # the library from this checkout and the binding from npm, so
+      # between a version bump and its release it can be ahead of the
+      # published binding: report, do not block.
+      - name: Tutorial example (servers, tokens, subscriptions)
+        working-directory: packages/lora-graphql/examples/tutorial
+        continue-on-error: true
+        run: |
+          npm install
+          npm run typecheck
+          npm test
 
   published:
     name: against the published binding
