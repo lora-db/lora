@@ -222,14 +222,20 @@ function findRelatedAnchor(
     });
     return {
       clauses,
-      // (anchor)<-[:T]-(this:Label): the field's direction, reversed.
+      // (anchor)<-[:T]-(this:Label): the field's direction, reversed; an
+      // UNDIRECTED field is followed both ways, as its reads are.
       pattern: {
         start: { variable: a, labels: [] },
         hops: [
           {
             rel: {
               type: rel.type,
-              direction: rel.direction === "OUT" ? "IN" : "OUT",
+              direction:
+                rel.queryDirection === "UNDIRECTED"
+                  ? "BOTH"
+                  : rel.direction === "OUT"
+                    ? "IN"
+                    : "OUT",
             },
             node: { variable: "this", labels: [node.labels[0]!] },
           },

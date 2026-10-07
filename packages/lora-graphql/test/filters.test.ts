@@ -11,6 +11,7 @@ const typeDefs = /* GraphQL */ `
       @filterable
     friends: [Band!]!
       @relationship(type: "FRIENDS", direction: OUT, queryDirection: UNDIRECTED)
+      @filterable
   }
   type Musician @node {
     key: String! @key
@@ -109,6 +110,27 @@ test("UNDIRECTED relationships read both ways", async () => {
     `{ band(key: "a") { friends(sort: [{ key: ASC }]) { key } } }`,
   );
   expect(d.band.friends).toEqual([{ key: "b" }, { key: "c" }]);
+});
+
+test("a keyed filter on an UNDIRECTED relationship matches both ways", async () => {
+  // The seek anchored on the related key has to follow the relationship
+  // in both directions too, whichever end it was stored from.
+  const ofA = await keys(`{ friends: { some: { key: { eq: "a" } } } }`);
+  const viaCount = await keys(`{ friends: { count: { gte: 1 } } }`);
+  const d = await h.data<{ band: { friends: Array<{ key: string }> } }>(
+    `{ band(key: "a") { friends(sort: [{ key: ASC }]) { key } } }`,
+  );
+  expect(ofA).toEqual(d.band.friends.map((f) => f.key));
+  for (const key of viaCount) {
+    const friends = await h.data<{ band: { friends: Array<{ key: string }> } }>(
+      `query ($k: String!) { band(key: $k) { friends { key } } }`,
+      { k: key },
+    );
+    for (const f of friends.band.friends)
+      expect(
+        await keys(`{ friends: { some: { key: { eq: "${f.key}" } } } }`),
+      ).toContain(key);
+  }
 });
 
 test("empty filters under NOT and OR are left out", async () => {
