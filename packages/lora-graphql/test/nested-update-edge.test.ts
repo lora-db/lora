@@ -71,6 +71,25 @@ describe("UPDATE_EDGE", () => {
     );
   });
 
+  test("alone, it is enough for the type to keep its update mutation", async () => {
+    // Person has nothing else to update: the edge is the whole update.
+    const t = await createTestLoraGraphQL({
+      typeDefs: typeDefs("UPDATE_EDGE"),
+      seed,
+    });
+    expect(t.lora.model.warnings).toEqual([]);
+    const d = await t.data<{
+      updatePerson: { info: { nodesUpdated: number } };
+    }>(
+      `mutation { updatePerson(key: "lou", update: { festivals: { update: [{ key: "f", edge: { status: "GOING" } }] } }) { info { nodesUpdated } } }`,
+    );
+    expect(d.updatePerson.info.nodesUpdated).toBe(1);
+    const stored = await t.db.execute(
+      "MATCH (:Person {key: 'lou'})-[r:ATTENDS]->(:Festival {key: 'f'}) RETURN r.status AS status",
+    );
+    expect(stored.rows).toEqual([{ status: "GOING" }]);
+  });
+
   test("needs relationship properties", () => {
     expect(() =>
       buildModel(`type A @node @mutation { key: String! @key  b: [B!]! @relationship(type: "R", direction: OUT, nestedOperations: [UPDATE_EDGE]) }

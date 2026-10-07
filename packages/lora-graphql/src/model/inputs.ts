@@ -62,13 +62,18 @@ export function offersNested(
   if (model.abstracts.has(rel.target)) return false;
   const target = model.nodes.get(rel.target)!;
   if (allows("DELETE") && target.mutations.has("DELETE")) return true;
-  if (!allows("UPDATE")) return false;
+  // `update`: the relationship's properties with UPDATE or UPDATE_EDGE,
+  // the connected node with UPDATE only (as the nested update input).
   const props = rel.properties
     ? model.relationshipProperties.get(rel.properties)
     : undefined;
   return (
-    (props !== undefined && hasSettable(props, "UPDATE")) ||
-    (target.mutations.has("UPDATE") && isUpdatable(model, target, seen))
+    ((allows("UPDATE") || allows("UPDATE_EDGE")) &&
+      props !== undefined &&
+      hasSettable(props, "UPDATE")) ||
+    (allows("UPDATE") &&
+      target.mutations.has("UPDATE") &&
+      isUpdatable(model, target, seen))
   );
 }
 
