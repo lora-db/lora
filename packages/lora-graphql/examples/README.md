@@ -7,8 +7,9 @@ Small servers that serve one `LoraGraphQL` schema each:
 | [`yoga/`](./yoga)                 | GraphQL Yoga 5       | `envelopPlugin()` guards, a response cache invalidated by `onWrite`   |
 | [`apollo/`](./apollo)             | Apollo Server 5      | `validationRules()` and `parseOptions()` guards, request cancellation |
 | [`graphql-http/`](./graphql-http) | graphql-http on node | The same guards with the reference GraphQL over HTTP server           |
+| [`tutorial/`](./tutorial)         | Yoga, Apollo, node   | The website tutorial's finished project, with a test of every server  |
 
-All three verify a JWT in the server and put only the verified claims in
+The first three verify a JWT in the server and put only the verified claims in
 the context, seed two genres, and let a token with the `editor` role
 create, update and delete festivals.
 

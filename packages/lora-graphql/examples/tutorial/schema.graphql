@@ -1,0 +1,53 @@
+extend schema @authorizationDefaults(requireAuthentication: false)
+
+type Claims @jwt {
+  sub: String! @viewer(type: "Person", field: "key")
+  roles: [String!]
+}
+
+type Person @node {
+  key: String! @key
+  name: String! @sortable
+  posts: [Post!]! @relationship(type: "WROTE", direction: OUT)
+}
+
+type Post
+  @node
+  @mutation
+  @subscription
+  @query(aggregate: true)
+  @authentication(operations: [CREATE, UPDATE, DELETE, SUBSCRIBE])
+  @authorization(
+    filter: [
+      { operations: [READ], where: { node: { published: { eq: true } } } }
+      { where: { node: { author: { isViewer: true } } } }
+    ]
+    validate: [
+      {
+        operations: [CREATE]
+        where: { node: { author: { isViewer: true } } }
+      }
+    ]
+  ) {
+  slug: String! @key
+  title: String! @filterable(byValue: [EQ, CONTAINS]) @sortable
+  body: String
+  published: Boolean! @default(value: false) @filterable
+  author: Person!
+    @relationship(type: "WROTE", direction: IN)
+    @settable(onUpdate: false)
+    @filterable
+  tags: [Tag!]!
+    @relationship(
+      type: "TAGGED"
+      direction: OUT
+      nestedOperations: [CONNECT, DISCONNECT]
+    )
+    @filterable
+    @cardinality(max: 10)
+}
+
+type Tag @node {
+  name: String! @key
+  posts: [Post!]! @relationship(type: "TAGGED", direction: IN)
+}
