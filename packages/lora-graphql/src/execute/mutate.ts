@@ -34,6 +34,7 @@ import { runStatement, type MutationEnv } from "./mutate/env.js";
 import { andText } from "./mutate/fragments.js";
 import type { Input, WritePlan } from "./mutate/plan.js";
 import { Runner } from "./mutate/runner.js";
+import { validateInput } from "./mutate/validate.js";
 
 /** The payload's node selection, merged across aliases. */
 function payloadSelections(
@@ -141,6 +142,9 @@ export async function executeMutation(
   // Rules the claims alone settle against refuse before any statement,
   // as @authentication does (an upsert may turn out an update: skipped).
   if (op !== "UPSERT") settleClaims(planCtx, node, authOp);
+  // Value rules next, still before the transaction: a request with a bad
+  // value never waits for, or holds, the writer lock.
+  validateInput(env.model, op, node, args);
 
   const tx =
     owned ??

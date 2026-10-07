@@ -73,7 +73,9 @@ export {
   LORA_GRAPHQL_ERROR_CODES,
   type LoraGraphQLErrorCode,
   type ModelProblem,
+  type Violation,
 } from "./errors.js";
+export type { FieldConstraints } from "./model/constraints.js";
 export { toGlobalId, fromGlobalId } from "./schema/global-id.js";
 export type {
   Attributes,

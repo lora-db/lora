@@ -157,8 +157,12 @@ API:
 | `@sortable`                                           | field                                        | Sort and paginate by this field (on a relationship property: `sort: [{ edge: { ... } }]`)                     |
 | `@groupBy`                                            | field                                        | A grouping key of `<plural>Grouped(by:)` (needs `@query(aggregate: true)`)                                    |
 | `@limit(default:, max:)`                              | type, interface, union, list relationship    | Page size bounds                                                                                              |
-| `@size(max:)`                                         | list argument of a `@cypher` field           | The most items it takes (default `maxListArgument`)                                                           |
-| `@range(min:, max:)`                                  | Int / Float argument of a `@cypher` field    | Bounds of its value (each item of a list); outside is `BAD_USER_INPUT`                                        |
+| `@length(min:, max:)`                                 | String / ID field                            | Its length in code points (each item of a list)                                                               |
+| `@pattern(regex:)`                                    | String / ID field                            | An expression the whole value must match; needs `@length(max:)`                                               |
+| `@format(as:)`                                        | String / ID field                            | `email`, `email-strict`, `url`, `uuid`, `hostname`, `ipv4`, `ipv6`, `slug`, `hex-color`, `ulid`, `e164`       |
+| `@range(min:, max:, exclusiveMin:, exclusiveMax:)`    | number field; argument of a `@cypher` field  | Bounds of its value (each item of a list); on an argument, `min` and `max`                                    |
+| `@multipleOf(value:)`                                 | Int / Float field                            | A whole multiple of `value`                                                                                   |
+| `@size(min:, max:, unique:)`                          | list field; list argument of `@cypher`       | How many items it holds; on an argument, `max` (default `maxListArgument`)                                    |
 | `@relayId`                                            | `@key` field                                 | Adds a global `id` and the `Node` interface                                                                   |
 | `@authentication(operations:, jwt:)`                  | type, field                                  | Needs an authenticated request, whose claims satisfy `jwt`                                                    |
 | `@authorization(filter:, validate:)`                  | type (filter and validate), field (validate) | Row-level rules, compiled into statements                                                                     |
@@ -177,6 +181,18 @@ Types: `String`, `ID`, `Int`, `Float`, `Boolean`, enums, `BigInt` (a decimal
 string), `Date`, `Time`, `LocalTime`, `DateTime`, `LocalDateTime`,
 `Duration` (ISO-8601 strings), `Point` and `CartesianPoint` (objects; set with
 `PointInput` / `CartesianPointInput`), and non-null lists of these.
+
+The six rows from `@length` to `@size` are validation rules. On a field
+they are checked wherever the field is set (create, update, upsert, nested
+creates, relationship properties), in JavaScript before the transaction
+opens, and a mutation that breaks any is `BAD_USER_INPUT` with every
+violation in `extensions.violations` (`path`, `coordinate`, `rule`,
+`params`, `message`; never the value). `null` and absent values pass; a
+pattern must match the whole value; values computed during the write (an
+`adjust`, a `@populatedBy` result) are checked in the transaction and fail
+with `CONSTRAINT_VIOLATION`. Raw Cypher and `@cypher` mutations are not
+checked. Each takes `message:`. See the
+[directive reference](https://loradb.com/docs/graphql/directives#validation).
 
 ## Queries
 

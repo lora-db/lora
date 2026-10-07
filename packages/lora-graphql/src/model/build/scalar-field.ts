@@ -24,6 +24,7 @@ import type {
 import { BUILTIN_SCALARS, unwrap, storageOf } from "./shapes.js";
 import { directive } from "./directive-args.js";
 import { readAuthorization } from "./authorization.js";
+import { readConstraints } from "./constraints.js";
 import { vectorQueryNames } from "./search.js";
 
 const TEXT_OPS: FilterOperator[] = ["CONTAINS", "STARTS_WITH", "ENDS_WITH"];
@@ -280,6 +281,14 @@ export function buildScalarField(
     }
   }
 
+  const constraints = readConstraints(d, f, at, {
+    type,
+    list: shape.list,
+    vector: vector !== undefined,
+    timestamp: timestamp !== undefined,
+    defaultValue,
+  });
+
   const field: ScalarField = {
     kind: "scalar",
     name: f.name,
@@ -300,6 +309,7 @@ export function buildScalarField(
     generate,
     ...(keyScope ? { keyScope } : {}),
     defaultValue,
+    ...(constraints ? { constraints } : {}),
     timestamp,
     readonly:
       readonlyFlag ||

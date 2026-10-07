@@ -108,8 +108,18 @@ export function buildCypherField(
     if (a.name === "viewer")
       at("argument `viewer` is reserved for the caller's @viewer key");
     const argShape = unwrapInput(a.type);
-    const size = directive(d("size"), a, at)?.["max"] as number | undefined;
-    if (size !== undefined && !argShape.list) {
+    const sizeArgs = directive(d("size"), a, at);
+    const size = (sizeArgs?.["max"] ?? undefined) as number | undefined;
+    if (
+      sizeArgs &&
+      (sizeArgs["min"] != null ||
+        sizeArgs["unique"] != null ||
+        sizeArgs["message"] != null)
+    ) {
+      at(`argument ${a.name}: @size on an argument takes max only`);
+    } else if (sizeArgs && size === undefined) {
+      at(`argument ${a.name}: @size on an argument needs max`);
+    } else if (size !== undefined && !argShape.list) {
       at(`argument ${a.name}: @size applies to list arguments`);
     } else if (size !== undefined && size < 1) {
       at(`argument ${a.name}: @size(max:) must be at least 1`);
@@ -243,6 +253,14 @@ function cypherArgumentRange(
   if (!args) return undefined;
   const min = args["min"] as number | null | undefined;
   const max = args["max"] as number | null | undefined;
+  if (
+    args["exclusiveMin"] != null ||
+    args["exclusiveMax"] != null ||
+    args["message"] != null
+  ) {
+    at(`argument ${a.name}: @range on an argument takes min and max only`);
+    return undefined;
+  }
   if (named !== "Int" && named !== "Float") {
     at(`argument ${a.name}: @range applies to Int and Float arguments`);
     return undefined;

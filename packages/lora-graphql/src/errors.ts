@@ -85,6 +85,58 @@ export function requestError(
   });
 }
 
+/** One value a mutation was given, or computed, that breaks a field's rule. */
+export interface Violation {
+  /** Where the value is in the mutation's arguments: keys and list indices. */
+  path: Array<string | number>;
+  /** The model field whose rule it is, as `Type.field`. */
+  coordinate: string;
+  /** The rule, named as its JSON Schema keyword (`maxLength`, `format`, ...). */
+  rule: string;
+  /** The rule's own numbers and names, enough to localise the message. */
+  params: Record<string, unknown>;
+  message: string;
+}
+
+/** The most violations one error lists; a batch can hold thousands. */
+export const MAX_VIOLATIONS = 100;
+
+const pathText = (path: ReadonlyArray<string | number>): string =>
+  path.reduce<string>(
+    (text, part) =>
+      typeof part === "number"
+        ? `${text}[${part}]`
+        : text === ""
+          ? part
+          : `${text}.${part}`,
+    "",
+  );
+
+/**
+ * Every value a mutation got wrong, in one error: `extensions.violations`
+ * lists each with its path, rule and parameters. The values themselves
+ * are never included: a rule is often on a password or an address.
+ */
+export function validationError(
+  code: "BAD_USER_INPUT" | "CONSTRAINT_VIOLATION",
+  violations: readonly Violation[],
+  total: number = violations.length,
+): GraphQLError {
+  const shown = violations
+    .slice(0, 3)
+    .map((v) => `${pathText(v.path) || v.coordinate} ${v.message}`);
+  const more = total - shown.length;
+  return requestError(
+    code,
+    `${total === 1 ? "1 value is" : `${total} values are`} not valid: ${shown.join("; ")}${more > 0 ? `; and ${more} more` : ""}`,
+    undefined,
+    {
+      violations,
+      ...(total > violations.length ? { violationCount: total } : {}),
+    },
+  );
+}
+
 /**
  * One error per field path pattern: errors with the same message and code
  * at paths that differ only in list indices (a field every row of a list

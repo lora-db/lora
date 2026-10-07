@@ -42,6 +42,12 @@ const USE: Record<string, string> = {
   subscription: "@subscription",
   mutation: "@mutation",
   default: "@default(value: 1)",
+  length: "@length(max: 10)",
+  pattern: '@pattern(regex: "[a-z]+")',
+  format: '@format(as: "email")',
+  multipleOf: "@multipleOf(value: 2)",
+  size: "@size(max: 3)",
+  range: "@range(min: 0)",
   timestamp: "@timestamp",
   readonly: "@readonly",
   cypher: '@cypher(statement: "RETURN 1 AS x")',
@@ -185,12 +191,8 @@ describe("no directive is silently ignored", () => {
 
   test("every library directive has a sample use", () => {
     // @storedAs (on scalars) and @authorizationDefaults (on the schema)
-    // have one place each, which graphql-js enforces; @size and @range (on
-    // arguments of @cypher fields) are tested in
-    // cypher-mutation-hardening.test.ts.
+    // have one place each, which graphql-js enforces.
     const elsewhere = new Set([
-      "size",
-      "range",
       "storedAs",
       "authorizationDefaults",
       "authorizationRules",

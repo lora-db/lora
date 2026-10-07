@@ -21,7 +21,13 @@ import { and, lit, name, printExpr } from "../../compile/cypher.js";
 import { compileNodeWhere } from "../../compile/filter.js";
 import { compileByKeys, keyOf } from "../../compile/read/by-keys.js";
 import type { DriverTransaction } from "../../driver.js";
-import { requestError } from "../../errors.js";
+import {
+  MAX_VIOLATIONS,
+  requestError,
+  validationError,
+  type Violation,
+} from "../../errors.js";
+import { checkValue } from "../../model/constraints.js";
 import { toStored } from "../../model/points.js";
 import type {
   NodeType,
@@ -815,6 +821,15 @@ export class Runner {
 
     const actx = this.ctx();
     const adjustments = compileAdjust(actx, node, adjust);
+    // An adjusted value is computed in the statement, so its rules can
+    // only be checked on what the statement stored: returned and checked
+    // here, and the transaction rolled back when one is broken.
+    const adjusted = Object.entries(adjust ?? {})
+      .filter(([, ops]) => ops !== null && ops !== undefined)
+      .map(([fieldName]) => node.fields.get(fieldName))
+      .filter((f): f is ScalarField => f?.kind === "scalar" && !!f.constraints);
+    const broken: Violation[] = [];
+    let brokenTotal = 0;
     const stamped = timestamps(node, "UPDATE");
     const suppliable = new Set(
       [...node.fields.values()]
@@ -851,15 +866,42 @@ export class Runner {
         ),
       ];
       const removes = shape ? shape.split("\0") : [];
-      await this.run(
+      const stored = await this.run(
         `UNWIND ${rowsParam} AS row\n` +
           `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = row.key\n` +
           `SET ${sets.join(", ")}` +
           (removes.length > 0
             ? `\nREMOVE ${removes.map((p) => `n.${name(p)}`).join(", ")}`
+            : "") +
+          (adjusted.length > 0
+            ? `\nRETURN ${adjusted.map((f, i) => `n.${name(f.property)} AS adjusted${i}`).join(", ")}`
             : ""),
         sctx,
       );
+      for (const row of adjusted.length > 0 ? stored : []) {
+        for (const [i, f] of adjusted.entries()) {
+          for (const failure of checkValue(
+            f.constraints!,
+            row[`adjusted${i}`],
+          )) {
+            brokenTotal++;
+            if (broken.length >= MAX_VIOLATIONS) continue;
+            broken.push({
+              path:
+                failure.index === undefined
+                  ? ["adjust", f.name]
+                  : ["adjust", f.name, failure.index],
+              coordinate: `${node.name}.${f.name}`,
+              rule: failure.rule,
+              params: failure.params,
+              message: `${failure.message} after the adjustment`,
+            });
+          }
+        }
+      }
+    }
+    if (brokenTotal > 0) {
+      throw validationError("CONSTRAINT_VIOLATION", broken, brokenTotal);
     }
     const keys = todo.map((r) => r.key);
     this.info.nodesUpdated += keys.length;

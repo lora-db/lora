@@ -11,7 +11,8 @@ import {
 } from "../../compile/auth.js";
 import type { CompileContext } from "../../compile/context.js";
 import { keyOf } from "../../compile/read/by-keys.js";
-import { requestError } from "../../errors.js";
+import { requestError, validationError } from "../../errors.js";
+import { checkValue } from "../../model/constraints.js";
 import { toStored } from "../../model/points.js";
 import { memberFields } from "../../model/relations.js";
 import type {
@@ -239,6 +240,22 @@ export class WritePlan {
         undefined,
         { type: node.name, field: f.name },
       );
+    }
+    // A computed value answers to the field's rules like a supplied one.
+    if (f.constraints) {
+      const failures = checkValue(f.constraints, value);
+      if (failures.length > 0) {
+        throw validationError(
+          "CONSTRAINT_VIOLATION",
+          failures.map((failure) => ({
+            path: [],
+            coordinate: `${node.name}.${f.name}`,
+            rule: failure.rule,
+            params: failure.params,
+            message: `${failure.message} (from its @populatedBy callback ${f.populatedBy!.callback})`,
+          })),
+        );
+      }
     }
     return value;
   }

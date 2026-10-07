@@ -2,6 +2,8 @@
 // properties, relationships and the API surface. Everything downstream
 // (schema generation, compilation, index inference) reads only this.
 
+import type { FieldConstraints } from "./constraints.js";
+
 export type ScalarType =
   | "String"
   | "ID"
@@ -103,6 +105,8 @@ export interface ScalarField extends FieldBase {
   keyScope?: { separator: string } | undefined;
   /** `@default(value:)`, stored on create when the input omits the field. */
   defaultValue: { value: unknown } | undefined;
+  /** `@length`, `@pattern`, `@format`, `@range`, `@multipleOf`, `@size`. */
+  constraints?: FieldConstraints | undefined;
   /** `@timestamp`: set to the current time by these operations. */
   timestamp: ReadonlySet<"CREATE" | "UPDATE"> | undefined;
   /** Never client-settable (`@readonly`, `@timestamp`, `@private`). */
