@@ -85,6 +85,7 @@ Subscriptions have their own limits:
 | `callbacks` | `Record<string, PopulatedByCallback>`: named callbacks for `@populatedBy(callback:)` |
 | `resolvers` | `Record<Type, Record<field, GraphQLFieldResolver>>`: resolvers of `@customResolver` fields |
 | `scalars` | `Record<string, GraphQLScalarType>`: implementations of `@storedAs` custom scalars. Without one, values pass through |
+| `validators` | `Record<Type, StandardSchemaV1 \| { create?, update?, upsert? }>`: a validator per node type, from any Standard Schema library (zod, valibot, arktype, yup). See [validators](/docs/graphql/directives#validators) |
 | `changeFeed` | `true` feeds subscriptions and `changes()` from the engine's committed change feed. Needs a driver with `changes()` (`@loradb/lora-node`); throws at construction otherwise |
 
 A `PopulatedByCallback` receives one object and returns the value to

@@ -1,7 +1,7 @@
 # lora-graphql: input validation
 
-Date: 2026-10-07. Status: phases 0 and 1 are built (see
-[Phases](#phases)); phases 2 and 3 are design. Written against `main` at
+Date: 2026-10-07. Status: phases 0, 1 and most of 2 are built (see
+[Phases](#phases)); the rest is design. Written against `main` at
 `f943345` (v0.24.2 prepared).
 
 The question: how should a lora-graphql schema say that a value is
@@ -524,7 +524,8 @@ None is part of this feature. All were reproduced on `main`.
 | --- | --- | --- |
 | 0 | Store `BigInt` as INTEGER; code inline-literal scalar errors | Built |
 | 1 | `@length`, `@pattern`, `@format`, `@range` and `@size` on fields, `@multipleOf`; pass A and pass B; the error shape; startup checks; docs and tests | Built |
-| 2 | `@normalize`; constraints on custom scalars; the `validators` hook; the same directives on `@cypher` arguments | 0.26.0 |
+| 2 | `@normalize`; constraints on custom scalars; the `validators` hook | Built |
+| 2b | The same directives on `@cypher` arguments; a `regexEngine` hook; normalising filter operands and lookup keys | Open |
 | 3 | `diff` awareness; `check --database` scan; JSON Schema export; constraint descriptions; `migrate` mapping | 0.27.0 |
 
 What phase 1 did differently from this design, and why:
@@ -541,6 +542,25 @@ What phase 1 did differently from this design, and why:
 - **No lints yet.** They move to phase 3 with the other tooling.
 - **`@range` and `@size` on `@cypher` arguments keep `min`/`max` and
   `max`.** The new arguments are refused there by name until phase 2.
+
+What phase 2 settled:
+
+- **Custom formats are constrained scalars** (D1), not a `formats`
+  option. `scalar Sku @storedAs(type: STRING) @length(max: 12)
+  @pattern(regex: "...")` is reusable, visible to the CLI, and shows in
+  the schema as a type. An option the CLI cannot see would have made
+  `lora-graphql check` fail on a schema the server accepts.
+- **A field's rule replaces the scalar's rule of the same directive**;
+  the scalar's other rules still apply.
+- **A validator runs only when the field rules hold** (D11), so it never
+  sees a value a directive refuses, and is shown dates as ISO strings.
+- **`@normalize` changes writes only.** Normalising filter operands and
+  lookup keys (open question 2) is not done: it changes read semantics
+  and belongs with a decision on case-insensitive lookups in general.
+  The directive reference says so.
+- **Verified against the real libraries:** the same cross-field rule
+  written in zod 4, valibot 1 and yup 1.7 produced identical violations,
+  and each library's `trim` transform reached the database.
 
 Phase 1 is the bulk of the value and is roughly the size of
 `@uniqueTogether`. Phase 2 should follow closely: without `@normalize` a

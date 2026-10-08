@@ -180,6 +180,7 @@ or an address, and errors end up in logs.
 | `multipleOf` | `multipleOf` | `@multipleOf` |
 | `minItems`, `maxItems` | `limit` | `@size` |
 | `uniqueItems` | | `@size(unique: true)` |
+| `custom` | | A [validator](/docs/graphql/directives#validators); `message` is the validator's |
 
 At most 100 violations are listed; when there are more,
 `extensions.violationCount` holds the total.

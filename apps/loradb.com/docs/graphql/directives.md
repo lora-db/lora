@@ -61,7 +61,8 @@ is an error.
 [`@format`](#format) ·
 [`@range`](#range) ·
 [`@multipleOf`](#multipleof) ·
-[`@size`](#size)
+[`@size`](#size) ·
+[`@normalize`](#normalize)
 
 **Relationships:**
 [`@relationship`](#relationship) ·
@@ -517,6 +518,11 @@ They validate what clients send through the generated API. Raw Cypher and
 `@cypher` mutations are not checked, and adding a rule does not revisit
 values already stored.
 
+The order is fixed: [`@normalize`](#normalize) changes the value first,
+the rules then judge the normalised value, and that value is what is
+stored. For what directives cannot say, such as a rule across two fields,
+see [validators](#validators).
+
 ### @length {#length}
 
 How long a `String` or `ID` may be.
@@ -715,6 +721,139 @@ type Query {
     @cypher(statement: "MATCH (f:Festival) WHERE f.key IN $keys RETURN f")
 }
 ```
+
+### @normalize {#normalize}
+
+Changes a `String` or `ID` before it is validated and stored. Validation
+refuses a value; this is the one directive that alters it, so it is
+strictly opt in.
+
+```graphql
+type Account @node @mutation {
+  key: String! @key
+  email: String!
+    @normalize(trim: true, case: LOWER, unicode: NFC)
+    @format(as: "email")
+    @unique
+  displayName: String @normalize(trim: true, emptyToNull: true)
+}
+```
+
+Arguments, applied in this order:
+
+- `trim`: `true` removes whitespace from both ends.
+- `unicode`: `NFC`, `NFD`, `NFKC` or `NFKD`. `NFC` makes the two ways of
+  writing "é" (one character, or "e" plus a combining accent) the same
+  string.
+- `case`: `LOWER` or `UPPER`.
+- `emptyToNull`: `true` stores no value for a string that is empty after
+  the steps above. Useful for optional fields filled from a form.
+
+On a list field each item is normalised.
+
+It matters most on a `@unique` field. LoraDB compares strings exactly:
+without it, `ada@example.com`, `Ada@Example.com` and `ada@example.com `
+are three different values and all three accounts are created. With the
+example above, the second is a `CONSTRAINT_VIOLATION`.
+
+What it does not do:
+
+- **Reads are not normalised.** A filter or a lookup compares with what
+  is stored, so `email: { eq: "Ada@Example.com" }` finds nothing. Clients
+  should send the stored form, which is the form they got back.
+- **`trim` leaves zero-width characters**, which are not whitespace.
+- **Case mapping is not for display.** It can change a string's length,
+  and it ignores language-specific rules on purpose, so a stored value
+  does not depend on where the server runs.
+
+### Reusable rules on a scalar {#scalar-rules}
+
+`@length`, `@pattern`, `@format`, `@range`, `@multipleOf` and
+`@normalize` can sit on a custom scalar. Every field of that type then
+has them, on node types and on relationship properties, and the type's
+name says what the value is.
+
+```graphql
+scalar Email
+  @storedAs(type: STRING)
+  @normalize(trim: true, case: LOWER)
+  @format(as: "email")
+  @length(max: 254)
+
+scalar Percent @storedAs(type: INT) @range(min: 0, max: 100)
+
+type Person @node @mutation {
+  key: String! @key
+  email: Email @unique
+  backupEmail: Email
+  profileComplete: Percent
+}
+```
+
+A field may replace one of the scalar's rules by writing the same
+directive itself: `backupEmail: Email @length(max: 100)`. The other rules
+of the scalar still apply.
+
+The scalar needs no implementation in the `scalars` option for this: the
+rules are the directives. Clients see `Email` and `Percent` as types in
+the schema.
+
+### Rules across fields: validators {#validators}
+
+A directive judges one value. A rule about two values ("the stay ends
+after it starts"), or one that needs your own code, goes in the
+`validators` option: a validator per node type, written with the schema
+library you already use.
+
+```ts
+import { z } from "zod";
+
+const lora = new LoraGraphQL({
+  typeDefs,
+  driver: loraDriver(db),
+  validators: {
+    Booking: z
+      .object({ startsOn: z.string().optional(), endsOn: z.string().optional() })
+      .passthrough()
+      .refine((b) => !b.startsOn || !b.endsOn || b.endsOn >= b.startsOn, {
+        path: ["endsOn"],
+        message: "must not be before startsOn",
+      }),
+  },
+});
+```
+
+Any [Standard Schema](https://standardschema.dev) validator works: zod,
+valibot, arktype, yup, joi and others implement it. The package depends
+on none of them.
+
+- **What it is given:** each input of that type as the client sent it,
+  after `@normalize`: a create's, an update's, an upsert's, and nested
+  ones. Dates and times are ISO strings.
+- **When:** after the field rules, and only if they all hold, so a
+  validator never has to defend against what a directive already refuses.
+  Still before the transaction opens.
+- **Its issues are reported like any other rule's**, in
+  `extensions.violations` with `rule: "custom"`, the path the validator
+  gave, and its message.
+- **What it returns is what is written**, so a schema's own transforms
+  apply. A strict object schema that strips unknown keys would drop
+  fields it does not list: use the library's pass-through mode.
+- **It may be asynchronous.**
+
+An update's input holds only the fields it sets, and an upsert's only the
+key for certain. To require fields on create without breaking updates,
+give a schema per kind of input:
+
+```ts
+validators: {
+  Booking: { create: fullBooking, update: partialBooking },
+}
+```
+
+A kind with no schema is not validated. A validator sees the input, not
+what is stored: an update that sets only `endsOn` cannot be compared with
+a stored `startsOn` here.
 
 ## Relationships
 
