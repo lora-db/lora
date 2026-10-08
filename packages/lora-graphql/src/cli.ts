@@ -34,6 +34,7 @@ import {
 } from "graphql";
 import { diffSchemas } from "./analyze/diff.js";
 import { formatProblem, ModelError } from "./errors.js";
+import { inputSchemas } from "./analyze/input-schemas.js";
 import { buildModel } from "./model/build.js";
 import { directiveTypeDefs } from "./model/directives.js";
 import {
@@ -54,6 +55,8 @@ const USAGE = `lora-graphql <command>
   access <schema.graphql> [--json]          who may do what: each type and guarded field,
                                             operation and kind of caller
   requirements <schema.graphql> [--ddl]     constraints and indexes the API needs
+  json-schema <schema.graphql>              the validation rules of every create and
+                                            update input, as JSON Schema, for clients
   check <schema.graphql> [--operations <file|dir>]... [--json]
         [--variables <file>] [--context <file>]
         [--baseline <file> [--update-baseline]]
@@ -108,6 +111,13 @@ export async function main(
         return await access(need(positional, 1), flags.has("--json"), io);
       case "requirements":
         return await requirements(need(positional, 1), flags.has("--ddl"), io);
+      case "json-schema": {
+        const [file] = need(positional, 1);
+        io.out(
+          JSON.stringify(inputSchemas(buildModel(await read(file!))), null, 2),
+        );
+        return 0;
+      }
       case "check":
         return await check(need(positional, 1), operations, flags, values, io);
       case "compile":
@@ -371,6 +381,11 @@ async function check(
   for (const u of report.unused) {
     io.out(
       `unused   ${u.type} index ${u.name} on :${u.labels.join(":")}(${u.properties.join(", ")})`,
+    );
+  }
+  for (const v of report.stored) {
+    io.out(
+      `stored   ${v.type} ${JSON.stringify(v.key)}.${v.field} ${v.message}`,
     );
   }
   for (const s of report.security) io.out(`error    ${formatProblem(s)}`);

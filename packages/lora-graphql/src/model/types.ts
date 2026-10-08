@@ -199,6 +199,8 @@ export interface CypherArgument {
   maxItems?: number | undefined;
   /** `@range(min:, max:)`: bounds of an Int or Float argument. */
   range?: { min?: number | undefined; max?: number | undefined } | undefined;
+  /** The other value rules of the argument, as on a field. */
+  constraints?: FieldConstraints | undefined;
 }
 
 export interface CypherField extends FieldBase {

@@ -1,11 +1,7 @@
 // @length, @pattern, @format, @range, @multipleOf and @size on a field:
 // read, checked against the field's type, and compiled.
 
-import type {
-  GraphQLDirective,
-  GraphQLField,
-  GraphQLScalarType,
-} from "graphql";
+import type { GraphQLDirective, GraphQLScalarType } from "graphql";
 import {
   checkValue,
   FORMATS,
@@ -29,7 +25,7 @@ const text = (args: Record<string, unknown>): { message?: string } =>
 /** The value rules of field `f`, with every problem reported through `at`. */
 export function readConstraints(
   d: (n: string) => GraphQLDirective,
-  f: GraphQLField<unknown, unknown>,
+  f: { astNode?: unknown; extensionASTNodes?: unknown },
   at: (message: string) => void,
   field: {
     type: ScalarType;
@@ -39,23 +35,31 @@ export function readConstraints(
     defaultValue: { value: unknown } | undefined;
     /** The field's custom scalar, whose rules it inherits. */
     scalar?: GraphQLScalarType | undefined;
+    /** How a problem names the default: an argument's is not a directive. */
+    defaultLabel?: string | undefined;
+    /** Directives another reader handles (an argument's plain @size, @range). */
+    skip?: ReadonlySet<string> | undefined;
   },
 ): FieldConstraints | undefined {
   // A rule on the field wins; one on the field's custom scalar applies to
   // every field of that type, which is how a constrained type is reused.
   const read = (name: string) =>
-    directive(d(name), f, at) ??
-    (field.scalar
-      ? directive(d(name), field.scalar, (message) =>
-          at(`${message} (on scalar ${field.scalar!.name})`),
-        )
-      : undefined);
+    field.skip?.has(name)
+      ? undefined
+      : (directive(d(name), f, at) ??
+        (field.scalar
+          ? directive(d(name), field.scalar, (message) =>
+              at(`${message} (on scalar ${field.scalar!.name})`),
+            )
+          : undefined));
   const lengthArgs = read("length");
   const patternArgs = read("pattern");
   const formatArgs = read("format");
   const rangeArgs = read("range");
   const multipleArgs = read("multipleOf");
-  const sizeArgs = directive(d("size"), f, at);
+  const sizeArgs = field.skip?.has("size")
+    ? undefined
+    : directive(d("size"), f, at);
   const normalizeArgs = read("normalize");
   const used = (
     [
@@ -240,13 +244,14 @@ export function readConstraints(
   if (Object.keys(out).length === 0) return undefined;
   if (field.defaultValue) {
     const value = field.defaultValue.value;
+    const defaultLabel = field.defaultLabel ?? "@default(value:)";
     // A default is stored as written: it has to be in the stored form
     // already, and pass the rules a client's value would.
     if (JSON.stringify(normalizeValue(out, value)) !== JSON.stringify(value)) {
-      at("@default(value:) is not in the form @normalize stores");
+      at(`${defaultLabel} is not in the form @normalize stores`);
     }
     const [broken] = checkValue(out, value);
-    if (broken) at(`@default(value:) ${broken.message}`);
+    if (broken) at(`${defaultLabel} ${broken.message}`);
   }
   return out;
 }

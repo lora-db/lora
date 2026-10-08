@@ -26,6 +26,7 @@ import type {
   RelationshipPropertiesType,
   ScalarField,
 } from "../model/types.js";
+import { describeConstraints } from "../model/constraints.js";
 import { memberFields } from "../model/relations.js";
 import { hasSettable, isUpdatable, settable } from "../model/inputs.js";
 
@@ -122,6 +123,13 @@ export function buildMutations(
     return t;
   };
 
+  // What a client reads on an input field: the SDL's description, then
+  // the field's validation rules in words, so they show in the schema.
+  const inputDescription = (f: ScalarField, note?: string) =>
+    [f.description, describeConstraints(f.constraints, f.list), note]
+      .filter((part) => part)
+      .join(" ") || undefined;
+
   const scalarInputs = (
     fields: Iterable<ScalarField>,
     op: "CREATE" | "UPDATE",
@@ -133,10 +141,12 @@ export function buildMutations(
       const t: GraphQLInputType = f.list ? listOf(nonNull(base)) : base;
       out[f.name] = {
         type: op === "CREATE" && requiredOnCreate(f) ? nonNull(t) : t,
-        description:
+        description: inputDescription(
+          f,
           op === "UPDATE" && !f.required
-            ? `${f.description ? f.description + " " : ""}null removes the value.`
-            : f.description,
+            ? "null removes the value."
+            : undefined,
+        ),
       };
     }
     return out;
@@ -376,7 +386,7 @@ export function buildMutations(
           const t: GraphQLInputType = f.list ? listOf(nonNull(base)) : base;
           fields[f.name] = {
             type: f.key ? nonNull(t) : t,
-            description: f.description,
+            description: inputDescription(f),
           };
         } else if (f.kind === "relationship" && settable(f, "CREATE")) {
           const inputs = relationFields(node, f, false);

@@ -12,6 +12,8 @@ import {
   type GraphQLField,
   type GraphQLObjectType,
   type GraphQLSchema,
+  isEnumType,
+  isScalarType,
 } from "graphql";
 import type { ModelProblem } from "../../errors.js";
 import { codeOnly, maskLiterals, scanParams } from "../cypher-lexer.js";
@@ -23,7 +25,15 @@ import type {
   ScalarField,
 } from "../types.js";
 import { outOfRange } from "../inputs.js";
-import { unwrap, isScalarLike, shapeOf, unwrapInput } from "./shapes.js";
+import {
+  BUILTIN_SCALARS,
+  unwrap,
+  isScalarLike,
+  shapeOf,
+  storageOf,
+  unwrapInput,
+} from "./shapes.js";
+import { readConstraints } from "./constraints.js";
 import { directive } from "./directive-args.js";
 import { buildScalarField } from "./scalar-field.js";
 import { authOps, readOnlyRules, rootFieldRules } from "./authorization.js";
@@ -108,27 +118,70 @@ export function buildCypherField(
     if (a.name === "viewer")
       at("argument `viewer` is reserved for the caller's @viewer key");
     const argShape = unwrapInput(a.type);
-    const sizeArgs = directive(d("size"), a, at);
-    const size = (sizeArgs?.["max"] ?? undefined) as number | undefined;
-    if (
-      sizeArgs &&
-      (sizeArgs["min"] != null ||
-        sizeArgs["unique"] != null ||
-        sizeArgs["message"] != null)
-    ) {
-      at(`argument ${a.name}: @size on an argument takes max only`);
-    } else if (sizeArgs && size === undefined) {
-      at(`argument ${a.name}: @size on an argument needs max`);
-    } else if (size !== undefined && !argShape.list) {
-      at(`argument ${a.name}: @size applies to list arguments`);
-    } else if (size !== undefined && size < 1) {
-      at(`argument ${a.name}: @size(max:) must be at least 1`);
+    // A plain `@size(max:)` or `@range(min:, max:)` keeps its own check
+    // and message; any other rule, or argument of these two, is read as
+    // on a field.
+    const quiet = () => undefined;
+    const sizeArgs = directive(d("size"), a, quiet);
+    const rangeArgs = directive(d("range"), a, quiet);
+    const plainSize =
+      sizeArgs !== undefined &&
+      sizeArgs["min"] == null &&
+      sizeArgs["unique"] == null &&
+      sizeArgs["message"] == null;
+    const plainRange =
+      rangeArgs !== undefined &&
+      rangeArgs["exclusiveMin"] == null &&
+      rangeArgs["exclusiveMax"] == null &&
+      rangeArgs["message"] == null;
+    let size: number | undefined;
+    if (plainSize) {
+      directive(d("size"), a, at);
+      size = (sizeArgs["max"] ?? undefined) as number | undefined;
+      if (size === undefined) {
+        at(`argument ${a.name}: @size needs max, min or unique`);
+      } else if (!argShape.list) {
+        at(`argument ${a.name}: @size applies to list arguments`);
+      } else if (size < 1) {
+        at(`argument ${a.name}: @size(max:) must be at least 1`);
+      }
     }
-    const range = cypherArgumentRange(a, argNamed, d("range"), at);
+    const range = plainRange
+      ? cypherArgumentRange(a, argNamed, d("range"), at)
+      : undefined;
     const defaultValue = argumentDefault(a);
     if (range && outOfRange(defaultValue, range) !== undefined) {
       at(`argument ${a.name}: its default is outside @range`);
     }
+    const argType = ctx.schema.getType(argNamed);
+    const constraints = readConstraints(
+      d,
+      a,
+      (message) => at(`argument ${a.name}: ${message}`),
+      {
+        type:
+          BUILTIN_SCALARS[argNamed] ??
+          (argType && isEnumType(argType)
+            ? "Enum"
+            : ((argType && storageOf(argType)) ?? "String")),
+        list: argShape.list,
+        vector: false,
+        timestamp: false,
+        defaultValue:
+          defaultValue === undefined ? undefined : { value: defaultValue },
+        defaultLabel: "its default",
+        scalar:
+          argType && isScalarType(argType) && !(argNamed in BUILTIN_SCALARS)
+            ? argType
+            : undefined,
+        skip: new Set([
+          ...(plainSize ? ["size"] : []),
+          ...(plainRange ? ["range"] : []),
+          // An argument is passed on as sent: nothing is stored to normalise.
+          "normalize",
+        ]),
+      },
+    );
     cypherArgs.push({
       name: a.name,
       type: { named: argNamed, ...argShape },
@@ -136,6 +189,7 @@ export function buildCypherField(
       description: a.description ?? undefined,
       ...(size !== undefined ? { maxItems: size } : {}),
       ...(range ? { range } : {}),
+      ...(constraints ? { constraints } : {}),
     });
   }
 
@@ -253,14 +307,6 @@ function cypherArgumentRange(
   if (!args) return undefined;
   const min = args["min"] as number | null | undefined;
   const max = args["max"] as number | null | undefined;
-  if (
-    args["exclusiveMin"] != null ||
-    args["exclusiveMax"] != null ||
-    args["message"] != null
-  ) {
-    at(`argument ${a.name}: @range on an argument takes min and max only`);
-    return undefined;
-  }
   if (named !== "Int" && named !== "Float") {
     at(`argument ${a.name}: @range applies to Int and Float arguments`);
     return undefined;

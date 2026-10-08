@@ -5,6 +5,7 @@
 import * as graphql from "graphql";
 import type { DocumentNode, GraphQLSchema } from "graphql";
 import { name } from "../compile/cypher.js";
+import { compareConstraints } from "../model/constraints.js";
 import { buildModel } from "../model/build.js";
 import { type ModelOptions } from "../model/build/limits.js";
 import type { Field, GraphModel, ScalarField } from "../model/types.js";
@@ -77,6 +78,7 @@ export function diffSchemas(
   }
 
   const api = apiChanges(publicSchema(oldModel), publicSchema(newModel));
+  ruleChanges(oldModel, newModel, api, notes);
   return { database: { create, drop, statements }, api, notes };
 }
 
@@ -126,6 +128,60 @@ function migrations(
         }
       }
     }
+  }
+}
+
+/**
+ * Validation rules are not part of the GraphQL type system, so graphql-js
+ * sees no change when one is tightened: a `String` is still a `String`.
+ * Compared here, on the model: a rule that now refuses input it accepted
+ * breaks clients that send it.
+ */
+function ruleChanges(
+  before: GraphModel,
+  after: GraphModel,
+  api: SchemaDiff["api"],
+  notes: string[],
+) {
+  const owners = (model: GraphModel) =>
+    new Map<string, ReadonlyMap<string, Field | ScalarField>>([
+      ...[...model.nodes].map(([n, t]) => [n, t.fields] as const),
+      ...[...model.relationshipProperties].map(
+        ([n, t]) => [n, t.fields] as const,
+      ),
+    ]);
+  const old = owners(before);
+  let stricter = 0;
+  for (const [owner, fields] of owners(after)) {
+    const oldFields = old.get(owner);
+    if (!oldFields) continue;
+    for (const f of fields.values()) {
+      const was = oldFields.get(f.name);
+      if (f.kind !== "scalar" || was?.kind !== "scalar") continue;
+      const { tightened, changed } = compareConstraints(
+        was.constraints,
+        f.constraints,
+      );
+      for (const what of tightened) {
+        stricter++;
+        api.breaking.push({
+          type: "RULE_TIGHTENED",
+          description: `${owner}.${f.name}: ${what}. Input the old rule accepted is now refused.`,
+        });
+      }
+      for (const what of changed) {
+        stricter++;
+        api.dangerous.push({
+          type: "RULE_CHANGED",
+          description: `${owner}.${f.name}: ${what}.`,
+        });
+      }
+    }
+  }
+  if (stricter > 0) {
+    notes.push(
+      `${stricter === 1 ? "A validation rule was" : `${stricter} validation rules were`} added, tightened or changed: values already stored are not revisited. \`lora-graphql check --database\` lists the ones that no longer pass.`,
+    );
   }
 }
 

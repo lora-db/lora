@@ -76,6 +76,8 @@ export {
   type Violation,
 } from "./errors.js";
 export type { FieldConstraints } from "./model/constraints.js";
+export { inputSchemas, type JsonSchema } from "./analyze/input-schemas.js";
+export type { StoredReport, StoredViolation } from "./analyze/stored.js";
 export type {
   StandardIssue,
   StandardResult,

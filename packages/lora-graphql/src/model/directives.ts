@@ -134,7 +134,7 @@ export const directiveTypeDefs = /* GraphQL */ `
   "Declared upper bound on a relationship's fan-out, used by cost estimates."
   directive @cardinality(max: Int!) on FIELD_DEFINITION
 
-  "How many items a list holds. On a list field: checked on every write, with unique refusing the same item twice. On a list argument of a @cypher field: max is the most items it takes (without it, maxListArgument applies)."
+  "How many items a list holds, with unique refusing the same item twice. On a list field: checked on every write. On a list argument of a @cypher field: checked before the statement runs (without max, maxListArgument applies)."
   directive @size(
     min: Int
     max: Int
@@ -143,7 +143,7 @@ export const directiveTypeDefs = /* GraphQL */ `
     message: String
   ) on ARGUMENT_DEFINITION | FIELD_DEFINITION
 
-  "Bounds of a number: min and max are inclusive, exclusiveMin and exclusiveMax are not. On an Int, Float or BigInt field (each item, for a list): checked on every write. On an Int or Float argument of a @cypher field: min and max."
+  "Bounds of a number: min and max are inclusive, exclusiveMin and exclusiveMax are not. On an Int, Float or BigInt field (each item, for a list): checked on every write. On an argument of a @cypher field: checked before the statement runs."
   directive @range(
     min: Float
     max: Float
@@ -159,21 +159,21 @@ export const directiveTypeDefs = /* GraphQL */ `
     max: Int
     "Replaces the default message of this rule."
     message: String
-  ) on FIELD_DEFINITION | SCALAR
+  ) on FIELD_DEFINITION | SCALAR | ARGUMENT_DEFINITION
 
   "An expression the whole value of a String or ID must match (each item, for a list). Needs @length(max:) on the same field."
   directive @pattern(
     regex: String!
     "Replaces the default message of this rule."
     message: String
-  ) on FIELD_DEFINITION | SCALAR
+  ) on FIELD_DEFINITION | SCALAR | ARGUMENT_DEFINITION
 
   "A named shape a String or ID must have: email, email-strict, url, uuid, hostname, ipv4, ipv6, slug, hex-color, ulid or e164."
   directive @format(
     as: String!
     "Replaces the default message of this rule."
     message: String
-  ) on FIELD_DEFINITION | SCALAR
+  ) on FIELD_DEFINITION | SCALAR | ARGUMENT_DEFINITION
 
   "Changes a String or ID before it is validated and stored (each item, for a list): trim removes surrounding whitespace, unicode normalises, case maps, in that order; emptyToNull then stores no value for an empty string. Opt in: nothing is changed without it."
   directive @normalize(
@@ -200,7 +200,7 @@ export const directiveTypeDefs = /* GraphQL */ `
     value: Float!
     "Replaces the default message of this rule."
     message: String
-  ) on FIELD_DEFINITION | SCALAR
+  ) on FIELD_DEFINITION | SCALAR | ARGUMENT_DEFINITION
 
   "Generated read operations for a node type. Reads are on by default."
   directive @query(

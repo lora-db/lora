@@ -2,7 +2,8 @@
 // once per parent, and the binding of their statement's parameters.
 
 import type { FieldNode, SelectionSetNode } from "graphql";
-import { requestError } from "../../errors.js";
+import { requestError, validationError, type Violation } from "../../errors.js";
+import { checkValue } from "../../model/constraints.js";
 import { scanParams } from "../../model/cypher-lexer.js";
 import type { CypherField } from "../../model/types.js";
 import { authFilter, checkAuthentication, viewerKey } from "../auth.js";
@@ -146,6 +147,22 @@ function checkListArguments(
   field: CypherField,
   args: Args,
 ): void {
+  const violations: Violation[] = [];
+  for (const a of field.args) {
+    if (!a.constraints) continue;
+    for (const failure of checkValue(a.constraints, args[a.name])) {
+      violations.push({
+        path: failure.index === undefined ? [a.name] : [a.name, failure.index],
+        coordinate: `${field.owner}.${field.name}(${a.name}:)`,
+        rule: failure.rule,
+        params: failure.params,
+        message: failure.message,
+      });
+    }
+  }
+  if (violations.length > 0) {
+    throw validationError("BAD_USER_INPUT", violations);
+  }
   for (const a of field.args) {
     if (a.range) {
       const bad = outOfRange(args[a.name], a.range);

@@ -8,6 +8,16 @@ export interface LintOptions {
   statistics?: boolean;
 }
 
+const settableOn = (
+  f: { settableOn: { create: boolean; update: boolean } },
+  op: "create" | "update",
+) => f.settableOn[op];
+
+/** Whether a field has a rule that judges its value (not only @normalize). */
+const hasRules = (f: { constraints?: object | undefined }) =>
+  f.constraints !== undefined &&
+  Object.keys(f.constraints).some((rule) => rule !== "normalize");
+
 export function lintModel(
   model: GraphModel,
   options: LintOptions = {},
@@ -22,6 +32,31 @@ export function lintModel(
             field: f.name,
             message:
               "CASE_INSENSITIVE compares lowercased values and cannot use an index: every such filter scans the label",
+          });
+        }
+        // LoraDB compares strings exactly: without @normalize, two
+        // spellings of one value are two values to a unique constraint.
+        if (
+          f.unique &&
+          !f.list &&
+          (f.type === "String" || f.type === "ID") &&
+          !f.constraints?.normalize &&
+          (settableOn(f, "create") || settableOn(f, "update"))
+        ) {
+          out.push({
+            type: node.name,
+            field: f.name,
+            message:
+              "@unique on text a client supplies, without @normalize: 'Ada@x.com', 'ada@x.com' and 'ada@x.com ' are three values. Add @normalize(trim: true, case: LOWER) if they should be one",
+          });
+        }
+        // A rule on a generated key never runs: the key is not an input.
+        if (f.key && f.generate && hasRules(f)) {
+          out.push({
+            type: node.name,
+            field: f.name,
+            message:
+              "validation rules on a @key(generate: true) apply only to a key the client supplies; a generated UUID is stored as it is",
           });
         }
         if (f.filters.has("IS_NULL")) {

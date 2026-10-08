@@ -39,7 +39,14 @@ export type Position =
   | "@jwt claim";
 
 /** Directives on arguments of @cypher fields. */
-const ARGUMENT_DIRECTIVES: ReadonlySet<string> = new Set(["size", "range"]);
+const ARGUMENT_DIRECTIVES: ReadonlySet<string> = new Set([
+  "size",
+  "range",
+  "length",
+  "pattern",
+  "format",
+  "multipleOf",
+]);
 
 /**
  * The directives each position applies, plus those it refuses with a more

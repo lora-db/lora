@@ -198,7 +198,11 @@ value). The rules and `@normalize` may sit on a custom scalar (`scalar
 Email @storedAs(type: STRING) @format(as: "email")`), for every field of
 that type. For a rule across fields, the `validators` option takes a
 Standard Schema validator per node type (zod, valibot, arktype, yup),
-run on each input after the field rules. See the
+run on each input after the field rules. The same directives go on
+`@cypher` arguments. Each input field says its rules in its description,
+`lora.inputSchemas()` (CLI: `json-schema`) exports them as JSON Schema
+for clients, `diff` reports a tightened rule as breaking, and `check`
+lists stored values that no longer pass. See the
 [directive reference](https://loradb.com/docs/graphql/directives#validation).
 
 ## Queries

@@ -88,6 +88,8 @@ import {
 } from "./execute/mutate/env.js";
 import { collapseErrors, ModelError, requestError } from "./errors.js";
 import { isStandardSchema } from "./standard-schema.js";
+import { inputSchemas, type JsonSchema } from "./analyze/input-schemas.js";
+import { scanStored, type StoredReport } from "./analyze/stored.js";
 import {
   buildManifest,
   generateTypes,
@@ -600,6 +602,29 @@ export class LoraGraphQL {
   }
 
   /**
+   * The validation rules as JSON Schema (2020-12), one per generated
+   * create and update input type, for clients: introspection does not
+   * show directives. Build zod, yup or valibot schemas from it, or
+   * validate with any JSON Schema library.
+   */
+  inputSchemas(): Record<string, JsonSchema> {
+    return inputSchemas(this.model);
+  }
+
+  /**
+   * Stored values that break a validation rule of their field: rules are
+   * checked on write through the API, so a rule added later, or a value
+   * written with raw Cypher, is only found by reading. Reads at most
+   * `limit` nodes per type (default 10 000).
+   */
+  storedViolations(options: { limit?: number } = {}): Promise<StoredReport> {
+    return scanStored(this.#driver, this.model, {
+      ...options,
+      timeoutMs: this.#timeoutMs,
+    });
+  }
+
+  /**
    * The CI gate: @cypher statements plan, the database has what the API
    * needs, and each operation's statements seek where they should.
    */
@@ -621,6 +646,7 @@ export class LoraGraphQL {
       security: unguardedMutations(this.model),
       plans: [],
       errors: [],
+      stored: (await scanStored(this.#driver, this.model)).violations,
     };
     for (const [i, op] of (options.operations ?? []).entries()) {
       const operation = op.name ?? `operation ${i + 1}`;

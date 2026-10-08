@@ -1,6 +1,7 @@
 // What `LoraGraphQL` hands back: execution results and their timing, and
 // the reports of `assertSchema()` and `check()`.
 
+import type { StoredViolation } from "./analyze/stored.js";
 import type { ExecutionResult } from "graphql";
 import type { CypherFinding } from "./analyze/cypher-check.js";
 import type { SchemaRequirement } from "./analyze/indexes.js";
@@ -64,4 +65,10 @@ export interface CheckReport {
   plans: Array<{ operation: string; field: string; reports: PlanReport[] }>;
   /** Operations that failed to compile. */
   errors: Array<{ operation: string; message: string }>;
+  /**
+   * Stored values that break a validation rule of their field (not a
+   * failure): a rule added or tightened after they were written, or a
+   * value written with raw Cypher. At most 10 000 nodes per type are read.
+   */
+  stored: StoredViolation[];
 }

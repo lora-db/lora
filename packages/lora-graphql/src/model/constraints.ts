@@ -65,6 +65,12 @@ const HOSTNAME = new RegExp(`^${LABEL}(?:\\.${LABEL})*$`);
 const IPV4 =
   /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
 const HEX_GROUP = /^[0-9a-fA-F]{1,4}$/;
+const UUID =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const HEX_COLOR = /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+const ULID = /^[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$/;
+const E164 = /^\+[1-9]\d{6,14}$/;
 
 /** RFC 4291 text form, with an optional embedded IPv4 tail; no zone id. */
 function isIpv6(value: string): boolean {
@@ -115,13 +121,7 @@ export const FORMATS: Readonly<Record<string, Format>> = Object.freeze({
     message: "must be an email address with a top-level domain",
   },
   url: { test: isHttpUrl, message: "must be an http or https URL" },
-  uuid: {
-    test: (v) =>
-      /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(
-        v,
-      ),
-    message: "must be a UUID",
-  },
+  uuid: { test: (v) => UUID.test(v), message: "must be a UUID" },
   hostname: {
     test: (v) => v.length <= 253 && HOSTNAME.test(v),
     message: "must be a host name",
@@ -129,20 +129,19 @@ export const FORMATS: Readonly<Record<string, Format>> = Object.freeze({
   ipv4: { test: (v) => IPV4.test(v), message: "must be an IPv4 address" },
   ipv6: { test: isIpv6, message: "must be an IPv6 address" },
   slug: {
-    test: (v) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(v),
+    test: (v) => SLUG.test(v),
     message: "must be lower-case letters and digits separated by hyphens",
   },
   "hex-color": {
-    test: (v) =>
-      /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(v),
+    test: (v) => HEX_COLOR.test(v),
     message: "must be a hex colour such as #1b6dff",
   },
   ulid: {
-    test: (v) => /^[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$/.test(v),
+    test: (v) => ULID.test(v),
     message: "must be a ULID",
   },
   e164: {
-    test: (v) => /^\+[1-9]\d{6,14}$/.test(v),
+    test: (v) => E164.test(v),
     message:
       "must be a phone number in international form, such as +31201234567",
   },
@@ -409,4 +408,218 @@ export function probePattern(
     }
   }
   return undefined;
+}
+
+/**
+ * How each format is written in JSON Schema: the standard `format` name
+ * where there is one, and the expression where the format is one. A
+ * client's JSON Schema validator treats `format` as a remark unless told
+ * otherwise, so the expression is what makes an exported rule hold.
+ */
+const FORMAT_EXPORT: Readonly<
+  Record<string, { format?: string; pattern?: string; maxLength?: number }>
+> = {
+  email: { format: "email", pattern: EMAIL.source, maxLength: 254 },
+  "email-strict": {
+    format: "email",
+    pattern: EMAIL_STRICT.source,
+    maxLength: 254,
+  },
+  url: { format: "uri", pattern: "^https?://", maxLength: FORMAT_MAX_LENGTH },
+  uuid: { format: "uuid", pattern: UUID.source },
+  hostname: { format: "hostname", pattern: HOSTNAME.source, maxLength: 253 },
+  ipv4: { format: "ipv4", pattern: IPV4.source },
+  ipv6: { format: "ipv6" },
+  slug: { pattern: SLUG.source },
+  "hex-color": { pattern: HEX_COLOR.source },
+  ulid: { pattern: ULID.source },
+  e164: { pattern: E164.source },
+};
+
+/**
+ * The rules as JSON Schema 2020-12 keywords, for one value (`item`) and
+ * for the list holding it (`list`). A pattern is exported anchored, since
+ * here it must match the whole value and in JSON Schema it need not. When
+ * a format and a @pattern both give an expression, they are joined with
+ * `allOf`.
+ */
+export function jsonSchemaKeywords(c: FieldConstraints | undefined): {
+  item: Record<string, unknown>;
+  list: Record<string, unknown>;
+} {
+  const item: Record<string, unknown> = {};
+  const list: Record<string, unknown> = {};
+  if (!c) return { item, list };
+  const patterns: string[] = [];
+  if (c.format) {
+    const exported = FORMAT_EXPORT[c.format.name] ?? {};
+    if (exported.format) item["format"] = exported.format;
+    if (exported.pattern) patterns.push(exported.pattern);
+    if (exported.maxLength !== undefined)
+      item["maxLength"] = exported.maxLength;
+  }
+  if (c.length?.min !== undefined) item["minLength"] = c.length.min;
+  if (c.length?.max !== undefined) {
+    item["maxLength"] = Math.min(
+      c.length.max,
+      (item["maxLength"] as number | undefined) ?? Infinity,
+    );
+  }
+  if (c.pattern) patterns.push(`^(?:${c.pattern.source})$`);
+  if (patterns.length === 1) item["pattern"] = patterns[0];
+  else if (patterns.length > 1) {
+    item["allOf"] = patterns.map((pattern) => ({ pattern }));
+  }
+  if (c.range?.min !== undefined) item["minimum"] = c.range.min;
+  if (c.range?.max !== undefined) item["maximum"] = c.range.max;
+  if (c.range?.exclusiveMin !== undefined) {
+    item["exclusiveMinimum"] = c.range.exclusiveMin;
+  }
+  if (c.range?.exclusiveMax !== undefined) {
+    item["exclusiveMaximum"] = c.range.exclusiveMax;
+  }
+  if (c.multipleOf) item["multipleOf"] = c.multipleOf.value;
+  if (c.size?.min !== undefined) list["minItems"] = c.size.min;
+  if (c.size?.max !== undefined) list["maxItems"] = c.size.max;
+  if (c.size?.unique) list["uniqueItems"] = true;
+  return { item, list };
+}
+
+const sentence = (text: string) =>
+  `${text.charAt(0).toUpperCase()}${text.slice(1)}.`;
+
+/**
+ * The rules in a sentence or two, for the description of a generated
+ * input field: what a client reads in GraphiQL and in the printed schema.
+ */
+export function describeConstraints(
+  c: FieldConstraints | undefined,
+  list: boolean,
+): string | undefined {
+  if (!c) return undefined;
+  const parts: string[] = [];
+  if (c.size) {
+    const { min, max, unique } = c.size;
+    if (min !== undefined && max !== undefined) {
+      parts.push(sentence(`${min} to ${plural(max, "item")}`));
+    } else if (max !== undefined) {
+      parts.push(sentence(`at most ${plural(max, "item")}`));
+    } else if (min !== undefined) {
+      parts.push(sentence(`at least ${plural(min, "item")}`));
+    }
+    if (unique) parts.push("No item twice.");
+  }
+  const each: string[] = [];
+  if (c.normalize) {
+    const steps = [
+      c.normalize.trim ? "trimmed" : undefined,
+      c.normalize.unicode ? `${c.normalize.unicode}-normalised` : undefined,
+      c.normalize.case === "LOWER"
+        ? "lower-cased"
+        : c.normalize.case === "UPPER"
+          ? "upper-cased"
+          : undefined,
+    ].filter((x): x is string => x !== undefined);
+    if (steps.length > 0) each.push(sentence(`stored ${steps.join(", ")}`));
+    if (c.normalize.emptyToNull) {
+      each.push("An empty value is stored as none.");
+    }
+  }
+  if (c.length) {
+    const { min, max } = c.length;
+    if (min !== undefined && max !== undefined) {
+      each.push(sentence(`${min} to ${plural(max, "character")}`));
+    } else if (max !== undefined) {
+      each.push(sentence(`at most ${plural(max, "character")}`));
+    } else if (min !== undefined) {
+      each.push(sentence(`at least ${plural(min, "character")}`));
+    }
+  }
+  if (c.format) each.push(sentence(FORMATS[c.format.name]!.message));
+  if (c.pattern) each.push(`Must match \`${c.pattern.source}\`.`);
+  if (c.range) {
+    const { min, max, exclusiveMin, exclusiveMax } = c.range;
+    if (min !== undefined) each.push(sentence(`at least ${min}`));
+    if (exclusiveMin !== undefined) {
+      each.push(sentence(`greater than ${exclusiveMin}`));
+    }
+    if (max !== undefined) each.push(sentence(`at most ${max}`));
+    if (exclusiveMax !== undefined) {
+      each.push(sentence(`less than ${exclusiveMax}`));
+    }
+  }
+  if (c.multipleOf) each.push(sentence(`a multiple of ${c.multipleOf.value}`));
+  if (each.length > 0) {
+    parts.push(list ? `Each item: ${each.join(" ")}` : each.join(" "));
+  }
+  return parts.length > 0 ? parts.join(" ") : undefined;
+}
+
+/**
+ * What changed between two versions of a field's rules, in the terms a
+ * schema diff needs: `tightened` refuses input the old rules accepted,
+ * `changed` may, `loosened` only accepts more.
+ */
+export function compareConstraints(
+  before: FieldConstraints | undefined,
+  after: FieldConstraints | undefined,
+): { tightened: string[]; changed: string[]; loosened: string[] } {
+  const tightened: string[] = [];
+  const changed: string[] = [];
+  const loosened: string[] = [];
+  /** A bound that refuses more when it moves in `direction`. */
+  const bound = (
+    label: string,
+    old: number | undefined,
+    now: number | undefined,
+    direction: "up" | "down",
+  ) => {
+    if (old === now) return;
+    if (now === undefined) loosened.push(`${label} was removed (was ${old})`);
+    else if (old === undefined) tightened.push(`${label} is now ${now}`);
+    else if (direction === "down" ? now < old : now > old) {
+      tightened.push(`${label} went from ${old} to ${now}`);
+    } else loosened.push(`${label} went from ${old} to ${now}`);
+  };
+  bound("@length(min:)", before?.length?.min, after?.length?.min, "up");
+  bound("@length(max:)", before?.length?.max, after?.length?.max, "down");
+  bound("@range(min:)", before?.range?.min, after?.range?.min, "up");
+  bound("@range(max:)", before?.range?.max, after?.range?.max, "down");
+  bound(
+    "@range(exclusiveMin:)",
+    before?.range?.exclusiveMin,
+    after?.range?.exclusiveMin,
+    "up",
+  );
+  bound(
+    "@range(exclusiveMax:)",
+    before?.range?.exclusiveMax,
+    after?.range?.exclusiveMax,
+    "down",
+  );
+  bound("@size(min:)", before?.size?.min, after?.size?.min, "up");
+  bound("@size(max:)", before?.size?.max, after?.size?.max, "down");
+  /** A rule with no order: added, removed, or different. */
+  const rule = (label: string, old: unknown, now: unknown) => {
+    if (old === now) return;
+    if (now === undefined) loosened.push(`${label} was removed`);
+    else if (old === undefined) tightened.push(`${label} was added`);
+    else changed.push(`${label} changed from ${String(old)} to ${String(now)}`);
+  };
+  rule("@pattern", before?.pattern?.source, after?.pattern?.source);
+  rule("@format", before?.format?.name, after?.format?.name);
+  rule("@multipleOf", before?.multipleOf?.value, after?.multipleOf?.value);
+  rule(
+    "@size(unique:)",
+    before?.size?.unique || undefined,
+    after?.size?.unique || undefined,
+  );
+  const stored = (n: FieldConstraints["normalize"]) =>
+    n ? JSON.stringify(n) : undefined;
+  if (stored(before?.normalize) !== stored(after?.normalize)) {
+    changed.push(
+      "@normalize changed: values already stored keep their old form",
+    );
+  }
+  return { tightened, changed, loosened };
 }
