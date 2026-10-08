@@ -36,7 +36,8 @@ you plan a production deployment.
   [validation rules](/docs/graphql/directives#validation) check what
   clients send through the generated API. Raw Cypher and `@cypher`
   mutations are not checked, and a rule added later does not revisit
-  stored values. A [validator](/docs/graphql/directives#validators) sees
+  stored values (`lora-graphql check --database` lists the ones that no
+  longer pass). A [validator](/docs/graphql/directives#validators) sees
   the input, not what is stored. `@normalize` changes writes only:
   filters and lookups compare with the stored form.
 - **Plan checks for mutations and subscriptions.** `check` plans queries.

@@ -1,7 +1,7 @@
 # lora-graphql: input validation
 
-Date: 2026-10-07. Status: phases 0, 1 and most of 2 are built (see
-[Phases](#phases)); the rest is design. Written against `main` at
+Date: 2026-10-07, updated 2026-10-08. Status: built, except what
+[Phases](#phases) lists as open. Written against `main` at
 `f943345` (v0.24.2 prepared).
 
 The question: how should a lora-graphql schema say that a value is
@@ -525,8 +525,9 @@ None is part of this feature. All were reproduced on `main`.
 | 0 | Store `BigInt` as INTEGER; code inline-literal scalar errors | Built |
 | 1 | `@length`, `@pattern`, `@format`, `@range` and `@size` on fields, `@multipleOf`; pass A and pass B; the error shape; startup checks; docs and tests | Built |
 | 2 | `@normalize`; constraints on custom scalars; the `validators` hook | Built |
-| 2b | The same directives on `@cypher` arguments; a `regexEngine` hook; normalising filter operands and lookup keys | Open |
-| 3 | `diff` awareness; `check --database` scan; JSON Schema export; constraint descriptions; `migrate` mapping | 0.27.0 |
+| 2b | The same directives on `@cypher` arguments | Built |
+| 3 | `diff` awareness; the stored-value scan in `check`; JSON Schema export; rules in input descriptions; two lints | Built |
+| Open | A `regexEngine` hook; normalising filter operands and lookup keys; relationship properties in the stored-value scan; `migrate` mapping of a third-party `@constraint`; a `describeConstraints` option | |
 
 What phase 1 did differently from this design, and why:
 
@@ -542,6 +543,23 @@ What phase 1 did differently from this design, and why:
 - **No lints yet.** They move to phase 3 with the other tooling.
 - **`@range` and `@size` on `@cypher` arguments keep `min`/`max` and
   `max`.** The new arguments are refused there by name until phase 2.
+
+What phase 3 settled:
+
+- **Rules are in the input descriptions, with no option to turn them
+  off** (D10). They are part of the contract, so the schema hash moving
+  with them is the correct signal to rebuild a persisted-operation
+  manifest. An option can follow if that coupling hurts in practice.
+- **The exported JSON Schema was checked against AJV in strict mode**: it
+  compiles as 2020-12, and AJV and the server gave the same verdict on 17
+  inputs, emoji length and anchoring included.
+- **The stored-value scan is part of `check()` and does not fail it.**
+  It reads values in key order and applies the write path's own code, so
+  the two cannot disagree. It covers node properties; relationship
+  properties are open.
+- **On an argument, a plain `@size(max:)` or `@range(min:, max:)` keeps
+  its older single-error message.** Any other rule, or argument of those
+  two, reports through `extensions.violations`.
 
 What phase 2 settled:
 

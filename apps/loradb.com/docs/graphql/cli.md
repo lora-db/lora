@@ -121,6 +121,52 @@ Every statement is `IF NOT EXISTS`, so the file is safe to apply
 repeatedly. It is the offline equivalent of
 `lora.assertSchema({ create: true })`.
 
+## json-schema
+
+```bash
+lora-graphql json-schema schema.graphql > inputs.schema.json
+```
+
+Prints the [validation rules](/docs/graphql/directives#validation) of
+every generated create and update input as JSON Schema (2020-12), keyed
+by input type name. GraphQL introspection shows a field's type but not
+the directives on it, so this is how a client learns that a name takes at
+most 80 characters before it submits a form.
+
+```json
+{
+  "PersonCreateInput": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "PersonCreateInput",
+    "type": "object",
+    "properties": {
+      "key": { "type": "string" },
+      "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+      "age": { "type": "integer", "minimum": 0 }
+    },
+    "required": ["key", "name"],
+    "additionalProperties": true
+  }
+}
+```
+
+Use it with any JSON Schema validator, or build zod, yup or valibot
+schemas from it with those libraries' converters. Three things to know:
+
+- **Scalar fields only.** Relationship inputs (`connect`, `create`) are
+  not described, which is why `additionalProperties` is `true`.
+- **A pattern is anchored.** Here a `@pattern` must match the whole
+  value; JSON Schema patterns may match anywhere, so it is exported as
+  `^(?:...)$`.
+- **A format also carries its expression.** Validators treat `format` as
+  a remark unless configured otherwise, so `email` is exported with both
+  `format: "email"` and a `pattern`.
+
+String length is counted in code points on the server. A client library
+that counts UTF-16 units instead can disagree on text with emoji.
+
+`lora.inputSchemas()` returns the same object at runtime.
+
 ## check
 
 ```bash
@@ -252,6 +298,22 @@ requirements as errors, and lists indexes the API does not use. Plans
 then reflect the real data. The database must not be open in another
 process.
 
+### Stored values
+
+`check` also reads the database and lists stored values that break a
+[validation rule](/docs/graphql/directives#validation) of their field:
+
+```text
+stored   Account "Bad Key".key does not match the required pattern
+stored   Account "Bad Key".age must be less than 150
+```
+
+Rules are checked when a value is written through the API. A rule added
+or tightened later does not revisit what is stored, and raw Cypher is
+never checked, so this is how you find such values, typically with
+`--database`. They are reported, not failures: the schema is sound and
+the data is old. At most 10,000 nodes per type are read.
+
 ### JSON output
 
 `--json` prints the full [check report](/docs/graphql/api-reference#checkoptions)
@@ -375,6 +437,12 @@ that is not a commit is an error.
 With `graphql` 17 installed the API comparison is unavailable (that
 version removed the function it relies on) and is reported as a single
 breaking `UNSUPPORTED` change. Run `diff` with `graphql` 16 in CI.
+
+A [validation rule](/docs/graphql/directives#validation) that is added or
+tightened is reported as breaking (`RULE_TIGHTENED`), although no GraphQL
+type changed: input the old rule accepted is now refused. A rule whose
+effect cannot be ordered, such as a different `@pattern`, is reported as
+dangerous (`RULE_CHANGED`). A loosened or removed rule is not reported.
 
 Renaming a field is a remove plus an add. To rename the API field while
 keeping the stored property, use `@alias(property:)`: the diff then

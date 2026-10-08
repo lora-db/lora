@@ -518,6 +518,15 @@ They validate what clients send through the generated API. Raw Cypher and
 `@cypher` mutations are not checked, and adding a rule does not revisit
 values already stored.
 
+The same directives go on an argument of a [`@cypher`](#cypher) field,
+where they are checked before the statement runs.
+
+Clients can see the rules. Each generated input field says them in its
+description ("1 to 80 characters. Must be an email address."), so they
+show in GraphiQL and in the printed schema, and
+[`lora-graphql json-schema`](/docs/graphql/cli#json-schema) exports them
+as JSON Schema for form validation.
+
 The order is fixed: [`@normalize`](#normalize) changes the value first,
 the rules then judge the normalised value, and that value is what is
 stored. For what directives cannot say, such as a rule across two fields,
@@ -644,8 +653,8 @@ mutation {
 }
 ```
 
-On an `Int` or `Float` argument of a [`@cypher`](#cypher) field, `@range`
-takes `min` and `max` and is checked before the statement runs:
+On an argument of a [`@cypher`](#cypher) field, `@range` is checked
+before the statement runs:
 
 ```graphql
 type Festival @node {
@@ -707,9 +716,9 @@ violation of an item rule carries the item's index in its path.
 A list grown with `adjust: { tags: { push: [...] } }` is checked after
 the push, like a `@range`.
 
-On a list argument of a [`@cypher`](#cypher) field, `@size(max:)` is the
-most items the argument takes, checked before the statement runs. Without
-it the `maxListArgument` option applies (1000 by default).
+On a list argument of a [`@cypher`](#cypher) field, `@size` is checked
+before the statement runs. Without a `max` the `maxListArgument` option
+applies (1000 by default).
 
 ```graphql
 type Festival @node {

@@ -242,6 +242,35 @@ driver points at, as it is: it does not create indexes. The report:
 | `unused` | Indexes the database has that the API does not need | No |
 | `plans` | Plan reports per operation and root field | Yes, if any has findings |
 | `errors` | Operations that failed to compile | Yes |
+| `stored` | Stored values that break a validation rule of their field: `{ type, key, field, rule, message }` | No |
+
+### inputSchemas()
+
+```ts
+inputSchemas(): Record<string, JsonSchema>
+```
+
+The [validation rules](/docs/graphql/directives#validation) of every
+generated create and update input as JSON Schema (2020-12), keyed by
+input type name, for clients. The same output as
+[`lora-graphql json-schema`](/docs/graphql/cli#json-schema). Also exported
+as a standalone function `inputSchemas(model)`.
+
+### storedViolations(options?)
+
+```ts
+storedViolations(options?: { limit?: number }): Promise<{
+  violations: Array<{ type: string; key: unknown; field: string; rule: string; message: string }>;
+  scanned: Record<string, number>; // nodes read per type
+  partial: string[]; // types with more nodes than `limit`
+}>
+```
+
+Reads the nodes of every type that has validation rules and returns the
+stored values that would be refused today, with the same code that
+refuses them on write. `limit` is the most nodes read per type (default
+10,000); at most 200 violations are returned. `check()` includes the
+result as `stored`.
 
 ### accessMatrix()
 

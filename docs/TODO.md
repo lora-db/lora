@@ -57,7 +57,7 @@ next, **P2** planned, **P3** when convenient.
 
 ## lora-graphql
 
-- [ ] P2 Input validation, what is left (`docs/design/graphql-input-validation.md`): the new rule arguments on `@cypher` arguments, a `regexEngine` hook, normalising filter operands and lookup keys of a `@normalize`d field; then lints, `diff` awareness of tightened rules, a `check --database` scan of stored values, JSON Schema export, rules in input descriptions.
+- [ ] P3 Input validation, what is left (`docs/design/graphql-input-validation.md`): a `regexEngine` hook, normalising filter operands and lookup keys of a `@normalize`d field, relationship properties in the stored-value scan, mapping a third-party `@constraint` in `migrate neo4j`.
 - [ ] P2 Relationship rules on interface / union targets (refused today).
 - [ ] P2 FULLTEXT: say when an index skips a value type (non-string list elements and properties are skipped silently).
 - [ ] P1 Mutations make several JS round trips under the writer lock — use `tx.executeMany`, fold validation and read-back into the last write (no `executeMany` in `src/`).

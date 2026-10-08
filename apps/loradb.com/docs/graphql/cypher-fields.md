@@ -181,7 +181,26 @@ read rules.
 ## Bounding arguments
 
 A statement sees its arguments as the client sent them, so the library
-bounds them before anything runs.
+checks them before anything runs. Every
+[validation directive](/docs/graphql/directives#validation) works on an
+argument: `@length`, `@pattern`, `@format`, `@range`, `@multipleOf` and
+`@size`.
+
+```graphql
+type Query {
+  search(
+    q: String! @length(min: 2, max: 50)
+    contact: String @format(as: "email")
+    kinds: [String!] @size(min: 1, max: 5, unique: true)
+  ): [Festival!]!
+    @cypher(statement: "...")
+}
+```
+
+A broken rule is `BAD_USER_INPUT` with
+[every violation listed](/docs/graphql/errors#validation-errors), and the
+statement does not run. The two rules below are the ones nearly every
+custom field needs.
 
 **Lists** take at most `@size(max:)` items, or `maxListArgument` (default
 1000) without it. Each level of a nested list counts.

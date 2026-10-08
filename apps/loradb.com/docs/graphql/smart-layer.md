@@ -292,6 +292,10 @@ One SDL describes both the graph and the API, so one diff reports both:
   relabels and property renames, with destructive ones flagged;
 - the API's breaking and dangerous changes.
 
+A [validation rule](/docs/graphql/directives#validation) that is added or
+tightened is reported as breaking too. graphql-js cannot see it, since a
+`String` is still a `String`; the diff compares the rules themselves.
+
 A field renamed with `@alias` over the same property is reported as an API
 break with no data migration.
 
