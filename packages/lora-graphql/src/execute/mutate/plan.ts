@@ -12,7 +12,7 @@ import {
 import type { CompileContext } from "../../compile/context.js";
 import { keyOf } from "../../compile/read/by-keys.js";
 import { requestError, validationError } from "../../errors.js";
-import { checkValue } from "../../model/constraints.js";
+import { checkValue, normalizeValue } from "../../model/constraints.js";
 import { toStored } from "../../model/points.js";
 import { memberFields } from "../../model/relations.js";
 import type {
@@ -243,7 +243,8 @@ export class WritePlan {
     }
     // A computed value answers to the field's rules like a supplied one.
     if (f.constraints) {
-      const failures = checkValue(f.constraints, value);
+      const stored = normalizeValue(f.constraints, value);
+      const failures = checkValue(f.constraints, stored);
       if (failures.length > 0) {
         throw validationError(
           "CONSTRAINT_VIOLATION",
@@ -256,6 +257,7 @@ export class WritePlan {
           })),
         );
       }
+      return stored;
     }
     return value;
   }

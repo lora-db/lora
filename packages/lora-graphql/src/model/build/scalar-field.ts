@@ -287,6 +287,7 @@ export function buildScalarField(
     vector: vector !== undefined,
     timestamp: timestamp !== undefined,
     defaultValue,
+    scalar: customScalar && isScalarType(named) ? named : undefined,
   });
 
   const field: ScalarField = {

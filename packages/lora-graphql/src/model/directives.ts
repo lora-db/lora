@@ -151,36 +151,56 @@ export const directiveTypeDefs = /* GraphQL */ `
     exclusiveMax: Float
     "Replaces the default message of this rule."
     message: String
-  ) on ARGUMENT_DEFINITION | FIELD_DEFINITION
+  ) on ARGUMENT_DEFINITION | FIELD_DEFINITION | SCALAR
 
-  "How long a String or ID is, in Unicode code points (each item, for a list)."
+  "How long a String or ID is, in Unicode code points (each item, for a list). On a custom scalar: for every field of that type."
   directive @length(
     min: Int
     max: Int
     "Replaces the default message of this rule."
     message: String
-  ) on FIELD_DEFINITION
+  ) on FIELD_DEFINITION | SCALAR
 
   "An expression the whole value of a String or ID must match (each item, for a list). Needs @length(max:) on the same field."
   directive @pattern(
     regex: String!
     "Replaces the default message of this rule."
     message: String
-  ) on FIELD_DEFINITION
+  ) on FIELD_DEFINITION | SCALAR
 
   "A named shape a String or ID must have: email, email-strict, url, uuid, hostname, ipv4, ipv6, slug, hex-color, ulid or e164."
   directive @format(
     as: String!
     "Replaces the default message of this rule."
     message: String
-  ) on FIELD_DEFINITION
+  ) on FIELD_DEFINITION | SCALAR
+
+  "Changes a String or ID before it is validated and stored (each item, for a list): trim removes surrounding whitespace, unicode normalises, case maps, in that order; emptyToNull then stores no value for an empty string. Opt in: nothing is changed without it."
+  directive @normalize(
+    trim: Boolean
+    case: TextCase
+    unicode: UnicodeForm
+    emptyToNull: Boolean
+  ) on FIELD_DEFINITION | SCALAR
+
+  enum TextCase {
+    LOWER
+    UPPER
+  }
+
+  enum UnicodeForm {
+    NFC
+    NFD
+    NFKC
+    NFKD
+  }
 
   "An Int or Float must be a whole multiple of value (each item, for a list)."
   directive @multipleOf(
     value: Float!
     "Replaces the default message of this rule."
     message: String
-  ) on FIELD_DEFINITION
+  ) on FIELD_DEFINITION | SCALAR
 
   "Generated read operations for a node type. Reads are on by default."
   directive @query(
@@ -431,6 +451,8 @@ export const directiveTypeDefs = /* GraphQL */ `
 /** Names defined by the prelude; never treated as user types. */
 export const PRELUDE_TYPES = new Set([
   "KeyScope",
+  "TextCase",
+  "UnicodeForm",
   "AuthorizationMask",
   "AuthorizationRuleDefinition",
   "QueryDirection",

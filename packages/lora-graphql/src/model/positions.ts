@@ -92,6 +92,7 @@ export const DIRECTIVE_POSITIONS: Readonly<
     "range",
     "multipleOf",
     "size",
+    "normalize",
     // Refused with "@relationship target must be a @node type".
     "relationship",
   ],
@@ -180,6 +181,7 @@ export const DIRECTIVE_POSITIONS: Readonly<
     "range",
     "multipleOf",
     "size",
+    "normalize",
     // Refused with a specific message.
     "key",
     "unique",

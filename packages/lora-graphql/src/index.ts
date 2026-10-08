@@ -76,6 +76,12 @@ export {
   type Violation,
 } from "./errors.js";
 export type { FieldConstraints } from "./model/constraints.js";
+export type {
+  StandardIssue,
+  StandardResult,
+  StandardSchemaV1,
+  TypeValidator,
+} from "./standard-schema.js";
 export { toGlobalId, fromGlobalId } from "./schema/global-id.js";
 export type {
   Attributes,

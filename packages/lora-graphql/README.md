@@ -191,7 +191,14 @@ violation in `extensions.violations` (`path`, `coordinate`, `rule`,
 pattern must match the whole value; values computed during the write (an
 `adjust`, a `@populatedBy` result) are checked in the transaction and fail
 with `CONSTRAINT_VIOLATION`. Raw Cypher and `@cypher` mutations are not
-checked. Each takes `message:`. See the
+checked. Each takes `message:`. `@normalize(trim:, case:, unicode:,
+emptyToNull:)` changes a string before it is validated and stored (it is
+what makes a `@unique` email treat `Ada@X.com ` and `ada@x.com` as one
+value). The rules and `@normalize` may sit on a custom scalar (`scalar
+Email @storedAs(type: STRING) @format(as: "email")`), for every field of
+that type. For a rule across fields, the `validators` option takes a
+Standard Schema validator per node type (zod, valibot, arktype, yup),
+run on each input after the field rules. See the
 [directive reference](https://loradb.com/docs/graphql/directives#validation).
 
 ## Queries

@@ -144,7 +144,7 @@ export async function executeMutation(
   if (op !== "UPSERT") settleClaims(planCtx, node, authOp);
   // Value rules next, still before the transaction: a request with a bad
   // value never waits for, or holds, the writer lock.
-  validateInput(env.model, op, node, args);
+  await validateInput(env.model, env.validators ?? {}, op, node, args);
 
   const tx =
     owned ??

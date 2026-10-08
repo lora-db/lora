@@ -642,3 +642,375 @@ describe("at startup", () => {
     );
   });
 });
+
+describe("@normalize", () => {
+  const sdl = /* GraphQL */ `
+    type Account @node @mutation {
+      key: String! @key
+      email: String!
+        @normalize(trim: true, case: LOWER, unicode: NFC)
+        @format(as: "email")
+        @unique
+      nickname: String @normalize(trim: true, emptyToNull: true) @length(min: 2)
+      tags: [String!] @normalize(trim: true, case: UPPER) @length(max: 3)
+      handle: String @populatedBy(callback: "handle") @normalize(case: LOWER)
+      friends: [Account!]!
+        @relationship(type: "KNOWS", direction: OUT, properties: "Knows")
+    }
+    type Knows @relationshipProperties {
+      note: String @normalize(trim: true) @length(max: 3)
+    }
+  `;
+  const make = () =>
+    createTestLoraGraphQL({
+      typeDefs: sdl,
+      callbacks: { handle: () => "MiXeD" },
+    });
+  const stored = async (a: T, key: string) =>
+    (
+      (await a.db.execute(
+        `MATCH (a:Account {key: '${key}'}) RETURN a.email AS email, a.nickname AS nickname, a.tags AS tags, a.handle AS handle`,
+      )) as unknown as { rows: Array<Record<string, unknown>> }
+    ).rows[0];
+
+  test("the value is normalised, then validated, then stored", async () => {
+    const a = await make();
+    const r = await a.lora.execute({
+      source: `mutation ($input: [AccountCreateInput!]!) { createAccounts(input: $input) { accounts { email tags } } }`,
+      variables: {
+        input: [
+          {
+            key: "a",
+            // Trimmed and lower-cased before @format sees it; the
+            // combining accent composed by NFC.
+            email: "  Ada@Example.COM ",
+            nickname: "   ",
+            tags: [" ab ", "cd"],
+          },
+        ],
+      },
+    });
+    expect(r.errors).toBeUndefined();
+    expect(await stored(a, "a")).toEqual({
+      email: "ada@example.com",
+      nickname: null,
+      tags: ["AB", "CD"],
+      handle: "mixed",
+    });
+  });
+
+  test("two spellings of one value meet the uniqueness constraint", async () => {
+    const a = await make();
+    const create = (key: string, email: string) =>
+      a.lora.execute({
+        source: `mutation ($key: String!, $email: String!) { createAccounts(input: [{ key: $key, email: $email }]) { info { nodesCreated } } }`,
+        variables: { key, email },
+      });
+    expect((await create("a", "ada@example.com")).errors).toBeUndefined();
+    expect(failure(await create("b", " ADA@example.com")).code).toBe(
+      "CONSTRAINT_VIOLATION",
+    );
+  });
+
+  test("the rules judge the normalised value", async () => {
+    const a = await make();
+    // Three characters once trimmed: within @length(max: 3).
+    const ok = await a.lora.execute({
+      source: `mutation { createAccounts(input: [{ key: "a", email: "a@b.co", tags: ["  abc  "] }]) { info { nodesCreated } } }`,
+    });
+    expect(ok.errors).toBeUndefined();
+    // One character once trimmed: under @length(min: 2).
+    const bad = await a.lora.execute({
+      source: `mutation { createAccounts(input: [{ key: "b", email: "b@b.co", nickname: " x " }]) { info { nodesCreated } } }`,
+    });
+    expect(failure(bad).violations).toMatchObject([
+      { path: ["input", 0, "nickname"], rule: "minLength" },
+    ]);
+  });
+
+  test("on update, and on a relationship's properties", async () => {
+    const a = await make();
+    await a.lora.execute({
+      source: `mutation { createAccounts(input: [{ key: "a", email: "a@b.co" }, { key: "b", email: "b@b.co" }]) { info { nodesCreated } } }`,
+    });
+    const r = await a.lora.execute({
+      source: `mutation { updateAccount(key: "a", update: { email: " NEW@b.co ", friends: { connect: [{ key: "b", edge: { note: " hi " } }] } }) {
+        account { email friendsConnection { edges { properties { note } } } } } }`,
+    });
+    expect(r.data).toEqual({
+      updateAccount: {
+        account: {
+          email: "new@b.co",
+          friendsConnection: { edges: [{ properties: { note: "hi" } }] },
+        },
+      },
+    });
+  });
+
+  test("startup: where it applies, and a default in stored form", () => {
+    const problems = (fields: string): string[] => {
+      try {
+        buildModel(`type T @node @mutation { key: String! @key ${fields} }`);
+        return [];
+      } catch (err) {
+        if (err instanceof ModelError)
+          return err.problems.map((p) => p.message);
+        throw err;
+      }
+    };
+    expect(problems("n: Int @normalize(trim: true)")).toContain(
+      "@normalize applies to String and ID fields",
+    );
+    expect(problems("s: String @normalize")).toContain(
+      "@normalize needs trim, case, unicode or emptyToNull",
+    );
+    expect(problems("l: [String!] @normalize(emptyToNull: true)")).toContain(
+      "@normalize(emptyToNull:) applies to a single value, not to list items",
+    );
+    expect(
+      problems('s: String @normalize(case: LOWER) @default(value: "Draft")'),
+    ).toContain("@default(value:) is not in the form @normalize stores");
+  });
+});
+
+describe("rules on a custom scalar", () => {
+  const sdl = /* GraphQL */ `
+    scalar Email
+      @storedAs(type: STRING)
+      @normalize(trim: true, case: LOWER)
+      @format(as: "email")
+      @length(max: 254)
+    scalar Percent @storedAs(type: INT) @range(min: 0, max: 100)
+
+    type Person @node @mutation {
+      key: String! @key
+      email: Email
+      backup: Email @length(max: 12)
+      progress: Percent
+      knows: [Person!]!
+        @relationship(type: "KNOWS", direction: OUT, properties: "Knows")
+    }
+    type Knows @relationshipProperties {
+      trust: Percent
+    }
+  `;
+
+  test("every field of the type has them, and a field may tighten one", async () => {
+    const s = await createTestLoraGraphQL({ typeDefs: sdl });
+    const r = await s.lora.execute({
+      source: `mutation ($input: [PersonCreateInput!]!) { createPersons(input: $input) { info { nodesCreated } } }`,
+      variables: {
+        input: [
+          {
+            key: "a",
+            email: "nope",
+            backup: "long.address@example.com",
+            progress: 101,
+            knows: { connect: [{ key: "a", edge: { trust: -1 } }] },
+          },
+        ],
+      },
+    });
+    expect(
+      failure(r).violations.map((v) => [v.coordinate, v.rule, v.params]),
+    ).toEqual([
+      ["Person.email", "format", { format: "email" }],
+      // The field's own @length replaces the scalar's 254.
+      ["Person.backup", "maxLength", { limit: 12 }],
+      ["Person.progress", "maximum", { limit: 100, comparison: "<=" }],
+      ["Knows.trust", "minimum", { limit: 0, comparison: ">=" }],
+    ]);
+  });
+
+  test("the scalar's @normalize applies before its rules", async () => {
+    const s = await createTestLoraGraphQL({ typeDefs: sdl });
+    const r = await s.lora.execute({
+      source: `mutation ($e: Email) { createPersons(input: [{ key: "a", email: $e }]) { persons { email } } }`,
+      variables: { e: " Ada@Example.com " },
+    });
+    expect(r.data).toEqual({
+      createPersons: { persons: [{ email: "ada@example.com" }] },
+    });
+  });
+
+  test("a rule the storage type cannot take is a model error", () => {
+    expect(() =>
+      buildModel(`scalar Code @storedAs(type: INT) @length(max: 3)
+        type T @node { key: String! @key  code: Code }`),
+    ).toThrow(/@length applies to String and ID fields/);
+  });
+});
+
+describe("the validators option", () => {
+  // The smallest Standard Schema: what zod, valibot, arktype and yup
+  // schemas expose under "~standard".
+  type Outcome =
+    | { value: unknown }
+    | {
+        issues: Array<{
+          message: string;
+          path?: Array<string | number | { key: string }>;
+        }>;
+      };
+  const schema = (
+    validate: (value: Record<string, unknown>) => Outcome | Promise<Outcome>,
+  ) => ({
+    "~standard": {
+      version: 1 as const,
+      vendor: "test",
+      validate: (value: unknown) => validate(value as Record<string, unknown>),
+    },
+  });
+  const sdl = /* GraphQL */ `
+    type Booking @node @mutation {
+      key: String! @key
+      startsOn: Date
+      endsOn: Date
+      note: String @length(max: 5)
+      guests: [Guest!]! @relationship(type: "FOR", direction: IN)
+    }
+    type Guest @node @mutation {
+      key: String! @key
+      age: Int
+    }
+  `;
+  const ordered = schema((b) => {
+    // Dates arrive as the ISO strings the client sent.
+    const start = b["startsOn"] as string | undefined;
+    const end = b["endsOn"] as string | undefined;
+    return start && end && end < start
+      ? {
+          issues: [
+            { message: "must not be before startsOn", path: ["endsOn"] },
+          ],
+        }
+      : { value: b };
+  });
+
+  test("a rule across two fields, reported like any other", async () => {
+    const v = await createTestLoraGraphQL({
+      typeDefs: sdl,
+      validators: { Booking: ordered },
+    });
+    const r = await v.lora.execute({
+      source: `mutation { createBookings(input: [
+        { key: "ok", startsOn: "2027-01-01", endsOn: "2027-01-05" },
+        { key: "bad", startsOn: "2027-01-05", endsOn: "2027-01-01" }
+      ]) { info { nodesCreated } } }`,
+    });
+    expect(failure(r)).toMatchObject({
+      code: "BAD_USER_INPUT",
+      violations: [
+        {
+          path: ["input", 1, "endsOn"],
+          coordinate: "Booking.endsOn",
+          rule: "custom",
+          params: {},
+          message: "must not be before startsOn",
+        },
+      ],
+    });
+    expect(v.statements).toHaveLength(0);
+  });
+
+  test("dates are shown as strings, and stored as dates", async () => {
+    const v = await createTestLoraGraphQL({
+      typeDefs: sdl,
+      validators: { Booking: ordered },
+    });
+    const r = await v.lora.execute({
+      source: `mutation { createBookings(input: [{ key: "a", startsOn: "2027-01-01", endsOn: "2027-01-05" }]) { bookings { startsOn endsOn } } }`,
+    });
+    expect(r.data).toEqual({
+      createBookings: {
+        bookings: [{ startsOn: "2027-01-01", endsOn: "2027-01-05" }],
+      },
+    });
+    expect(
+      (
+        (await v.db.execute(
+          "MATCH (b:Booking) RETURN type.of(b.startsOn) AS t",
+        )) as unknown as { rows: unknown[] }
+      ).rows,
+    ).toEqual([{ t: "DATE" }]);
+  });
+
+  test("it runs once the field rules hold, and may be asynchronous", async () => {
+    let calls = 0;
+    const v = await createTestLoraGraphQL({
+      typeDefs: sdl,
+      validators: {
+        Booking: schema(async (b) => {
+          calls++;
+          await Promise.resolve();
+          return { value: b };
+        }),
+      },
+    });
+    const bad = await v.lora.execute({
+      source: `mutation { createBookings(input: [{ key: "a", note: "too long" }]) { info { nodesCreated } } }`,
+    });
+    expect(failure(bad).violations.map((x) => x.rule)).toEqual(["maxLength"]);
+    expect(calls).toBe(0);
+    const ok = await v.lora.execute({
+      source: `mutation { createBookings(input: [{ key: "a", note: "fine" }]) { info { nodesCreated } } }`,
+    });
+    expect(ok.errors).toBeUndefined();
+    expect(calls).toBe(1);
+  });
+
+  test("what it returns is what is written", async () => {
+    const v = await createTestLoraGraphQL({
+      typeDefs: sdl,
+      validators: {
+        Booking: schema((b) => ({
+          value: { ...b, note: String(b["note"]).toUpperCase() },
+        })),
+      },
+    });
+    const r = await v.lora.execute({
+      source: `mutation { createBookings(input: [{ key: "a", note: "hi" }]) { bookings { note } } }`,
+    });
+    expect(r.data).toEqual({ createBookings: { bookings: [{ note: "HI" }] } });
+  });
+
+  test("a schema per kind of input, and nested inputs", async () => {
+    const adult = schema((g) =>
+      typeof g["age"] === "number" && g["age"] < 18
+        ? { issues: [{ message: "must be an adult", path: [{ key: "age" }] }] }
+        : { value: g },
+    );
+    const v = await createTestLoraGraphQL({
+      typeDefs: sdl,
+      validators: { Guest: { create: adult } },
+    });
+    const nested = await v.lora.execute({
+      source: `mutation { createBookings(input: [{ key: "b", guests: { create: [{ node: { key: "g", age: 12 } }] } }]) { info { nodesCreated } } }`,
+    });
+    expect(failure(nested).violations).toMatchObject([
+      {
+        path: ["input", 0, "guests", "create", 0, "node", "age"],
+        coordinate: "Guest.age",
+        message: "must be an adult",
+      },
+    ]);
+    // An update has no validator here: only `create` was given.
+    await v.db.execute("CREATE (:Guest {key: 'g1', age: 30})");
+    const update = await v.lora.execute({
+      source: `mutation { updateGuest(key: "g1", update: { age: 12 }) { guest { age } } }`,
+    });
+    expect(update.data).toEqual({ updateGuest: { guest: { age: 12 } } });
+  });
+
+  test("an unknown type or a non-schema is refused at construction", async () => {
+    await expect(
+      createTestLoraGraphQL({ typeDefs: sdl, validators: { Nope: ordered } }),
+    ).rejects.toThrow(/validators.Nope: there is no @node type Nope/);
+    await expect(
+      createTestLoraGraphQL({
+        typeDefs: sdl,
+        validators: { Booking: { parse: () => 1 } as never },
+      }),
+    ).rejects.toThrow(/validators.Booking: not a Standard Schema validator/);
+  });
+});

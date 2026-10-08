@@ -46,6 +46,7 @@ const USE: Record<string, string> = {
   pattern: '@pattern(regex: "[a-z]+")',
   format: '@format(as: "email")',
   multipleOf: "@multipleOf(value: 2)",
+  normalize: "@normalize(trim: true)",
   size: "@size(max: 3)",
   range: "@range(min: 0)",
   timestamp: "@timestamp",

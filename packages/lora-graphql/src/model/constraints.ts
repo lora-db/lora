@@ -24,6 +24,13 @@ export interface FieldConstraints {
   };
   multipleOf?: { value: number; message?: string };
   size?: { min?: number; max?: number; unique: boolean; message?: string };
+  /** `@normalize`: applied before the rules, and to what is stored. */
+  normalize?: {
+    trim: boolean;
+    unicode?: "NFC" | "NFD" | "NFKC" | "NFKD";
+    case?: "LOWER" | "UPPER";
+    emptyToNull: boolean;
+  };
 }
 
 /** One rule a value breaks. `rule` is the JSON Schema keyword. */
@@ -140,6 +147,38 @@ export const FORMATS: Readonly<Record<string, Format>> = Object.freeze({
       "must be a phone number in international form, such as +31201234567",
   },
 });
+
+function normalizeText(
+  n: NonNullable<FieldConstraints["normalize"]>,
+  value: string,
+): string {
+  let out = n.trim ? value.trim() : value;
+  if (n.unicode) out = out.normalize(n.unicode);
+  // Locale-independent on purpose: a stored value must not depend on
+  // where the server runs.
+  if (n.case === "LOWER") out = out.toLowerCase();
+  else if (n.case === "UPPER") out = out.toUpperCase();
+  return out;
+}
+
+/**
+ * `value` as `@normalize` stores it: trimmed, normalised and case-mapped,
+ * in that order, and null for an empty string under `emptyToNull`. Items
+ * of a list are normalised one by one. Anything but a string is returned
+ * as it is.
+ */
+export function normalizeValue(c: FieldConstraints, value: unknown): unknown {
+  const n = c.normalize;
+  if (!n) return value;
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      typeof item === "string" ? normalizeText(n, item) : item,
+    );
+  }
+  if (typeof value !== "string") return value;
+  const out = normalizeText(n, value);
+  return n.emptyToNull && out === "" ? null : out;
+}
 
 /** Unicode code points in `s`. */
 export function codePoints(s: string): number {

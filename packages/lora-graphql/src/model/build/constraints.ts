@@ -1,10 +1,15 @@
 // @length, @pattern, @format, @range, @multipleOf and @size on a field:
 // read, checked against the field's type, and compiled.
 
-import type { GraphQLDirective, GraphQLField } from "graphql";
+import type {
+  GraphQLDirective,
+  GraphQLField,
+  GraphQLScalarType,
+} from "graphql";
 import {
   checkValue,
   FORMATS,
+  normalizeValue,
   probePattern,
   type FieldConstraints,
 } from "../constraints.js";
@@ -32,14 +37,26 @@ export function readConstraints(
     vector: boolean;
     timestamp: boolean;
     defaultValue: { value: unknown } | undefined;
+    /** The field's custom scalar, whose rules it inherits. */
+    scalar?: GraphQLScalarType | undefined;
   },
 ): FieldConstraints | undefined {
-  const lengthArgs = directive(d("length"), f, at);
-  const patternArgs = directive(d("pattern"), f, at);
-  const formatArgs = directive(d("format"), f, at);
-  const rangeArgs = directive(d("range"), f, at);
-  const multipleArgs = directive(d("multipleOf"), f, at);
+  // A rule on the field wins; one on the field's custom scalar applies to
+  // every field of that type, which is how a constrained type is reused.
+  const read = (name: string) =>
+    directive(d(name), f, at) ??
+    (field.scalar
+      ? directive(d(name), field.scalar, (message) =>
+          at(`${message} (on scalar ${field.scalar!.name})`),
+        )
+      : undefined);
+  const lengthArgs = read("length");
+  const patternArgs = read("pattern");
+  const formatArgs = read("format");
+  const rangeArgs = read("range");
+  const multipleArgs = read("multipleOf");
   const sizeArgs = directive(d("size"), f, at);
+  const normalizeArgs = read("normalize");
   const used = (
     [
       ["length", lengthArgs],
@@ -48,6 +65,7 @@ export function readConstraints(
       ["range", rangeArgs],
       ["multipleOf", multipleArgs],
       ["size", sizeArgs],
+      ["normalize", normalizeArgs],
     ] as const
   ).filter(([, args]) => args !== undefined);
   if (used.length === 0) return undefined;
@@ -190,10 +208,44 @@ export function readConstraints(
     }
   }
 
+  if (normalizeArgs) {
+    const trim = normalizeArgs["trim"] === true;
+    const emptyToNull = normalizeArgs["emptyToNull"] === true;
+    const unicode = normalizeArgs["unicode"] as
+      | NonNullable<FieldConstraints["normalize"]>["unicode"]
+      | null
+      | undefined;
+    const textCase = normalizeArgs["case"] as
+      | "LOWER"
+      | "UPPER"
+      | null
+      | undefined;
+    if (!isText) at("@normalize applies to String and ID fields");
+    else if (!trim && !emptyToNull && !unicode && !textCase) {
+      at("@normalize needs trim, case, unicode or emptyToNull");
+    } else if (emptyToNull && field.list) {
+      at(
+        "@normalize(emptyToNull:) applies to a single value, not to list items",
+      );
+    } else {
+      out.normalize = {
+        trim,
+        emptyToNull,
+        ...(unicode ? { unicode } : {}),
+        ...(textCase ? { case: textCase } : {}),
+      };
+    }
+  }
+
   if (Object.keys(out).length === 0) return undefined;
-  // A default the field's own rules refuse could never be stored by a client.
   if (field.defaultValue) {
-    const [broken] = checkValue(out, field.defaultValue.value);
+    const value = field.defaultValue.value;
+    // A default is stored as written: it has to be in the stored form
+    // already, and pass the rules a client's value would.
+    if (JSON.stringify(normalizeValue(out, value)) !== JSON.stringify(value)) {
+      at("@default(value:) is not in the form @normalize stores");
+    }
+    const [broken] = checkValue(out, value);
     if (broken) at(`@default(value:) ${broken.message}`);
   }
   return out;

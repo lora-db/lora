@@ -12,6 +12,7 @@ import type { PopulatedByCallback } from "./execute/mutate/env.js";
 import type { LoraTransaction } from "./execute/transaction.js";
 import type { DocumentGuards } from "./guards.js";
 import type { ModelOptions } from "./model/build/limits.js";
+import type { TypeValidator } from "./standard-schema.js";
 import type { ObservabilityOptions } from "./observe.js";
 
 export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
@@ -122,6 +123,19 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
   subscriptionTimeoutMs?: number;
   /** Named callbacks for `@populatedBy(callback:)`. */
   callbacks?: Record<string, PopulatedByCallback>;
+  /**
+   * A validator per node type, for what the validation directives do not
+   * say (a rule across two fields, a check against your own data): any
+   * Standard Schema object, which zod, valibot, arktype and yup schemas
+   * are. It is given each input of that type (a create's, an update's, a
+   * nested one's) after `@normalize` and after the field rules hold, and
+   * its issues are reported like theirs, in `extensions.violations` with
+   * `rule: "custom"`. What it returns is what is written, so its
+   * transforms apply. One schema validates every input; `{ create,
+   * update, upsert }` gives each kind its own, which matters because an
+   * update's input holds only the fields it sets.
+   */
+  validators?: Record<string, TypeValidator>;
   /**
    * Implementations of custom scalars declared with `@storedAs`, e.g. one
    * that validates e-mail addresses. Without one a scalar passes through.

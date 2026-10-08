@@ -87,6 +87,7 @@ import {
   type PopulatedByCallback,
 } from "./execute/mutate/env.js";
 import { collapseErrors, ModelError, requestError } from "./errors.js";
+import { isStandardSchema } from "./standard-schema.js";
 import {
   buildManifest,
   generateTypes,
@@ -171,6 +172,7 @@ export class LoraGraphQL {
   readonly #maxListFilter: number | undefined;
   readonly #maxStringFilter: number | undefined;
   readonly #callbacks: Record<string, PopulatedByCallback>;
+  readonly #validators: NonNullable<LoraGraphQLOptions["validators"]>;
   readonly #resolvers: NonNullable<LoraGraphQLOptions["resolvers"]>;
   readonly #scalars: LoraGraphQLOptions["scalars"];
   readonly #jwt: (context: unknown) => Record<string, unknown> | undefined;
@@ -239,6 +241,19 @@ export class LoraGraphQL {
     );
     this.#resolvers = options.resolvers ?? {};
     this.#scalars = options.scalars;
+    this.#validators = options.validators ?? {};
+    for (const [type, validator] of Object.entries(this.#validators)) {
+      if (!this.model.nodes.has(type)) {
+        missing.push(`validators.${type}: there is no @node type ${type}`);
+      } else if (
+        !isStandardSchema(validator) &&
+        !Object.values(validator).every(isStandardSchema)
+      ) {
+        missing.push(
+          `validators.${type}: not a Standard Schema validator (zod, valibot, arktype and yup schemas are), nor { create, update, upsert } of them`,
+        );
+      }
+    }
     for (const n of this.model.nodes.values()) {
       for (const f of n.fields.values()) {
         if (f.kind === "custom" && !this.#resolvers[n.name]?.[f.name]) {
@@ -1386,6 +1401,7 @@ export class LoraGraphQL {
       statistics: this.#statistics,
       requestContext: context,
       callbacks: this.#callbacks,
+      validators: this.#validators,
       transaction: (context as LoraGraphQLContext | undefined)?.transaction
         ?.driverTransaction,
       onStatement: (statement) =>

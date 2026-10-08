@@ -1,6 +1,7 @@
 // What a mutation runs with: the environment the server hands it, the
 // statement runner every write goes through, and the counts it reports.
 
+import type { TypeValidator } from "../../standard-schema.js";
 import type { Statistics } from "../../analyze/statistics.js";
 import type { SelectionContext } from "../../compile/selection.js";
 import type {
@@ -53,6 +54,8 @@ export interface MutationEnv {
   /** Statistics from `analyze()`, for filter costs. */
   statistics?: Statistics | undefined;
   callbacks: Readonly<Record<string, PopulatedByCallback>>;
+  /** The `validators` option: a Standard Schema per node type. */
+  validators?: Readonly<Record<string, TypeValidator>> | undefined;
   /**
    * A caller-owned transaction: run inside it and leave the commit to the
    * caller. A failed mutation rolls it back, so it is never half-applied.
