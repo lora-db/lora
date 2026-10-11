@@ -449,6 +449,33 @@ pub struct LoraLocalDateTime {
 }
 
 impl LoraLocalDateTime {
+    /// `dur` added to the wall clock: months and days by the calendar,
+    /// then seconds and nanoseconds. `None` when the result is out of
+    /// range.
+    pub fn try_add_duration(&self, dur: &LoraDuration) -> Option<Self> {
+        let out = LoraDateTime {
+            year: self.year,
+            month: self.month,
+            day: self.day,
+            hour: self.hour,
+            minute: self.minute,
+            second: self.second,
+            nanosecond: self.nanosecond,
+            offset_seconds: 0,
+            zone: None,
+        }
+        .try_add_duration(dur)?;
+        Some(Self {
+            year: out.year,
+            month: out.month,
+            day: out.day,
+            hour: out.hour,
+            minute: out.minute,
+            second: out.second,
+            nanosecond: out.nanosecond,
+        })
+    }
+
     pub fn parse(s: &str) -> Result<Self, String> {
         let t_pos = s
             .find('T')

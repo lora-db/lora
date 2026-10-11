@@ -6,6 +6,7 @@ use std::fmt;
 
 use super::calendar::unix_now;
 use super::datetime::split_zone_suffix;
+use super::duration::LoraDuration;
 use super::format::{format_offset, format_subsecond};
 use super::parsing::parse_time_string;
 
@@ -16,6 +17,58 @@ pub struct LoraTime {
     pub second: u32,
     pub nanosecond: u32,
     pub offset_seconds: i32,
+}
+
+/// A time of day moved by `dur`, wrapping at midnight. A time has no
+/// date, so the months and days of the duration do not move it.
+fn add_to_time_of_day(
+    hour: u32,
+    minute: u32,
+    second: u32,
+    nanosecond: u32,
+    dur: &LoraDuration,
+) -> (u32, u32, u32, u32) {
+    const DAY: i128 = 86_400 * 1_000_000_000;
+    let now = (hour as i128 * 3600 + minute as i128 * 60 + second as i128) * 1_000_000_000
+        + nanosecond as i128;
+    let moved =
+        (now + dur.seconds as i128 * 1_000_000_000 + dur.nanoseconds as i128).rem_euclid(DAY);
+    let seconds = (moved / 1_000_000_000) as u32;
+    (
+        seconds / 3600,
+        seconds % 3600 / 60,
+        seconds % 60,
+        (moved % 1_000_000_000) as u32,
+    )
+}
+
+impl LoraTime {
+    /// `dur` added to the time of day, at the same offset.
+    pub fn add_duration(&self, dur: &LoraDuration) -> Self {
+        let (hour, minute, second, nanosecond) =
+            add_to_time_of_day(self.hour, self.minute, self.second, self.nanosecond, dur);
+        Self {
+            hour,
+            minute,
+            second,
+            nanosecond,
+            offset_seconds: self.offset_seconds,
+        }
+    }
+}
+
+impl LoraLocalTime {
+    /// `dur` added to the time of day.
+    pub fn add_duration(&self, dur: &LoraDuration) -> Self {
+        let (hour, minute, second, nanosecond) =
+            add_to_time_of_day(self.hour, self.minute, self.second, self.nanosecond, dur);
+        Self {
+            hour,
+            minute,
+            second,
+            nanosecond,
+        }
+    }
 }
 
 impl LoraTime {

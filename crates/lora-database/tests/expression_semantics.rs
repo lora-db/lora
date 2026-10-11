@@ -183,3 +183,71 @@ fn integer_division_by_zero_is_an_error() {
         "overflow",
     );
 }
+
+#[test]
+fn integer_addition_subtraction_and_multiplication_overflow_is_an_error() {
+    assert_error("RETURN 9223372036854775807 + 1 AS v", "overflow");
+    assert_error("RETURN -9223372036854775807 - 2 AS v", "overflow");
+    assert_error("RETURN 9223372036854775807 * 2 AS v", "overflow");
+    assert_error(
+        "UNWIND [1, 9223372036854775807] AS n RETURN n + 1 AS v",
+        "overflow",
+    );
+}
+
+/// Regression: `=~` with a pattern that does not compile gave null, so a
+/// filter with a typo silently matched nothing.
+#[test]
+fn regex_match_with_a_bad_pattern_is_an_error() {
+    assert_error("RETURN 'a' =~ '(' AS v", "invalid regular expression `(`");
+    assert_error(
+        "UNWIND ['a', 'b'] AS s WITH s WHERE s =~ '[' RETURN s",
+        "invalid regular expression `[`",
+    );
+    assert_error(
+        "UNWIND range(1, 50) AS i RETURN 'a' =~ '\\\\pL{1,300}{1,300}' AS v",
+        "too large to compile",
+    );
+    // A null operand is still null, and a valid pattern still matches.
+    assert!(TestDb::new().scalar("RETURN null =~ '(' AS v").is_null());
+    assert_eq!(
+        TestDb::new().scalar("RETURN 'abc' =~ 'a.c' AS v"),
+        serde_json::json!(true)
+    );
+}
+
+/// Regression: a LOCAL_DATETIME, TIME or LOCAL_TIME plus or minus a
+/// DURATION was "Cannot add localdatetime and duration"; inside a write
+/// the error was dropped and the property left out.
+#[test]
+fn local_temporals_take_duration_arithmetic() {
+    let db = TestDb::new();
+    let text = |query: &str| db.scalar(query).as_str().map(str::to_string);
+    assert_eq!(
+        text("RETURN toString(('2024-01-31T10:00:00'::LOCAL_DATETIME) + ({months: 1, hours: 15}::DURATION)) AS v"),
+        Some("2024-03-01T01:00:00".to_string())
+    );
+    assert_eq!(
+        text(
+            "RETURN toString(({days: 1}::DURATION) + ('2024-02-28T00:00:00'::LOCAL_DATETIME)) AS v"
+        ),
+        Some("2024-02-29T00:00:00".to_string())
+    );
+    assert_eq!(
+        text("RETURN toString(('2024-03-01T00:30:00'::LOCAL_DATETIME) - ({hours: 1}::DURATION)) AS v"),
+        Some("2024-02-29T23:30:00".to_string())
+    );
+    // A time has no date: it wraps at midnight, and days do not move it.
+    assert_eq!(
+        text("RETURN toString(('23:30:00'::LOCAL_TIME) + ({minutes: 45, days: 3}::DURATION)) AS v"),
+        Some("00:15:00".to_string())
+    );
+    assert_eq!(
+        text("RETURN toString(('00:10:00'::LOCAL_TIME) - ({minutes: 20}::DURATION)) AS v"),
+        Some("23:50:00".to_string())
+    );
+    assert_eq!(
+        text("RETURN toString(('08:00:00+01:00'::TIME) + ({minutes: 7}::DURATION)) AS v"),
+        Some("08:07:00+01:00".to_string())
+    );
+}

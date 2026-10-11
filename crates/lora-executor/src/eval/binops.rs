@@ -169,9 +169,15 @@ pub(super) fn eval_binary(op: &BinaryOp, lhs: LoraValue, rhs: LoraValue) -> Lora
 
         BinaryOp::RegexMatch => match (lhs, rhs) {
             (LoraValue::Null, _) | (_, LoraValue::Null) => LoraValue::Null,
-            (LoraValue::String(s), LoraValue::String(pattern)) => regex::full_match(&s, &pattern)
-                .map(LoraValue::Bool)
-                .unwrap_or(LoraValue::Null),
+            (LoraValue::String(s), LoraValue::String(pattern)) => {
+                match regex::full_match(&s, &pattern) {
+                    Ok(matched) => LoraValue::Bool(matched),
+                    Err(msg) => {
+                        set_eval_error(msg);
+                        LoraValue::Null
+                    }
+                }
+            }
             _ => LoraValue::Bool(false),
         },
     }
@@ -339,6 +345,19 @@ fn add_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
             Some(out) => LoraValue::DateTime(out),
             None => arithmetic_overflow("datetime duration addition"),
         },
+        (LoraValue::LocalDateTime(dt), LoraValue::Duration(dur))
+        | (LoraValue::Duration(dur), LoraValue::LocalDateTime(dt)) => {
+            match dt.try_add_duration(&dur) {
+                Some(out) => LoraValue::LocalDateTime(out),
+                None => arithmetic_overflow("localdatetime duration addition"),
+            }
+        }
+        (LoraValue::Time(t), LoraValue::Duration(dur))
+        | (LoraValue::Duration(dur), LoraValue::Time(t)) => LoraValue::Time(t.add_duration(&dur)),
+        (LoraValue::LocalTime(t), LoraValue::Duration(dur))
+        | (LoraValue::Duration(dur), LoraValue::LocalTime(t)) => {
+            LoraValue::LocalTime(t.add_duration(&dur))
+        }
         (LoraValue::Duration(a), LoraValue::Duration(b)) => match a.try_add(&b) {
             Some(out) => LoraValue::Duration(out),
             None => arithmetic_overflow("duration addition"),
@@ -382,6 +401,20 @@ fn sub_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
                 Some(out) => LoraValue::DateTime(out),
                 None => arithmetic_overflow("datetime duration subtraction"),
             },
+            None => arithmetic_overflow("duration negation"),
+        },
+        (LoraValue::LocalDateTime(dt), LoraValue::Duration(dur)) => {
+            match dur.try_negate().and_then(|d| dt.try_add_duration(&d)) {
+                Some(out) => LoraValue::LocalDateTime(out),
+                None => arithmetic_overflow("localdatetime duration subtraction"),
+            }
+        }
+        (LoraValue::Time(t), LoraValue::Duration(dur)) => match dur.try_negate() {
+            Some(negated) => LoraValue::Time(t.add_duration(&negated)),
+            None => arithmetic_overflow("duration negation"),
+        },
+        (LoraValue::LocalTime(t), LoraValue::Duration(dur)) => match dur.try_negate() {
+            Some(negated) => LoraValue::LocalTime(t.add_duration(&negated)),
             None => arithmetic_overflow("duration negation"),
         },
         // Temporal - Temporal -> Duration
