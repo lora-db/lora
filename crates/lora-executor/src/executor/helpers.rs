@@ -897,7 +897,7 @@ pub(super) fn eval_properties_expr<S: GraphStorage>(
     if let ResolvedExpr::Map(items) = expr {
         let mut out = Properties::new();
         for (k, v) in items {
-            let value = eval_expr(v, row, &eval_ctx);
+            let value = eval_expr_result(v, row, &eval_ctx).map_err(ExecutorError::from_eval)?;
             if matches!(value, LoraValue::Null) {
                 continue;
             }
@@ -908,7 +908,7 @@ pub(super) fn eval_properties_expr<S: GraphStorage>(
         return Ok(out);
     }
 
-    match eval_expr(expr, row, &eval_ctx) {
+    match eval_expr_result(expr, row, &eval_ctx).map_err(ExecutorError::from_eval)? {
         LoraValue::Map(map) => {
             let mut out = Properties::new();
             for (k, v) in map {

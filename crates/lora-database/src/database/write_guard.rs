@@ -226,7 +226,18 @@ where
         &self,
         f: impl FnOnce(&mut S) -> Result<R>,
     ) -> Result<R> {
-        let guard = self.write_store();
+        self.run_with_durable_recorder_deadline(None, f)
+    }
+
+    /// [`Self::run_with_durable_recorder`], giving up with a timeout when
+    /// the writer lock is not free by `deadline`: a bounded write must not
+    /// wait behind another writer for longer than its own limit.
+    pub(crate) fn run_with_durable_recorder_deadline<R>(
+        &self,
+        deadline: Option<Instant>,
+        f: impl FnOnce(&mut S) -> Result<R>,
+    ) -> Result<R> {
+        let guard = self.write_store_deadline(deadline)?;
         self.with_logged_write_guard(guard, WalAbortPolicy::AbortOnly, f)
     }
 

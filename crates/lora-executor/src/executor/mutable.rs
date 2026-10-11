@@ -11,7 +11,7 @@
 //! fully streamable.
 
 use crate::errors::{value_kind, ExecResult, ExecutorError};
-use crate::eval::{clear_eval_error, eval_expr, EvalContext};
+use crate::eval::{clear_eval_error, eval_expr_result, EvalContext};
 use crate::value::{lora_value_to_property, LoraPath, LoraValue, Row};
 use crate::{project_rows, ExecuteOptions, QueryResult};
 
@@ -1016,7 +1016,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 labels,
                 properties,
             } => {
-                let expected_props = self.merge_expected_props(properties.as_ref(), row);
+                let expected_props = self.merge_expected_props(properties.as_ref(), row)?;
                 let Some(id) = self
                     .merge_node_candidates(labels, &expected_props)
                     .into_iter()
@@ -1048,7 +1048,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 let head_candidates = match head.var.and_then(|v| row.get(v)) {
                     Some(LoraValue::Node(id)) => vec![*id],
                     _ => {
-                        let expected = self.merge_expected_props(head.properties.as_ref(), row);
+                        let expected = self.merge_expected_props(head.properties.as_ref(), row)?;
                         self.merge_node_candidates(&head.labels, &expected)
                             .into_iter()
                             .filter(|&id| self.merge_node_matches(id, &head.labels, &expected))
@@ -1062,7 +1062,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                         trial.insert(var_id, LoraValue::Node(head_id));
                     }
                     let mut walked = Vec::with_capacity(chain.len());
-                    if self.match_merge_chain(&mut trial, head_id, chain, &mut walked) {
+                    if self.match_merge_chain(&mut trial, head_id, chain, &mut walked)? {
                         if let Some(path_var) = part.binding {
                             let path = LoraPath {
                                 nodes: std::iter::once(head_id)
@@ -1092,9 +1092,9 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         current: NodeId,
         chain: &[lora_analyzer::ResolvedChain],
         walked: &mut Vec<(u64, NodeId)>,
-    ) -> bool {
+    ) -> ExecResult<bool> {
         let Some((step, rest)) = chain.split_first() else {
-            return true;
+            return Ok(true);
         };
 
         let bound_dst = match step.node.var.and_then(|v| row.get(v)) {
@@ -1105,8 +1105,8 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             Some(LoraValue::Relationship(id)) => Some(*id),
             _ => None,
         };
-        let expected_node = self.merge_expected_props(step.node.properties.as_ref(), row);
-        let expected_rel = self.merge_expected_props(step.rel.properties.as_ref(), row);
+        let expected_node = self.merge_expected_props(step.node.properties.as_ref(), row)?;
+        let expected_rel = self.merge_expected_props(step.rel.properties.as_ref(), row)?;
 
         let edges = self
             .ctx
@@ -1149,25 +1149,27 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 next.insert(node_var, LoraValue::Node(node_id));
             }
             walked.push((rel_id, node_id));
-            if self.match_merge_chain(&mut next, node_id, rest, walked) {
+            if self.match_merge_chain(&mut next, node_id, rest, walked)? {
                 *row = next;
-                return true;
+                return Ok(true);
             }
             walked.pop();
         }
-        false
+        Ok(false)
     }
 
     fn merge_expected_props(
         &self,
         properties: Option<&ResolvedExpr>,
         row: &Row,
-    ) -> Option<LoraValue> {
+    ) -> ExecResult<Option<LoraValue>> {
         let eval_ctx = EvalContext {
             storage: &*self.ctx.storage,
             params: &self.ctx.params,
         };
-        properties.map(|e| eval_expr(e, row, &eval_ctx))
+        properties
+            .map(|e| eval_expr_result(e, row, &eval_ctx).map_err(ExecutorError::from_eval))
+            .transpose()
     }
 
     /// Candidate ids for a MERGE node pattern. `MERGE (n:L {key: $k})`
@@ -1228,7 +1230,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                         storage: &*self.ctx.storage,
                         params: &self.ctx.params,
                     };
-                    eval_expr(expr, row, &eval_ctx)
+                    eval_expr_result(expr, row, &eval_ctx).map_err(ExecutorError::from_eval)?
                 };
                 self.collect_delete_targets(&value, &mut targets)?;
             }
@@ -1288,7 +1290,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                     storage: &*self.ctx.storage,
                     params: &self.ctx.params,
                 };
-                eval_expr(&op.list, &row, &eval_ctx)
+                eval_expr_result(&op.list, &row, &eval_ctx).map_err(ExecutorError::from_eval)?
             };
 
             let elements: Vec<LoraValue> = match list_value {
@@ -1350,7 +1352,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                             storage: &*self.ctx.storage,
                             params: &self.ctx.params,
                         };
-                        eval_expr(expr, row, &eval_ctx)
+                        eval_expr_result(expr, row, &eval_ctx).map_err(ExecutorError::from_eval)?
                     };
                     self.delete_value(value, detach)?;
                 }
@@ -1376,7 +1378,8 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                         storage: &*self.ctx.storage,
                         params: &self.ctx.params,
                     };
-                    eval_expr(&nested.list, row, &eval_ctx)
+                    eval_expr_result(&nested.list, row, &eval_ctx)
+                        .map_err(ExecutorError::from_eval)?
                 };
 
                 let elements: Vec<LoraValue> = match list_value {
@@ -1436,7 +1439,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                         storage: &*self.ctx.storage,
                         params: &self.ctx.params,
                     };
-                    eval_expr(value, row, &eval_ctx)
+                    eval_expr_result(value, row, &eval_ctx).map_err(ExecutorError::from_eval)?
                 };
 
                 self.set_property_from_expr(row, target, new_value)
@@ -1456,7 +1459,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                         storage: &*self.ctx.storage,
                         params: &self.ctx.params,
                     };
-                    eval_expr(value, row, &eval_ctx)
+                    eval_expr_result(value, row, &eval_ctx).map_err(ExecutorError::from_eval)?
                 };
 
                 self.overwrite_entity_target(entity_target, new_value)
@@ -1475,7 +1478,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                         storage: &*self.ctx.storage,
                         params: &self.ctx.params,
                     };
-                    eval_expr(value, row, &eval_ctx)
+                    eval_expr_result(value, row, &eval_ctx).map_err(ExecutorError::from_eval)?
                 };
 
                 self.mutate_entity_target(entity_target, patch)
@@ -1530,7 +1533,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 storage: &*self.ctx.storage,
                 params: &self.ctx.params,
             };
-            eval_expr(expr, row, &eval_ctx)
+            eval_expr_result(expr, row, &eval_ctx).map_err(ExecutorError::from_eval)?
         };
 
         // `SET n.a = null` removes the property.
@@ -1645,7 +1648,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 storage: &*self.ctx.storage,
                 params: &self.ctx.params,
             };
-            eval_expr(owner_expr, row, &eval_ctx)
+            eval_expr_result(owner_expr, row, &eval_ctx).map_err(ExecutorError::from_eval)?
         };
 
         match owner {
@@ -1804,7 +1807,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                             storage: &*self.ctx.storage,
                             params: &self.ctx.params,
                         };
-                        eval_expr(expr, row, &eval_ctx)
+                        eval_expr_result(expr, row, &eval_ctx).map_err(ExecutorError::from_eval)?
                     };
                     self.delete_value(value, detach)?;
                 }

@@ -209,3 +209,70 @@ fn cartesian_match_stops_close_to_its_deadline() {
         "took {took:?} for a {timeout:?} deadline"
     );
 }
+
+/// Regression: an auto-commit write with a timeout waited for the writer
+/// lock without a bound, so behind a long transaction it blocked for as
+/// long as that transaction stayed open.
+#[test]
+fn a_bounded_write_gives_up_waiting_for_the_writer_lock() {
+    let db = TestDb::new();
+    let mut holder = db
+        .service
+        .begin_transaction(lora_database::TransactionMode::ReadWrite)
+        .unwrap();
+    holder.execute_rows("CREATE (:Held)").unwrap();
+    for query in [
+        // The staged path and the in-place fast path.
+        "MERGE (:Waiting {id: 1})",
+        "CREATE (:Waiting {id: 2})",
+    ] {
+        let took = timed_out(&db, query, Duration::from_millis(50));
+        assert!(took < Duration::from_secs(2), "waited {took:?}");
+    }
+    holder.commit().unwrap();
+    assert_eq!(
+        db.scalar("MATCH (n) RETURN count(n) AS c"),
+        serde_json::json!(1),
+        "only the transaction's own write is there"
+    );
+}
+
+/// Regression: `begin_transaction` waited for the writer lock without a
+/// bound. With a deadline it gives up, and a read-only one never waits.
+#[test]
+fn a_transaction_gives_up_waiting_for_the_writer_lock_at_its_deadline() {
+    use lora_database::TransactionMode;
+    let db = TestDb::new();
+    let holder = db
+        .service
+        .begin_transaction(TransactionMode::ReadWrite)
+        .unwrap();
+    let start = Instant::now();
+    let err = db
+        .service
+        .begin_transaction_deadline(
+            TransactionMode::ReadWrite,
+            Some(Instant::now() + Duration::from_millis(50)),
+        )
+        .err()
+        .expect("the lock is held");
+    assert_eq!(err.code(), LoraErrorCode::Timeout, "{err}");
+    assert!(start.elapsed() < Duration::from_secs(2));
+    db.service
+        .begin_transaction_deadline(
+            TransactionMode::ReadOnly,
+            Some(Instant::now() + Duration::from_millis(1)),
+        )
+        .expect("a read-only transaction takes no lock")
+        .commit()
+        .unwrap();
+    holder.commit().unwrap();
+    db.service
+        .begin_transaction_deadline(
+            TransactionMode::ReadWrite,
+            Some(Instant::now() + Duration::from_millis(50)),
+        )
+        .expect("the lock is free")
+        .commit()
+        .unwrap();
+}

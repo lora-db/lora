@@ -5,11 +5,11 @@
 //! builds a `MutableExecutor` against the live store and hands it to
 //! [`Database::run_with_durable_recorder`], which owns the writer
 //! mutex, recorder arm/commit/abort lifecycle, and the
-//! managed-snapshot trigger. The single-writer design (`Arc::make_mut`
-//! against the live `Arc<S>`) and the failure trade-off — a query
-//! that fails mid-execution can leave the live graph partially
-//! mutated, but never the durable log — are documented in
-//! [`super::write_guard`].
+//! managed-snapshot trigger. Writes are staged on a clone and published
+//! only after a successful commit, so a failing query leaves the live
+//! graph untouched. The exception is the live fast path below
+//! ([`live_fast_plan_safe`]), which mutates the live graph in place for
+//! plans it considers unable to fail; see [`super::write_guard`].
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -20,6 +20,7 @@ use anyhow::Result;
 use lora_analyzer::{
     LiteralValue, ResolvedExpr, ResolvedPattern, ResolvedPatternElement, ResolvedSetItem,
 };
+use lora_ast::{BinaryOp, UnaryOp};
 use lora_compiler::physical::{PhysicalOp, PhysicalPlan};
 use lora_compiler::CompiledQuery;
 use lora_executor::{LoraValue, MutableExecutionContext, MutableExecutor, Row};
@@ -71,7 +72,7 @@ where
                 .any(|op| matches!(op, PhysicalOp::Delete(_)));
             self.run_live_fast_with_durable_recorder(may_delete, run)
         } else {
-            self.run_with_durable_recorder(run)
+            self.run_with_durable_recorder_deadline(deadline, run)
         }
     }
 }
@@ -108,7 +109,10 @@ fn live_fast_plan_safe(plan: &PhysicalPlan) -> bool {
 
     for op in &plan.nodes {
         match op {
-            PhysicalOp::Create(create) if create_pattern_is_node_only(&create.pattern) => {
+            PhysicalOp::Create(create)
+                if create_pattern_is_node_only(&create.pattern)
+                    && create_properties_cannot_fail(&create.pattern) =>
+            {
                 writes.push("create");
                 collect_created_node_vars(&create.pattern, &mut create_nodes);
             }
@@ -136,6 +140,16 @@ fn live_fast_plan_safe(plan: &PhysicalPlan) -> bool {
             | PhysicalOp::Foreach(_)
             | PhysicalOp::CallSubquery(_) => return false,
             PhysicalOp::Create(_) | PhysicalOp::Set(_) => return false,
+            // An expression that raises (`1/0`, a failing function) stops
+            // the statement after earlier rows or clauses already wrote.
+            PhysicalOp::Filter(filter) if !expr_cannot_fail(&filter.predicate) => return false,
+            PhysicalOp::Unwind(unwind) if !expr_cannot_fail(&unwind.expr) => return false,
+            PhysicalOp::Projection(projection)
+                if !projection.items.iter().all(|i| expr_cannot_fail(&i.expr)) =>
+            {
+                return false
+            }
+            PhysicalOp::HashAggregation(_) => return false,
             _ => {}
         }
     }
@@ -151,6 +165,48 @@ fn create_pattern_is_node_only(pattern: &ResolvedPattern) -> bool {
         .parts
         .iter()
         .all(|part| matches!(part.element, ResolvedPatternElement::Node { .. }))
+}
+
+fn create_properties_cannot_fail(pattern: &ResolvedPattern) -> bool {
+    pattern.parts.iter().all(|part| match &part.element {
+        ResolvedPatternElement::Node { properties, .. } => {
+            properties.as_ref().is_none_or(expr_cannot_fail)
+        }
+        _ => false,
+    })
+}
+
+/// Whether evaluating `expr` can never raise: values read as they are
+/// (literals, parameters, variables, properties, lists and maps of those)
+/// and equality and boolean operators over them. Arithmetic can overflow
+/// or divide by zero, an ordering of two temporals of different kinds is
+/// an error, and functions can reject their arguments, so anything else
+/// counts as able to fail.
+fn expr_cannot_fail(expr: &ResolvedExpr) -> bool {
+    match expr {
+        ResolvedExpr::Variable(_) | ResolvedExpr::Literal(_) | ResolvedExpr::Parameter(_) => true,
+        ResolvedExpr::Property { expr, .. } => expr_cannot_fail(expr),
+        ResolvedExpr::List(items) => items.iter().all(expr_cannot_fail),
+        ResolvedExpr::Map(items) => items.iter().all(|(_, v)| expr_cannot_fail(v)),
+        ResolvedExpr::Unary {
+            op: UnaryOp::Not,
+            expr,
+        } => expr_cannot_fail(expr),
+        ResolvedExpr::Binary { lhs, op, rhs } => {
+            matches!(
+                op,
+                BinaryOp::Or
+                    | BinaryOp::Xor
+                    | BinaryOp::And
+                    | BinaryOp::Eq
+                    | BinaryOp::Ne
+                    | BinaryOp::IsNull
+                    | BinaryOp::IsNotNull
+            ) && expr_cannot_fail(lhs)
+                && expr_cannot_fail(rhs)
+        }
+        _ => false,
+    }
 }
 
 fn collect_created_node_vars(

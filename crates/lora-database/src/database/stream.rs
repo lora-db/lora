@@ -12,7 +12,8 @@
 //! origin.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, TryLockError};
+use web_time::Instant;
 
 use anyhow::Result;
 use lora_executor::{classify_stream, compiled_result_columns, LoraValue, StreamShape};
@@ -36,6 +37,17 @@ impl Database<InMemoryGraph> {
     /// transactions that perform only materialized reads (or commit
     /// empty) pay nothing for staging.
     pub fn begin_transaction(&self, mode: TransactionMode) -> Result<Transaction<'_>, LoraError> {
+        self.begin_transaction_deadline(mode, None)
+    }
+
+    /// [`Self::begin_transaction`], giving up with a timeout when a
+    /// read-write transaction does not get the writer lock by `deadline`.
+    /// A read-only transaction never waits.
+    pub fn begin_transaction_deadline(
+        &self,
+        mode: TransactionMode,
+        deadline: Option<Instant>,
+    ) -> Result<Transaction<'_>, LoraError> {
         let live = match mode {
             TransactionMode::ReadOnly => LiveStoreGuard::Read(self.store.load_full()),
             TransactionMode::ReadWrite => {
@@ -45,10 +57,26 @@ impl Database<InMemoryGraph> {
                 // statement runs. This keeps a `begin_transaction →
                 // commit` round trip with no mutations cheap (matches
                 // the previous RwLock-based behavior).
-                let lock = self
-                    .writer
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let lock = match deadline {
+                    None => self
+                        .writer
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                    Some(deadline) => loop {
+                        match self.writer.try_lock() {
+                            Ok(lock) => break lock,
+                            Err(TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+                            Err(TryLockError::WouldBlock)
+                                if lora_executor::cancel::deadline_reached(deadline) =>
+                            {
+                                return Err(lora_executor::ExecutorError::QueryTimeout.into());
+                            }
+                            Err(TryLockError::WouldBlock) => {
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                            }
+                        }
+                    },
+                };
                 let snapshot = self.store.load_full();
                 LiveStoreGuard::Write(WriteLease {
                     _writer_lock: lock,
@@ -163,7 +191,21 @@ impl Database<InMemoryGraph> {
         self: &Arc<Self>,
         mode: TransactionMode,
     ) -> Result<Transaction<'static>, LoraError> {
-        let tx = self.begin_transaction(mode)?;
+        self.begin_transaction_owned_deadline(mode, None)
+    }
+
+    /// [`Self::begin_transaction_owned`] with the deadline of
+    /// [`Self::begin_transaction_deadline`].
+    ///
+    /// # Safety
+    ///
+    /// As for [`Self::begin_transaction_owned`].
+    pub unsafe fn begin_transaction_owned_deadline(
+        self: &Arc<Self>,
+        mode: TransactionMode,
+        deadline: Option<Instant>,
+    ) -> Result<Transaction<'static>, LoraError> {
+        let tx = self.begin_transaction_deadline(mode, deadline)?;
         Ok(std::mem::transmute::<Transaction<'_>, Transaction<'static>>(tx))
     }
 

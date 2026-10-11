@@ -213,3 +213,53 @@ fn a_relationship_set_that_collides_on_a_later_row_changes_none() {
         json!([{"k": "a"}, {"k": "b"}]),
     );
 }
+
+fn seeded() -> TestDb {
+    let db = TestDb::new();
+    db.run("CREATE (:P {id: 1, v: 0}), (:P {id: 2, v: 0})");
+    db
+}
+
+const P_STATE: &str = "MATCH (p:P) RETURN p.id AS id, p.v AS v, p.w AS w ORDER BY id";
+
+fn p_unchanged() -> JsonValue {
+    json!([{"id": 1, "v": 0, "w": null}, {"id": 2, "v": 0, "w": null}])
+}
+
+/// Regression: an expression that raised inside a write clause was dropped,
+/// so `SET n.x = 1/0` succeeded and left the property absent. It now fails
+/// the statement, and nothing the statement wrote before it is kept.
+#[test]
+fn a_failing_expression_in_a_write_fails_the_statement() {
+    for query in [
+        "MATCH (p:P) SET p.w = 1 / 0",
+        "MATCH (p:P) SET p.w = 10 / (p.id - 2)",
+        "MATCH (p:P) SET p += {w: 1 / 0}",
+        "MATCH (p:P) SET p = {id: p.id, v: 1 / 0}",
+        "CREATE (:P {id: 1 / 0})",
+        "UNWIND [3, 0] AS d CREATE (:P {id: 10 / d})",
+        "UNWIND [3, 0] AS d CREATE (:P {id: 3})-[:R {w: 10 / d}]->(:P {id: 4})",
+        "MERGE (p:P {id: 1 / 0})",
+        "MERGE (p:P {id: 9}) ON CREATE SET p.w = 1 / 0",
+        "MATCH (p:P) FOREACH (x IN [1] | SET p.w = x / 0)",
+        "MATCH (p:P) FOREACH (x IN [1 / 0] | SET p.w = x)",
+        "CREATE (:P {id: date('2020-13-01')})",
+    ] {
+        assert_rejected_whole(seeded, query, "", P_STATE, p_unchanged());
+    }
+}
+
+/// Regression: a statement simple enough for the live fast path kept its
+/// writes when a later clause raised (`... RETURN 1/0`), because that path
+/// has no rollback. A plan with an expression that can fail is now staged.
+#[test]
+fn a_failure_after_the_write_keeps_no_write() {
+    for query in [
+        "UNWIND [3, 4] AS i CREATE (n:P {id: i}) WITH n WHERE n.id > 1 RETURN 1 / 0 AS v",
+        "CREATE (n:P {id: 3}) RETURN 1 / 0 AS v",
+        "MATCH (p:P) SET p.v = 5 RETURN 10 / (p.id - 2) AS v",
+        "MATCH (p:P) DETACH DELETE p RETURN 1 / 0 AS v",
+    ] {
+        assert_rejected_whole(seeded, query, "by zero", P_STATE, p_unchanged());
+    }
+}

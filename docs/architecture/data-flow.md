@@ -208,7 +208,12 @@ validate-and-retry step today:
    recorder buffers mutation events, commit the WAL, then publish the clone
    by replacing the `Arc` under the write lock. A failure discards the clone.
 3. Live fast path: plans proven unable to fail midway, with no deadline, run
-   directly against the live graph through `Arc::make_mut`. If one fails after
+   directly against the live graph through `Arc::make_mut`. "Unable to
+   fail" covers the write clause (a node-only `CREATE`, a `SET` of literals
+   or parameters, a `DELETE`) and every expression in the plan: only
+   literals, parameters, variables, property reads, lists and maps of
+   those, equality and boolean operators qualify. Arithmetic, ordering
+   comparisons and function calls can raise, so such plans are staged. If one fails after
    emitting WAL events anyway, the recorder is poisoned.
 
 Explicit transactions use a different rule: read-only transactions pin a
