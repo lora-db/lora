@@ -1,7 +1,6 @@
 // Schema lint for `check`: choices that are valid but costly or risky.
 // Warnings, not failures: each may be intended.
 
-import { codeOnly } from "../model/cypher-lexer.js";
 import type { GraphModel, ModelWarning } from "../model/types.js";
 
 export interface LintOptions {
@@ -27,10 +26,7 @@ export function lintModel(
   for (const node of model.nodes.values()) {
     for (const [i, trigger] of node.triggers.entries()) {
       // What a statement wrote is known only from what it returns.
-      if (
-        trigger.writes &&
-        !/\bAS\s+`?(created|updated)`?\b/i.test(codeOnly(trigger.statement))
-      ) {
+      if (trigger.writes && !trigger.reports) {
         out.push({
           type: node.name,
           field: `@trigger ${i + 1}`,

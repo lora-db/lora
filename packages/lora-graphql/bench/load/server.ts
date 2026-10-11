@@ -28,6 +28,7 @@ import {
 import { createDatabase } from "@loradb/lora-node";
 import { execute, parse, validate, type DocumentNode } from "graphql";
 import { LoraGraphQL, loraDriver } from "../../src/index.js";
+import type { LoraDriver } from "../../src/index.js";
 import { appTypeDefs } from "../../test/fixtures.js";
 import { graphSize, seedGraph } from "../seed.js";
 
@@ -165,7 +166,9 @@ async function openLora(config: ServerConfig, dir: string | undefined) {
     : await createDatabase();
   const lora = new LoraGraphQL({
     typeDefs: appTypeDefs,
-    driver: loraDriver(db),
+    driver: process.env.LOAD_NO_BATCH
+      ? oneByOne(loraDriver(db))
+      : loraDriver(db),
     timeoutMs: config.timeoutMs,
   });
   return { db, lora };
@@ -295,4 +298,27 @@ if (isMainThread) {
     port: endpoint.port,
     festivals: Number(counted.rows[0]?.n),
   } satisfies WorkerMessage);
+}
+
+/**
+ * `driver` without `executeMany()`, for LOAD_NO_BATCH=1: a mutation's
+ * statements then go one call at a time, which is how they went before
+ * batching. Run a write scenario with and without it to see what the
+ * round trips under the writer lock cost.
+ */
+function oneByOne(driver: LoraDriver): LoraDriver {
+  return {
+    ...driver,
+    begin: async (options) => {
+      const tx = await driver.begin!(options);
+      return {
+        execute: (statement) => tx.execute(statement),
+        commit: () => tx.commit(),
+        rollback: () => tx.rollback(),
+        get isOpen() {
+          return tx.isOpen;
+        },
+      };
+    },
+  };
 }

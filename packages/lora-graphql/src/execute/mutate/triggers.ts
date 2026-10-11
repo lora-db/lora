@@ -94,15 +94,13 @@ export function triggerStatement(
  */
 export async function runWriteTriggers(runner: Runner): Promise<void> {
   if (!hasTriggers(runner.env)) return;
-  const created = group(runner, runner.change.created);
-  const fresh = new Set(
-    runner.change.created.map((e) => `${e.type}\0${keyOf(e.key)}`),
-  );
+  // What a trigger wrote (a DELETE trigger ran before this) fires nothing.
+  const own = (e: EntityRef) => !runner.triggered.has(refId(e));
+  const created = group(runner, runner.change.created.filter(own));
+  const fresh = new Set(runner.change.created.map(refId));
   const updated = group(
     runner,
-    runner.change.updated.filter(
-      (e) => !fresh.has(`${e.type}\0${keyOf(e.key)}`),
-    ),
+    runner.change.updated.filter((e) => own(e) && !fresh.has(refId(e))),
   );
   const fired: Array<[NodeType, Trigger, MutationOperation, unknown[]]> = [];
   for (const node of runner.env.model.nodes.values()) {
@@ -199,22 +197,40 @@ async function call(
   } finally {
     clearTimeout(timer);
   }
-  for (const nested of transaction.drain()) merge(runner.change, nested);
+  for (const nested of transaction.drain()) merge(runner, nested);
 }
 
-/** Add the write-set of a mutation a trigger ran to the parent's. */
-function merge(into: WriteChange, nested: WriteChange): void {
+/**
+ * Add the write-set of a mutation a trigger ran to the parent's. A node
+ * it deleted is no longer created or updated; one the parent created and
+ * the trigger deleted never existed for anyone outside the transaction.
+ */
+function merge(runner: Runner, nested: WriteChange): void {
+  const into = runner.change;
+  const drop = (list: EntityRef[], id: string): boolean => {
+    const at = list.findIndex((e) => refId(e) === id);
+    if (at >= 0) list.splice(at, 1);
+    return at >= 0;
+  };
+  for (const ref of nested.deleted) {
+    const id = refId(ref);
+    const wasCreated = drop(into.created, id);
+    drop(into.updated, id);
+    if (!wasCreated && !into.deleted.some((e) => refId(e) === id)) {
+      into.deleted.push(ref);
+    }
+    runner.triggered.add(id);
+  }
   const seen = new Set(
-    [...into.created, ...into.updated, ...into.deleted].map(
-      (e) => `${e.type}\0${keyOf(e.key)}`,
-    ),
+    [...into.created, ...into.updated, ...into.deleted].map(refId),
   );
-  for (const list of ["created", "updated", "deleted"] as const) {
+  for (const list of ["created", "updated"] as const) {
     for (const ref of nested[list]) {
-      const id = `${ref.type}\0${keyOf(ref.key)}`;
+      const id = refId(ref);
       if (seen.has(id)) continue;
       seen.add(id);
       into[list].push(ref);
+      runner.triggered.add(id);
     }
   }
   into.connected.push(...nested.connected);
@@ -222,6 +238,8 @@ function merge(into: WriteChange, nested: WriteChange): void {
   if (nested.before) (into.before ??= []).push(...nested.before);
   into.broad ||= nested.broad;
 }
+
+const refId = (e: EntityRef): string => `${e.type}\0${keyOf(e.key)}`;
 
 /** Issue every statement at once, then merge what each reports. */
 async function fire(
@@ -280,9 +298,9 @@ function report(
   result: QueryResult,
 ): EntityRef[] {
   const made: EntityRef[] = [];
-  const reports =
-    result.columns.includes("created") || result.columns.includes("updated");
-  if (!reports) {
+  // Decided by the statement, not by this result: one that matched no
+  // row has no columns either.
+  if (!trigger.reports) {
     if (trigger.writes) runner.change.broad = true;
     return made;
   }
@@ -304,6 +322,7 @@ function report(
         if (seen.has(id)) continue;
         seen.add(id);
         into.push(ref);
+        runner.triggered.add(id);
         if (column === "created") made.push(ref);
       }
     }

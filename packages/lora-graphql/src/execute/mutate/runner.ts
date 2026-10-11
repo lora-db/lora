@@ -77,6 +77,8 @@ export class Runner {
   disconnected: RelationshipRef[] = [];
   /** Nodes updated per type, for AFTER validation. */
   updated = new Map<NodeType, { keys: unknown[]; fields: Set<string> }>();
+  /** Nodes a trigger added to the write-set: they fire no trigger. */
+  triggered = new Set<string>();
   /** The fields each update set, per type and key: `@trigger(fields:)`. */
   updatedFields = new Map<NodeType, Map<string, Set<string>>>();
   /**

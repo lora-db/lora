@@ -6,6 +6,7 @@
 // idempotent; the node's key is its idempotency key.
 
 import { name } from "../compile/cypher.js";
+import { keyOf } from "../compile/read/by-keys.js";
 import type { LoraDriver } from "../driver.js";
 import type { WriteChange } from "../execute/changes.js";
 import type { NodeType } from "../model/types.js";
@@ -33,7 +34,8 @@ export interface WorkerOptions {
   concurrency?: number;
   /**
    * Calls before a node is given up as `FAILED` and reported to
-   * `onError`. Default 8.
+   * `onError`. A call that never returned (its worker died, or it
+   * outlived `leaseMs`) counts. Default 8.
    */
   maxAttempts?: number;
   /**
@@ -48,12 +50,11 @@ export interface WorkerOptions {
    */
   sweepMs?: number;
   /**
-   * How long a claim holds, in milliseconds. A handler that takes longer
-   * may see its node handed out again. Default 60 000.
+   * How long a claim holds, in milliseconds. Past it another worker may
+   * take the node, and what the first handler then returns is ignored:
+   * give a handler a timeout shorter than this. Default 60 000.
    */
   leaseMs?: number;
-  /** What to do with a node once handled. Default `"keep"`. */
-  onDone?: "keep" | "delete";
 }
 
 export interface Worker {
@@ -72,8 +73,6 @@ export interface WorkerHost {
   timeoutMs: number;
   /** Committed writes, from the change hub. */
   listen: (listener: (change: WriteChange) => void) => () => unknown;
-  /** Report a deleted node to the change hub (`onDone: "delete"`). */
-  emit: (change: WriteChange) => void;
   onError: ((event: DatabaseErrorEvent) => void) | undefined;
 }
 
@@ -90,7 +89,13 @@ export class OutboxWorker implements Worker {
   readonly #abort = new AbortController();
   readonly #unlisten: () => unknown;
   readonly #timer: ReturnType<typeof setInterval>;
+  /** Keys this worker is handling: one handler per node at a time. */
+  readonly #active = new Set<string>();
+  /** Timers that look again when a retry is due. */
+  readonly #retries = new Set<ReturnType<typeof setTimeout>>();
   #running = 0;
+  /** Whether the last sweep hit its limit: there is more to take. */
+  #more = false;
   #sweeping: Promise<void> | undefined;
   #waiters: Array<() => void> = [];
 
@@ -102,7 +107,6 @@ export class OutboxWorker implements Worker {
       backoffMs: (attempt) => Math.min(1000 * 2 ** (attempt - 1), 300_000),
       sweepMs: 30_000,
       leaseMs: 60_000,
-      onDone: "keep",
       ...options,
     };
     this.#label = name(host.node.labels[0]!);
@@ -133,6 +137,8 @@ export class OutboxWorker implements Worker {
     this.#abort.abort();
     this.#unlisten();
     clearInterval(this.#timer);
+    for (const timer of this.#retries) clearTimeout(timer);
+    this.#retries.clear();
     this.#queue.clear();
     while (this.#running > 0) {
       await new Promise<void>((resolve) => this.#waiters.push(resolve));
@@ -155,6 +161,7 @@ export class OutboxWorker implements Worker {
           ],
           { mode: "read", timeoutMs: this.#host.timeoutMs },
         );
+        this.#more = result!.rows.length >= SWEEP_LIMIT;
         for (const row of result!.rows) this.#enqueue(row["key"]);
       } catch (err) {
         this.#report(err);
@@ -175,7 +182,11 @@ export class OutboxWorker implements Worker {
 
   #enqueue(key: unknown): void {
     if (this.#abort.signal.aborted) return;
-    this.#queue.set(JSON.stringify(key), key);
+    const id = keyOf(key);
+    // Its handler is still running here: the lease is not this worker's
+    // to break.
+    if (this.#active.has(id)) return;
+    this.#queue.set(id, key);
     this.#pump();
   }
 
@@ -184,11 +195,15 @@ export class OutboxWorker implements Worker {
       const [id, key] = this.#queue.entries().next().value!;
       this.#queue.delete(id);
       this.#running++;
+      this.#active.add(id);
       void this.#process(key)
         .catch((err: unknown) => this.#report(err))
         .finally(() => {
           this.#running--;
+          this.#active.delete(id);
           this.#pump();
+          // A sweep that hit its limit left work behind: take the rest.
+          if (this.#more && this.#queue.size === 0) void this.#sweep();
           for (const wake of this.#waiters.splice(0)) wake();
         });
     }
@@ -196,17 +211,48 @@ export class OutboxWorker implements Worker {
 
   async #process(key: unknown): Promise<void> {
     const now = Date.now();
-    // One write claims the node: with one writer at a time, two workers
-    // on one database never both get a row back.
+    const until = now + this.#options.leaseMs;
+    // One write claims the node and counts the attempt: with one writer
+    // at a time, two workers on one database never both get a row back,
+    // and a handler that never returns has still used its attempt.
     const claimed = await this.#write(
       `MATCH (n:${this.#label}) WHERE n.${this.#key} = $key AND ${this.#due("n")}\n` +
-        `SET n.${OUTBOX.state} = "CLAIMED", n.${OUTBOX.lease} = $until\n` +
+        `SET n.${OUTBOX.state} = "CLAIMED", n.${OUTBOX.lease} = $until, ` +
+        `n.${OUTBOX.attempts} = coalesce(n.${OUTBOX.attempts}, 0) + 1\n` +
         `RETURN properties(n) AS props`,
-      { key, now, until: now + this.#options.leaseMs },
+      { key, now, until },
     );
     const props = claimed[0]?.["props"] as Record<string, unknown> | undefined;
     if (!props) return;
-    const attempt = Number(props[OUTBOX.attempts] ?? 0) + 1;
+    const attempt = Number(props[OUTBOX.attempts]);
+    // Every later write is this claim's only: it names the lease it took,
+    // so a handler that outlived it cannot undo the next worker's claim.
+    const mine = `n.${this.#key} = $key AND n.${OUTBOX.state} = "CLAIMED" AND n.${OUTBOX.lease} = $until`;
+    const fail = (err: unknown, final: boolean, at: number) =>
+      this.#write(
+        `MATCH (n:${this.#label}) WHERE ${mine}\n` +
+          `SET n.${OUTBOX.state} = $state, n.${OUTBOX.at} = $at, n.${OUTBOX.error} = $error\n` +
+          `REMOVE n.${OUTBOX.lease}`,
+        {
+          key,
+          until,
+          state: final ? "FAILED" : "PENDING",
+          at,
+          error: (err instanceof Error ? err.message : String(err)).slice(
+            0,
+            1000,
+          ),
+        },
+      );
+    if (attempt > this.#options.maxAttempts) {
+      // Its earlier calls never returned: give it up without another.
+      const err = new Error(
+        `no call returned in ${this.#options.maxAttempts} attempts (each outlived its lease of ${this.#options.leaseMs} ms, or its worker stopped)`,
+      );
+      await fail(err, true, now);
+      this.#report(err);
+      return;
+    }
     const node: Record<string, unknown> = {};
     for (const f of this.#host.node.fields.values()) {
       if (f.kind === "scalar") node[f.name] = props[f.property] ?? null;
@@ -218,52 +264,30 @@ export class OutboxWorker implements Worker {
         signal: this.#abort.signal,
       });
     } catch (err) {
-      const failed = attempt >= this.#options.maxAttempts;
-      await this.#write(
-        `MATCH (n:${this.#label}) WHERE n.${this.#key} = $key AND n.${OUTBOX.state} = "CLAIMED"\n` +
-          `SET n.${OUTBOX.state} = $state, n.${OUTBOX.attempts} = $attempt, n.${OUTBOX.at} = $at, n.${OUTBOX.error} = $error\n` +
-          `REMOVE n.${OUTBOX.lease}`,
-        {
-          key,
-          state: failed ? "FAILED" : "PENDING",
-          attempt,
-          at: Date.now() + this.#options.backoffMs(attempt),
-          error: (err instanceof Error ? err.message : String(err)).slice(
-            0,
-            1000,
-          ),
-        },
-      );
-      if (failed) this.#report(err);
+      const final = attempt >= this.#options.maxAttempts;
+      const wait = this.#options.backoffMs(attempt);
+      await fail(err, final, Date.now() + wait);
+      if (final) this.#report(err);
+      else this.#lookIn(wait);
       return;
     }
-    if (this.#options.onDone === "delete") {
-      await this.#write(
-        `MATCH (n:${this.#label}) WHERE n.${this.#key} = $key AND n.${OUTBOX.state} = "CLAIMED"\nDETACH DELETE n`,
-        { key },
-      );
-      const ref = { type: this.#host.node.name, key };
-      this.#host.emit({
-        operation: "DELETE",
-        field: "worker",
-        created: [],
-        updated: [],
-        deleted: [ref],
-        connected: [],
-        disconnected: [],
-        entities: [ref],
-        types: [ref.type],
-        relationshipTypes: [],
-        broad: false,
-      });
-    } else {
-      await this.#write(
-        `MATCH (n:${this.#label}) WHERE n.${this.#key} = $key AND n.${OUTBOX.state} = "CLAIMED"\n` +
-          `SET n.${OUTBOX.state} = "DONE"\n` +
-          `REMOVE n.${OUTBOX.lease}, n.${OUTBOX.at}, n.${OUTBOX.error}`,
-        { key },
-      );
-    }
+    await this.#write(
+      `MATCH (n:${this.#label}) WHERE ${mine}\n` +
+        `SET n.${OUTBOX.state} = "DONE"\n` +
+        `REMOVE n.${OUTBOX.lease}, n.${OUTBOX.at}, n.${OUTBOX.error}`,
+      { key, until },
+    );
+  }
+
+  /** Look for work again in `ms`: when a retry comes due. */
+  #lookIn(ms: number): void {
+    if (this.#abort.signal.aborted) return;
+    const timer = setTimeout(() => {
+      this.#retries.delete(timer);
+      void this.#sweep();
+    }, ms + 1);
+    (timer as { unref?: () => void }).unref?.();
+    this.#retries.add(timer);
   }
 
   async #write(

@@ -179,12 +179,16 @@ each check runs. The user-facing rules are in the package
 - **Nothing from the request reaches a statement's text.** `$jwt`,
   `$viewer`, `$operation` and the keys are bound parameters; any other
   `$parameter` in a statement is refused at startup.
-- **A trigger runs before the mutation's outcome is known.** It runs
-  inside the transaction, with a hidden key moved aside like every other
-  statement (G-20), so an error it raises is the one a free key gets;
-  the rollback takes its writes. A trigger function with side effects
-  outside the database would leak them for a refused mutation: side
-  effects belong in a worker.
+- **A trigger runs only for a write every rule has passed.** `CREATE`
+  and `UPDATE` triggers are issued after the AFTER rules,
+  `@uniqueTogether` and every earlier statement have been checked, never
+  in the same batch: otherwise an engine error from a trigger (a key
+  another node holds) would outrank `FORBIDDEN` and tell a denied caller
+  that node exists (found in review, `test/trigger-hardening.test.ts`).
+  They still run before the hidden-key refusal (G-20), on a graph where
+  the hidden node is moved aside, so their errors are the ones a free
+  key gets. `DELETE` triggers run after the delete's own rules passed.
+  Side effects outside the database belong in a worker.
 - **A trigger function holds the writer lock.** It is bounded by
   `triggerTimeoutMs` (default 1 s); past it the mutation fails with
   `TIMEOUT`. A function that never yields the event loop cannot be

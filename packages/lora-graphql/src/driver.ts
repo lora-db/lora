@@ -277,8 +277,19 @@ export function boundedWrites(
   const begin = (driver as LoraDriver | undefined)?.begin?.bind(driver);
   if (!begin || !Number.isFinite(max)) return driver;
   let waiting = 0;
+  // Each method is called on `driver` itself: a driver may be a class
+  // instance, whose methods a spread would leave behind.
   return {
-    ...driver,
+    run: (statements, options) => driver.run(statements, options),
+    ...(driver.explain
+      ? { explain: (statement: Statement) => driver.explain!(statement) }
+      : {}),
+    ...(driver.changes
+      ? {
+          changes: (options: { fromLsn?: number; signal?: AbortSignal }) =>
+            driver.changes!(options),
+        }
+      : {}),
     begin: async (options) => {
       if (options.mode !== "write") return begin(options);
       if (waiting >= max) throw onFull(waiting);

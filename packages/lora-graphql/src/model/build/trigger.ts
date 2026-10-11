@@ -10,6 +10,9 @@ import { directive, directiveNodes } from "./directive-args.js";
 
 const WRITE_CLAUSES = /\b(CREATE|MERGE|SET|DELETE|REMOVE|DETACH)\b/i;
 
+/** A result column that reports what the statement wrote. */
+const REPORTS = /\bAS\s+`?(created|updated)`?(?![A-Za-z0-9_])/i;
+
 /** What a trigger statement may read as a `$parameter`. */
 export const TRIGGER_PARAMS: readonly string[] = ["jwt", "viewer", "operation"];
 
@@ -74,6 +77,7 @@ export function readTriggers(
       fields,
       params,
       writes: WRITE_CLAUSES.test(codeOnly(statement)),
+      reports: REPORTS.test(codeOnly(statement)),
     });
   }
   return out;

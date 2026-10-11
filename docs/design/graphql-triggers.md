@@ -253,7 +253,6 @@ const worker = lora.worker("Notification", {
   maxAttempts: 8,       // default, then FAILED and onError
   sweepMs: 30_000,      // default
   leaseMs: 60_000,      // default
-  onDone: "keep",       // or "delete"
 });
 ```
 
@@ -423,7 +422,7 @@ Each phase ships on its own, with tests, and leaves `main` releasable.
   retries with backoff; `FAILED` after `maxAttempts`; a node left
   `PENDING` or with an expired lease is picked up by a new instance on
   the same database; two instances do not both handle one node; state
-  writes emit no change; `onDone: "delete"`).
+  writes emit no change).
 
 ### Phase 5. Docs and release
 
@@ -457,8 +456,18 @@ Phases 1 to 4 as designed, with these differences:
 - **A failing trigger function is not reported as
   `trigger:Type.operation`**: it goes through the mutation's own error
   path, so `onError` names the root field.
-- **`onDone: "delete"` reports the delete** to `onWrite` and
-  subscriptions.
+- **No `onDone: "delete"`.** A worker deleting a node with raw Cypher
+  skipped `onDelete: RESTRICT`, cascades and `DELETE` triggers (found in
+  review), so the option was removed: delete through a generated
+  mutation.
+- **Triggers are not batched with the mutation's checks.** They are
+  issued after the checks pass, which costs a round trip on types that
+  have triggers and closes an error-precedence leak (see the threat
+  model).
+- **An attempt is counted when a node is claimed**, not when its handler
+  fails, and every later write names the lease it took: a handler that
+  hangs uses up its attempts, and a late result cannot undo a newer
+  claim.
 - **With `changeFeed: true` a worker's state writes are filtered out of
   the feed** (`execute/feed.ts`, by `setKeys`), so subscribers do not
   see an `UPDATE` per delivery.

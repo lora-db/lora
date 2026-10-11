@@ -398,8 +398,11 @@ Rules worth knowing:
   triggers. An upsert fires whichever happened. A node created and
   updated in one mutation fires `CREATE` only.
 - **Order.** `DELETE` triggers run before the nodes are removed.
-  `CREATE` and `UPDATE` triggers run after all of the mutation's writes
-  and checks, type by type in schema order, statements before functions.
+  `CREATE` and `UPDATE` triggers run after all of the mutation's writes,
+  and only once every rule has passed, type by type in schema order,
+  statements before functions. A write that `@authorization`, a
+  constraint or `@uniqueTogether` refuses fires none, so the error a
+  denied caller gets never depends on what a trigger would have found.
 - **No cascades.** What a trigger writes fires no trigger. The cost of a
   mutation is readable from the schema, and a loop is impossible.
 - **System writes.** A statement is your own Cypher: it is not checked
@@ -514,7 +517,14 @@ await worker.stop();
 - **Retries.** A handler that throws is called again after a backoff
   (one second, doubling, at most five minutes). After `maxAttempts`
   (default 8) the node is given up as failed and `onError` is called
-  with `field: "worker:Notification"` and the handler's last error.
+  with `field: "worker:Notification"` and the handler's last error. A
+  call that never returned counts as an attempt too: its worker died, or
+  it ran past `leaseMs`.
+- **Leases.** A claim holds for `leaseMs` (default 60 seconds). Past it
+  another worker may take the node, and what the first handler then
+  returns is ignored. Give a handler a timeout shorter than the lease
+  (the `signal` it gets aborts when the worker stops). One worker never
+  runs two handlers for the same node at once.
 - **Restarts.** The state lives on the node, so it is exactly as durable
   as your data. A worker looks for pending nodes when it starts and
   every `sweepMs` (default 30 seconds): work left by a crash, retries
@@ -533,8 +543,7 @@ await worker.stop();
 | `maxAttempts` | 8                           | Calls before the node is `FAILED`                                                                        |
 | `backoffMs`   | 1 s doubling, at most 5 min | `(attempt) => number`                                                                                    |
 | `sweepMs`     | 30 000                      | How often to look for work the worker was not told about                                                 |
-| `leaseMs`     | 60 000                      | How long a claim holds; a slower handler may see its node handed out again                               |
-| `onDone`      | `"keep"`                    | `"delete"` removes the node once handled, for a type that is only a queue                                |
+| `leaseMs`     | 60 000                      | How long a claim holds; past it another worker may take the node                                         |
 
 `worker.idle()` resolves when nothing is pending, which is what a test
 awaits. `lora.close()` stops every worker.
@@ -546,7 +555,13 @@ What becomes work:
 - a node a trigger function created with a generated mutation.
 
 A node created by raw Cypher is not: nothing stamped it. Set
-`_outbox: 'PENDING'` in the statement yourself to make it so.
+`_outbox: 'PENDING'` in the statement yourself to make it so. Nodes that
+existed before the type got `@outbox` are not work either.
+
+A handled node stays, marked done. To remove nodes of a type that is
+only a queue, delete them with a generated mutation (from the handler,
+or on a schedule): that runs the type's delete rules, which a worker
+deleting behind the API's back would skip.
 
 The delivery state is stored on the node in properties the library owns
 (`_outbox`, `_outboxAttempts`, `_outboxAt`, `_outboxLease`,

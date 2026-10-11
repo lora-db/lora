@@ -34,7 +34,11 @@ import { runStatement, type MutationEnv } from "./mutate/env.js";
 import { andText } from "./mutate/fragments.js";
 import type { Input, WritePlan } from "./mutate/plan.js";
 import { held, Runner } from "./mutate/runner.js";
-import { hasTriggerFunctions, runWriteTriggers } from "./mutate/triggers.js";
+import {
+  hasTriggerFunctions,
+  hasTriggers,
+  runWriteTriggers,
+} from "./mutate/triggers.js";
 import { validateInput } from "./mutate/validate.js";
 
 /** The payload's node selection, merged across aliases. */
@@ -226,8 +230,22 @@ export async function executeMutation(
   if (viewerKey !== undefined) env = { ...env, viewerKey };
   const runner = new Runner(env, tx, change);
   const schema = env.selection.schema;
-  // The CREATE and UPDATE triggers of everything the mutation wrote, once:
-  // called when its last write is issued.
+  // The @uniqueTogether check, when a case issued it with its last
+  // statements.
+  let unique: Promise<void> | undefined;
+  // With triggers, nothing of the mutation's ending is issued ahead of
+  // its checks: a trigger runs only for a write every rule has passed, so
+  // a denied write fails with its own error whatever a trigger would hit.
+  const late = hasTriggers(env);
+  let checked: Promise<void> | undefined;
+  const checks = () =>
+    (checked ??= held(
+      (async () => {
+        await (unique ?? checkUniqueTogether(runner));
+        await runner.settle();
+      })(),
+    ));
+  // The CREATE and UPDATE triggers of everything the mutation wrote, once.
   let triggered: Promise<void> | undefined;
   const triggers = () => (triggered ??= held(runWriteTriggers(runner)));
   const payloadFor = async (
@@ -236,26 +254,20 @@ export async function executeMutation(
     keys: unknown[],
   ) => {
     const payloadType = schema.getType(payloadTypeName) as GraphQLObjectType;
+    const sets = payloadSelections(env, payloadType, fieldNodes, field);
+    if (!late) return runner.payload(node, keys, sets);
+    await checks();
     // The payload shows what the triggers wrote: their statements are
     // issued first, and the read right behind them shares their round trip.
     const fired = triggers();
     // A trigger function may write anything: wait for it before reading.
     if (hasTriggerFunctions(env)) await fired;
-    const read = held(
-      runner.payload(
-        node,
-        keys,
-        payloadSelections(env, payloadType, fieldNodes, field),
-      ),
-    );
+    const read = held(runner.payload(node, keys, sets));
     await fired;
     return read;
   };
   try {
     let payload: unknown;
-    // The @uniqueTogether check, when a case issued it with its last
-    // statements; it is awaited after the payload, as when it runs alone.
-    let unique: Promise<void> | undefined;
     const plan = runner.plan();
     switch (op) {
       case "CREATE": {
@@ -264,19 +276,19 @@ export async function executeMutation(
         );
         // The payload read and the last check share the creates' round
         // trip when the plan only creates nodes.
-        let created!: Promise<unknown[]>;
-        await runner.apply(plan, () => {
-          created = held(
-            payloadFor(
-              mutationNames.createPayload(node),
-              mutationNames.createdField(node),
-              keys,
-            ),
+        let created: Promise<unknown[]> | undefined;
+        const read = () =>
+          payloadFor(
+            mutationNames.createPayload(node),
+            mutationNames.createdField(node),
+            keys,
           );
+        await runner.apply(plan, () => {
+          if (!late) created = held(read());
           unique = held(checkUniqueTogether(runner));
         });
         payload = {
-          [mutationNames.createdField(node)]: await created,
+          [mutationNames.createdField(node)]: await (created ?? read()),
           info: runner.info,
         };
         break;
@@ -291,18 +303,18 @@ export async function executeMutation(
           args["adjust"] as Input | undefined,
         );
         let validating!: Promise<void>;
-        let updated!: Promise<unknown[]>;
+        let updated: Promise<unknown[]> | undefined;
+        const read = () =>
+          done.length > 0
+            ? payloadFor(mutationNames.updatePayload(node), field, [key])
+            : Promise.resolve([null]);
         await runner.apply(plan, () => {
           validating = held(runner.validateUpdated());
-          updated = held(
-            done.length > 0
-              ? payloadFor(mutationNames.updatePayload(node), field, [key])
-              : Promise.resolve([null]),
-          );
+          if (!late) updated = held(read());
           unique = held(checkUniqueTogether(runner));
         });
         await validating;
-        const [value] = await updated;
+        const [value] = await (updated ?? read());
         payload = { [field]: value ?? null, info: runner.info };
         break;
       }
@@ -331,21 +343,21 @@ export async function executeMutation(
           args["adjust"] as Input | undefined,
         );
         let validating!: Promise<void>;
-        let updated!: Promise<unknown[]>;
+        let updated: Promise<unknown[]> | undefined;
+        const read = () =>
+          payloadFor(
+            mutationNames.updateManyPayload(node),
+            mutationNames.createdField(node),
+            done,
+          );
         await runner.apply(plan, () => {
           validating = held(runner.validateUpdated());
-          updated = held(
-            payloadFor(
-              mutationNames.updateManyPayload(node),
-              mutationNames.createdField(node),
-              done,
-            ),
-          );
+          if (!late) updated = held(read());
           unique = held(checkUniqueTogether(runner));
         });
         await validating;
         payload = {
-          [mutationNames.createdField(node)]: await updated,
+          [mutationNames.createdField(node)]: await (updated ?? read()),
           info: runner.info,
         };
         break;
@@ -383,9 +395,16 @@ export async function executeMutation(
         break;
       }
     }
-    await (unique ?? checkUniqueTogether(runner));
-    await runner.settle();
+    await checks();
     await triggers();
+    // A trigger function that swallowed a failed statement leaves the
+    // transaction rolled back: the mutation must not report success.
+    if (!tx.isOpen) {
+      throw requestError(
+        "DATABASE_ERROR",
+        "a trigger left the transaction closed: a statement it ran failed, which rolled the mutation back",
+      );
+    }
     // Only now, so that any other error is the one a free key gets.
     if (runner.hiddenKey) throw forbidden(runner.hiddenKey, "CREATE");
     if (runner.takenUnique) {

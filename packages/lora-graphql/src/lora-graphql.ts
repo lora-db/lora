@@ -288,13 +288,13 @@ export class LoraGraphQL {
       }
       for (const [key, fn] of Object.entries(fns)) {
         const op = key.toUpperCase();
-        if (op !== "CREATE" && op !== "UPDATE" && op !== "DELETE") {
+        if (key !== "create" && key !== "update" && key !== "delete") {
           missing.push(
             `triggers.${type}.${key}: not an operation (create, update, delete)`,
           );
         } else if (typeof fn !== "function") {
           missing.push(`triggers.${type}.${key}: not a function`);
-        } else if (!n.mutations.has(op)) {
+        } else if (!n.mutations.has(op as "CREATE" | "UPDATE" | "DELETE")) {
           missing.push(
             `triggers.${type}.${key}: ${type} has no generated ${op} mutation (@mutation(operations:)) to fire it`,
           );
@@ -1617,7 +1617,6 @@ export class LoraGraphQL {
         node,
         timeoutMs: this.#timeoutMs,
         listen: (listener) => this.#changes.listen(listener),
-        emit: (change) => this.#changes.emit(change),
         onError: this.#onError,
       },
       options,

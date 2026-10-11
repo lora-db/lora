@@ -55,6 +55,8 @@ export interface Trigger {
   params: readonly string[];
   /** Whether the statement has a write clause. */
   writes: boolean;
+  /** Whether it returns a `created` or `updated` column. */
+  reports: boolean;
 }
 export type AuthOperation =
   | "READ"

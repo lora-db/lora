@@ -55,7 +55,6 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P2 Relationship rules on interface / union targets (refused today).
 - [ ] P2 FULLTEXT: say when an index skips a value type (non-string list elements and properties are skipped silently).
 - [ ] P2 Mutations with relationship writes still make one round trip per checked statement (each `connect` / `disconnect` group, edge updates, nested deletes, the update's key lookup); a create is one `executeMany` call and an update two (`src/execute/mutate/runner.ts`, `test/mutation-round-trips.test.ts`). Measure with `bench:load` before going further.
-- [ ] P1 `maxCost` counts projected rows only — charge scans, `totalCount` and aggregates (from `explain()`/`analyze()`).
 - [ ] P2 Compile cache: keyed lookups miss every request because the key variable is in the cache key; rebind variables into parameter slots the way `$jwt` claims are (`src/compile/cache.ts`).
 - [ ] P3 `@populatedBy` callbacks of nested inputs, generated keys, upserts and bulk updates still run inside the transaction, one at a time (`src/execute/mutate/plan.ts`); a mutation's own inputs start before `begin()`.
 - [ ] P2 Add a subscription scenario to `bench/load` (fan-out is indexed by type+key but not load tested over HTTP).
