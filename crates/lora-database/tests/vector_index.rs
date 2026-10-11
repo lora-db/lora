@@ -1006,6 +1006,38 @@ fn hnsw_int8_ddl_round_trip() {
     );
 }
 
+/// Regression: int8 quantisation scaled coordinates by 127 and clamped, so
+/// vectors that were not unit length all clipped to the same corner and
+/// scored as near-identical.
+#[test]
+fn hnsw_int8_tells_unnormalized_vectors_apart() {
+    let db = TestDb::new();
+    create_hnsw_int8(&db, 4);
+    let vector = |coords: [f64; 4]| {
+        LoraVector::try_new(
+            coords
+                .iter()
+                .map(|c| lora_store::RawCoordinate::Float(*c))
+                .collect(),
+            4,
+            VectorCoordinateType::Float32,
+        )
+        .unwrap()
+    };
+    // cos(a, b) = 40 / 104 = 0.38; unquantised, a is far from b.
+    let a = vector([10.0, 2.0, 0.0, 0.0]);
+    let b = vector([2.0, 10.0, 0.0, 0.0]);
+    seed_vector_nodes(&db, &[a.clone(), b]);
+    let scores = call_top_k(&db, 2, &a);
+    assert_eq!(scores.len(), 2);
+    assert!(scores[0] > 0.99, "self score: {}", scores[0]);
+    assert!(
+        scores[1] < 0.8,
+        "a vector 67 degrees away scored {}",
+        scores[1]
+    );
+}
+
 #[test]
 fn hnsw_int8_returns_top_k_for_normalized_embeddings() {
     let db = TestDb::new();

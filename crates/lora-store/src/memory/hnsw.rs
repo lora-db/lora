@@ -140,17 +140,32 @@ impl HnswParams {
     }
 }
 
-/// Quantize an input vector to int8 by scaling each f32 coordinate
-/// by 127 and clamping to `[-128, 127]`. Designed for unit-norm
-/// embeddings; out-of-range values clip rather than panic. Used for
-/// both stored vectors at insert time and the query vector at
-/// search time so distances stay comparable.
+/// Quantize an input vector to int8: normalise it to unit length, then
+/// scale each coordinate by 127. Int8 indexes are cosine-only, and cosine
+/// ignores length, so normalising first keeps every direction apart;
+/// scaling an un-normalised vector directly clips its coordinates to
+/// `[-128, 127]` and makes long vectors look alike. Used for both stored
+/// vectors at insert time and the query vector at search time so
+/// distances stay comparable.
 fn quantize_to_int8(input: &LoraVector) -> Option<LoraVector> {
     let dim = input.dimension;
-    let coords: Vec<RawCoordinate> = (0..dim)
-        .map(|i| {
-            let f = input.values.f32_at(i).unwrap_or(0.0);
-            let scaled = (f * 127.0).round().clamp(-128.0, 127.0) as i64;
+    let values: Vec<f32> = (0..dim)
+        .map(|i| input.values.f32_at(i).unwrap_or(0.0))
+        .collect();
+    let norm = values
+        .iter()
+        .map(|v| f64::from(*v) * f64::from(*v))
+        .sum::<f64>()
+        .sqrt();
+    let scale = if norm > 0.0 && norm.is_finite() {
+        127.0 / norm
+    } else {
+        0.0
+    };
+    let coords: Vec<RawCoordinate> = values
+        .iter()
+        .map(|v| {
+            let scaled = (f64::from(*v) * scale).round().clamp(-128.0, 127.0) as i64;
             RawCoordinate::Int(scaled)
         })
         .collect();
