@@ -61,6 +61,7 @@ Subscriptions have their own limits:
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `maxQueuedWrites` | 512 | Write transactions that may wait for the writer lock at once. One more fails at once with [`OVERLOADED`](/docs/graphql/errors#overloaded); `Infinity` disables |
+| `maxTotalCount` | none | Most matches the `totalCount` of a root or search connection counts. A count stops there, so a `totalCount` equal to it means "this many or more". Aggregates and nested connections are not capped |
 | `maxQueuedChanges` | 1000 | Changes a `changes()` consumer or subscriber may fall behind before it is ended with `LIMIT_EXCEEDED` |
 | `maxSubscriptions` | 100 | Live subscriptions per scope. One more is `LIMIT_EXCEEDED` |
 | `subscriptionScope` | the context object | `(context) => object \| undefined`: what `maxSubscriptions` counts per. Return the connection or the user when your server builds a new context per subscription |

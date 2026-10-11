@@ -27,7 +27,13 @@ import type {
   Where,
   RawConnection,
 } from "./types.js";
-import { finish, readSet, deniedItem, assertNoneDenied } from "./common.js";
+import {
+  finish,
+  readSet,
+  deniedItem,
+  assertNoneDenied,
+  countCap,
+} from "./common.js";
 import {
   resolveLimit,
   resolveSort,
@@ -230,6 +236,8 @@ function compileConnection(
   // totalCount and aggregates: one pass over every match, in the same
   // read transaction.
   const stats = sel.totalCount || sel.aggregate !== undefined;
+  // An aggregate is over every match: only a bare count can stop early.
+  const capped = sel.aggregate === undefined ? ctx.maxTotalCount : undefined;
   let statsColumns: Array<{ column: string; path: string[] }> = [];
   if (stats) {
     const statsCtx: CompileContext = {
@@ -255,6 +263,7 @@ function compileConnection(
     statements.push({
       text: printClauses([
         ...statsRoot.clauses,
+        ...countCap(statsCtx, capped),
         ...aggregateReturn(statsCtx, "this", items, wanted),
       ]),
       params: statsCtx.params,
@@ -271,7 +280,16 @@ function compileConnection(
     cost:
       ctx.cost +
       (stats
-        ? Math.max(1, rootFilterCost(ctx, node, where, first + 1, true))
+        ? Math.max(
+            1,
+            // Without a filter a capped count reads no more than its cap.
+            capped !== undefined && !where
+              ? Math.min(
+                  capped,
+                  rootFilterCost(ctx, node, where, first + 1, true),
+                )
+              : rootFilterCost(ctx, node, where, first + 1, true),
+          )
         : 0),
     mode: "read",
     shape: (results): RawConnection => {

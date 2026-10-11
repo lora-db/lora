@@ -31,6 +31,7 @@ import {
   deniedItem,
   assertNoneDenied,
   coalesceFalse,
+  countCap,
 } from "./common.js";
 import { resolveLimit } from "./sort.js";
 import { projectNode } from "./project.js";
@@ -285,6 +286,7 @@ function searchCount(
   };
   const clauses: Clause[] = [
     ...matches(statsCtx, undefined),
+    ...countCap(statsCtx, ctx.maxTotalCount),
     {
       kind: "return",
       items: [

@@ -106,6 +106,15 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
    */
   maxStringFilter?: number;
   /**
+   * Most matches the `totalCount` of a root or search connection counts.
+   * A count stops there, so `totalCount` equal to this means "this many
+   * or more": enough for "1000+ results", at a bounded cost on a label
+   * of any size. Aggregates, and the `totalCount` of a connection nested
+   * under a node (bounded by that node's relationships), are not capped.
+   * Default: no cap.
+   */
+  maxTotalCount?: number;
+  /**
    * Changes a `changes()` consumer or subscriber may fall behind before it
    * is ended with an error. Default 1000.
    */

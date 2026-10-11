@@ -187,6 +187,7 @@ export class LoraGraphQL {
   readonly #maxBatch: number;
   readonly #maxListArgument: number;
   readonly #maxFilterDepth: number;
+  readonly #maxTotalCount: number | undefined;
   readonly #maxListFilter: number | undefined;
   readonly #maxStringFilter: number | undefined;
   readonly #callbacks: Record<string, PopulatedByCallback>;
@@ -258,6 +259,15 @@ export class LoraGraphQL {
     this.#maxBatch = options.maxBatch ?? 1000;
     this.#maxListArgument = options.maxListArgument ?? MAX_LIST_ARGUMENT;
     this.#maxFilterDepth = options.maxFilterDepth ?? MAX_FILTER_DEPTH;
+    if (
+      options.maxTotalCount !== undefined &&
+      !(Number.isInteger(options.maxTotalCount) && options.maxTotalCount > 0)
+    ) {
+      throw new Error(
+        `maxTotalCount must be a positive integer, got ${String(options.maxTotalCount)}`,
+      );
+    }
+    this.#maxTotalCount = options.maxTotalCount;
     this.#maxListFilter = options.maxListFilter;
     this.#maxStringFilter = options.maxStringFilter;
     this.#callbacks = options.callbacks ?? {};
@@ -1147,6 +1157,7 @@ export class LoraGraphQL {
       maxFilterDepth: this.#maxFilterDepth,
       maxListFilter: this.#maxListFilter,
       maxStringFilter: this.#maxStringFilter,
+      maxTotalCount: this.#maxTotalCount,
     });
   }
 

@@ -60,7 +60,6 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P2 Add a subscription scenario to `bench/load` (fan-out is indexed by type+key but not load tested over HTTP).
 - [ ] P3 `check()` does not plan-check subscriptions (the statements that test a change for a subscriber). Queries are compiled and planned; mutations are run in a rolled-back transaction and planned.
 - [ ] P3 Schema lint: warn on low-cardinality inferred indexes (enum, boolean, `@default`); writes no longer pay for them, but they rarely help reads.
-- [ ] P2 Opt-in `totalCount` cap.
 - [ ] P2 Worker threads sharing one engine: confirm `bench:load --workers 0,1,2,4` on a quiet machine; document multi-worker serving (change feed for cache invalidation).
 - [ ] P3 `onWrite` listeners run synchronously on the request path (`src/subscriptions/change-hub.ts`).
 - [ ] P3 S8 types for `@cypher` parameters in `compile` output.

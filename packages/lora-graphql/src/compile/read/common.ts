@@ -5,7 +5,7 @@ import type { Statement } from "../../driver.js";
 import { requestError } from "../../errors.js";
 import type { NodeType, ScalarField } from "../../model/types.js";
 import { authValidate, fieldValidate, maskSettled } from "../auth.js";
-import type { CompileContext } from "../context.js";
+import { bind, type CompileContext } from "../context.js";
 import { fn, lit, printClauses, v, type Clause, type Expr } from "../cypher.js";
 import type { SeekExpectation, ReadSet, CompiledRead } from "./types.js";
 
@@ -110,4 +110,14 @@ export function collectOne(value: Expr, out: string): Clause[] {
 /** A rule condition as a WHERE predicate: an unknown result excludes. */
 export function coalesceFalse(e: Expr | undefined): Expr | undefined {
   return e && fn("coalesce", e, lit(false));
+}
+
+/** Stop a count at `cap` matches (`maxTotalCount`): the scan ends there. */
+export function countCap(
+  ctx: CompileContext,
+  cap: number | undefined,
+): Clause[] {
+  return cap === undefined
+    ? []
+    : [{ kind: "with", items: [{ expr: v("this") }], limit: bind(ctx, cap) }];
 }

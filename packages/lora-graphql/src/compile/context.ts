@@ -31,6 +31,8 @@ export interface CompileContext extends SelectionContext {
   maxListFilter?: number | undefined;
   /** Characters a string filter operand may hold (`maxStringFilter`). */
   maxStringFilter?: number | undefined;
+  /** Most matches a root connection's `totalCount` counts (`maxTotalCount`). */
+  maxTotalCount?: number | undefined;
   /** Relationship levels of the `where` being compiled, so far. */
   filterDepth?: number | undefined;
   /** The GraphQL context, for `"$context.path"` values in rules. */
@@ -68,6 +70,7 @@ export function newContext(
     maxFilterDepth?: number | undefined;
     maxListFilter?: number | undefined;
     maxStringFilter?: number | undefined;
+    maxTotalCount?: number | undefined;
   } = {},
 ): CompileContext {
   return {
@@ -84,6 +87,7 @@ export function newContext(
     maxFilterDepth: options.maxFilterDepth,
     maxListFilter: options.maxListFilter,
     maxStringFilter: options.maxStringFilter,
+    maxTotalCount: options.maxTotalCount,
     requestContext: options.requestContext,
     computed: new Map(),
     contextReads: [],

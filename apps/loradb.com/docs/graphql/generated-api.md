@@ -150,6 +150,9 @@ query ($cursor: String) {
 - `pageInfo` has `hasNextPage`, `hasPreviousPage`, `startCursor` and
   `endCursor`.
 - `totalCount` and `aggregate` cover every match, not only the page.
+  With the [`maxTotalCount`](/docs/graphql/api-reference) option a root
+  connection's `totalCount` stops counting there ("1000 or more"), which
+  bounds its cost on a large label.
   Selecting only them reads no page.
 - List relationships to a node type get a connection too
   (`followersConnection`). When the relationship has properties, its edges
