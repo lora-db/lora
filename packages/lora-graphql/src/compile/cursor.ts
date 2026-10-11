@@ -79,12 +79,47 @@ export function decodeCursor(
   return payload.v;
 }
 
+/** `node:crypto` where there is one: its HMAC is native. */
+const nodeCrypto = (() => {
+  try {
+    const process = (
+      globalThis as {
+        process?: { getBuiltinModule?: (id: string) => unknown };
+      }
+    ).process;
+    return process?.getBuiltinModule?.("node:crypto") as
+      | {
+          createHmac(
+            algorithm: string,
+            key: Uint8Array,
+          ): {
+            update(data: string): { digest(): Uint8Array };
+          };
+        }
+      | undefined;
+  } catch {
+    return undefined;
+  }
+})();
+
+/** Secrets as key bytes: a server signs every cursor with the same one. */
+const keys = new Map<string, Uint8Array>();
+
 function sign(secret: string, payload: string): Uint8Array {
-  const encoder = new TextEncoder();
-  return hmacSha256(encoder.encode(secret), encoder.encode(payload)).slice(
-    0,
-    SIGNATURE_BYTES,
-  );
+  let key = keys.get(secret);
+  if (!key) {
+    if (keys.size >= 16) keys.clear();
+    key = new TextEncoder().encode(secret);
+    keys.set(secret, key);
+  }
+  // The portable implementation serves browsers (the WASM binding) and
+  // Node versions without `process.getBuiltinModule`.
+  const digest = nodeCrypto
+    ? new Uint8Array(
+        nodeCrypto.createHmac("sha256", key).update(payload).digest(),
+      )
+    : hmacSha256(key, new TextEncoder().encode(payload));
+  return digest.slice(0, SIGNATURE_BYTES);
 }
 
 // Portable base64url (Node and browsers; the WASM binding runs in both).

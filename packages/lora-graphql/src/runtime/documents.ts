@@ -149,7 +149,11 @@ export class Documents {
         };
       }
       document = this.#documents.get(args.source);
-      if (!document) {
+      if (document) {
+        // Least recently used goes first: a hit moves to the back.
+        this.#documents.delete(args.source);
+        this.#documents.set(args.source, document);
+      } else {
         try {
           document = this.#parse(args.source);
         } catch (err) {
