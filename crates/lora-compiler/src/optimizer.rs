@@ -28,7 +28,6 @@ impl Optimizer {
         self.use_indexed_rel_scans(&mut plan, stats);
         self.use_index_order_for_sorts(&mut plan);
         self.annotate_top_k_sorts(&mut plan);
-        self.remove_redundant_limit(&mut plan);
         plan
     }
 
@@ -121,10 +120,6 @@ impl Optimizer {
                 include_existing: true,
             });
         }
-    }
-
-    fn remove_redundant_limit(&self, _plan: &mut LogicalPlan) {
-        // placeholder for future rules
     }
 
     fn annotate_top_k_sorts(&self, plan: &mut LogicalPlan) {

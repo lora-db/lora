@@ -5,22 +5,22 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ExecutorError {
-    #[error("this query modifies the graph, but it was executed in read-only mode (CREATE at plan node {node_id:?})")]
+    #[error("this query modifies the graph, but it was executed in read-only mode (CREATE at plan node {node_id})")]
     ReadOnlyCreate { node_id: PhysicalNodeId },
 
-    #[error("this query modifies the graph, but it was executed in read-only mode (MERGE at plan node {node_id:?})")]
+    #[error("this query modifies the graph, but it was executed in read-only mode (MERGE at plan node {node_id})")]
     ReadOnlyMerge { node_id: PhysicalNodeId },
 
-    #[error("this query modifies the graph, but it was executed in read-only mode (DELETE at plan node {node_id:?})")]
+    #[error("this query modifies the graph, but it was executed in read-only mode (DELETE at plan node {node_id})")]
     ReadOnlyDelete { node_id: PhysicalNodeId },
 
-    #[error("this query modifies the graph, but it was executed in read-only mode (SET at plan node {node_id:?})")]
+    #[error("this query modifies the graph, but it was executed in read-only mode (SET at plan node {node_id})")]
     ReadOnlySet { node_id: PhysicalNodeId },
 
-    #[error("this query modifies the graph, but it was executed in read-only mode (REMOVE at plan node {node_id:?})")]
+    #[error("this query modifies the graph, but it was executed in read-only mode (REMOVE at plan node {node_id})")]
     ReadOnlyRemove { node_id: PhysicalNodeId },
 
-    #[error("this query modifies the graph, but it was executed in read-only mode (FOREACH at plan node {node_id:?})")]
+    #[error("this query modifies the graph, but it was executed in read-only mode (FOREACH at plan node {node_id})")]
     ReadOnlyForeach { node_id: PhysicalNodeId },
 
     #[error("expected variable {var} to contain a node before expanding a relationship, but found {found}")]

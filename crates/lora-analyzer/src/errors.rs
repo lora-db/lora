@@ -8,15 +8,6 @@ pub enum SemanticError {
     #[error("duplicate variable `{0}` in the same scope")]
     DuplicateVariable(String),
 
-    #[error("unknown label `:{0}`")]
-    UnknownLabel(String),
-
-    #[error("unknown relationship type `:{0}`")]
-    UnknownRelationshipType(String),
-
-    #[error("unknown property `{0}`")]
-    UnknownProperty(String),
-
     #[error("unknown property `{0}` at {1}..{2}")]
     UnknownPropertyAt(String, usize, usize),
 

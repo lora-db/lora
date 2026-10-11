@@ -50,7 +50,7 @@ impl PointKeyFamily {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SridResolveError {
     #[error(
-        "point() got unsupported crs '{0}' \
+        "point() got unsupported crs `{0}` \
          (expected one of cartesian, cartesian-3D, WGS-84, WGS-84-3D)"
     )]
     UnsupportedCrs(String),
@@ -64,7 +64,7 @@ pub enum SridResolveError {
     )]
     UnsupportedSrid(u32),
 
-    #[error("point() crs '{crs}' and srid {srid} do not agree")]
+    #[error("point() crs `{crs}` and srid {srid} do not agree")]
     CrsSridConflict { crs: String, srid: u32 },
 
     #[error(

@@ -70,10 +70,9 @@ where
 /// * `NodeByPropertyRangeScan`, `NodeByTextScan`, `NodeByPointScan` → a
 ///   fraction of the label count, as the optimizer scores them
 ///
-/// Operators that aren't covered keep the existing `None`. The
-/// optimizer doesn't *use* these numbers yet — it's `EXPLAIN`-only —
-/// but populating them now is what unlocks the cost model in a
-/// follow-up.
+/// Operators that aren't covered (Expand, Filter, joins, aggregates) keep
+/// the existing `None`. The same statistics already steer the anchor and
+/// seek choice in the optimizer; these numbers are for `EXPLAIN`.
 pub(crate) fn annotate_estimated_rows(tree: &mut PlanTree, stats: &GraphStats) {
     annotate_node(&mut tree.root, stats);
 }

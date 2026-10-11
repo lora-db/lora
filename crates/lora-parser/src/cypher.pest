@@ -73,8 +73,7 @@ index_options = { OPTIONS ~ map_literal }
 show_indexes_command = {
     SHOW ~ show_index_filter? ~ (INDEXES | INDEX) ~ show_pipeline?
 }
-// Type filter for SHOW INDEXES. `ALL` is the explicit unfiltered form;
-// `FULLTEXT` parses but returns empty (not yet implemented).
+// Type filter for SHOW INDEXES. `ALL` is the explicit unfiltered form.
 show_index_filter = { ALL | FULLTEXT | LOOKUP | POINT | RANGE | TEXT | VECTOR }
 
 // YIELD [* | items [ORDER BY ...] [SKIP ...] [LIMIT ...]]

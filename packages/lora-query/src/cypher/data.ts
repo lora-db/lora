@@ -416,65 +416,9 @@ interface RawBuiltinsRegistry {
   aliases: RawBuiltinAlias[];
 }
 
-/**
- * Pull the builtin registry from the WASM module. If the current
- * artifact doesn't expose `builtins()` yet (i.e. we're running with
- * the pre-rebuild shim), fall back to a registry synthesised from
- * `DOC_OVERRIDES` so existing tests + autocomplete coverage continue
- * to work. Once `yarn build:wasm` regenerates the shim, this call
- * starts returning the full 190+ entries automatically and the
- * fallback becomes dead code.
- */
+/** Pull the builtin registry from the WASM module. */
 function loadBuiltinsRaw(): RawBuiltinsRegistry {
-  // TODO: enable after yarn build:wasm — `builtins` will be present
-  // on the WASM module and the fallback path below becomes dead code.
-  const mod = WasmModule as unknown as {
-    builtins?: () => RawBuiltinsRegistry;
-  };
-  if (typeof mod.builtins === "function") {
-    try {
-      const raw = mod.builtins();
-      if (raw && Array.isArray(raw.functions) && raw.functions.length > 0) {
-        return raw;
-      }
-    } catch {
-      // Fall through to the editorial fallback.
-    }
-  }
-  return fallbackFromDocOverrides();
-}
-
-/**
- * Synthesise a minimal registry from the keys of `DOC_OVERRIDES` so
- * the editor stays usable while waiting for a WASM rebuild. Arity is
- * unknown here, so we default to variadic (`min=0, max=null`) — the
- * autocomplete + hover surfaces only need the name, and the synthesised
- * detail string is overridden by the editorial entry anyway.
- */
-function fallbackFromDocOverrides(): RawBuiltinsRegistry {
-  const AGGREGATE_NAMES = new Set([
-    "count",
-    "collect",
-    "sum",
-    "avg",
-    "min",
-    "max",
-    "stdev",
-    "stdevp",
-    "percentileCont",
-    "percentileDisc",
-  ]);
-  const functions: RawBuiltinFunction[] = Object.keys(DOC_OVERRIDES).map(
-    (name) => ({
-      name,
-      minArgs: 0,
-      maxArgs: null,
-      isAggregate: AGGREGATE_NAMES.has(name),
-      acceptsEnumAt: [],
-      acceptsTypeAt: [],
-    }),
-  );
-  return { functions, aliases: [] };
+  return WasmModule.builtins() as RawBuiltinsRegistry;
 }
 
 /** Render an arity range as a human placeholder, e.g. `(x, y)` or `(...)`. */

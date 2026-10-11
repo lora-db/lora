@@ -19,24 +19,6 @@ fn duplicate_variable() {
 }
 
 #[test]
-fn unknown_label() {
-    let err = SemanticError::UnknownLabel("Person".into());
-    assert_eq!(err.to_string(), "unknown label `:Person`");
-}
-
-#[test]
-fn unknown_relationship_type() {
-    let err = SemanticError::UnknownRelationshipType("KNOWS".into());
-    assert_eq!(err.to_string(), "unknown relationship type `:KNOWS`");
-}
-
-#[test]
-fn unknown_property() {
-    let err = SemanticError::UnknownProperty("name".into());
-    assert_eq!(err.to_string(), "unknown property `name`");
-}
-
-#[test]
 fn unknown_property_at() {
     let err = SemanticError::UnknownPropertyAt("name".into(), 4, 8);
     assert_eq!(err.to_string(), "unknown property `name` at 4..8");
