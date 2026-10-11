@@ -129,10 +129,7 @@ export class Runner {
     result.catch(() => undefined);
     if (this.#queue.length === 1) queueMicrotask(() => void this.#flush());
     this.env.onStatement?.(statement);
-    if (!this.env.observe) return result;
-    const observed = this.env.observe(statement, () => result);
-    observed.catch(() => undefined);
-    return observed;
+    return result;
   }
 
   /**
@@ -158,11 +155,28 @@ export class Runner {
     }
     const batch = this.#queue;
     this.#queue = [];
+    const run = () =>
+      batch.length > 1 && this.tx.executeMany
+        ? this.tx.executeMany(batch.map((b) => b.statement))
+        : inOrder(this.tx, batch);
     try {
-      const results =
-        batch.length > 1 && this.tx.executeMany
-          ? await this.tx.executeMany(batch.map((b) => b.statement))
-          : await inOrder(this.tx, batch);
+      const observe = this.env.observe;
+      let results: QueryResult[];
+      if (!observe) {
+        results = await run();
+      } else {
+        // One call, timed once: the first statement carries the batch's
+        // duration, the others are observed as done the moment it is.
+        let all: QueryResult[] = [];
+        await observe(batch[0]!.statement, async () => {
+          all = await run();
+          return all[0]!;
+        });
+        results = all;
+        for (const [i, b] of batch.entries()) {
+          if (i > 0) await observe(b.statement, async () => results[i]!);
+        }
+      }
       for (const [i, b] of batch.entries()) b.resolve(results[i]!);
     } catch (err) {
       for (const b of batch) b.reject(err);

@@ -79,3 +79,20 @@ test("decided per request from the context", async () => {
     ),
   ).toBeDefined();
 });
+
+// Regression: a mutation's statements go to the database in one call, and
+// each was timed for the whole call, so the database time reported was a
+// multiple of the time the mutation took.
+test("a batched mutation's database time is counted once", async () => {
+  const t = await createTestLoraGraphQL({ typeDefs, seed, timing: true });
+  for (let i = 0; i < 20; i++) {
+    const r = await t.lora.execute({
+      source: `mutation { createFs(input: [{ key: "x${i}", name: "n" }]) { fs { key name } } }`,
+    });
+    expect(r.errors).toBeUndefined();
+    const timing = timingOf(r)!;
+    expect(timing.databaseMs).toBeGreaterThan(0);
+    expect(timing.databaseMs).toBeLessThanOrEqual(timing.totalMs + 0.01);
+  }
+  t.close();
+});
