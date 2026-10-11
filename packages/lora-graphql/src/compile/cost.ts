@@ -87,7 +87,8 @@ export function perRowCost(
     }
     const f = node.fields.get(key);
     if (f?.kind === "cypher" && f.computed) {
-      cost += 1;
+      // A filter on a computed field runs its statement for every row.
+      cost += 1 + f.cost;
     } else if (f?.kind === "relationship") {
       cost += relationshipCost(ctx, f, value as Where, chosen);
     } else if (key.endsWith("Exists")) {

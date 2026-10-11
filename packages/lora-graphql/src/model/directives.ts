@@ -292,7 +292,12 @@ export const directiveTypeDefs = /* GraphQL */ `
   directive @readonly on FIELD_DEFINITION
 
   "A field backed by a Cypher statement. \`this\` is the parent node; arguments are $parameters, $jwt holds the request's claims, and $viewer the caller's @viewer node key."
-  directive @cypher(statement: String!, columnName: String) on FIELD_DEFINITION
+  directive @cypher(
+    statement: String!
+    columnName: String
+    "Rows the statement examines each time it runs, charged against maxCost: once for a root field, once per parent node for a field of a type. Without it only the rows the field returns are charged."
+    cost: Int
+  ) on FIELD_DEFINITION
 
   "Require an authenticated request (a jwt in the context) for these operations."
   directive @authentication(

@@ -228,6 +228,8 @@ export interface CypherField extends FieldBase {
   statement: string;
   /** The result column holding the field's value. */
   columnName: string;
+  /** `@cypher(cost:)`: rows the statement examines per run; 0 without. */
+  cost: number;
   /** The field's type; `node` names a @node type when it returns nodes. */
   type: TypeShape;
   node: string | undefined;

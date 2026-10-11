@@ -283,10 +283,35 @@ filter or a nested sort it is `BAD_USER_INPUT`. The model warns, so
 
 A `@cypher` field on a node type runs once per parent row: a page of 25
 festivals selecting `similar` runs the statement 25 times, inside the one
-statement the root field compiles to. That work is **not** counted by
-`maxCost`, which only knows the page sizes. Keep such statements
-anchored on `this` and bounded with `LIMIT`, and prefer selecting them on
-single lookups and small pages.
+statement the root field compiles to. The library cannot read a
+hand-written statement's cost, so by default `maxCost` counts only the
+rows the field returns. Tell it what the statement examines with `cost`:
+
+```graphql
+type Festival @node {
+  key: String! @key
+  genre: String
+  similar(limit: Int = 3): [Festival!]!
+    @cypher(
+      statement: """
+      MATCH (f:Festival) WHERE f.genre = this.genre AND f <> this
+      RETURN f ORDER BY f.key LIMIT $limit
+      """
+      columnName: "f"
+      cost: 2000
+    )
+}
+```
+
+`cost` is the rows one run of the statement examines (here, the
+festivals of a genre). It is charged once for a root field and once per
+parent row for a field of a type: a page of 25 festivals selecting
+`similar` costs 25 × 2000 on top of the page, and is refused with
+`COST_EXCEEDED` before it runs when that is over `maxCost`. A filter on
+a computed `@cypher` field is charged the same per row it examines.
+
+Keep such statements anchored on `this` and bounded with `LIMIT`, and
+prefer selecting them on single lookups and small pages.
 
 ## What the library checks
 

@@ -1107,6 +1107,10 @@ Arguments:
   `$viewer` the key of the caller's node.
 - `columnName`: the returned column. Inferred when the last `RETURN` has
   one item.
+- `cost`: the rows one run of the statement examines, charged against
+  [`maxCost`](/docs/graphql/cypher-fields#cost): once for a root field,
+  once per parent row for a field of a type. Without it only the rows
+  the field returns are charged.
 
 ```graphql
 {

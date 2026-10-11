@@ -99,6 +99,8 @@ export function buildCypherField(
     at("list items must be non-null, e.g. [Festival!]");
   }
 
+  const cost = (args["cost"] as number | null | undefined) ?? 0;
+  if (cost < 0) at("cost must not be negative");
   const columnName =
     (args["columnName"] as string | undefined) ?? inferColumn(statement);
   if (!columnName) {
@@ -265,6 +267,7 @@ export function buildCypherField(
     owner,
     statement,
     columnName,
+    cost,
     type: { named, ...shapeOf(shape) },
     node,
     abstract,

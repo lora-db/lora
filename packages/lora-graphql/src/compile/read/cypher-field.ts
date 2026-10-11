@@ -31,6 +31,7 @@ export function compileCypherRoot(
     imports: [],
     body: [{ kind: "raw", text: bindStatement(ctx, field, args) }],
   };
+  ctx.cost += field.cost;
   const column = field.columnName;
   const clauses: Clause[] = [call];
   if (field.node) {
@@ -210,6 +211,8 @@ export function projectCypher(
   rows: number,
 ): Projection {
   const out = freshVar(ctx, `${parent}_${key}`);
+  // The statement runs once per parent row.
+  ctx.cost += rows * field.cost;
   const body: Clause[] = [];
   if (parent !== "this") {
     body.push({ kind: "with", items: [{ expr: v(parent), alias: "this" }] });

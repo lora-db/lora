@@ -1,6 +1,7 @@
 import { parse } from "graphql";
 import { festivalHarness, type Harness } from "./harness.js";
 import { LoraGraphQL, loraDriver, type Statistics } from "../src/index.js";
+import { createTestLoraGraphQL } from "../src/testing.js";
 
 const typeDefs = /* GraphQL */ `
   type User @node @query(aggregate: true) {
@@ -426,5 +427,59 @@ describe("error amplification", () => {
         setResult: (result) => (collapsed = result),
       });
     expect(collapsed?.errors).toHaveLength(1);
+  });
+});
+
+describe("@cypher(cost:)", () => {
+  const sdl = /* GraphQL */ `
+    type Item @node {
+      key: String! @key
+      plain: Int @cypher(statement: "RETURN 1 AS n")
+      heavy: Int
+        @cypher(statement: "MATCH (o:Item) RETURN count(o) AS n", cost: 400)
+    }
+    type Query {
+      report: Int
+        @cypher(statement: "MATCH (o:Item) RETURN count(o) AS n", cost: 5000)
+      quick: Int @cypher(statement: "RETURN 1 AS n")
+    }
+  `;
+  const costOf = async (source: string, maxCost?: number) => {
+    const costs: number[] = [];
+    const t = await createTestLoraGraphQL({
+      typeDefs: sdl,
+      onCost: (e) => costs.push(e.cost),
+      ...(maxCost !== undefined ? { maxCost } : {}),
+    });
+    const r = await t.lora.execute({ source });
+    t.close();
+    return { costs, code: r.errors?.[0]?.extensions?.["code"] };
+  };
+
+  test("a field of a type is charged per parent row", async () => {
+    expect((await costOf(`{ items(limit: 10) { key plain } }`)).costs).toEqual([
+      20,
+    ]);
+    expect((await costOf(`{ items(limit: 10) { key heavy } }`)).costs).toEqual([
+      10 + 10 + 10 * 400,
+    ]);
+  });
+
+  test("a root field is charged once", async () => {
+    expect((await costOf(`{ quick }`)).costs).toEqual([0]);
+    expect((await costOf(`{ report }`)).costs).toEqual([5000]);
+  });
+
+  test("the declared cost counts against maxCost before anything runs", async () => {
+    const r = await costOf(`{ items(limit: 50) { heavy } }`, 10_000);
+    expect(r.code).toBe("COST_EXCEEDED");
+  });
+
+  test("a negative cost is a model error", async () => {
+    await expect(
+      createTestLoraGraphQL({
+        typeDefs: `type T @node { key: String! @key  n: Int @cypher(statement: "RETURN 1 AS n", cost: -1) }`,
+      }),
+    ).rejects.toThrow("cost must not be negative");
   });
 });
