@@ -97,6 +97,7 @@ export declare class Database {
       | "rw"
       | "ro"
       | null,
+    timeoutMs?: number | null,
   ): Promise<number>;
   txExecute(
     txId: number,

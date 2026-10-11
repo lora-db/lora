@@ -867,13 +867,6 @@ class DatabaseImpl {
   }
 
   /**
-   * Execute a statement batch inside one native transaction.
-   *
-   * Results are returned in statement order. If any statement fails, the
-   * native transaction is dropped before commit and all prior writes in the
-   * batch are rolled back.
-   */
-  /**
    * Begin an interactive transaction: run statements, decide in JS, then
    * `commit()` or `rollback()`.
    *
@@ -885,16 +878,58 @@ class DatabaseImpl {
    * (`await using tx = await db.begin()`), when the database is disposed,
    * or when the process exits. Keep transactions short: while one is open,
    * writers queue behind it.
+   *
+   * `options.timeoutMs` bounds the wait for the writer lock: past it
+   * `begin()` rejects with `LORA_TIMEOUT` and nothing is held. Aborting
+   * `options.signal` rejects `begin()` at once; a transaction that opens
+   * afterwards is rolled back, so it never holds the lock.
    */
-  async begin(mode: TransactionMode = "read_write"): Promise<Transaction> {
+  async begin(
+    mode: TransactionMode = "read_write",
+    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<Transaction> {
+    const { timeoutMs, signal } = options;
+    if (signal?.aborted) throw signal.reason;
+    let opening: Promise<number>;
     try {
-      const id = await this.#inner.beginTransaction(mode);
+      opening = this.#inner.beginTransaction(mode, timeoutMs ?? null);
+    } catch (err) {
+      throw wrapError(err);
+    }
+    try {
+      const id = await (signal
+        ? new Promise<number>((resolve, reject) => {
+            const onAbort = () => {
+              // Whenever it opens, it is rolled back at once.
+              void opening.then(
+                (late) =>
+                  new Transaction(this.#inner, late)
+                    .rollback()
+                    .catch(() => undefined),
+                () => undefined,
+              );
+              reject(signal.reason);
+            };
+            signal.addEventListener("abort", onAbort, { once: true });
+            opening
+              .then(resolve, reject)
+              .finally(() => signal.removeEventListener("abort", onAbort));
+          })
+        : opening);
       return new Transaction(this.#inner, id);
     } catch (err) {
+      if (signal?.aborted) throw signal.reason;
       throw wrapError(err);
     }
   }
 
+  /**
+   * Execute a statement batch inside one native transaction.
+   *
+   * Results are returned in statement order. If any statement fails, the
+   * native transaction is dropped before commit and all prior writes in the
+   * batch are rolled back.
+   */
   async transaction<
     T extends Record<string, LoraValue> = Record<string, LoraValue>,
   >(

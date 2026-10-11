@@ -31,6 +31,7 @@ use std::collections::BTreeMap;
 use std::sync::mpsc::{self, Receiver, SendError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use napi::{Error as NapiError, Status};
 
@@ -106,6 +107,7 @@ impl TxActor {
     pub(crate) fn spawn(
         db: Arc<InnerDatabase<InMemoryGraph>>,
         mode: TransactionMode,
+        deadline: Option<Instant>,
         opened: Done<()>,
     ) -> Self {
         let (commands, inbox) = mpsc::channel::<Command>();
@@ -123,7 +125,7 @@ impl TxActor {
                 .spawn(move || {
                     // Released once `run` has dropped the transaction.
                     let _writer = writer;
-                    run(db, mode, inbox, opened, lifecycle)
+                    run(db, mode, deadline, inbox, opened, lifecycle)
                 })
         };
         let thread = match thread {
@@ -224,6 +226,7 @@ pub(crate) fn closed() -> String {
 fn run(
     db: Arc<InnerDatabase<InMemoryGraph>>,
     mode: TransactionMode,
+    deadline: Option<Instant>,
     inbox: Receiver<Command>,
     opened: Arc<Mutex<Option<Done<()>>>>,
     lifecycle: Lifecycle,
@@ -231,7 +234,7 @@ fn run(
     // SAFETY: `db` lives on this thread's stack for as long as `tx`
     // does (it is declared first, so it is dropped last), and the
     // transaction never leaves this thread.
-    let tx = unsafe { db.begin_transaction_owned(mode) };
+    let tx = unsafe { db.begin_transaction_owned_deadline(mode, deadline) };
     let opened = take(&opened);
     let mut tx = match tx {
         Ok(tx) => {

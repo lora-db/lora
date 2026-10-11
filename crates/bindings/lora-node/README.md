@@ -88,6 +88,20 @@ if ((rows[0].free as number) > 0) {
 await tx.commit();
 ```
 
+A `read_write` `begin()` waits for the writer lock for as long as another
+writer holds it. Bound the wait with `timeoutMs`, or abandon it with a
+`signal`:
+
+```ts
+// Rejects with LORA_TIMEOUT if the lock is not free within 2 seconds.
+const tx = await db.begin("read_write", { timeoutMs: 2000, signal });
+```
+
+Past `timeoutMs` nothing is held. An aborted `signal` rejects `begin()`
+with the signal's reason at once; if the transaction opens afterwards it
+is rolled back. Both bound the wait, not the transaction: one that is
+opened and never finished holds the lock until it is disposed.
+
 `tx.executeMany()` runs several statements in one native call and returns
 their results in order, saving the round trip each `execute()` costs
 (about 0.1 ms per statement down to 0.03 ms). Each statement sees the

@@ -60,7 +60,22 @@ pub(crate) fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue
                 }
                 Ok(LoraValue::Int(i))
             } else if let Some(f) = n.as_f64() {
-                Ok(LoraValue::Float(f))
+                // napi hands an integral JS number outside `[-2^31, 2^32)`
+                // over as a float. JS does not tell `5000000000` from
+                // `5000000000.0`, so it is an integer here as it is below
+                // 2^32: up to the safe-integer bound, exactly.
+                if f.fract() == 0.0 && f.abs() <= MAX_SAFE_INTEGER as f64 {
+                    Ok(LoraValue::Int(f as i64))
+                } else if f.fract() == 0.0 && f.abs() < 9_223_372_036_854_775_808.0 {
+                    Err(NapiError::new(
+                        Status::InvalidArg,
+                        format!(
+                            "{INVALID_PARAMS_CODE}: integer {f} is outside the JavaScript safe-integer range and may already be rounded; pass it as a bigint"
+                        ),
+                    ))
+                } else {
+                    Ok(LoraValue::Float(f))
+                }
             } else {
                 Err(NapiError::new(
                     Status::InvalidArg,

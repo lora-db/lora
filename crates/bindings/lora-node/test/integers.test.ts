@@ -60,6 +60,32 @@ describe("64-bit integers", () => {
     expect(rows[0].c).toBe(42);
   });
 
+  // Regression: an integral number outside [-2^31, 2^32) arrived as a
+  // FLOAT, so a stored 5000000000 was a float in the graph. toString()
+  // tells the two apart: a FLOAT prints with a fraction.
+  it.each([4294967295, 4294967296, 5000000000, 2 ** 53 - 1, -2147483649])(
+    "stores the integral number %d as an INTEGER",
+    async (v) => {
+      const db = await createDatabase();
+      await db.execute("CREATE (:N {v: $v})", { v });
+      const { rows } = await db.execute(
+        "MATCH (n:N) RETURN n.v AS v, toString(n.v) AS text",
+      );
+      expect(rows[0].v).toBe(v);
+      expect(rows[0].text).toBe(String(v));
+    },
+  );
+
+  it("keeps a number with a fraction as a FLOAT", async () => {
+    const db = await createDatabase();
+    const { rows } = await db.execute(
+      "RETURN $v AS v, toString($whole) AS whole",
+      { v: 5000000000.5, whole: 7 },
+    );
+    expect(rows[0].v).toBe(5000000000.5);
+    expect(rows[0].whole).toBe("7");
+  });
+
   it("returns exact bigints from stream()", async () => {
     const db = await createDatabase();
     const v = 2n ** 63n - 1n;

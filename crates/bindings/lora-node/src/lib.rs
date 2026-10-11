@@ -487,7 +487,8 @@ impl Database {
 
     /// Begin an interactive transaction. Resolves with a transaction id
     /// once it is open; a read-write transaction holds the writer lock
-    /// (other writers wait) until it commits or rolls back.
+    /// (other writers wait) until it commits or rolls back. With
+    /// `timeout_ms`, waiting for that lock longer fails with `LORA_TIMEOUT`.
     ///
     /// Waiting for the writer lock happens on the transaction's own thread
     /// and never occupies a libuv worker (see [`interactive`]).
@@ -499,10 +500,15 @@ impl Database {
             ts_arg_type = "\"read_write\" | \"read_only\" | \"readwrite\" | \"readonly\" | null | undefined"
         )]
         mode: Option<String>,
+        #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
     ) -> Result<JsObject> {
         // Everything that can fail runs before the deferred exists: a
         // deferred dropped unsettled keeps the process alive.
         let mode = tasks::parse_transaction_mode(mode.as_deref())?;
+        // How long a read-write transaction may wait for the writer lock.
+        let deadline = timeout_ms
+            .filter(|ms| *ms > 0)
+            .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms.into()));
         let db = self.inner()?;
         let mut txs = self
             .txs
@@ -514,6 +520,7 @@ impl Database {
         let actor = interactive::TxActor::spawn(
             db,
             mode,
+            deadline,
             interactive::done(move |opened| {
                 // Settled on the JS thread, after this call has registered
                 // the actor: a failed open unregisters it there. A

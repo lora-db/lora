@@ -119,12 +119,13 @@ export declare class Database {
   /**
    * Begin an interactive transaction. Resolves with a transaction id
    * once it is open; a read-write transaction holds the writer lock
-   * (other writers wait) until it commits or rolls back.
+   * (other writers wait) until it commits or rolls back. With
+   * `timeout_ms`, waiting for that lock longer fails with `LORA_TIMEOUT`.
    *
    * Waiting for the writer lock happens on the transaction's own thread
    * and never occupies a libuv worker (see [`interactive`]).
    */
-  beginTransaction(mode?: "read_write" | "read_only" | "readwrite" | "readonly" | null | undefined): Promise<number>
+  beginTransaction(mode?: "read_write" | "read_only" | "readwrite" | "readonly" | null | undefined, timeoutMs?: number | null | undefined): Promise<number>
   /**
    * Run one statement inside interactive transaction `tx_id`. A failed
    * statement rolls the transaction back.

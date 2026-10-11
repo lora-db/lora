@@ -214,3 +214,56 @@ describe("deadlines inside pattern comprehensions", () => {
     expect(ms).toBeLessThan(250);
   });
 });
+
+describe("begin() bounds its wait for the writer lock", () => {
+  it("rejects with LORA_TIMEOUT past timeoutMs and holds nothing", async () => {
+    const db = await createDatabase();
+    const holder = await db.begin();
+    const started = Date.now();
+    const err = await db.begin("read_write", { timeoutMs: 50 }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(LoraError);
+    expect((err as LoraError).code).toBe("LORA_TIMEOUT");
+    expect(Date.now() - started).toBeLessThan(2000);
+    await holder.commit();
+    // Nothing was left holding the lock: a write goes through.
+    await db.execute("CREATE (:After)");
+    const { rows } = await db.execute("MATCH (n:After) RETURN count(n) AS c");
+    expect(rows[0].c).toBe(1);
+  });
+
+  it("opens within timeoutMs when the lock is free", async () => {
+    const db = await createDatabase();
+    const tx = await db.begin("read_write", { timeoutMs: 1000 });
+    await tx.execute("CREATE (:InTx)");
+    await tx.commit();
+    const { rows } = await db.execute("MATCH (n:InTx) RETURN count(n) AS c");
+    expect(rows[0].c).toBe(1);
+  });
+
+  it("an aborted signal rejects at once and the late transaction is rolled back", async () => {
+    const db = await createDatabase();
+    const holder = await db.begin();
+    const controller = new AbortController();
+    const waiting = db.begin("read_write", { signal: controller.signal });
+    const reason = new Error("client went away");
+    controller.abort(reason);
+    await expect(waiting).rejects.toBe(reason);
+    await holder.commit();
+    // The abandoned transaction opened and rolled back; the lock is free.
+    await db.execute("CREATE (:After)", {}, { timeoutMs: 2000 });
+    await expect(
+      db.begin("read_write", { signal: controller.signal }),
+    ).rejects.toBe(reason);
+  });
+
+  it("a read-only transaction never waits", async () => {
+    const db = await createDatabase();
+    const holder = await db.begin();
+    const reader = await db.begin("read_only", { timeoutMs: 1 });
+    await reader.rollback();
+    await holder.rollback();
+  });
+});
