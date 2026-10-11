@@ -993,7 +993,6 @@ fn where_string_comparison_ordering() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
 fn where_exists_negated() {
     // NOT EXISTS subquery
     let db = TestDb::new();
@@ -1006,7 +1005,6 @@ fn where_exists_negated() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
 fn where_count_subquery() {
     // COUNT subquery in WHERE
     let db = TestDb::new();
@@ -1158,7 +1156,7 @@ fn where_in_with_collected_list() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
+#[ignore = "COLLECT { } subqueries are not in the grammar"]
 fn where_collect_subquery() {
     // COLLECT subquery in WHERE
     let db = TestDb::new();
@@ -1171,7 +1169,7 @@ fn where_collect_subquery() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
+#[ignore = "a bare pattern predicate in WHERE is a parse error; use EXISTS { }"]
 fn where_pattern_predicate_not_exists() {
     // NOT EXISTS pattern predicate without subquery syntax
     let db = TestDb::new();

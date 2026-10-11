@@ -563,7 +563,7 @@ fn random_operations_match_the_model() {
 /// Longer runs over more seeds. `cargo test -p lora-store --release
 /// model -- --ignored`
 #[test]
-#[ignore]
+#[ignore = "long run over 300 seeds; run with --ignored"]
 fn random_operations_match_the_model_at_length() {
     for seed in 100..=400 {
         run(seed * 0x9E37_79B9, 2_500);

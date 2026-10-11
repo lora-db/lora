@@ -790,7 +790,6 @@ fn distinct_on_computed_expression() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
 fn order_by_subquery_count() {
     let db = TestDb::new();
     db.seed_org_graph();

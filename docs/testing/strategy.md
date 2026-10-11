@@ -48,7 +48,7 @@ opens with a `//!` comment saying what it guards.
 | Transactions and durability | `transactions.rs`, `invariants.rs`, `wal.rs`, `snapshot.rs`, `managed_snapshots.rs`, `change_feed.rs` | Explicit transactions, graph integrity after mutations, WAL recovery / checkpoints / DDL replay, snapshot round-trip and format gating, managed snapshots with an LSN fence, the committed-change feed |
 | Errors | `errors.rs`, `error_messages.rs` | Parse and semantic errors, unbound variables, unknown functions, arity checks; error-message baselines |
 | Storage traits | `backend_stub.rs` | The storage trait surface on a backend that cannot hand out long-lived borrows |
-| Docs and roadmap | `docs_examples.rs`, `parser.rs`, `advanced_queries.rs` | Every query example in the site docs runs; parse-to-AST coverage via `Database::parse`; complex multi-clause queries (most `#[ignore]`d) |
+| Docs and roadmap | `docs_examples.rs`, `parser.rs`, `advanced_queries.rs` | Every query example in the site docs runs; parse-to-AST coverage via `Database::parse`; complex multi-clause queries |
 | Helpers | `test_helpers.rs`, `seeds.rs` | `TestDb` with `run` / `assert` / `column` / `scalar`; shared seed graphs (social, org, transport, knowledge, …) |
 
 ## Server integration test files (`lora-server/tests/`)
@@ -62,22 +62,25 @@ opens with a `//!` comment saying what it guards.
 
 ## Ignored tests
 
-All ignored tests carry an explicit reason via `#[ignore = "..."]`. Most
-(`pending implementation` and a handful of specific reasons such as
-`CALL db.labels()`, type mismatch detection, or parameters as labels) are
-forward-looking specifications: queries the engine did not support when
-they were written. Two more are slow runs (`scale.rs`, a 100k-row
-`UNWIND`) that are ignored only for time.
+Every ignored test carries a specific reason via `#[ignore = "..."]`,
+and each one is in one of three groups:
 
-The list is not current: a good share of the specification tests now
-pass and are waiting to be un-ignored. Run them to see where they stand:
+- **A feature the engine does not have**, named in the reason (`CALL
+  db.labels()`, `COLLECT { }` subqueries, quantified path patterns,
+  `UNION` inside `CALL { }`, ...). Each has a line in
+  [`docs/TODO.md`](../TODO.md); the test is un-ignored by the commit that
+  ships the feature.
+- **Slow runs**, ignored only for time: `scale.rs`, a 100k-row `UNWIND`,
+  the 1M-node write-latency run, the long seeded model run in
+  `lora-store`.
+- **Probes** that print a table for a human (`sort_limit_probe.rs`, the
+  estimator error profile in `lora-store`).
+
+Triaged 2026-10-11: no ignored feature test passes. To check again:
 
 ```bash
-cargo test -p lora-database -- --ignored
+cargo test -p lora-database --no-fail-fast -- --ignored
 ```
-
-Triage (un-ignore what passes, give the rest a specific reason) is tracked
-in [`docs/TODO.md`](../TODO.md).
 
 ## How to run tests
 

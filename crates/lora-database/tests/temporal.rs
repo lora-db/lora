@@ -3,10 +3,6 @@
 /// Covers creation, component extraction, comparison, arithmetic, string
 /// conversion, integration with Lora clauses, parameterized values, and
 /// error handling.
-///
-/// The engine does not yet have native temporal LoraValue variants. All temporal
-/// tests are marked `#[ignore]` and serve as a specification / roadmap for
-/// future implementation.
 mod test_helpers;
 use test_helpers::TestDb;
 

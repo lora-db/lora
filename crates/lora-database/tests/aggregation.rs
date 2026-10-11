@@ -919,7 +919,6 @@ fn agg_empty_group_returns_zero() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
 fn agg_percentile_disc() {
     let db = TestDb::new();
     for i in 1..=10 {
@@ -1112,24 +1111,10 @@ fn agg_collect_then_size() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
 fn agg_stdev_population() {
     let db = TestDb::new();
     for i in 1..=10 {
         db.run(&format!("CREATE (:V {{x: {}}})", i));
     }
     let _rows = db.run("MATCH (v:V) RETURN stDevP(v.x) AS sd");
-}
-
-#[test]
-#[ignore = "pending implementation"]
-fn agg_having_without_with() {
-    // Direct HAVING clause (not standard Lora but common request)
-    let db = TestDb::new();
-    db.seed_org_graph();
-    let _rows = db.run(
-        "MATCH (p:Person) \
-         RETURN p.dept AS dept, count(p) AS cnt \
-         HAVING cnt > 2",
-    );
 }

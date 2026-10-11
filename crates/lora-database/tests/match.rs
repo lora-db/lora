@@ -1424,7 +1424,7 @@ fn future_pattern_comprehension_in_return() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
+#[ignore = "quantified path patterns are not in the grammar"]
 fn future_quantified_path_patterns() {
     // Lora: quantified path patterns
     let db = TestDb::new();
@@ -1452,16 +1452,16 @@ fn future_relationship_type_disjunction() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
+#[ignore = "inline WHERE in a relationship pattern is not in the grammar"]
 fn future_variable_length_with_inline_where() {
-    // Lora: variable-length with inline WHERE filter on intermediate nodes
+    // Lora: variable-length with an inline WHERE on each relationship
     let db = TestDb::new();
     db.seed_rich_social_graph();
-    let _rows = db.run(
-        "MATCH (a:Person {name:'Alice'})-[:KNOWS*1..3 WHERE ALL(n IN path.nodes(path) WHERE n.age > 20)]->(b:Person) \
+    let rows = db.run(
+        "MATCH (a:Person {name:'Alice'})-[r:KNOWS*1..3 WHERE r.since IS NOT NULL]->(b:Person) \
          RETURN b.name AS name",
     );
-    assert!(!_rows.is_empty());
+    assert!(!rows.is_empty());
 }
 
 #[test]
@@ -1690,7 +1690,7 @@ fn match_collect_relationship_properties() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
+#[ignore = "quantified path patterns are not in the grammar"]
 fn match_quantified_path_pattern() {
     // GQL quantified path pattern (Lora 25)
     let db = TestDb::new();
@@ -1702,7 +1702,6 @@ fn match_quantified_path_pattern() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
 fn match_pattern_with_where_on_path() {
     // WHERE on the path variable itself
     let db = TestDb::new();
@@ -2003,7 +2002,6 @@ fn transport_all_reachable_in_two_hops() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
 fn match_shortest_path() {
     // shortestPath() function
     let db = TestDb::new();
@@ -2015,7 +2013,6 @@ fn match_shortest_path() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
 fn match_all_shortest_paths() {
     // allShortestPaths() function
     let db = TestDb::new();
@@ -2027,7 +2024,6 @@ fn match_all_shortest_paths() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
 fn match_call_subquery() {
     // CALL subquery
     let db = TestDb::new();
@@ -2040,7 +2036,7 @@ fn match_call_subquery() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
+#[ignore = "COLLECT { } subqueries are not in the grammar"]
 fn match_collect_subquery() {
     // COLLECT subquery (Lora 25)
     let db = TestDb::new();

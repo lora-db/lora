@@ -746,7 +746,6 @@ fn detach_delete_all_then_recreate_from_scratch() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
 fn concurrent_merge_idempotency() {
     // Simulate concurrent MERGE operations (would need threading)
     let db = TestDb::new();

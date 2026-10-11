@@ -839,7 +839,7 @@ mod tests {
 mod profile {
     use super::*;
     #[test]
-    #[ignore]
+    #[ignore = "estimator error profile, prints a table; run with --ignored --nocapture"]
     fn error_profile() {
         let mut n = 10u64;
         while n <= 2_000_000 {

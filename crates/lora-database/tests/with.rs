@@ -665,7 +665,6 @@ fn with_unwind_filter_reaggregate() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
 fn with_call_subquery() {
     let db = TestDb::new();
     db.seed_org_graph();

@@ -408,14 +408,13 @@ fn large_property_values() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
+#[ignore = "CALL db.labels() is an unknown procedure"]
 fn call_stored_procedure() {
     let db = TestDb::new();
     let _rows = db.run("CALL db.labels() YIELD label RETURN label");
 }
 
 #[test]
-#[ignore = "pending implementation"]
 fn create_index() {
     let db = TestDb::new();
     db.run("CREATE INDEX FOR (n:Person) ON (n.name)");
@@ -424,7 +423,6 @@ fn create_index() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
 fn subquery_in_return() {
     let db = TestDb::new();
     db.seed_org_graph();
@@ -436,7 +434,6 @@ fn subquery_in_return() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
 fn map_projection_on_node() {
     let db = TestDb::new();
     db.run("CREATE (:P {name: 'Alice', age: 30, city: 'London'})");
@@ -715,7 +712,6 @@ fn temporal_chronological_event_query() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
 fn exists_subquery_in_return() {
     let db = TestDb::new();
     db.seed_org_graph();
@@ -886,7 +882,7 @@ fn call_subquery_movie_recommendation() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
+#[ignore = "CALL { } IN TRANSACTIONS is not in the grammar"]
 fn call_in_transactions() {
     let db = TestDb::new();
     db.run("UNWIND list.range(1, 1000) AS i CREATE (:Bulk {id: i})");
@@ -895,22 +891,12 @@ fn call_in_transactions() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
-fn use_graph_clause() {
-    // Multi-database support
-    let db = TestDb::new();
-    let _rows = db.run("USE mydb MATCH (n) RETURN n");
-}
-
-#[test]
-#[ignore = "pending implementation"]
 fn create_fulltext_index() {
     let db = TestDb::new();
     let _rows = db.run("CREATE FULLTEXT INDEX personNames FOR (n:Person) ON EACH [n.name]");
 }
 
 #[test]
-#[ignore = "pending implementation"]
 fn collect_in_pattern_comprehension() {
     let db = TestDb::new();
     db.seed_org_graph();

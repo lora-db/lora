@@ -503,7 +503,7 @@ fn list_comprehension_transform() {
 // ============================================================
 
 #[test]
-#[ignore = "stored procedures: CALL db.labels() not yet implemented"]
+#[ignore = "CALL db.labels() is an unknown procedure"]
 fn call_db_labels() {
     let db = TestDb::new();
     db.run("CREATE (n:User {name: 'Alice'})");
@@ -1069,13 +1069,11 @@ fn sign_float() {
 // ============================================================
 
 #[test]
-#[ignore = "temporal types: date/time functions not yet implemented"]
 fn date_function() {
     let _rows = TestDb::new().run("RETURN '2024-01-15'::DATE AS d");
 }
 
 #[test]
-#[ignore = "temporal types: date/time functions not yet implemented"]
 fn datetime_function() {
     let _rows = TestDb::new().run("RETURN temporal.now() AS now");
 }
@@ -1379,7 +1377,6 @@ fn point_and_distance_functions() {
 }
 
 #[test]
-#[ignore = "duration type: duration arithmetic not yet implemented"]
 fn duration_type_and_arithmetic() {
     // Lora: duration type and arithmetic
     let _rows = TestDb::new().run("RETURN 'P1Y2M3D'::DURATION AS d");
@@ -1394,7 +1391,7 @@ fn case_type_coercion_in_branches() {
 }
 
 #[test]
-#[ignore = "utility functions: compatibility utilities not yet implemented"]
+#[ignore = "util.text.join is an unknown function (string.join exists)"]
 fn compatibility_utility_functions() {
     // Future extension target: compatibility utility functions.
     let _rows = TestDb::new().run("RETURN util.text.join(['a', 'b', 'c'], '-') AS joined");

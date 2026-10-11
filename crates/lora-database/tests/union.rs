@@ -577,14 +577,16 @@ fn union_all_summary_statistics() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
+#[ignore = "UNION inside CALL { } is not supported"]
 fn union_with_limit_on_each_branch() {
     // Per-branch LIMIT before UNION (requires subquery or specific syntax)
     let db = TestDb::new();
     db.seed_org_graph();
-    let _rows = db.run(
-        "CALL { MATCH (p:Person) RETURN p.name AS name ORDER BY p.name LIMIT 2 } \
+    let rows = db.run(
+        "CALL { MATCH (p:Person) RETURN p.name AS name ORDER BY name LIMIT 2 \
          UNION ALL \
-         CALL { MATCH (c:City) RETURN c.name AS name ORDER BY c.name LIMIT 2 }",
+         MATCH (c:City) RETURN c.name AS name ORDER BY name LIMIT 2 } \
+         RETURN name",
     );
+    assert_eq!(rows.len(), 4);
 }

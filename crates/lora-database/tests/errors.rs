@@ -533,7 +533,7 @@ fn error_wrong_function_arity() {
 }
 
 #[test]
-#[ignore = "type validation: type mismatch in comparison not yet detected"]
+#[ignore = "a comparison across types is null, not an error"]
 fn error_type_mismatch_in_comparison() {
     // Lora: error for type mismatch in comparison
     let db = TestDb::new();
@@ -621,21 +621,13 @@ fn error_duplicate_variable_in_create() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
 fn error_constraint_violation() {
     let db = TestDb::new();
     // After creating a uniqueness constraint, duplicate should error
-    db.run("CREATE CONSTRAINT FOR (n:User) REQUIRE n.email IS UNIQUE");
+    db.run("CREATE CONSTRAINT user_email FOR (n:User) REQUIRE n.email IS UNIQUE");
     db.run("CREATE (:User {email: 'a@b.com'})");
-    let _err = db.run_err("CREATE (:User {email: 'a@b.com'})");
-}
-
-#[test]
-#[ignore = "pending implementation"]
-fn error_read_after_write_in_same_clause() {
-    // Lora spec: cannot read and write in the same clause
-    let db = TestDb::new();
-    let _err = db.run_err("MATCH (n) CREATE (n)-[:R]->(:New) RETURN n");
+    let err = db.run_err("CREATE (:User {email: 'a@b.com'})");
+    assert!(err.contains("uniqueness constraint violated"), "{err}");
 }
 
 // ============================================================
@@ -735,20 +727,3 @@ fn error_count_two_arguments() {
 // ============================================================
 // Future error tests
 // ============================================================
-
-#[test]
-#[ignore = "pending implementation"]
-fn error_write_conflict_in_same_clause() {
-    // Reading and writing to the same node in same clause
-    let db = TestDb::new();
-    db.run("CREATE (:X {val: 1})");
-    let _err = db.run_err("MATCH (n:X) SET n.val = n.val + 1 DELETE n");
-}
-
-#[test]
-#[ignore = "pending implementation"]
-fn error_property_type_mismatch_at_comparison() {
-    let db = TestDb::new();
-    db.run("CREATE (:X {val: 42})");
-    let _err = db.run_err("MATCH (n:X) WHERE n.val > 'hello' RETURN n");
-}

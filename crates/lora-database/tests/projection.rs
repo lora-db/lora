@@ -597,7 +597,6 @@ fn return_keys_function_in_projection() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
 fn return_collect_subquery_in_projection() {
     let db = TestDb::new();
     db.seed_org_graph();
@@ -609,7 +608,6 @@ fn return_collect_subquery_in_projection() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
 fn return_exists_subquery_in_projection() {
     let db = TestDb::new();
     db.seed_org_graph();

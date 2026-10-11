@@ -642,12 +642,15 @@ fn set_with_case_expression() {
 
 // Lora: SET with map from parameter $props
 #[test]
-#[ignore = "pending implementation"]
 fn set_with_map_from_parameter() {
     let db = TestDb::new();
     db.run("CREATE (:Param {name:'test'})");
-    db.run("MATCH (n:Param {name:'test'}) SET n += $props");
-    let rows = db.run("MATCH (n:Param {name:'test'}) RETURN n");
+    let mut props = std::collections::BTreeMap::new();
+    props.insert("age".to_string(), lora_database::LoraValue::Int(30));
+    let mut params = std::collections::BTreeMap::new();
+    params.insert("props".to_string(), lora_database::LoraValue::Map(props));
+    db.run_with_params("MATCH (n:Param {name:'test'}) SET n += $props", params);
+    let rows = db.run("MATCH (n:Param {name:'test', age: 30}) RETURN n");
     assert_eq!(rows.len(), 1);
 }
 
@@ -663,20 +666,8 @@ fn transactional_rollback_on_error_leaves_data_unchanged() {
     assert_eq!(rows[0]["n"]["properties"]["val"], 1);
 }
 
-// Lora: ON DELETE CASCADE (not Lora, but worth noting as non-goal)
-#[test]
-#[ignore = "pending implementation"]
-fn on_delete_cascade_is_not_cypher() {
-    let db = TestDb::new();
-    db.run("CREATE (:Parent {id:1})-[:OWNS]->(:Child {id:2})");
-    // Lora has no ON DELETE CASCADE; this tests hypothetical behavior
-    db.run("MATCH (p:Parent {id:1}) DELETE p CASCADE");
-    db.assert_count("MATCH (n) RETURN n", 0);
-}
-
 // Lora: SET with subquery-derived value
 #[test]
-#[ignore = "pending implementation"]
 fn set_with_subquery_derived_value() {
     let db = TestDb::new();
     db.run("CREATE (:Outer {name:'target'})");
@@ -796,10 +787,10 @@ fn foreach_update() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
 fn create_unique_constraint() {
     let db = TestDb::new();
-    let _err = db.run("CREATE CONSTRAINT FOR (n:User) REQUIRE n.email IS UNIQUE");
+    let rows = db.run("CREATE CONSTRAINT user_email FOR (n:User) REQUIRE n.email IS UNIQUE");
+    assert!(rows.is_empty());
 }
 
 // ============================================================
@@ -929,7 +920,6 @@ fn delete_relationship_by_property_filter() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
 fn set_from_call_subquery() {
     let db = TestDb::new();
     db.run("CREATE (:Target {name: 'x', total: 0})");

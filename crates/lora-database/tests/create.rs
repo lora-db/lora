@@ -543,12 +543,11 @@ fn create_with_unicode_property_value() {
 // Ignored future CREATE tests
 // ============================================================
 
-// Lora: CREATE CONSTRAINT ON (n:Label) ASSERT n.prop IS UNIQUE
+// Lora: CREATE CONSTRAINT name FOR (n:Label) REQUIRE n.prop IS UNIQUE
 #[test]
-#[ignore = "pending implementation"]
 fn create_constraint_unique_property() {
     let db = TestDb::new();
-    db.run("CREATE CONSTRAINT ON (n:User) ASSERT n.email IS UNIQUE");
+    db.run("CREATE CONSTRAINT user_email FOR (n:User) REQUIRE n.email IS UNIQUE");
     db.run("CREATE (:User {email: 'alice@example.com'})");
     let err = db.run_err("CREATE (:User {email: 'alice@example.com'})");
     assert!(!err.is_empty());
@@ -556,7 +555,6 @@ fn create_constraint_unique_property() {
 
 // Lora: CREATE INDEX FOR (n:Label) ON (n.prop)
 #[test]
-#[ignore = "pending implementation"]
 fn create_index_on_label_property() {
     let db = TestDb::new();
     db.run("CREATE INDEX FOR (n:User) ON (n.name)");
@@ -574,7 +572,6 @@ fn foreach_create_from_list() {
 
 // Lora: CREATE with temporal properties (date, datetime)
 #[test]
-#[ignore = "pending implementation"]
 fn create_with_temporal_properties() {
     let db = TestDb::new();
     db.run("CREATE (:Event {name: 'Launch', date: '2025-01-15'::DATE, ts: '2025-01-15T10:00:00'::DATETIME})");
@@ -584,7 +581,6 @@ fn create_with_temporal_properties() {
 
 // Lora: CREATE with spatial properties (point)
 #[test]
-#[ignore = "pending implementation"]
 fn create_with_spatial_properties() {
     let db = TestDb::new();
     db.run("CREATE (:Location {name: 'HQ', pos: {latitude: 52.37, longitude: 4.89}::POINT})");

@@ -469,7 +469,6 @@ fn merge_relationship_conditional_on_properties() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
 fn merge_with_call_subquery() {
     let db = TestDb::new();
     db.run("CREATE (:Source {name: 'data', val: 42})");

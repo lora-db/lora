@@ -376,20 +376,6 @@ fn parameter_as_property_map_in_create() {
 }
 
 #[test]
-#[ignore = "parameter as label: dynamic labels via parameters not standard Lora"]
-fn parameter_as_label_name() {
-    // Lora: parameter as label name (not standard Lora)
-    let db = TestDb::new();
-    db.run("CREATE (:DynamicLabel {name: 'test'})");
-    let rows = db.run_with_params(
-        "MATCH (n:$label) RETURN n.name AS name",
-        params(&[("label", LoraValue::String("DynamicLabel".into()))]),
-    );
-    assert_eq!(rows.len(), 1);
-}
-
-#[test]
-#[ignore = "parameter validation: type checking at parse time not yet implemented"]
 fn parameter_type_checking_at_parse_time() {
     // Lora: parameter validation/type checking at parse time
     let db = TestDb::new();
@@ -463,7 +449,6 @@ fn param_boolean_in_where() {
 }
 
 #[test]
-#[ignore = "pending implementation"]
 fn param_map_as_properties() {
     let db = TestDb::new();
 
@@ -582,7 +567,6 @@ fn parameter_list_in_unwind_create() {
 // ============================================================
 
 #[test]
-#[ignore = "pending implementation"]
 fn parameter_in_skip_limit() {
     let db = TestDb::new();
     db.run("UNWIND list.range(1, 10) AS i CREATE (:N {id: i})");

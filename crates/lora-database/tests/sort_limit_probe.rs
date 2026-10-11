@@ -83,7 +83,7 @@ fn plan_bounds_the_sort_by_the_parameter() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "timing probe, prints a table; run with --ignored --nocapture"]
 fn probe() {
     for n in [20_000usize, 100_000] {
         let db = festivals(n);
