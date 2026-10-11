@@ -20,7 +20,11 @@ import {
 import { and, lit, name, printExpr } from "../../compile/cypher.js";
 import { compileNodeWhere } from "../../compile/filter.js";
 import { compileByKeys, keyOf } from "../../compile/read/by-keys.js";
-import type { DriverTransaction } from "../../driver.js";
+import type {
+  DriverTransaction,
+  QueryResult,
+  Statement,
+} from "../../driver.js";
 import {
   MAX_VIOLATIONS,
   requestError,
@@ -40,7 +44,8 @@ import type { RelationshipRef, WriteChange } from "../changes.js";
 import { compileAdjust } from "./adjust.js";
 import { checkCardinality, checkRequired } from "./checks.js";
 import { deleteNodes } from "./delete.js";
-import { runStatement, type MutationEnv, type MutationInfo } from "./env.js";
+import type { MutationEnv, MutationInfo } from "./env.js";
+import { OUTBOX } from "../../events/outbox.js";
 import { notConnected } from "./errors.js";
 import {
   andText,
@@ -72,6 +77,8 @@ export class Runner {
   disconnected: RelationshipRef[] = [];
   /** Nodes updated per type, for AFTER validation. */
   updated = new Map<NodeType, { keys: unknown[]; fields: Set<string> }>();
+  /** The fields each update set, per type and key: `@trigger(fields:)`. */
+  updatedFields = new Map<NodeType, Map<string, Set<string>>>();
   /**
    * A type this mutation creates under a key held by a node the caller
    * cannot read; see {@link Runner.moveHiddenKeys}.
@@ -83,11 +90,80 @@ export class Runner {
    */
   takenUnique: { node: NodeType; field: ScalarField } | undefined;
 
+  /** Statements issued and not sent yet; see {@link Runner.send}. */
+  #queue: Array<{
+    statement: Statement;
+    resolve: (result: QueryResult) => void;
+    reject: (err: unknown) => void;
+  }> = [];
+
+  /** Writes issued with `later`, not awaited yet. */
+  #unchecked: Array<Promise<QueryResult>> = [];
+  /** Whether the queue waits for the next turn of the event loop. */
+  #deferred = false;
+
   constructor(
     readonly env: MutationEnv,
     readonly tx: DriverTransaction,
     readonly change: WriteChange,
   ) {}
+
+  /**
+   * Run `statement` in the transaction. Statements issued in the same
+   * tick, without awaiting one before issuing the next, go to the
+   * database in one call (`executeMany`), in the order issued: one round
+   * trip under the writer lock instead of one each. When a statement of
+   * such a batch fails, every statement of the batch rejects with its
+   * error, so a batch holds writes whose results are not checked,
+   * followed by reads.
+   */
+  send(statement: Statement): Promise<QueryResult> {
+    const result = new Promise<QueryResult>((resolve, reject) => {
+      this.#queue.push({ statement, resolve, reject });
+    });
+    // Awaited later, or not at all when an earlier check throws first.
+    result.catch(() => undefined);
+    if (this.#queue.length === 1) queueMicrotask(() => void this.#flush());
+    this.env.onStatement?.(statement);
+    if (!this.env.observe) return result;
+    const observed = this.env.observe(statement, () => result);
+    observed.catch(() => undefined);
+    return observed;
+  }
+
+  /**
+   * Issue a write whose result nothing checks, and leave it for the next
+   * statements to share its round trip: it is sent with whatever is
+   * issued before the event loop turns. `settle()` awaits it.
+   */
+  later(statement: Statement): void {
+    this.#unchecked.push(this.send(statement));
+    this.#deferred = true;
+  }
+
+  /** Wait for the writes issued with `later`; throws the first failure. */
+  async settle(): Promise<void> {
+    for (const pending of this.#unchecked.splice(0)) await pending;
+  }
+
+  async #flush(): Promise<void> {
+    if (this.#deferred) {
+      this.#deferred = false;
+      nextTurn(() => void this.#flush());
+      return;
+    }
+    const batch = this.#queue;
+    this.#queue = [];
+    try {
+      const results =
+        batch.length > 1 && this.tx.executeMany
+          ? await this.tx.executeMany(batch.map((b) => b.statement))
+          : await inOrder(this.tx, batch);
+      for (const [i, b] of batch.entries()) b.resolve(results[i]!);
+    } catch (err) {
+      for (const b of batch) b.reject(err);
+    }
+  }
 
   ctx(): CompileContext {
     return newContext(this.env.selection, this.env.model, {
@@ -105,8 +181,7 @@ export class Runner {
     text: string,
     ctx: CompileContext,
   ): Promise<Array<Record<string, unknown>>> {
-    const statement = { text, params: ctx.params };
-    const result = await runStatement(this.env, this.tx, statement);
+    const result = await this.send({ text, params: ctx.params });
     return result.rows;
   }
 
@@ -115,21 +190,48 @@ export class Runner {
   }
 
   /** Every planned write, in order, with the checks that follow them. */
-  async apply(plan: WritePlan): Promise<void> {
+  /**
+   * `tail` is called once the plan's last statements are issued, without
+   * waiting for them: what it issues (the payload read, the caller's own
+   * checks) shares their round trip.
+   */
+  async apply(plan: WritePlan, tail?: () => void): Promise<void> {
     for (const task of plan.pending) await task();
     this.assertBatch(plan);
     assertUniqueKeys(plan);
-    await this.moveHiddenKeys(plan);
-    await this.moveTakenUniques(plan);
-    await this.applyCreates(plan);
-    await this.applyDisconnects(plan);
-    await this.applyLinks(plan);
-    await this.applyEdgeUpdates(plan);
-    await this.applyNodeUpdates(plan);
-    await this.applyNestedDeletes(plan);
-    await checkCardinality(this, plan);
-    await checkRequired(this);
-    await this.validateCreated(plan);
+    // Issued together, in this order: the moves precede the creates.
+    const creating = settled([
+      this.moveHiddenKeys(plan),
+      this.moveTakenUniques(plan),
+      this.applyCreates(plan),
+    ]);
+    // A plan that only creates nodes has nothing between its creates and
+    // its last checks, so all of it is one batch.
+    const createsOnly =
+      plan.disconnects.length === 0 &&
+      plan.links.length === 0 &&
+      plan.edgeUpdates.length === 0 &&
+      plan.nodeUpdates.length === 0 &&
+      plan.nestedDeletes.length === 0 &&
+      this.disconnected.length === 0;
+    if (!createsOnly) {
+      // The creates wait for the first statement of what follows (a read
+      // of the nodes to connect, usually) and share its round trip. A
+      // create that fails rejects that statement with its error.
+      if (this.#queue.length > 0) this.#deferred = true;
+      await this.applyDisconnects(plan);
+      await this.applyLinks(plan);
+      await this.applyEdgeUpdates(plan);
+      await this.applyNodeUpdates(plan);
+      await this.applyNestedDeletes(plan);
+      await checkCardinality(this, plan);
+      await checkRequired(this);
+    }
+    const validating = held(this.validateCreated(plan));
+    tail?.();
+    for (const step of creating) await step;
+    await validating;
+    await this.settle();
   }
 
   /**
@@ -174,19 +276,28 @@ export class Runner {
    * create. Either way the transaction rolls back, and the key with it.
    */
   async moveHiddenKeys(plan: WritePlan): Promise<void> {
+    // Every statement is issued before the first is awaited (see `send`).
+    const moving: Array<[NodeType, Promise<Array<Record<string, unknown>>>]> =
+      [];
     for (const [node, rows] of plan.creates) {
       const ctx = this.ctx();
       const visible = authFilter(ctx, node, "n", "READ");
       if (!visible) continue;
       const moves = rows.map((r) => ({ key: r.key, to: placeholderKey(node) }));
       const key = `n.${name(node.key.property)}`;
-      const [moved] = await this.run(
-        `UNWIND ${printExpr(bind(ctx, moves))} AS m\n` +
-          `MATCH (n:${name(node.labels[0]!)}) WHERE ${key} = m.key` +
-          ` AND NOT coalesce(${printExpr(visible)}, false)\n` +
-          `SET ${key} = m.to\nRETURN count(n) AS moved`,
-        ctx,
-      );
+      moving.push([
+        node,
+        this.run(
+          `UNWIND ${printExpr(bind(ctx, moves))} AS m\n` +
+            `MATCH (n:${name(node.labels[0]!)}) WHERE ${key} = m.key` +
+            ` AND NOT coalesce(${printExpr(visible)}, false)\n` +
+            `SET ${key} = m.to\nRETURN count(n) AS moved`,
+          ctx,
+        ),
+      ]);
+    }
+    for (const [node, pending] of moving) {
+      const [moved] = await pending;
       if (Number(moved?.["moved"] ?? 0) > 0) this.hiddenKey ??= node;
     }
   }
@@ -202,6 +313,9 @@ export class Runner {
    * without CREATE rules skip this: there is nothing to leak.
    */
   async moveTakenUniques(plan: WritePlan): Promise<void> {
+    const moving: Array<
+      [NodeType, ScalarField, Promise<Array<Record<string, unknown>>>]
+    > = [];
     for (const [node, rows] of plan.creates) {
       const ruled = node.authorization?.validate.some((r) =>
         r.operations.has("CREATE"),
@@ -219,20 +333,28 @@ export class Runner {
         if (moves.length === 0) continue;
         const ctx = this.ctx();
         const p = `n.${name(f.property)}`;
-        const [moved] = await this.run(
-          `UNWIND ${printExpr(bind(ctx, moves))} AS m\n` +
-            `MATCH (n:${name(node.labels[0]!)}) WHERE ${p} = m.value\n` +
-            `SET ${p} = m.to\nRETURN count(n) AS moved`,
-          ctx,
-        );
-        if (Number(moved?.["moved"] ?? 0) > 0) {
-          this.takenUnique ??= { node, field: f };
-        }
+        moving.push([
+          node,
+          f,
+          this.run(
+            `UNWIND ${printExpr(bind(ctx, moves))} AS m\n` +
+              `MATCH (n:${name(node.labels[0]!)}) WHERE ${p} = m.value\n` +
+              `SET ${p} = m.to\nRETURN count(n) AS moved`,
+            ctx,
+          ),
+        ]);
+      }
+    }
+    for (const [node, field, pending] of moving) {
+      const [moved] = await pending;
+      if (Number(moved?.["moved"] ?? 0) > 0) {
+        this.takenUnique ??= { node, field };
       }
     }
   }
 
   async applyCreates(plan: WritePlan): Promise<void> {
+    const creating: Array<Promise<unknown>> = [];
     for (const [node, rows] of plan.creates) {
       // Every property goes into the CREATE itself (timestamps included):
       // existence constraints are checked there, before any SET. Rows are
@@ -253,15 +375,19 @@ export class Runner {
         const given = shape ? shape.split("\0") : [];
         const props = [
           `${name(node.key.property)}: row.key`,
+          // Work for the type's worker from the moment it commits.
+          ...(node.outbox ? [`${name(OUTBOX.state)}: "PENDING"`] : []),
           ...given.map((prop) => `${name(prop)}: row.props.${name(prop)}`),
           // A settable @timestamp the input supplied keeps its value.
           ...stamped
             .filter(([prop]) => !given.includes(prop))
             .map(([prop, now]) => `${name(prop)}: ${now}`),
         ];
-        await this.run(
-          `UNWIND ${p} AS row\nCREATE (n:${labels} { ${props.join(", ")} })`,
-          ctx,
+        creating.push(
+          this.run(
+            `UNWIND ${p} AS row\nCREATE (n:${labels} { ${props.join(", ")} })`,
+            ctx,
+          ),
         );
       }
       this.info.nodesCreated += rows.length;
@@ -269,6 +395,7 @@ export class Runner {
         this.change.created.push({ type: node.name, key: r.key });
       }
     }
+    for (const pending of creating) await pending;
   }
 
   async applyDisconnects(plan: WritePlan): Promise<void> {
@@ -866,19 +993,24 @@ export class Runner {
         ),
       ];
       const removes = shape ? shape.split("\0") : [];
-      const stored = await this.run(
+      const text =
         `UNWIND ${rowsParam} AS row\n` +
-          `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = row.key\n` +
-          `SET ${sets.join(", ")}` +
-          (removes.length > 0
-            ? `\nREMOVE ${removes.map((p) => `n.${name(p)}`).join(", ")}`
-            : "") +
-          (adjusted.length > 0
-            ? `\nRETURN ${adjusted.map((f, i) => `n.${name(f.property)} AS adjusted${i}`).join(", ")}`
-            : ""),
-        sctx,
-      );
-      for (const row of adjusted.length > 0 ? stored : []) {
+        `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = row.key\n` +
+        `SET ${sets.join(", ")}` +
+        (removes.length > 0
+          ? `\nREMOVE ${removes.map((p) => `n.${name(p)}`).join(", ")}`
+          : "") +
+        (adjusted.length > 0
+          ? `\nRETURN ${adjusted.map((f, i) => `n.${name(f.property)} AS adjusted${i}`).join(", ")}`
+          : "");
+      // Nothing to check on what it stored: the write shares the round
+      // trip of the statements that follow it.
+      if (adjusted.length === 0) {
+        this.later({ text, params: sctx.params });
+        continue;
+      }
+      const stored = await this.run(text, sctx);
+      for (const row of stored) {
         for (const [i, f] of adjusted.entries()) {
           for (const failure of checkValue(
             f.constraints!,
@@ -910,6 +1042,15 @@ export class Runner {
     entry.keys.push(...keys);
     for (const f of written) entry.fields.add(f.name);
     this.updated.set(node, entry);
+    const byKey =
+      this.updatedFields.get(node) ?? new Map<string, Set<string>>();
+    for (const { key, input } of todo) {
+      const set = byKey.get(keyOf(key)) ?? new Set<string>();
+      for (const name of Object.keys(input)) set.add(name);
+      for (const name of Object.keys(adjust ?? {})) set.add(name);
+      byKey.set(keyOf(key), set);
+    }
+    this.updatedFields.set(node, byKey);
     return keys;
   }
 
@@ -919,6 +1060,8 @@ export class Runner {
    * groups that set the same guarded fields.
    */
   async validateCreated(plan: WritePlan): Promise<void> {
+    // Issued together; the first failure, in order, is the one reported.
+    const validating: Array<Promise<void>> = [];
     for (const [node, rows] of plan.creates) {
       const guarded = [...node.fields.values()]
         .filter((f) => f.kind === "scalar" && f.authorization)
@@ -932,15 +1075,20 @@ export class Runner {
         groups.set(id, group);
       }
       for (const { fields, keys } of groups.values()) {
-        await this.validateAfter(node, keys, "CREATE", new Set(fields));
+        validating.push(
+          this.validateAfter(node, keys, "CREATE", new Set(fields)),
+        );
       }
     }
+    for (const pending of settled(validating)) await pending;
   }
 
   async validateUpdated(): Promise<void> {
+    const validating: Array<Promise<void>> = [];
     for (const [node, { keys, fields }] of this.updated) {
-      await this.validateAfter(node, keys, "UPDATE", fields);
+      validating.push(this.validateAfter(node, keys, "UPDATE", fields));
     }
+    for (const pending of settled(validating)) await pending;
   }
 
   /** AFTER rules for `op` on the nodes with `keys` (and written fields). */
@@ -979,8 +1127,7 @@ export class Runner {
     if (sets.length === 0) return keys.map(() => ({}));
     const ctx = this.ctx();
     const compiled = compileByKeys(ctx, node, keys, sets);
-    const statement = compiled.statements[0]!;
-    const result = await runStatement(this.env, this.tx, statement);
+    const result = await this.send(compiled.statements[0]!);
     return assertReadable(compiled.shape([result]) as unknown[]);
   }
 
@@ -1031,4 +1178,30 @@ function placeholderKey(node: NodeType): unknown {
     return -(2n ** 62n) - ((BigInt(hi! & 0x3fffffff) << 32n) | BigInt(lo!));
   }
   return `\u0000lora-graphql:hidden:${globalThis.crypto.randomUUID()}`;
+}
+
+/** One `execute()` per statement, for a driver without `executeMany`. */
+async function inOrder(
+  tx: DriverTransaction,
+  batch: ReadonlyArray<{ statement: Statement }>,
+): Promise<QueryResult[]> {
+  const results: QueryResult[] = [];
+  for (const { statement } of batch) results.push(await tx.execute(statement));
+  return results;
+}
+
+/** Run `fn` on the next turn of the event loop. */
+const nextTurn: (fn: () => void) => void =
+  typeof setImmediate === "function" ? setImmediate : (fn) => setTimeout(fn, 0);
+
+/** `pending`, safe to leave unawaited when an earlier check throws. */
+export function held<T>(pending: Promise<T>): Promise<T> {
+  pending.catch(() => undefined);
+  return pending;
+}
+
+/** `pending`, each safe to leave unawaited when an earlier one throws. */
+function settled<T>(pending: Array<Promise<T>>): Array<Promise<T>> {
+  for (const p of pending) p.catch(() => undefined);
+  return pending;
 }

@@ -223,15 +223,16 @@ export class WritePlan {
     key: unknown,
     input: Input,
   ): Promise<unknown> {
-    const cb = this.env.callbacks[f.populatedBy!.callback]!;
-    const value = await cb({
-      operation,
-      type: node.name,
-      field: f.name,
-      key,
-      input,
-      context: this.env.requestContext,
-    });
+    const started = this.env.computed?.get(input)?.get(f.name);
+    const value = await (started ??
+      this.env.callbacks[f.populatedBy!.callback]!({
+        operation,
+        type: node.name,
+        field: f.name,
+        key,
+        input,
+        context: this.env.requestContext,
+      }));
     // A required field must stay set, whatever the callback returns.
     if (f.required && (value === null || value === undefined)) {
       throw requestError(

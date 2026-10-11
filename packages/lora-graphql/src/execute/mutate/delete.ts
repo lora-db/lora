@@ -2,6 +2,7 @@
 // constraints checked before anything goes, and the relationships the
 // deleted nodes take with them, for the write-set.
 
+import { runDeleteTriggers } from "./triggers.js";
 import {
   authFilter,
   authValidate,
@@ -174,21 +175,22 @@ export async function deleteNodes(
     })),
     (statement) => runStatement(runner.env, runner.tx, statement),
   );
+  // DELETE triggers see the nodes as they are, before any is removed.
+  await runDeleteTriggers(
+    runner,
+    [...doomed].map(([node, keysByNode]) => ({
+      node,
+      keys: [...keysByNode.values()],
+    })),
+  );
 
   const relIds = new Set<number>();
   for (const [node, keysByNode] of doomed) {
-    const nodeKeys = [...keysByNode.values()];
-    for (const key of nodeKeys) {
-      runner.disconnected.push(...(await neighbours(runner, node, key)));
-    }
-    const ctx = runner.ctx();
-    const rows = await runner.run(
-      `UNWIND ${printExpr(bind(ctx, nodeKeys))} AS k\n` +
-        `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = k\n` +
-        `RETURN [(n)-[r]-() | id(r)] AS ids`,
-      ctx,
-    );
-    for (const r of rows) for (const id of r["ids"] as number[]) relIds.add(id);
+    const { refs, ids } = await neighbours(runner, node, [
+      ...keysByNode.values(),
+    ]);
+    runner.disconnected.push(...refs);
+    for (const id of ids) relIds.add(id);
   }
   for (const [node, keysByNode] of doomed) {
     const nodeKeys = [...keysByNode.values()];
@@ -223,12 +225,16 @@ export async function deleteNodes(
   runner.info.relationshipsDeleted += relIds.size;
 }
 
-/** The node's current relationships in the model, for the write-set. */
+/**
+ * The nodes' current relationships: those in the model, for the
+ * write-set, and the ids of all of them, for the count. One statement
+ * for all `keys`.
+ */
 async function neighbours(
   runner: Runner,
   node: NodeType,
-  key: unknown,
-): Promise<RelationshipRef[]> {
+  keys: unknown[],
+): Promise<{ refs: RelationshipRef[]; ids: number[] }> {
   // Relationship fields declared on this type, and those on other types
   // that point here: a relationship may be declared on either side.
   const model = runner.env.model;
@@ -241,9 +247,7 @@ async function neighbours(
         f.kind === "relationship" && f.members.includes(node.name),
     ),
   );
-  if (own.length + inverse.length === 0) return [];
   const ctx = runner.ctx();
-  const k = printExpr(bind(ctx, key));
   const entries = [
     ...own.map((f, i) => {
       const target = model.nodes.get(f.target)!;
@@ -260,29 +264,37 @@ async function neighbours(
     }),
   ];
   const rows = await runner.run(
-    `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = ${k}\nRETURN { ${entries.join(", ")} } AS related`,
+    `UNWIND ${printExpr(bind(ctx, keys))} AS k\n` +
+      `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = k\n` +
+      `RETURN n.${name(node.key.property)} AS key, { ${entries.join(", ")} } AS related, [(n)-[r]-() | id(r)] AS ids`,
     ctx,
   );
-  const related = rows[0]?.["related"] as Record<string, unknown[]> | undefined;
-  if (!related) return [];
-  const refs = [
-    ...own.flatMap((f, i) =>
-      (related[`r${i}`] ?? []).map((to) => relRef(f, key, to)),
-    ),
-    ...inverse.flatMap((f, i) =>
-      (related[`i${i}`] ?? []).map((from) => relRef(f, from, key)),
-    ),
-  ];
-  // A relationship declared on both sides is reported once.
-  const seen = new Set<string>();
-  return refs.filter((r) => {
-    const ends = [
-      `${r.from.type}:${keyOf(r.from.key)}`,
-      `${r.to.type}:${keyOf(r.to.key)}`,
-    ].sort();
-    const id = `${r.type}\0${ends.join("\0")}`;
-    if (seen.has(id)) return false;
-    seen.add(id);
-    return true;
-  });
+  const refs: RelationshipRef[] = [];
+  const ids: number[] = [];
+  for (const row of rows) {
+    ids.push(...(row["ids"] as number[]));
+    const key = row["key"];
+    const related = row["related"] as Record<string, unknown[]>;
+    const found = [
+      ...own.flatMap((f, i) =>
+        (related[`r${i}`] ?? []).map((to) => relRef(f, key, to)),
+      ),
+      ...inverse.flatMap((f, i) =>
+        (related[`i${i}`] ?? []).map((from) => relRef(f, from, key)),
+      ),
+    ];
+    // A relationship declared on both sides is reported once.
+    const seen = new Set<string>();
+    for (const r of found) {
+      const ends = [
+        `${r.from.type}:${keyOf(r.from.key)}`,
+        `${r.to.type}:${keyOf(r.to.key)}`,
+      ].sort();
+      const id = `${r.type}\0${ends.join("\0")}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      refs.push(r);
+    }
+  }
+  return { refs, ids };
 }

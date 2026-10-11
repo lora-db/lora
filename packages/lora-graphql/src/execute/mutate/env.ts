@@ -12,6 +12,7 @@ import type {
 } from "../../driver.js";
 import type { GraphModel, NodeType } from "../../model/types.js";
 import type { WriteChange } from "../changes.js";
+import type { LoraTransaction } from "../transaction.js";
 
 /** Computes a `@populatedBy` field. */
 export type PopulatedByCallback = (args: {
@@ -25,6 +26,36 @@ export type PopulatedByCallback = (args: {
   /** The GraphQL context. */
   context: unknown;
 }) => unknown;
+
+/** What a JavaScript trigger is called with. */
+export interface TriggerEvent {
+  operation: "CREATE" | "UPDATE" | "DELETE";
+  /** The node type whose nodes were written. */
+  type: string;
+  /** Their @key values. For DELETE the nodes still exist. */
+  keys: unknown[];
+  /** The mutation's write-set so far. */
+  change: WriteChange;
+  /**
+   * The mutation's transaction: `execute()` runs Cypher in it, and
+   * `lora.execute({ context: { ...context, transaction } })` runs a
+   * generated mutation in it, whose writes join the write-set. The
+   * mutation commits it; throw to roll everything back.
+   */
+  transaction: LoraTransaction;
+  /** The GraphQL context of the request. */
+  context: unknown;
+}
+
+/** A trigger function; it may return a promise. Throwing vetoes the write. */
+export type TriggerFunction = (event: TriggerEvent) => unknown;
+
+/** The trigger functions of one node type. */
+export interface TriggerFunctions {
+  create?: TriggerFunction;
+  update?: TriggerFunction;
+  delete?: TriggerFunction;
+}
 
 export interface MutationEnv {
   model: GraphModel;
@@ -54,6 +85,23 @@ export interface MutationEnv {
   /** Statistics from `analyze()`, for filter costs. */
   statistics?: Statistics | undefined;
   callbacks: Readonly<Record<string, PopulatedByCallback>>;
+  /** The `triggers` option: functions per node type and operation. */
+  triggers?: Readonly<Record<string, TriggerFunctions>> | undefined;
+  /** The `triggerTimeoutMs` option, defaulted. */
+  triggerTimeoutMs?: number | undefined;
+  /**
+   * The mutation runs inside a trigger's transaction: it fires no trigger
+   * itself, so what a trigger writes never cascades.
+   */
+  inTrigger?: boolean | undefined;
+  /**
+   * `@populatedBy` callbacks already started, by the input they compute
+   * for and the field's name: those of the mutation's own inputs start
+   * before the transaction opens, all at once, so they do not run under
+   * the writer lock one after another. Each is awaited where it would
+   * have been called, so a failure surfaces at the same point.
+   */
+  computed?: WeakMap<object, Map<string, Promise<unknown>>> | undefined;
   /** The `validators` option: a Standard Schema per node type. */
   validators?: Readonly<Record<string, TypeValidator>> | undefined;
   /**

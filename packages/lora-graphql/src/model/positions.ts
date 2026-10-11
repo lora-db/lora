@@ -67,6 +67,8 @@ export const DIRECTIVE_POSITIONS: Readonly<
     "fulltext",
     "limit",
     "uniqueTogether",
+    "trigger",
+    "outbox",
   ],
   "relationship properties type": ["relationshipProperties"],
   "@jwt type": ["jwt"],

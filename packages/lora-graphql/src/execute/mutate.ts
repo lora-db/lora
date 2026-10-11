@@ -21,7 +21,7 @@ import { keyOf } from "../compile/read/by-keys.js";
 import { collectFields, subSelections } from "../compile/selection.js";
 import type { DriverTransaction } from "../driver.js";
 import { requestError } from "../errors.js";
-import type { NodeType } from "../model/types.js";
+import type { NodeType, ScalarField } from "../model/types.js";
 import {
   mutationNames,
   settable,
@@ -33,7 +33,8 @@ import { deleteNodes } from "./mutate/delete.js";
 import { runStatement, type MutationEnv } from "./mutate/env.js";
 import { andText } from "./mutate/fragments.js";
 import type { Input, WritePlan } from "./mutate/plan.js";
-import { Runner } from "./mutate/runner.js";
+import { held, Runner } from "./mutate/runner.js";
+import { hasTriggerFunctions, runWriteTriggers } from "./mutate/triggers.js";
 import { validateInput } from "./mutate/validate.js";
 
 /** The payload's node selection, merged across aliases. */
@@ -106,6 +107,69 @@ async function lookupViewerKey(
   return rows[0]?.["key"] ?? null;
 }
 
+/**
+ * Start the `@populatedBy` callbacks of the mutation's own inputs, before
+ * the transaction opens: of each created node whose key the input gives,
+ * and of a keyed update. Nested inputs, generated keys, upserts and bulk
+ * updates are computed in the transaction, where their key or operation
+ * is known.
+ */
+function startCallbacks(
+  env: MutationEnv,
+  op: MutationKind,
+  node: NodeType,
+  args: Record<string, unknown>,
+): MutationEnv["computed"] {
+  const operation = op === "CREATE" || op === "UPDATE" ? op : undefined;
+  const fields = [...node.fields.values()].filter(
+    (f): f is ScalarField =>
+      f.kind === "scalar" &&
+      !f.key &&
+      !!operation &&
+      !!f.populatedBy?.operations.has(operation),
+  );
+  if (!operation || fields.length === 0) return undefined;
+  const inputs: Array<{ key: unknown; input: Input }> =
+    operation === "CREATE"
+      ? ((args["input"] as Input[] | undefined) ?? []).map((input) => ({
+          key: input[node.key.name],
+          input,
+        }))
+      : args["update"]
+        ? [{ key: args[node.key.name], input: args["update"] as Input }]
+        : [];
+  const computed = new WeakMap<object, Map<string, Promise<unknown>>>();
+  for (const { key, input } of inputs) {
+    if (key === undefined || key === null) continue;
+    const started = new Map<string, Promise<unknown>>();
+    for (const f of fields) {
+      // A create computes a field the input leaves out or null; an
+      // update, one the input does not name.
+      const given =
+        operation === "CREATE"
+          ? input[f.name] !== undefined && input[f.name] !== null
+          : f.name in input;
+      if (given) continue;
+      started.set(
+        f.name,
+        held(
+          (async () =>
+            env.callbacks[f.populatedBy!.callback]!({
+              operation,
+              type: node.name,
+              field: f.name,
+              key,
+              input,
+              context: env.requestContext,
+            }))(),
+        ),
+      );
+    }
+    if (started.size > 0) computed.set(input, started);
+  }
+  return computed;
+}
+
 export async function executeMutation(
   env: MutationEnv,
   op: MutationKind,
@@ -145,6 +209,7 @@ export async function executeMutation(
   // Value rules next, still before the transaction: a request with a bad
   // value never waits for, or holds, the writer lock.
   await validateInput(env.model, env.validators ?? {}, op, node, args);
+  env = { ...env, computed: startCallbacks(env, op, node, args) };
 
   const tx =
     owned ??
@@ -161,33 +226,57 @@ export async function executeMutation(
   if (viewerKey !== undefined) env = { ...env, viewerKey };
   const runner = new Runner(env, tx, change);
   const schema = env.selection.schema;
+  // The CREATE and UPDATE triggers of everything the mutation wrote, once:
+  // called when its last write is issued.
+  let triggered: Promise<void> | undefined;
+  const triggers = () => (triggered ??= held(runWriteTriggers(runner)));
   const payloadFor = async (
     payloadTypeName: string,
     field: string,
     keys: unknown[],
   ) => {
     const payloadType = schema.getType(payloadTypeName) as GraphQLObjectType;
-    return runner.payload(
-      node,
-      keys,
-      payloadSelections(env, payloadType, fieldNodes, field),
+    // The payload shows what the triggers wrote: their statements are
+    // issued first, and the read right behind them shares their round trip.
+    const fired = triggers();
+    // A trigger function may write anything: wait for it before reading.
+    if (hasTriggerFunctions(env)) await fired;
+    const read = held(
+      runner.payload(
+        node,
+        keys,
+        payloadSelections(env, payloadType, fieldNodes, field),
+      ),
     );
+    await fired;
+    return read;
   };
   try {
     let payload: unknown;
+    // The @uniqueTogether check, when a case issued it with its last
+    // statements; it is awaited after the payload, as when it runs alone.
+    let unique: Promise<void> | undefined;
     const plan = runner.plan();
     switch (op) {
       case "CREATE": {
         const keys = (args["input"] as Input[]).map((input) =>
           plan.create(node, input),
         );
-        await runner.apply(plan);
+        // The payload read and the last check share the creates' round
+        // trip when the plan only creates nodes.
+        let created!: Promise<unknown[]>;
+        await runner.apply(plan, () => {
+          created = held(
+            payloadFor(
+              mutationNames.createPayload(node),
+              mutationNames.createdField(node),
+              keys,
+            ),
+          );
+          unique = held(checkUniqueTogether(runner));
+        });
         payload = {
-          [mutationNames.createdField(node)]: await payloadFor(
-            mutationNames.createPayload(node),
-            mutationNames.createdField(node),
-            keys,
-          ),
+          [mutationNames.createdField(node)]: await created,
           info: runner.info,
         };
         break;
@@ -201,12 +290,19 @@ export async function executeMutation(
           [{ key, input: (args["update"] as Input | undefined) ?? {} }],
           args["adjust"] as Input | undefined,
         );
-        await runner.apply(plan);
-        await runner.validateUpdated();
-        const [value] =
-          done.length > 0
-            ? await payloadFor(mutationNames.updatePayload(node), field, [key])
-            : [null];
+        let validating!: Promise<void>;
+        let updated!: Promise<unknown[]>;
+        await runner.apply(plan, () => {
+          validating = held(runner.validateUpdated());
+          updated = held(
+            done.length > 0
+              ? payloadFor(mutationNames.updatePayload(node), field, [key])
+              : Promise.resolve([null]),
+          );
+          unique = held(checkUniqueTogether(runner));
+        });
+        await validating;
+        const [value] = await updated;
         payload = { [field]: value ?? null, info: runner.info };
         break;
       }
@@ -234,14 +330,22 @@ export async function executeMutation(
           keys.map((key) => ({ key, input })),
           args["adjust"] as Input | undefined,
         );
-        await runner.apply(plan);
-        await runner.validateUpdated();
+        let validating!: Promise<void>;
+        let updated!: Promise<unknown[]>;
+        await runner.apply(plan, () => {
+          validating = held(runner.validateUpdated());
+          updated = held(
+            payloadFor(
+              mutationNames.updateManyPayload(node),
+              mutationNames.createdField(node),
+              done,
+            ),
+          );
+          unique = held(checkUniqueTogether(runner));
+        });
+        await validating;
         payload = {
-          [mutationNames.createdField(node)]: await payloadFor(
-            mutationNames.updateManyPayload(node),
-            mutationNames.createdField(node),
-            done,
-          ),
+          [mutationNames.createdField(node)]: await updated,
           info: runner.info,
         };
         break;
@@ -279,7 +383,9 @@ export async function executeMutation(
         break;
       }
     }
-    await checkUniqueTogether(runner);
+    await (unique ?? checkUniqueTogether(runner));
+    await runner.settle();
+    await triggers();
     // Only now, so that any other error is the one a free key gets.
     if (runner.hiddenKey) throw forbidden(runner.hiddenKey, "CREATE");
     if (runner.takenUnique) {

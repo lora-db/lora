@@ -41,6 +41,21 @@ export type FilterOperator =
 export type IndexKind = "RANGE" | "TEXT" | "POINT";
 
 export type MutationOperation = "CREATE" | "UPDATE" | "DELETE";
+
+/**
+ * `@trigger(on:, statement:, fields:)`: a statement run for the nodes of
+ * a type that a generated mutation wrote, inside its transaction.
+ */
+export interface Trigger {
+  operations: ReadonlySet<MutationOperation>;
+  statement: string;
+  /** `UPDATE` fires only for nodes whose update set one of these. */
+  fields: readonly string[] | undefined;
+  /** The `$parameters` the statement uses: `jwt`, `viewer`, `operation`. */
+  params: readonly string[];
+  /** Whether the statement has a write clause. */
+  writes: boolean;
+}
 export type AuthOperation =
   | "READ"
   | MutationOperation
@@ -337,6 +352,10 @@ export interface NodeType {
   interfaces: readonly string[];
   /** `@uniqueTogether`: combinations no two nodes of the type may share. */
   uniqueTogether: readonly UniqueTogether[];
+  /** `@outbox`: nodes of the type are work for `lora.worker()`. */
+  outbox: boolean;
+  /** `@trigger`: statements run in the transaction of a mutation, in SDL order. */
+  triggers: readonly Trigger[];
   description: string | undefined;
 }
 

@@ -10,6 +10,7 @@ import type {
   NodeType,
   RelationshipField,
 } from "../model/types.js";
+import { isOutboxProperty } from "../events/outbox.js";
 import type { EntityRef, RelationshipRef, WriteChange } from "./changes.js";
 
 /** Node ids seen, for relationship ends and deletions. */
@@ -142,6 +143,8 @@ export class EngineFeed {
         relationships.push(c);
         continue;
       }
+      // A worker's delivery-state write changes nothing a client can see.
+      if (c.kind === "nodeUpdated" && outboxOnly(c)) continue;
       const ref = this.#entity(c.labels ?? [], c.properties ?? {});
       if (!ref) continue;
       this.#remember(c.id!, ref);
@@ -261,6 +264,17 @@ function fill(change: WriteChange): void {
       [...change.connected, ...change.disconnected].map((r) => r.type),
     ),
   ].sort();
+}
+
+/** Whether an update set or removed only delivery-state properties. */
+function outboxOnly(change: DriverChange): boolean {
+  const keys = [...(change.setKeys ?? []), ...(change.removedKeys ?? [])];
+  return (
+    keys.length > 0 &&
+    keys.every(isOutboxProperty) &&
+    (change.addedLabels ?? []).length === 0 &&
+    (change.removedLabels ?? []).length === 0
+  );
 }
 
 /** Resolve after `ms`, or at once when `signal` aborts. */

@@ -147,3 +147,26 @@ test("a create does not look for relationships its new nodes cannot have", async
   expect(texts.filter((t) => t.includes("DELETE"))).toEqual([]);
   expect(texts.filter((t) => t.includes("AS count"))).toEqual([]);
 });
+
+test("a bulk delete runs as many statements for one node as for many", async () => {
+  const seed = (keys: string[]) =>
+    run(`mutation {
+      createVenues(input: [${keys
+        .map(
+          (k) =>
+            `{ key: "${k}", name: "bulk", stages: { create: [{ node: { key: "${k}-s1" } }, { node: { key: "${k}-s2" } }] } }`,
+        )
+        .join(", ")}]) { info { nodesCreated } }
+    }`);
+  const deleteBulk = async (keys: string[]) => {
+    await seed(keys);
+    statements.length = 0;
+    await run(
+      `mutation { deleteVenues(where: { key: { in: ${JSON.stringify(keys)} } }) { nodesDeleted } }`,
+    );
+    return statements.length;
+  };
+  const one = await deleteBulk(["one"]);
+  const many = await deleteBulk(["a", "b", "c", "d", "e", "f", "g", "h"]);
+  expect(many).toBe(one);
+});

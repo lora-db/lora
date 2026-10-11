@@ -8,7 +8,10 @@ import type {
   GraphQLScalarType,
 } from "graphql";
 import type { LoraDriver, Statement } from "./driver.js";
-import type { PopulatedByCallback } from "./execute/mutate/env.js";
+import type {
+  PopulatedByCallback,
+  TriggerFunctions,
+} from "./execute/mutate/env.js";
 import type { LoraTransaction } from "./execute/transaction.js";
 import type { DocumentGuards } from "./guards.js";
 import type { ModelOptions } from "./model/build/limits.js";
@@ -72,6 +75,13 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
    */
   maxBatch?: number;
   /**
+   * Write transactions that may wait for the writer lock at once. One
+   * more fails at once with OVERLOADED (answer it with HTTP 503 and let
+   * the client back off) instead of joining a queue whose wait only
+   * grows: one writer runs at a time. Default 512; `Infinity` disables.
+   */
+  maxQueuedWrites?: number;
+  /**
    * Most items a list argument of a `@cypher` field takes, unless its
    * `@size(max:)` says otherwise. More is BAD_USER_INPUT before the
    * statement runs. Default 1000.
@@ -123,6 +133,24 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
   subscriptionTimeoutMs?: number;
   /** Named callbacks for `@populatedBy(callback:)`. */
   callbacks?: Record<string, PopulatedByCallback>;
+  /**
+   * Trigger functions per node type: `{ Comment: { create, update,
+   * delete } }`. Each is called inside the transaction of a generated
+   * mutation that wrote nodes of the type, after the type's `@trigger`
+   * statements and before the commit, with the keys written, the
+   * write-set so far and the transaction. Throwing rolls the mutation
+   * back: a `GraphQLError` reaches the client as thrown, anything else
+   * is reported like a database error. Mutations a trigger runs in its
+   * transaction fire no trigger. A trigger holds the database's writer
+   * lock: keep network calls out of it.
+   */
+  triggers?: Record<string, TriggerFunctions>;
+  /**
+   * Most time one trigger function may take, in milliseconds; past it
+   * the mutation fails with TIMEOUT and rolls back. Default 1000; 0
+   * disables.
+   */
+  triggerTimeoutMs?: number;
   /**
    * A validator per node type, for what the validation directives do not
    * say (a rule across two fields, a check against your own data): any
@@ -218,8 +246,11 @@ export interface DatabaseErrorEvent {
   /** Correlation id, also in the client error's `extensions.id`. */
   id: string;
   /**
-   * The root field that failed, or `changeFeed` for a failure of the
-   * change feed (it reopens from where it stopped after a backoff).
+   * The root field that failed, `changeFeed` for a failure of the
+   * change feed (it reopens from where it stopped after a backoff), or
+   * `worker:<Type>` for a worker: a node given up after `maxAttempts`
+   * (with the handler's last error), or a failed read or write of its
+   * own.
    */
   field: string;
   /** The engine's message, which may name labels, properties and Cypher. */

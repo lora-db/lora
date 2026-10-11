@@ -47,6 +47,7 @@ import type {
   RelationshipPropertiesType,
   ScalarField,
   ScalarType,
+  Trigger,
   UniqueTogether,
 } from "./types.js";
 import { RELATIONSHIP_OPERATIONS } from "./types.js";
@@ -88,6 +89,7 @@ import {
   type RuleEnds,
 } from "./build/rule-checks.js";
 import { readSearch } from "./build/search.js";
+import { readTriggers } from "./build/trigger.js";
 import { readUniqueTogether } from "./build/unique-together.js";
 
 const ROOT_TYPES = new Set(["Query", "Mutation", "Subscription"]);
@@ -565,6 +567,8 @@ export function buildModel(
       search,
       interfaces: t.getInterfaces().map((i) => i.name),
       uniqueTogether: [],
+      triggers: [],
+      outbox: directive(d("outbox"), t, atType(t.name)) !== undefined,
       subscriptions: new Set<MutationOperation>(
         (subscription?.["operations"] as MutationOperation[] | undefined) ?? [],
       ),
@@ -924,6 +928,13 @@ export function buildModel(
     if (!node) continue;
     (node as { uniqueTogether: readonly UniqueTogether[] }).uniqueTogether =
       readUniqueTogether(t, node, nodes, relationshipProperties, d, problems);
+    (node as { triggers: readonly Trigger[] }).triggers = readTriggers(
+      t,
+      node,
+      d,
+      problems,
+      viewer !== undefined,
+    );
   }
   const ruleEnds = (f: RelationshipField): RuleEnds | undefined => {
     const source = nodes.get(f.owner);

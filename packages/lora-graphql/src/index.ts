@@ -62,10 +62,14 @@ export type {
 export type {
   MutationInfo,
   PopulatedByCallback,
+  TriggerEvent,
+  TriggerFunction,
+  TriggerFunctions,
 } from "./execute/mutate/env.js";
 export type { MutationKind } from "./schema/mutations.js";
 export type { ChangeEvent } from "./schema/hooks.js";
 export { LoraTransaction } from "./execute/transaction.js";
+export type { Worker, WorkerOptions } from "./events/worker.js";
 export {
   ModelError,
   formatProblem,

@@ -264,6 +264,17 @@ export const directiveTypeDefs = /* GraphQL */ `
     previousState: Boolean = false
   ) on OBJECT
 
+  "A Cypher statement run inside the transaction of every generated mutation that creates, updates or deletes nodes of this type, before the commit. this is each written node; $jwt, $viewer and $operation are bound. Nodes it returns as created or updated join the mutation's write-set. Raw Cypher and @cypher mutations fire no trigger."
+  directive @trigger(
+    on: [MutationOperation!]!
+    statement: String!
+    "Fire an UPDATE trigger only for nodes whose update set one of these fields."
+    fields: [String!]
+  ) repeatable on OBJECT
+
+  "Nodes of this type are work for lora.worker(): each one created by a generated mutation or returned as created by a @trigger is handed to the worker's handler after the commit, at least once, with retries. The delivery state is stored on the node, outside the API."
+  directive @outbox on OBJECT
+
   "Generated mutations for a node type. None without this directive."
   directive @mutation(
     operations: [MutationOperation!]! = [CREATE, UPDATE, DELETE]

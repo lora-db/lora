@@ -17,6 +17,8 @@ const USE: Record<string, string> = {
   customResolver: "@customResolver",
   unique: "@unique",
   uniqueTogether: '@uniqueTogether(fields: ["key", "name"])',
+  trigger: '@trigger(on: [CREATE], statement: "SET this.seen = true")',
+  outbox: "@outbox",
   index: "@index(kind: RANGE)",
   relationship: '@relationship(type: "X", direction: OUT)',
   settable: "@settable(onCreate: true)",

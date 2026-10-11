@@ -8,6 +8,7 @@ import type {
   IndexKind,
   ScalarType,
 } from "../model/types.js";
+import { OUTBOX } from "../events/outbox.js";
 
 export type SchemaRequirement =
   | {
@@ -173,6 +174,19 @@ export function inferRequirements(model: GraphModel): SchemaRequirement[] {
         });
       }
     }
+  }
+  // An @outbox type's worker finds its pending nodes by their state.
+  for (const node of model.nodes.values()) {
+    if (!node.outbox) continue;
+    const label = node.labels[0]!;
+    out.push({
+      kind: "index",
+      index: "RANGE",
+      name: schemaName(label, OUTBOX.state, "range"),
+      label,
+      property: OUTBOX.state,
+      reason: `${node.name} is an @outbox: its worker seeks pending nodes by state`,
+    });
   }
   return out;
 }

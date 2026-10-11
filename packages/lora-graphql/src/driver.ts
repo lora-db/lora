@@ -50,6 +50,13 @@ export interface RunOptions {
 /** An open interactive transaction: statements see earlier writes. */
 export interface DriverTransaction {
   execute(statement: Statement): Promise<QueryResult>;
+  /**
+   * Run several statements in one call, in order, each seeing the writes
+   * of those before it. The first failure rolls the transaction back and
+   * rejects with that statement's error. Optional: without it the
+   * statements run one `execute()` at a time.
+   */
+  executeMany?(statements: Statement[]): Promise<QueryResult[]>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
   /** False once committed, rolled back, or failed (a failure rolls back). */
@@ -92,6 +99,12 @@ export interface DriverChange {
   startId?: number;
   endId?: number;
   properties?: Record<string, unknown>;
+  /** For an update: the properties the transaction set and removed. */
+  setKeys?: string[];
+  removedKeys?: string[];
+  /** For a node update: the labels it added and removed. */
+  addedLabels?: string[];
+  removedLabels?: string[];
 }
 
 export interface DriverChangeBatch {
@@ -124,12 +137,19 @@ export interface LoraDatabaseLike {
     fromLsn?: number;
     signal?: AbortSignal;
   }): AsyncIterable<DriverChangeBatch> & { ready: Promise<void> };
-  begin?(mode?: "read_write" | "read_only"): Promise<{
+  begin?(
+    mode?: "read_write" | "read_only",
+    options?: { timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<{
     execute(
       query: string,
       params?: never,
       options?: { timeoutMs?: number; signal?: AbortSignal },
     ): Promise<QueryResult>;
+    executeMany?(
+      statements: Array<{ query: string; params?: never }>,
+      options?: { timeoutMs?: number; signal?: AbortSignal },
+    ): Promise<QueryResult[]>;
     commit(): Promise<void>;
     rollback(): Promise<void>;
     readonly isOpen: boolean;
@@ -190,13 +210,40 @@ export function loraDriver(db: LoraDatabaseLike): LoraDriver {
     const begin = db.begin.bind(db);
     driver.begin = async (options) => {
       const limits = runLimits(options);
-      // The engine's begin() waits for the writer lock without a timeout.
+      // A current lora-node bounds the wait for the writer lock itself;
+      // an older binding ignores the limits, so they are also held here.
       const tx = await bounded(
-        begin(options.mode === "read" ? "read_only" : "read_write"),
+        begin(options.mode === "read" ? "read_only" : "read_write", limits),
         limits,
       );
+      const many =
+        typeof tx.executeMany === "function"
+          ? tx.executeMany.bind(tx)
+          : undefined;
       return {
         execute: (s) => tx.execute(s.text, s.params as never, limits),
+        ...(many
+          ? {
+              executeMany: (statements: Statement[]) =>
+                many(
+                  statements.map((s) => ({
+                    query: s.text,
+                    params: s.params as never,
+                  })),
+                  limits,
+                ).catch((err: unknown) => {
+                  // The binding names the failing statement's position in
+                  // the batch; callers see the error a lone statement gives.
+                  if (err instanceof Error) {
+                    err.message = err.message.replace(
+                      / \(statement \d+ of \d+\)$/,
+                      "",
+                    );
+                  }
+                  throw err;
+                }),
+            }
+          : {}),
         commit: () => tx.commit(),
         rollback: () => tx.rollback(),
         get isOpen() {
@@ -213,6 +260,36 @@ export function loraDriver(db: LoraDatabaseLike): LoraDriver {
     driver.changes = db.changes.bind(db);
   }
   return driver;
+}
+
+/**
+ * `driver`, refusing a write transaction when `max` are already waiting
+ * for the writer lock: one writer runs at a time, so past saturation a
+ * queue only adds latency. `onFull` builds the error to throw. Reads are
+ * not counted: they do not wait for the lock.
+ */
+export function boundedWrites(
+  driver: LoraDriver,
+  max: number,
+  onFull: (waiting: number) => Error,
+): LoraDriver {
+  // `driver` is absent in an offline instance (schema tooling).
+  const begin = (driver as LoraDriver | undefined)?.begin?.bind(driver);
+  if (!begin || !Number.isFinite(max)) return driver;
+  let waiting = 0;
+  return {
+    ...driver,
+    begin: async (options) => {
+      if (options.mode !== "write") return begin(options);
+      if (waiting >= max) throw onFull(waiting);
+      waiting++;
+      try {
+        return await begin(options);
+      } finally {
+        waiting--;
+      }
+    },
+  };
 }
 
 /**

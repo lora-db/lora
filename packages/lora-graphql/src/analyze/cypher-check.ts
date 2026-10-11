@@ -49,5 +49,30 @@ export async function checkCypherFields(
       at(err instanceof Error ? err.message : String(err));
     }
   }
+  // @trigger statements, composed as they run: after the match of `this`.
+  for (const node of model.nodes.values()) {
+    for (const [i, trigger] of node.triggers.entries()) {
+      const params: Record<string, unknown> = { a_keys: [] };
+      const statement = renameParams(trigger.statement, (p) => {
+        params[`a_${p}`] = null;
+        return `a_${p}`;
+      });
+      const text =
+        `UNWIND $a_keys AS lora_trigger_key\n` +
+        `MATCH (this:${name(node.labels[0]!)}) WHERE this.${name(node.key.property)} = lora_trigger_key\n` +
+        statement;
+      const at = (message: string) =>
+        findings.push({
+          type: node.name,
+          field: `@trigger ${i + 1}`,
+          message,
+        });
+      try {
+        await driver.explain({ text, params: params as never });
+      } catch (err) {
+        at(err instanceof Error ? err.message : String(err));
+      }
+    }
+  }
   return findings;
 }

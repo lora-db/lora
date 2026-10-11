@@ -71,7 +71,12 @@ import {
   variableValuesOf,
   type SelectionContext,
 } from "./compile/selection.js";
-import type { LoraDriver, QueryResult, Statement } from "./driver.js";
+import {
+  boundedWrites,
+  type LoraDriver,
+  type QueryResult,
+  type Statement,
+} from "./driver.js";
 import { affects, type WriteChange } from "./execute/changes.js";
 import { executeCypherMutation } from "./execute/cypher-mutation.js";
 import { LoraTransaction } from "./execute/transaction.js";
@@ -85,8 +90,14 @@ import { executeMutation } from "./execute/mutate.js";
 import {
   type MutationEnv,
   type PopulatedByCallback,
+  type TriggerFunctions,
 } from "./execute/mutate/env.js";
 import { collapseErrors, ModelError, requestError } from "./errors.js";
+import {
+  OutboxWorker,
+  type Worker,
+  type WorkerOptions,
+} from "./events/worker.js";
 import { isStandardSchema } from "./standard-schema.js";
 import { inputSchemas, type JsonSchema } from "./analyze/input-schemas.js";
 import { scanStored, type StoredReport } from "./analyze/stored.js";
@@ -174,6 +185,9 @@ export class LoraGraphQL {
   readonly #maxListFilter: number | undefined;
   readonly #maxStringFilter: number | undefined;
   readonly #callbacks: Record<string, PopulatedByCallback>;
+  readonly #triggers: Record<string, TriggerFunctions>;
+  readonly #triggerTimeoutMs: number;
+  readonly #workers = new Set<OutboxWorker>();
   readonly #validators: NonNullable<LoraGraphQLOptions["validators"]>;
   readonly #resolvers: NonNullable<LoraGraphQLOptions["resolvers"]>;
   readonly #scalars: LoraGraphQLOptions["scalars"];
@@ -212,7 +226,15 @@ export class LoraGraphQL {
 
   constructor(options: LoraGraphQLOptions) {
     this.model = buildModel(options.typeDefs, options);
-    this.#driver = options.driver;
+    this.#driver = boundedWrites(
+      options.driver,
+      options.maxQueuedWrites ?? 512,
+      (waiting) =>
+        requestError(
+          "OVERLOADED",
+          `${waiting} writes are waiting for the database; try again shortly`,
+        ),
+    );
     this.#timeoutMs = options.timeoutMs ?? 10_000;
     const cacheBytes = options.compileCacheBytes ?? COMPILE_CACHE_BYTES;
     this.#compiled = new CompileCache(COMPILED_TOTAL, cacheBytes);
@@ -232,6 +254,8 @@ export class LoraGraphQL {
     this.#maxListFilter = options.maxListFilter;
     this.#maxStringFilter = options.maxStringFilter;
     this.#callbacks = options.callbacks ?? {};
+    this.#triggers = options.triggers ?? {};
+    this.#triggerTimeoutMs = options.triggerTimeoutMs ?? 1000;
     const missing = [...this.model.nodes.values()].flatMap((n) =>
       [...n.fields.values()].flatMap((f) =>
         f.kind === "scalar" &&
@@ -254,6 +278,27 @@ export class LoraGraphQL {
         missing.push(
           `validators.${type}: not a Standard Schema validator (zod, valibot, arktype and yup schemas are), nor { create, update, upsert } of them`,
         );
+      }
+    }
+    for (const [type, fns] of Object.entries(this.#triggers)) {
+      const n = this.model.nodes.get(type);
+      if (!n) {
+        missing.push(`triggers.${type}: no @node type ${type}`);
+        continue;
+      }
+      for (const [key, fn] of Object.entries(fns)) {
+        const op = key.toUpperCase();
+        if (op !== "CREATE" && op !== "UPDATE" && op !== "DELETE") {
+          missing.push(
+            `triggers.${type}.${key}: not an operation (create, update, delete)`,
+          );
+        } else if (typeof fn !== "function") {
+          missing.push(`triggers.${type}.${key}: not a function`);
+        } else if (!n.mutations.has(op)) {
+          missing.push(
+            `triggers.${type}.${key}: ${type} has no generated ${op} mutation (@mutation(operations:)) to fire it`,
+          );
+        }
       }
     }
     for (const n of this.model.nodes.values()) {
@@ -1427,6 +1472,10 @@ export class LoraGraphQL {
       statistics: this.#statistics,
       requestContext: context,
       callbacks: this.#callbacks,
+      triggers: this.#triggers,
+      triggerTimeoutMs: this.#triggerTimeoutMs,
+      inTrigger: (context as LoraGraphQLContext | undefined)?.transaction
+        ?.inTrigger,
       validators: this.#validators,
       transaction: (context as LoraGraphQLContext | undefined)?.transaction
         ?.driverTransaction,
@@ -1544,8 +1593,43 @@ export class LoraGraphQL {
     return new LoraTransaction(tx, (change) => this.#changes.emit(change));
   }
 
-  /** Stop the engine change feed (with `changeFeed: true`). */
+  /**
+   * Hand the nodes of an `@outbox` type to `options.handle`, after the
+   * commit that made them: for the side effects a transaction cannot
+   * hold (a push, an e-mail, a webhook). Delivery is at least once, with
+   * retries and backoff; work left by a restart is picked up when the
+   * worker starts. With `changeFeed: true` it also hears of nodes
+   * created outside this instance, otherwise it finds those on its next
+   * sweep. `close()` stops it.
+   */
+  worker(type: string, options: WorkerOptions): Worker {
+    const node = this.model.nodes.get(type);
+    if (!node?.outbox) {
+      throw new Error(
+        node
+          ? `worker("${type}"): ${type} has no @outbox`
+          : `worker("${type}"): no @node type ${type}`,
+      );
+    }
+    const worker = new OutboxWorker(
+      {
+        driver: this.#driver,
+        node,
+        timeoutMs: this.#timeoutMs,
+        listen: (listener) => this.#changes.listen(listener),
+        emit: (change) => this.#changes.emit(change),
+        onError: this.#onError,
+      },
+      options,
+    );
+    this.#workers.add(worker);
+    return worker;
+  }
+
+  /** Stop the workers, and the engine change feed (with `changeFeed: true`). */
   close(): void {
+    for (const worker of this.#workers) void worker.stop();
+    this.#workers.clear();
     this.#changes.close();
   }
 }
