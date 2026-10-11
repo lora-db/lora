@@ -41,6 +41,14 @@ you plan a production deployment.
   the input, not what is stored. `@normalize` changes writes only:
   filters and lookups compare with the stored form.
 - **Plan checks for mutations and subscriptions.** `check` plans queries.
+- **Triggers for raw Cypher.** [`@trigger`](/docs/graphql/triggers) and
+  trigger functions fire for generated mutations only. Raw Cypher and
+  `@cypher` mutations fire none; that needs triggers in the engine.
+  There are no `CONNECT` / `DISCONNECT` triggers, and an `UPDATE`
+  trigger does not get the previous values.
+- **Custom events.** A `type Subscription` of your own is refused, and
+  there is no `publish()`: an event a client hears is a node that was
+  written. Model it as a node (a trigger can write it).
 - **Mutations in the browser.** `@loradb/lora-wasm` serves reads;
   mutations, `explain()`, `check()` and the change feed need
   `@loradb/lora-node`.

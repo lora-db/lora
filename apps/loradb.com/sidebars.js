@@ -137,7 +137,11 @@ module.exports = {
       type: 'category',
       label: 'The API',
       collapsed: false,
-      items: ['graphql/generated-api', 'graphql/examples'],
+      items: [
+        'graphql/generated-api',
+        'graphql/examples',
+        'graphql/triggers',
+      ],
     },
     {
       type: 'category',

@@ -60,6 +60,7 @@ Subscriptions have their own limits:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
+| `maxQueuedWrites` | 512 | Write transactions that may wait for the writer lock at once. One more fails at once with [`OVERLOADED`](/docs/graphql/errors#overloaded); `Infinity` disables |
 | `maxQueuedChanges` | 1000 | Changes a `changes()` consumer or subscriber may fall behind before it is ended with `LIMIT_EXCEEDED` |
 | `maxSubscriptions` | 100 | Live subscriptions per scope. One more is `LIMIT_EXCEEDED` |
 | `subscriptionScope` | the context object | `(context) => object \| undefined`: what `maxSubscriptions` counts per. Return the connection or the user when your server builds a new context per subscription |
@@ -83,6 +84,8 @@ Subscriptions have their own limits:
 | Option | Meaning |
 | --- | --- |
 | `callbacks` | `Record<string, PopulatedByCallback>`: named callbacks for `@populatedBy(callback:)` |
+| `triggers` | `Record<string, { create?, update?, delete? }>`: [trigger functions](/docs/graphql/triggers#trigger-functions) per node type, called inside the mutation's transaction |
+| `triggerTimeoutMs` | Most time one trigger function may take, in milliseconds (default 1000; 0 disables). Past it the mutation fails with `TIMEOUT` and rolls back |
 | `resolvers` | `Record<Type, Record<field, GraphQLFieldResolver>>`: resolvers of `@customResolver` fields |
 | `scalars` | `Record<string, GraphQLScalarType>`: implementations of `@storedAs` custom scalars. Without one, values pass through |
 | `validators` | `Record<Type, StandardSchemaV1 \| { create?, update?, upsert? }>`: a validator per node type, from any Standard Schema library (zod, valibot, arktype, yup). See [validators](/docs/graphql/directives#validators) |
@@ -585,14 +588,27 @@ Whether a read with this read-set (from `compile()`) may observe the
 change. Label level: any write to a `Festival` affects every read of
 `:Festival`. Always `true` for a broad change.
 
+### worker(type, options)
+
+```ts
+worker(type: string, options: WorkerOptions): Worker
+```
+
+Hands the nodes of an [`@outbox`](/docs/graphql/directives#outbox) type
+to `options.handle` after the commit that made them, at least once, with
+retries: for a push, an e-mail or a webhook. Throws when the type is
+unknown or has no `@outbox`. The returned worker has `idle()` (resolves
+when nothing is pending) and `stop()`. Options and guarantees are in
+[triggers and workers](/docs/graphql/triggers#workers).
+
 ### close()
 
 ```ts
 close(): void
 ```
 
-Stops the engine change feed. Call it on shutdown when `changeFeed` is
-on; otherwise it does nothing.
+Stops every worker and the engine change feed. Call it on shutdown when
+you started a worker or `changeFeed` is on; otherwise it does nothing.
 
 ## Drivers
 
@@ -637,6 +653,9 @@ interface RunOptions {
 }
 interface DriverTransaction {
   execute(statement: Statement): Promise<QueryResult>;
+  // Several statements in one call, in order; the first failure rolls back
+  // and rejects with that statement's error. Optional.
+  executeMany?(statements: Statement[]): Promise<QueryResult[]>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
   readonly isOpen: boolean;
@@ -646,6 +665,14 @@ interface DriverTransaction {
 Rows are plain objects keyed by column, with LoraDB values as the Node
 binding returns them. Mutations rely on `begin()` giving an interactive
 transaction whose statements see earlier writes.
+
+A mutation holds the database's writer lock from `begin()` to `commit()`,
+so every call into the transaction is a round trip under the lock. With
+`executeMany()` the library sends the statements that do not need an
+earlier result in one call: a create with its payload read is one call,
+an update or a create with a `connect` is two. A driver without it runs
+the same statements one `execute()` at a time. `timeoutMs` then bounds
+each call, not each statement.
 
 ## Standalone exports
 

@@ -88,7 +88,9 @@ is an error.
 
 **Writing and events:**
 [`@mutation`](#mutation) ·
-[`@subscription`](#subscription)
+[`@subscription`](#subscription) ·
+[`@trigger`](#trigger) ·
+[`@outbox`](#outbox)
 
 **Access control:**
 [`@jwt`](#jwt) ·
@@ -367,7 +369,12 @@ Arguments:
 
 The callback receives the operation, the type and field names, the
 node's key, the node's input in this mutation and the GraphQL context,
-and may return a promise. It is the usual way to fill a field from the
+and may return a promise. The callbacks of a mutation's own inputs (the
+nodes of a create whose key the input gives, a keyed update) start
+together, before the transaction opens, so they do not hold the database's
+writer lock; those of nested inputs, generated keys, upserts and bulk
+updates run inside it. A callback may therefore run for a mutation that
+is then refused: keep it free of side effects. It is the usual way to fill a field from the
 caller's claims, such as a tenant id from `context.jwt`.
 
 A non-null field is allowed when `operations` includes `CREATE`. A
@@ -1550,6 +1557,78 @@ subscription {
   }
 }
 ```
+
+### @trigger {#trigger}
+
+A Cypher statement run inside the transaction of every generated
+mutation that creates, updates or deletes nodes of the type, before the
+commit. Repeatable.
+
+```graphql
+type Post @node {
+  key: String! @key
+  commentCount: Int
+}
+
+type Comment
+  @node
+  @mutation
+  @authentication
+  @trigger(
+    on: [CREATE, DELETE]
+    statement: """
+    MATCH (this)-[:ON]->(post:Post)
+    SET post.commentCount = coalesce(post.commentCount, 0)
+      + CASE $operation WHEN 'DELETE' THEN -1 ELSE 1 END
+    RETURN post AS updated
+    """
+  )
+  @trigger(
+    on: [UPDATE]
+    fields: ["text"]
+    statement: "SET this.edited = true RETURN this AS updated"
+  ) {
+  key: String! @key
+  text: String!
+  edited: Boolean
+  post: Post! @relationship(type: "ON", direction: OUT)
+}
+```
+
+Arguments:
+
+- `on`: `CREATE`, `UPDATE`, `DELETE`. The type must have the generated
+  mutation for each.
+- `statement`: runs once per mutation with `this` bound to each node of
+  the type it wrote. `$jwt`, `$viewer` and `$operation` are bound.
+- `fields`: an `UPDATE` trigger fires only for nodes whose update named
+  one of these.
+
+Return the nodes the statement wrote as `created` or `updated` and they
+join the mutation's write-set, so `onWrite` and subscriptions see them.
+What a trigger writes fires no trigger, and raw Cypher and `@cypher`
+mutations fire none. The whole picture, with trigger functions and a
+tested example, is in [triggers and workers](/docs/graphql/triggers).
+
+### @outbox {#outbox}
+
+Makes each node of the type work for
+[`lora.worker()`](/docs/graphql/triggers#workers): it is handed to the
+worker's handler after the commit that created it, at least once, with
+retries.
+
+```graphql
+type Notification @node @outbox @subscription(operations: [CREATE]) {
+  key: String! @key
+  kind: String!
+  text: String!
+}
+```
+
+No arguments. The delivery state is stored on the node, in properties
+that are not part of the API. Nodes created by a generated mutation, or
+returned as `created` by a `@trigger` statement, are work; nodes created
+by raw Cypher are not.
 
 ## Access control
 

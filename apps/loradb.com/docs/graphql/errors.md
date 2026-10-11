@@ -82,6 +82,8 @@ function handle(errors: readonly Coded[]) {
       case "LIMIT_EXCEEDED":
       case "COST_EXCEEDED":
         return show("That request is too large. Narrow it and try again.");
+      case "OVERLOADED":
+        return retryAfterBackoff();
       case "TIMEOUT":
       case "DATABASE_ERROR":
         return retryOnceThenReport(error);
@@ -106,6 +108,7 @@ and the [authorization recipes](/docs/graphql/authorization-recipes).
 | `INVALID_CURSOR` | A cursor is malformed, forged, or from another sort | | Restart from the first page |
 | `LIMIT_EXCEEDED` | A page, batch, document, subscription count or subscriber queue is over its limit | | Ask for less, or resubscribe |
 | `COST_EXCEEDED` | The operation's estimated rows exceed the limit | `cost`, `maxCost` | Ask for smaller pages or fewer nested lists |
+| `OVERLOADED` | More than `maxQueuedWrites` mutations are already waiting for the database | | Back off and retry |
 | `TIMEOUT` | A query's root fields together ran past `operationTimeoutMs` | `operationTimeoutMs` | Ask for less, or retry later |
 | `UNAUTHENTICATED` | An operation or field needs an authenticated request | | Sign in |
 | `FORBIDDEN` | The caller's claims fail a rule, or introspection is off | | Not retry |
@@ -294,6 +297,42 @@ charged per event: each event's fields are checked against the limit on
 their own, so a long-lived subscription does not run out of budget. The error names
 the field, the estimate and the limit, and `extensions` carries `cost`
 and `maxCost`.
+
+### OVERLOADED
+
+LoraDB runs one write at a time. Mutations that arrive faster than they
+commit wait for the writer lock, and past saturation that wait only
+grows. So the library bounds the queue: when `maxQueuedWrites` (default
+512) write transactions are already waiting, one more is refused at once,
+before it touches the database. Nothing is written.
+
+```graphql
+mutation {
+  createItems(input: [{ key: "c" }]) {
+    items {
+      key
+    }
+  }
+}
+```
+
+```json
+{
+  "data": null,
+  "errors": [
+    {
+      "message": "2 writes are waiting for the database; try again shortly",
+      "path": ["createItems"],
+      "extensions": { "code": "OVERLOADED" }
+    }
+  ]
+}
+```
+
+(From an instance with `maxQueuedWrites: 2`.) Answer it with HTTP 503 and
+a `Retry-After`, and have clients back off: a refused request costs
+nothing, a queued one makes every request behind it slower. Reads are
+never refused: they do not wait for the writer lock.
 
 ### TIMEOUT
 
