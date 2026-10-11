@@ -13,7 +13,11 @@ import type { ModelWarning } from "./model/types.js";
 export interface ExecutionTiming {
   /** The whole `execute()` call: parse, validation, execution. */
   totalMs: number;
-  /** Time spent running statements in LoraDB. */
+  /**
+   * Time spent running statements in LoraDB, summed over the root fields.
+   * A query's root fields run concurrently, so this can exceed `totalMs`;
+   * within one field it never exceeds that field's `totalMs`.
+   */
   databaseMs: number;
   /** Per root field, by response key (alias or name). */
   fields: Record<string, { totalMs: number; databaseMs: number }>;

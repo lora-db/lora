@@ -1,7 +1,21 @@
 // Schema lint for `check`: choices that are valid but costly or risky.
 // Warnings, not failures: each may be intended.
 
-import type { GraphModel, ModelWarning } from "../model/types.js";
+import type {
+  FilterOperator,
+  GraphModel,
+  ModelWarning,
+} from "../model/types.js";
+
+/** Filter operators a RANGE index answers. */
+const INDEXED_OPS: ReadonlySet<FilterOperator> = new Set<FilterOperator>([
+  "EQ",
+  "IN",
+  "GT",
+  "GTE",
+  "LT",
+  "LTE",
+]);
 
 export interface LintOptions {
   /** Statistics are loaded: relationship degrees are known. */
@@ -68,6 +82,22 @@ export function lintModel(
             field: f.name,
             message:
               "validation rules on a @key(generate: true) apply only to a key the client supplies; a generated UUID is stored as it is",
+          });
+        }
+        // An index over two or a handful of values narrows little: half
+        // the label is still read for `{ active: { eq: true } }`.
+        if (
+          (f.type === "Boolean" || f.type === "Enum") &&
+          !f.list &&
+          !f.unique &&
+          !f.key &&
+          f.indexes.length === 0 &&
+          (f.sortable || [...f.filters].some((op) => INDEXED_OPS.has(op)))
+        ) {
+          out.push({
+            type: node.name,
+            field: f.name,
+            message: `an index is inferred for this ${f.type === "Boolean" ? "Boolean" : `enum (${f.enumName ?? "Enum"})`}, which has few distinct values: a filter on it alone still reads a large share of the label. It helps next to a selective filter, not instead of one`,
           });
         }
         if (f.filters.has("IS_NULL")) {

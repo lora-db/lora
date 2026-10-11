@@ -165,3 +165,24 @@ describe("execution helpers", () => {
     expect(await stream.next()).toEqual({ value: undefined, done: true });
   });
 });
+
+test("lint: an inferred index on a Boolean or enum field is noted", async () => {
+  const { buildModel } = await import("../src/index.js");
+  const { lintModel } = await import("../src/analyze/lint.js");
+  const model = buildModel(`
+    enum Status { OPEN CLOSED }
+    type Ticket @node {
+      key: String! @key
+      open: Boolean @filterable
+      status: Status @filterable
+      pinned: Boolean
+      title: String @filterable
+      level: Status @filterable @index(kind: RANGE)
+    }
+  `);
+  const notes = lintModel(model, { statistics: true }).filter((w) =>
+    w.message.includes("few distinct values"),
+  );
+  expect(notes.map((w) => w.field)).toEqual(["open", "status"]);
+  expect(notes[1]!.message).toContain("enum (Status)");
+});

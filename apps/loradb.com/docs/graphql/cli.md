@@ -321,6 +321,15 @@ never checked, so this is how you find such values, typically with
 `--database`. They are reported, not failures: the schema is sound and
 the data is old. At most 10,000 nodes per type are read.
 
+The same pass reports values a [`@fulltext`](/docs/graphql/directives#fulltext)
+index cannot hold. The engine indexes strings and skips anything else
+without an error, so a number or a list with a non-string item, written
+by raw Cypher into an indexed field, is never found by a search:
+
+```text
+stored   Festival "f7".name is not text: the full-text index festival_search skips it, so a search never finds the node by this value
+```
+
 ### JSON output
 
 `--json` prints the full [check report](/docs/graphql/api-reference#checkoptions)

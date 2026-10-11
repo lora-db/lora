@@ -183,7 +183,9 @@ With `timing`, `execute()` returns the request's timings in
 - `totalMs` covers the whole `execute()` call: parse, validation and
   execution.
 - `databaseMs` is the time LoraDB spent running statements, reads and
-  mutations alike.
+  mutations alike, summed over the root fields. A query's root fields run
+  concurrently, so the sum can be more than `totalMs`; within one field
+  it never is.
 - `fields` gives both per root field, by response key (the alias when
   there is one).
 

@@ -30,7 +30,8 @@ test("per root field, by response key, with database time inside total", async (
     expect(f.databaseMs).toBeGreaterThanOrEqual(0);
     expect(f.databaseMs).toBeLessThanOrEqual(f.totalMs + 0.01);
   }
-  expect(timing.totalMs).toBeGreaterThanOrEqual(timing.databaseMs);
+  // The request's database time is the sum over its root fields, which run
+  // two at a time: it can exceed the request's wall-clock total.
   expect(timing.databaseMs).toBeCloseTo(
     timing.fields["all"]!.databaseMs + timing.fields["one"]!.databaseMs,
     1,
