@@ -1553,9 +1553,8 @@ user-visible win.
 
 ### 5.3 What this does not try to do
 
-- **Multi-writer concurrency.** Unchanged. The concurrency plan's phases 1–7
-  apply on top. The chunk store is compatible with them because writers
-  already work on private copy-on-write versions.
+- **Multi-writer concurrency.** Unchanged: one writer at a time is the
+  design (`docs/TODO.md`, "Accepted").
 - **Transactions larger than memory.** A single transaction's dirty chunks
   must fit in memory, the same limit Memgraph's on-disk mode has. Huge bulk
   loads need a dedicated path that checkpoints mid-load (§9, Q4).

@@ -130,11 +130,10 @@ note **why** in the commit message. Per-bench `threshold` overrides
 
 ## Concurrency guard
 
-Use this guard while implementing concurrent reads, concurrent writes, WAL
-commit changes, and concurrent file syncs. It compares two runs from the same
+Use this guard when changing the write path: the writer lock, staging and
+publish, WAL commit, or checkpoints. It compares two runs from the same
 machine/session, so it can use a much tighter threshold than the `perf_smoke`
-gate. The phase-by-phase plan it guards is
-[`docs/design/concurrency-implementation-plan.md`](../design/concurrency-implementation-plan.md).
+gate.
 
 - **Binary:** `crates/lora-database/benches/concurrency_guard.rs`
 - **Check script:** `scripts/check-bench-delta.mjs`

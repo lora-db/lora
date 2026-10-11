@@ -45,7 +45,6 @@ For public docs writing conventions, including `QueryCodeBlock`,
 ## Design
 
 - [Change Management](design/change-management.md) — how to evolve the system safely
-- [Concurrent Write Implementation Plan](design/concurrency-implementation-plan.md) — current concurrency state and the phased implementation plan (guard usage lives in Perf Smoke)
 - [Known Risks](design/known-risks.md) — engineering risks and recommended priorities
 - [Error Style](design/error-style.md) — the shape and tone of every error message in the workspace
 - [GraphQL Threat Model](design/graphql-threat-model.md) — what `packages/lora-graphql` defends against, what it trusts, and where each check runs
