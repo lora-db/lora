@@ -7,13 +7,15 @@ each check runs. The user-facing rules are in the package
 
 ## Trust boundaries
 
-| Input                              | Trusted?      | Why                                                                                                                                                                                           |
-| ---------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The annotated SDL (`typeDefs`)     | Yes           | Written by the application. It decides what is exposed and which rules apply.                                                                                                                 |
-| `@cypher` statements               | Yes           | Trusted code. They run with the database's full access and can read `$jwt`. Rules on the owning type do not reach inside them. Review them like any other server code.                        |
-| `@populatedBy` callbacks           | Yes           | Application code, run in the server process.                                                                                                                                                  |
-| The GraphQL context and its `jwt`  | Yes, as given | The library never verifies tokens. The server verifies the JWT and puts the verified claims in the context. A server that copies unverified claims into the context grants whatever they say. |
-| Documents, variables, cursors, ids | No            | Everything a client sends. Parsed, validated, bounded and bound as parameters, never spliced into Cypher text.                                                                                |
+| Input                                       | Trusted?      | Why                                                                                                                                                                                                     |
+| ------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The annotated SDL (`typeDefs`)              | Yes           | Written by the application. It decides what is exposed and which rules apply.                                                                                                                           |
+| `@cypher` statements                        | Yes           | Trusted code. They run with the database's full access and can read `$jwt`. Rules on the owning type do not reach inside them. Review them like any other server code.                                  |
+| `@populatedBy` callbacks                    | Yes           | Application code, run in the server process.                                                                                                                                                            |
+| `@trigger` statements and trigger functions | Yes           | Trusted code, like `@cypher` statements. They run inside the mutation's transaction with the database's full access; a statement can read `$jwt` and `$viewer`. Review them like any other server code. |
+| Worker handlers (`lora.worker()`)           | Yes           | Application code, run in the server process, given the node's stored fields without read rules.                                                                                                         |
+| The GraphQL context and its `jwt`           | Yes, as given | The library never verifies tokens. The server verifies the JWT and puts the verified claims in the context. A server that copies unverified claims into the context grants whatever they say.           |
+| Documents, variables, cursors, ids          | No            | Everything a client sends. Parsed, validated, bounded and bound as parameters, never spliced into Cypher text.                                                                                          |
 
 ## What a client can and cannot do
 
@@ -165,6 +167,38 @@ each check runs. The user-facing rules are in the package
   `changeFeed: true` they are fed from the engine's committed change feed
   instead, which names the nodes and relationships the statement
   actually wrote.
+
+### Triggers and workers
+
+- **A trigger's writes are system writes.** No `@authorization` rule,
+  validation rule, `@default` or `@timestamp` applies to what a
+  `@trigger` statement or a trigger function's own Cypher writes. A
+  mutation a trigger function runs through `lora.execute()` is checked
+  as the caller it passes in the context. `@uniqueTogether` types a
+  statement may write are compared after it.
+- **Nothing from the request reaches a statement's text.** `$jwt`,
+  `$viewer`, `$operation` and the keys are bound parameters; any other
+  `$parameter` in a statement is refused at startup.
+- **A trigger runs before the mutation's outcome is known.** It runs
+  inside the transaction, with a hidden key moved aside like every other
+  statement (G-20), so an error it raises is the one a free key gets;
+  the rollback takes its writes. A trigger function with side effects
+  outside the database would leak them for a refused mutation: side
+  effects belong in a worker.
+- **A trigger function holds the writer lock.** It is bounded by
+  `triggerTimeoutMs` (default 1 s); past it the mutation fails with
+  `TIMEOUT`. A function that never yields the event loop cannot be
+  interrupted: the bound covers waiting, not a busy loop.
+- **What a trigger creates is visible by the type's own rules.** A
+  notification written for another user reaches only subscribers who
+  pass the `Notification` type's read rules; the trigger does not widen
+  anyone's access.
+- **Worker state is not in the API.** The `_outbox*` properties are not
+  fields, so no client can read or set them through GraphQL. Raw Cypher
+  can: whoever can run Cypher against the database can requeue or
+  cancel work.
+- **A handler sees the stored node without read rules**, masks
+  included: it is server code. Do not forward that object to a client.
 
 ## Where each check runs
 

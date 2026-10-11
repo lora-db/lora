@@ -97,7 +97,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `IS NULL` / `IS NOT NULL` | **Supported** | |
 | `STARTS WITH` / `ENDS WITH` / `CONTAINS` | **Supported** | Case-sensitive. A TEXT index serves all three; with only a RANGE index on the property, `STARTS WITH` seeks it as the range `s <= x < string.prefix_end(s)` |
 | `CASE` (generic and simple) | **Supported** | |
-| Regex matching `=~` | **Supported** | Full Rust `regex` crate |
+| Regex matching `=~` | **Supported** | Full Rust `regex` crate, matching the whole string. A pattern that does not compile, or is too large to, is an error (not `null`) |
 | List indexing `[i]` | **Supported** | Negative indices supported |
 | List slicing `[a..b]` | **Supported** | Open-ended slices; negative bounds count from the end |
 | List concatenation `+` | **Supported** | A list and an element append (`[1] + 2`) or prepend (`0 + [1]`) |
@@ -254,7 +254,7 @@ All six temporal types have first-class `LoraValue` and `PropertyValue` variants
 | `temporal.between(a, b)` | **Supported** | Between dates or datetimes; datetimes give days and time, no months |
 | `temporal.in_days(a, b)` | **Supported** | Whole days between any two temporals (as `duration.inDays`) |
 
-Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same temporal type. Ordering two values of different temporal types (`date('2026-10-01') >= datetime()`) is an error, not Cypher's `null`: a `WHERE` on it would otherwise drop every row without a word. It fails the same way when a RANGE index answers the predicate: the index scan hands values of another temporal type to the filter, which compares them as an unindexed scan does, so a guard earlier in the `AND` (`type.of(x) = 'DATE' AND x >= date(…)`) still drops them first. `=` between different temporal types is `false`, and `ORDER BY`, `min` and `max` still order mixed values. Convert one side first: `date(x)`, `datetime(x)`. Ordering comparisons and `ORDER BY` use the instant a value denotes, at nanosecond precision (zoned values are compared in UTC); `=` also compares the offset and the named zone. `Date + Duration` and `DateTime - DateTime` arithmetic are supported for the subset of tests in `tests/temporal.rs`.
+Comparison operators (`<`, `>`, `<=`, `>=`, `=`) work between values of the same temporal type. Ordering two values of different temporal types (`date('2026-10-01') >= datetime()`) is an error, not Cypher's `null`: a `WHERE` on it would otherwise drop every row without a word. It fails the same way when a RANGE index answers the predicate: the index scan hands values of another temporal type to the filter, which compares them as an unindexed scan does, so a guard earlier in the `AND` (`type.of(x) = 'DATE' AND x >= date(…)`) still drops them first. `=` between different temporal types is `false`, and `ORDER BY`, `min` and `max` still order mixed values. Convert one side first: `date(x)`, `datetime(x)`. Ordering comparisons and `ORDER BY` use the instant a value denotes, at nanosecond precision (zoned values are compared in UTC); `=` also compares the offset and the named zone. A `DATE`, `DATETIME`, `LOCAL_DATETIME`, `TIME` or `LOCAL_TIME` plus or minus a `DURATION` gives a value of the same type (a time of day wraps at midnight, and the duration's months and days do not move it); `DATE - DATE` and `DATETIME - DATETIME` give a `DURATION`.
 
 ## 13. Spatial types and functions
 
@@ -458,9 +458,9 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 | `COLLECT { }` subquery | Expression | Not in grammar |
 | Quantified path patterns | Pattern | Future openCypher syntax |
 | Inline WHERE inside variable-length | Pattern | Not in grammar |
+| Bare pattern predicate in `WHERE` (`WHERE NOT (a)-[:R]->()`) | Pattern | Parse error; use `EXISTS { }` |
 | Type mismatch detection in comparison | Validation | 1 ignored test |
 | Parameter as label | Parameters | Non-standard |
-| Parameter type checking at parse time | Parameters | |
 | Typed helper constructors over HTTP | Transport | JSON params are supported, but helper constructors live in host bindings; use query casts for `DATE`, `POINT`, `VECTOR`, etc. |
 | Compatibility utility functions | Functions | No compatibility layer |
 | Authentication / TLS | Server | See [`../operations/security.md`](../operations/security.md) |

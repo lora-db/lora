@@ -14,66 +14,57 @@ next, **P2** planned, **P3** when convenient.
 
 ## Engine — Cypher correctness
 
-- [ ] P1 A failing expression inside a write is dropped instead of raised: `SET n.x = 1/0` and `CREATE (:T {d: date('2020-13-01')})` succeed and leave the property absent (the same expressions in `RETURN` raise `LORA_VALIDATION`). Found 2026-10-07, see `docs/design/graphql-input-validation.md`.
-- [ ] P1 Auto-commit `execute` without `timeoutMs` keeps the writes of a statement that then errors (`UNWIND [1,2] AS i CREATE (n:P {id:i}) WITH n WHERE n.id > 1 RETURN 1/0` leaves 2 nodes; with a timeout, 0): the live fast path has no rollback (`lora-database/src/database/occ.rs:56-66`).
-- [ ] P2 `=~` with an invalid or oversized pattern is `null`, not an error, and a failed compile is not cached (`lora-executor/src/eval/regex.rs:27`): 100 rows of `=~ '\\pL{1,300}'` took 4.26 s.
 - [ ] P3 A function with two or more arguments (`coalesce(big, [])`), an operator
       (`big + [x]`) or a map/list literal still copies a carried list per call; a lone
       variable argument (`size(big)`) and row clones share it (`value.rs` `SlotValue`).
-- [ ] P2 HNSW `quantization: 'int8'` clips coordinates outside [-1, 1] silently (un-normalised vectors all score ≈1.0). Reject or normalise on insert.
 - [ ] P2 General procedures: `CALL db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()` ("unknown procedure").
+- [ ] P3 A failing expression in a seek or range bound of a read is dropped, not raised (`MATCH (n {id: 1/0})` matches nothing): raw `eval_expr` in `lora-executor/src/executor/helpers.rs:432,713,1356` and `pull/scan.rs:413,703`. Writes raise since 2026-10-11.
+- [ ] P3 Subtraction between values of unrelated types is `null`, not an error (`sub_values` fallback, `eval/binops.rs`); addition raises.
 - [ ] P2 `UNION` inside `CALL {}`, `CALL (x) {}` scope clause, `IN TRANSACTIONS` (`analyzer/state.rs:209`).
-- [ ] P3 `COUNT { … RETURN DISTINCT }` is a parse error (E24 residual); `COLLECT { }` subquery not in the grammar.
-- [ ] P3 Quantified path patterns; inline `WHERE` in variable-length relationships (`match.rs:1427,1455`).
-- [ ] P3 Comparison type-mismatch errors (`errors.rs:536`); parse-time parameter type checks (`parameters.rs:383`).
-- [ ] P3 `'…'::DATE` / `::DURATION` cast syntax (the real gap behind `expressions.rs:1067,1073,1377`); `util.text.join` (`:1392`).
-- [ ] P3 Vector procedure options reject `$param` maps (`database/procedures.rs:314-318`).
-- [ ] P3 `SHOW FULLTEXT INDEXES` parses but always returns empty (`cypher.pest:77`).
+- [ ] P3 Any `RETURN` inside `COUNT { }` or `EXISTS { }` is a parse error (`cypher.pest:372-374` takes one pattern plus `WHERE`); `COLLECT { }` subquery not in the grammar.
+- [ ] P3 A bare pattern predicate in `WHERE` is a parse error (`WHERE NOT (p)-[:MANAGES]->()`, `where_clause.rs` `where_pattern_predicate_not_exists`); `EXISTS { }` works.
+- [ ] P3 Quantified path patterns; inline `WHERE` in relationship and node patterns, single-hop included (`match.rs:1427,1455`; the test at `:1455` is not valid Cypher as written).
+- [ ] P3 Comparison type-mismatch errors (`errors.rs:536`, duplicated at `:749`): `1 < 'a'` is null.
+- [ ] P3 `util.text.join` is an unknown function (`string.join` exists): alias it or delete the ignored test (`expressions.rs:1397`).
+- [ ] P3 Standalone `CALL … YIELD` vector procedures reject `$param` option maps (`database/procedures.rs:308-323`); the in-query form accepts them.
 - [ ] P3 3D geodesic distance ignores height; no WKT / CRS transform.
 
 ## Engine — performance
 
-- [ ] P2 Composite multi-property seeks (`optimizer.rs:975`); composite RANGE indexes are catalog-only (`:484+`).
-- [ ] P2 Index-ordered scan when the filter isn't selective; count a range from the index.
-- [ ] P2 Join ordering and global cardinality estimation (`estimatedRows` exist only for seeks — E11).
-- [ ] P2 Streaming iterators for bulk scans (`all_nodes()` / `nodes_by_label()` return `Vec`, `lora-store/src/traits.rs:161,168`).
-- [ ] P3 CSE and redundant-scan elimination. `remove_redundant_limit` (`optimizer.rs:126`) is an empty placeholder — implement or delete.
+- [ ] P2 Composite multi-property seeks (`optimizer.rs:1085-1088`); composite RANGE indexes are catalog-only.
+- [ ] P2 Index-ordered scan for an order-only or unbounded range (`ORDER BY key LIMIT k` over a bounded range already streams, `optimizer.rs:70-124`); count a range from the index.
+- [ ] P2 Join ordering and global cardinality estimation (`estimatedRows` exist for scans and seeks, not for Expand, Filter, joins or aggregates, `database/explain.rs:61-110`).
+- [ ] P2 Streaming iterators for relationship scans, multi-label scans and the write path (`helpers.rs:2613,2618`, `mutable.rs:1190`); node scans on the read path are paged (`scan_node_ids`).
+- [ ] P3 CSE and redundant-scan elimination (no pass exists).
 - [ ] P3 Snapshot save/load benchmark (no `benches/snapshot.rs`).
 
-## Concurrency and durability (`docs/design/concurrency-implementation-plan.md`)
+## Writer lock and durability
 
 - [ ] P1 Auto-commit and batched writes still hold a libuv thread while waiting for the writer lock (latency, not deadlock).
-- [ ] P1 `begin()` takes no `timeoutMs`/`signal` — lock wait and transaction lifetime are unbounded (`lora-node/ts/index.ts:889`, lora-graphql `src/driver.ts:190`).
-- [ ] P2 Phase 1 — define snapshot isolation and write-write conflict semantics, with tests (none exist).
-- [ ] P2 Phase 2 — the "write attempt" object (rows, events, write-set, base snapshot); staging itself is done (`database/occ.rs:55-69`).
-- [ ] P2 Phase 3 — fine-grained commit; `lock_table` is dead code (`database/mod.rs:113-117`).
-- [ ] P2 Phase 4 — concurrent-safe ID allocation (`memory/graph.rs:48-49`).
-- [ ] P2 Phase 5 — `FsyncCoord` / GroupSync waiter batching (`commit_tx_lsn` and the `bg_failure` latch exist).
-- [ ] P2 Phase 6 — managed checkpoints run inline on commit (`write_guard.rs:178-184`); move to a worker.
-- [ ] P2 Phase 7 — stress tests + fallback flag (after 1–6).
+- [ ] P2 A transaction's lifetime is unbounded: one that is opened and never committed holds the writer lock until it is disposed. `begin()` bounds only the wait for the lock (`timeoutMs`, `signal`).
+- [ ] P2 Managed checkpoints run inline on commit, under the writer mutex (`write_guard.rs:173-186`, `snapshot/store.rs:135-151`); move to a worker.
 - [ ] P3 Time-based checkpoint scheduler (only `checkpoint_every_commits`).
 - [ ] P3 Consolidate torn-tail detection (`lora-wal/src/segment.rs:335-343`, ADR 0004).
-- [ ] P3 Binary vector-index trailer in snapshot v5 (JSON today, `lora-snapshot/src/format.rs:15`).
+- [ ] P3 Binary vector-index trailer in snapshot v5 (JSON today, `lora-snapshot/src/format.rs:14-18`).
+- [ ] P3 Remove the unused `LockTable` / `WriteSetLocks` and the dead `lock_table` field (`lora-store/src/lock_table.rs`, `database/mod.rs:114-118`, `builder.rs:239,258`): the single writer is the design.
 
 ## lora-graphql
 
 - [ ] P3 Input validation, what is left (`docs/design/graphql-input-validation.md`): a `regexEngine` hook, normalising filter operands and lookup keys of a `@normalize`d field, relationship properties in the stored-value scan, mapping a third-party `@constraint` in `migrate neo4j`.
+- [ ] P3 Triggers, what is left (`docs/design/graphql-triggers.md`): `CONNECT` / `DISCONNECT` triggers on relationship fields, previous values in an `UPDATE` trigger, `lora.publish()` with custom `Subscription` fields for events that are not stored, a trigger and a worker scenario in `bench/load`, the notification flow in `examples/tutorial`.
 - [ ] P2 Relationship rules on interface / union targets (refused today).
 - [ ] P2 FULLTEXT: say when an index skips a value type (non-string list elements and properties are skipped silently).
-- [ ] P1 Mutations make several JS round trips under the writer lock — use `tx.executeMany`, fold validation and read-back into the last write (no `executeMany` in `src/`).
-- [ ] P1 Bounded write queue: fail fast with `OVERLOADED`/503.
+- [ ] P2 Mutations with relationship writes still make one round trip per checked statement (each `connect` / `disconnect` group, edge updates, nested deletes, the update's key lookup); a create is one `executeMany` call and an update two (`src/execute/mutate/runner.ts`, `test/mutation-round-trips.test.ts`). Measure with `bench:load` before going further.
 - [ ] P1 `maxCost` counts projected rows only — charge scans, `totalCount` and aggregates (from `explain()`/`analyze()`).
 - [ ] P2 Compile cache: keyed lookups miss every request because the key variable is in the cache key; rebind variables into parameter slots the way `$jwt` claims are (`src/compile/cache.ts`).
-- [ ] P2 Resolve `@populatedBy` callbacks in parallel before `begin()` (`src/execute/mutate/runner.ts`).
-- [ ] P2 Batch a delete's neighbour lookup with `UNWIND` (`src/execute/mutate/delete.ts`).
+- [ ] P3 `@populatedBy` callbacks of nested inputs, generated keys, upserts and bulk updates still run inside the transaction, one at a time (`src/execute/mutate/plan.ts`); a mutation's own inputs start before `begin()`.
 - [ ] P2 Add a subscription scenario to `bench/load` (fan-out is indexed by type+key but not load tested over HTTP).
 - [ ] P2 `check()` plan-checks queries only — extend to mutations and subscriptions.
 - [ ] P2 `@cypher` `cost` argument; document its per-row semantics (`src/model/directives.ts:196`).
 - [ ] P3 Schema lint: warn on low-cardinality inferred indexes (enum, boolean, `@default`); writes no longer pay for them, but they rarely help reads.
 - [ ] P2 Opt-in `totalCount` cap.
-- [ ] P2 Cursor HMAC: use `node:crypto.createHmac`, precompute per secret (`src/compile/cursor.ts:82`).
 - [ ] P2 Worker threads sharing one engine: confirm `bench:load --workers 0,1,2,4` on a quiet machine; document multi-worker serving (change feed for cache invalidation).
-- [ ] P3 Document cache is FIFO, not LRU; `onWrite` listeners run synchronously on the request path (`src/runtime/documents.ts`, `src/subscriptions/change-hub.ts`).
+- [ ] P3 `onWrite` listeners run synchronously on the request path (`src/subscriptions/change-hub.ts`).
 - [ ] P3 S8 types for `@cypher` parameters in `compile` output.
 - [ ] P3 Load-test `@authorization` rules, cascading and bulk mutations.
 - [ ] P3 CI bench regression gate (>15%, like `scripts/check-bench-delta.mjs`) in `lora-graphql.yml`.
@@ -81,33 +72,24 @@ next, **P2** planned, **P3** when convenient.
 
 ## Server and bindings
 
-- [ ] P1 Node binding: a JS `number` parameter is INTEGER only in `[-2^31, 2^32)`; larger integers (`4294967296`, `2**53-1`) arrive as FLOAT, so `CREATE (n {v: $x})` with `5000000000` stores a float (`lora-node/src/json.rs:48-62`).
 - [ ] P1 HTTP server: no auth, TLS or rate limiting.
 - [ ] P1 HTTP `/query` has no timeout/deadline; Python, Go and Ruby pass none either.
+- [ ] P1 `lora-server` runs each query synchronously inside an async handler on a current-thread runtime (`main.rs:27`, `app/routes.rs:41`): one slow query blocks every request, `/health` included.
 - [ ] P2 `tracing-subscriber` + configurable log level in `lora-server` (logs are invisible today).
 - [ ] P2 Graceful SIGTERM shutdown in `lora-server`.
 - [ ] P2 Query-size and result-size limits on HTTP (only axum's JSON body default).
-- [ ] P2 Confirm on a quiet machine that chunked write streams close the Python/Go per-row gap to 0.18.0 (`3e515cd`); only 0.19.0 vs patched was measured.
+- [ ] P2 Confirm on a quiet machine that chunked write streams close the Python/Go per-row gap to 0.18.0 (chunking is `729ffe13`); only 0.19.0 vs patched was measured.
 - [ ] P3 Node: read streams via `ThreadsafeFunction`; column-major TypedArray decoding (`lora-node/src/stream.rs:3`).
-- [ ] P3 lora-query: delete the dead `fallbackFromDocOverrides` ("TODO: enable after yarn build:wasm", `packages/lora-query/src/cypher/data.ts:429`) — the WASM already exports `builtins()`.
 - [ ] P3 lora-graph-canvas: internalise the kapsule renderer deps (`engines/3d-force-graph/kapsule.ts:11`).
 
 ## Tests
 
-- [ ] P1 **Triage the 59 `#[ignore]`d tests.** 29 now pass (e.g. `where_exists_negated`,
-      `date_function`, `match_shortest_path`, `create_index`) — un-ignore them. Of the
-      rest, fix outdated syntax or give each a specific reason; the support matrix calls
-      these tests its source of truth.
-- [ ] P3 Integration test for integer-overflow errors (`eval/binops.rs:290,424`).
 - [ ] P3 Property-based tests for queries and snapshot round-trips (no proptest/quickcheck).
 
 ## Code hygiene
 
-- [ ] P3 Remove the never-constructed `UnknownLabel` / `UnknownRelationshipType` / `UnknownProperty` (and probably `UnknownPropertyAt`) errors (`analyzer/errors.rs:12-21`) — the analyzer stopped reading the graph in `d004ba4e`.
-- [ ] P3 Error-style violations: six `{node_id:?}` messages (`lora-executor/src/errors.rs:8-23`), `'{crs}'` quoting (`spatial/srid.rs:67`), `anyhow::Result` in public API (`stream.rs:255`, `snapshot/json.rs:38`).
-- [ ] P3 Stale ArcSwap/CAS comments in `benches/concurrent.rs:4,35,88,102` (the store is `RwLock<Arc>`).
+- [ ] P3 `anyhow::Result` in public API (`lora-database/src/stream.rs:260,274,282`, `snapshot/json.rs:38`); every binding that calls streams changes with it.
 - [ ] P3 Replace `smallvec = "2.0.0-alpha.12"` when 2.0 is stable.
-- [ ] P3 Fix the `temporal.rs:1-9` doc comment (says all tests are ignored; none are).
 
 ## Release and tooling
 
@@ -126,6 +108,7 @@ next, **P2** planned, **P3** when convenient.
 
 ## Accepted — not to-dos
 
+- One writer at a time: no multi-writer commit, write-write conflict detection or group-fsync coordination (decided 2026-10-11; the phased plan was deleted). Revisit only if a write benchmark shows the single writer, not the lock hold time, is the limit.
 - A non-key `@unique` value held by a hidden node reads as taken (threat model).
 - No cross-process change feed; no GraphQL variant cap; lighter connection projection measured and left (6%).
 - `LOAD CSV` and `USE <graph>` out of scope (host-side `import_rows` covers it).

@@ -132,12 +132,11 @@ Ranked by production impact. Each finding lists what was seen, why it happens, a
   - Each statement is a round trip between the JS thread and the transaction thread, all while holding the lock.
   - Also inside the lock:
     - `@populatedBy` callbacks, awaited one at a time (`src/execute/mutate/runner.ts`);
-    - a delete's neighbour lookup, one statement per key (`src/execute/mutate/delete.ts`), up to `maxBatch` (1000) statements for a bulk delete.
 - **Solutions:**
-  - **Fewer round trips:** send a mutation's statements through `tx.executeMany` (one native call), and fold the validation and read-back into the last write. The lock hold then shrinks toward one round trip.
-  - Resolve `@populatedBy` callbacks before `begin()`, in parallel.
-  - Batch the delete neighbour lookup into one `UNWIND` statement, as the next statement already does.
-  - **Bound the write queue in lora-graphql:** a JS-side semaphore with a maximum depth that fails fast (`OVERLOADED`, HTTP 503) instead of queuing without limit. Clients then back off before latency explodes.
+  - **Fewer round trips:** send a mutation's statements through `tx.executeMany` (one native call), and fold the validation and read-back into the last write. The lock hold then shrinks toward one round trip. Done 2026-10-11 for the common shapes: a create with its payload read is one call (was two), an update two (was three), a create with a `connect` two (was three). Not yet re-measured with `bench:load`.
+  - Resolve `@populatedBy` callbacks before `begin()`, in parallel. Done 2026-10-11 for a mutation's own inputs.
+  - Done 2026-10-11: the delete neighbour lookup is one `UNWIND` statement per node type (it was one statement per key, up to `maxBatch`).
+  - **Bound the write queue in lora-graphql:** a JS-side semaphore with a maximum depth that fails fast (`OVERLOADED`, HTTP 503) instead of queuing without limit. Clients then back off before latency explodes. Done 2026-10-11: `maxQueuedWrites`, default 512.
 
 ### 5. A write to a shared indexed value costs O(nodes with that value)
 

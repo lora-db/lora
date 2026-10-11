@@ -495,12 +495,17 @@ the parser, the analyser, the store's hand-written codec (a new kind tag
 that old binaries cannot read), the WAL and snapshot formats, and the
 executor's statement-end check. Two engine behaviours would have to be
 settled first, since both would turn a failed check into a pass: an
-invalid regex evaluates to `null`, and a failing expression inside a
-write is dropped silently (see below).
+invalid regex evaluated to `null`, and a failing expression inside a
+write was dropped silently (see below; both fixed 2026-10-11).
 
 ## Engine and binding bugs found on the way
 
-None is part of this feature. All were reproduced on `main`.
+None is part of this feature. All were reproduced on `main`, and all four
+were fixed on 2026-10-11: a JavaScript integer up to 2^53 arrives as an
+INTEGER, a failing expression in a write fails the statement, the
+auto-commit fast path takes only plans that cannot fail, and an invalid
+or oversized regex is an error whose failed compile is cached. What
+follows is how they behaved before.
 
 - **Integers outside the 32-bit range arrive in the engine as floats.** A
   JavaScript `number` parameter is an INTEGER only in `[-2^31, 2^32)`.
