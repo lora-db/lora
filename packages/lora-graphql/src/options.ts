@@ -294,6 +294,15 @@ export interface CheckOptions {
    * the GraphQL context to compile them under (e.g. `{ jwt }`, so rules
    * compile as they do for a signed-in caller). Without one, an operation
    * compiles as an anonymous request would.
+   *
+   * A query is compiled, not run. A mutation is run, because what it
+   * does depends on what it finds, in a transaction that is always rolled
+   * back: nothing is written and no change is reported, but its
+   * `@populatedBy` callbacks and trigger functions are called. Each
+   * statement it ran, a `@trigger`'s included, must start from keys: one
+   * that expands from a full scan is a finding. A mutation that fails is
+   * an error of the check, so give it variables that succeed against the
+   * database being checked.
    */
   operations?: Array<{
     name?: string;

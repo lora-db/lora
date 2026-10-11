@@ -65,6 +65,7 @@ const yoga = createYoga({
 - [The smart layer](#the-smart-layer)
 - [Change tracking](#change-tracking)
 - [Subscriptions](#subscriptions)
+- [Triggers and workers](#triggers-and-workers)
 - [Transactions](#transactions)
 - [CLI](#cli)
 - [Drivers, limits and errors](#drivers-limits-and-errors)
@@ -1396,6 +1397,85 @@ replay earlier writes. `onWrite` still reports
 this instance's mutations, and `previousState` needs them: the feed carries
 the state after the write. Call `lora.close()` to stop the feed.
 
+## Triggers and workers
+
+Three things react to a write, at three moments:
+
+- a **trigger** runs inside the mutation's transaction, before the
+  commit: derived data that must never be out of step, or a refusal;
+- an **event** (`onWrite`, `changes()`, a subscription) reports what
+  committed;
+- a **worker** delivers what a transaction cannot hold (a push, an
+  e-mail, a webhook) after the commit, with retries.
+
+```graphql
+type Comment
+  @node
+  @mutation
+  @authentication
+  @trigger(
+    on: [CREATE]
+    statement: """
+    MATCH (this)-[:ON]->(post:Post)<-[:WROTE]-(author:Person)
+    CREATE (author)<-[:FOR]-(n:Notification {
+      key: 'comment:' + this.key, text: 'New comment on ' + post.title
+    })
+    RETURN n AS created
+    """
+  ) {
+  key: String! @key
+  text: String!
+  post: Post! @relationship(type: "ON", direction: OUT)
+}
+
+type Notification @node @outbox @subscription(operations: [CREATE]) {
+  key: String! @key
+  text: String!
+}
+```
+
+```ts
+const lora = new LoraGraphQL({
+  typeDefs,
+  driver: loraDriver(db),
+  // What Cypher cannot say; throwing rolls the mutation back.
+  triggers: {
+    Comment: {
+      create: async ({ keys, transaction }) => {
+        /* transaction.execute(cypher, params) */
+      },
+    },
+  },
+});
+
+// After the commit, at least once, with retries: make it idempotent.
+lora.worker("Notification", {
+  handle: async (notification, { key, attempt, signal }) => {
+    await push.send(key, notification.text, { signal });
+  },
+});
+```
+
+- A `@trigger` statement runs once per mutation with `this` bound to
+  every node of the type the mutation wrote; `$jwt`, `$viewer` and
+  `$operation` are bound. `fields:` narrows an `UPDATE` trigger to
+  updates that named one of them.
+- Nodes a statement returns as `created` or `updated` join the
+  mutation's write-set, so `onWrite` and subscriptions see them without
+  `changeFeed`.
+- Triggers run only for a write every rule has passed, and what a
+  trigger writes fires no trigger.
+- **Only generated mutations fire triggers.** Raw Cypher and `@cypher`
+  mutations fire none.
+- A trigger function holds the writer lock, bounded by
+  `triggerTimeoutMs` (default 1000). Network calls belong in a worker.
+- `@outbox` makes each node of a type work for `lora.worker()`. The
+  delivery state lives on the node, outside the API, so the work is as
+  durable as the data and is found again after a restart.
+
+The full guide, with a tested example and every option, is on the
+[site](https://loradb.com/docs/graphql/triggers).
+
 ## Transactions
 
 ```ts
@@ -1635,37 +1715,41 @@ transaction. Mutations need interactive transactions, which only the Node
 binding has, so the WASM binding serves reads.
 `explain()`, and so plan checks, need the Node binding too.
 
-| Option                       | Default       | Meaning                                             |
-| ---------------------------- | ------------- | --------------------------------------------------- |
-| `timeoutMs`                  | 10 000        | Per statement and lock wait; a `signal` cancels     |
-| `operationTimeoutMs`         | 2 × timeout   | All root fields of one query; then `TIMEOUT`        |
-| `maxConcurrentStatements`    | 2             | Statements one operation runs at once               |
-| `maxCost`                    | 50 000        | Estimated rows per operation                        |
-| `maxBatch`                   | 1000          | Nodes written per mutation; bulk `limit` by default |
-| `compileCacheBytes`          | 64 MiB        | Compile cache and document cache, each              |
-| `maxQueuedChanges`           | 1000          | How far a change consumer may fall behind           |
-| `maxSubscriptions`           | 100           | Live subscriptions per `subscriptionScope`          |
-| `subscriptionScope`          | the context   | What `maxSubscriptions` counts per                  |
-| `maxSubscriptionFilterDepth` | 1             | Relationship filter nesting in a subscription where |
-| `subscriptionTimeoutMs`      | 2000          | Per statement checking a change for a subscriber    |
-| `defaultLimit` / `maxLimit`  | 25 / 100      | Global page sizes; `@limit` may only lower `max`    |
-| `callbacks`                  |               | Named callbacks for `@populatedBy`                  |
-| `jwt`                        | `context.jwt` | Where the claims are                                |
-| `onStatement`                |               | Observe every statement                             |
-| `cursorSecret`               |               | Sign cursors; reject unsigned or forged ones        |
-| `maskErrors`                 | production    | Clients get `DATABASE_ERROR` and an `id` only       |
-| `onError`                    |               | Receives each database error's detail and `id`      |
-| `guards`                     | see below     | Document limits; `false` turns them off             |
-| `persistedOnly`              | false         | `execute()`, `subscribe()` run persisted ops only   |
-| `budget`                     |               | Cost limit per request, from the context            |
-| `onCost`                     |               | Each root field's estimate, total and limit         |
-| `onStatementEnd`             |               | Duration, rows and error of every statement call    |
-| `timing`                     | false         | `extensions.timing` in `execute()` results          |
-| `tracer` / `traceStatements` |               | OpenTelemetry-style spans; Cypher text on request   |
-| `metrics`                    |               | Counters and histograms (see below)                 |
+| Option                       | Default       | Meaning                                                  |
+| ---------------------------- | ------------- | -------------------------------------------------------- |
+| `timeoutMs`                  | 10 000        | Per statement and lock wait; a `signal` cancels          |
+| `operationTimeoutMs`         | 2 × timeout   | All root fields of one query; then `TIMEOUT`             |
+| `maxConcurrentStatements`    | 2             | Statements one operation runs at once                    |
+| `maxCost`                    | 50 000        | Estimated rows per operation                             |
+| `maxBatch`                   | 1000          | Nodes written per mutation; bulk `limit` by default      |
+| `compileCacheBytes`          | 64 MiB        | Compile cache and document cache, each                   |
+| `maxQueuedChanges`           | 1000          | How far a change consumer may fall behind                |
+| `maxSubscriptions`           | 100           | Live subscriptions per `subscriptionScope`               |
+| `maxQueuedWrites`            | 512           | Writes waiting for the writer lock; more is `OVERLOADED` |
+| `triggerTimeoutMs`           | 1000          | Per trigger function; past it the mutation fails         |
+| `subscriptionScope`          | the context   | What `maxSubscriptions` counts per                       |
+| `maxSubscriptionFilterDepth` | 1             | Relationship filter nesting in a subscription where      |
+| `subscriptionTimeoutMs`      | 2000          | Per statement checking a change for a subscriber         |
+| `defaultLimit` / `maxLimit`  | 25 / 100      | Global page sizes; `@limit` may only lower `max`         |
+| `callbacks`                  |               | Named callbacks for `@populatedBy`                       |
+| `jwt`                        | `context.jwt` | Where the claims are                                     |
+| `onStatement`                |               | Observe every statement                                  |
+| `cursorSecret`               |               | Sign cursors; reject unsigned or forged ones             |
+| `maskErrors`                 | production    | Clients get `DATABASE_ERROR` and an `id` only            |
+| `onError`                    |               | Receives each database error's detail and `id`           |
+| `guards`                     | see below     | Document limits; `false` turns them off                  |
+| `persistedOnly`              | false         | `execute()`, `subscribe()` run persisted ops only        |
+| `budget`                     |               | Cost limit per request, from the context                 |
+| `onCost`                     |               | Each root field's estimate, total and limit              |
+| `onStatementEnd`             |               | Duration, rows and error of every statement call         |
+| `timing`                     | false         | `extensions.timing` in `execute()` results               |
+| `tracer` / `traceStatements` |               | OpenTelemetry-style spans; Cypher text on request        |
+| `metrics`                    |               | Counters and histograms (see below)                      |
 
 Errors carry `extensions.code`: `BAD_USER_INPUT`, `INVALID_CURSOR`,
-`LIMIT_EXCEEDED`, `COST_EXCEEDED`, `TIMEOUT` (with `operationTimeoutMs`),
+`LIMIT_EXCEEDED`, `COST_EXCEEDED`, `OVERLOADED` (more than
+`maxQueuedWrites` mutations are waiting for the database: answer 503 and
+let the client back off), `TIMEOUT` (with `operationTimeoutMs`),
 `UNAUTHENTICATED`, `FORBIDDEN`,
 `NOT_FOUND`, `CONSTRAINT_VIOLATION` (with `type` and `field`),
 `DATABASE_ERROR` (with an `id`, also given to `onError`),

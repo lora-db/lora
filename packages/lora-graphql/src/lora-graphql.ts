@@ -37,7 +37,11 @@ import {
   inferRequirements,
   type SchemaRequirement,
 } from "./analyze/indexes.js";
-import { checkPlans, type PlanReport } from "./analyze/plans.js";
+import {
+  checkPlans,
+  checkStatements,
+  type PlanReport,
+} from "./analyze/plans.js";
 import { lintModel, unguardedMutations } from "./analyze/lint.js";
 import { accessLints } from "./analyze/access-lint.js";
 import {
@@ -127,6 +131,7 @@ import type {
   ExecuteArgs,
   LoraGraphQLContext,
   LoraGraphQLOptions,
+  StatementEvent,
 } from "./options.js";
 import type {
   CheckReport,
@@ -188,6 +193,8 @@ export class LoraGraphQL {
   readonly #triggers: Record<string, TriggerFunctions>;
   readonly #triggerTimeoutMs: number;
   readonly #workers = new Set<OutboxWorker>();
+  /** Statements of a mutation `check()` is running, by its context. */
+  readonly #collected = new WeakMap<object, StatementEvent[]>();
   readonly #validators: NonNullable<LoraGraphQLOptions["validators"]>;
   readonly #resolvers: NonNullable<LoraGraphQLOptions["resolvers"]>;
   readonly #scalars: LoraGraphQLOptions["scalars"];
@@ -696,10 +703,15 @@ export class LoraGraphQL {
     for (const [i, op] of (options.operations ?? []).entries()) {
       const operation = op.name ?? `operation ${i + 1}`;
       try {
-        const fields = await this.explain(op.document, op.variables ?? {}, {
-          rowBudget: options.rowBudget,
-          context: op.context,
-        });
+        const document =
+          typeof op.document === "string" ? parse(op.document) : op.document;
+        const fields =
+          findOperation(document, undefined).operation === "mutation"
+            ? await this.#explainMutation(document, op, options.rowBudget)
+            : await this.explain(document, op.variables ?? {}, {
+                rowBudget: options.rowBudget,
+                context: op.context,
+              });
         for (const f of fields) report.plans.push({ operation, ...f });
       } catch (err) {
         report.errors.push({
@@ -717,6 +729,52 @@ export class LoraGraphQL {
         p.reports.every((r) => r.findings.length === 0),
       );
     return report;
+  }
+
+  /**
+   * Plan a mutation's statements for `check()`. What a mutation runs
+   * depends on what it finds, so it is run, in a transaction that is
+   * always rolled back: nothing is written and no change is reported.
+   * Its `@populatedBy` callbacks and trigger functions do run.
+   */
+  async #explainMutation(
+    document: DocumentNode,
+    op: NonNullable<CheckOptions["operations"]>[number],
+    rowBudget: number | undefined,
+  ): Promise<Array<{ field: string; reports: PlanReport[] }>> {
+    const tx = await this.begin();
+    const context = {
+      ...((op.context as object | undefined) ?? {}),
+      transaction: tx,
+    };
+    const collected: StatementEvent[] = [];
+    this.#collected.set(context, collected);
+    try {
+      const result = await graphqlExecute({
+        schema: this.getSchema(),
+        document,
+        variableValues: op.variables ?? {},
+        contextValue: context,
+      });
+      if (result.errors?.length) throw result.errors[0]!;
+    } finally {
+      this.#collected.delete(context);
+      if (tx.isOpen) await tx.rollback();
+    }
+    const byField = new Map<string, Statement[]>();
+    for (const { field, statement } of collected) {
+      byField.set(field, [...(byField.get(field) ?? []), statement]);
+    }
+    const out: Array<{ field: string; reports: PlanReport[] }> = [];
+    for (const [field, statements] of byField) {
+      out.push({
+        field,
+        reports: await checkStatements(this.#driver, statements, {
+          ...(rowBudget !== undefined ? { rowBudget } : {}),
+        }),
+      });
+    }
+    return out;
   }
 
   /**
@@ -1479,8 +1537,13 @@ export class LoraGraphQL {
       validators: this.#validators,
       transaction: (context as LoraGraphQLContext | undefined)?.transaction
         ?.driverTransaction,
-      onStatement: (statement) =>
-        this.#onStatement?.({ field: info.fieldName, statement }),
+      onStatement: (statement) => {
+        this.#onStatement?.({ field: info.fieldName, statement });
+        // check() collects what a mutation runs, to plan it afterwards.
+        this.#collected
+          .get(context as object)
+          ?.push({ field: rootKey(info) ?? info.fieldName, statement });
+      },
       observe: this.#mutationObserve(info, context),
       beforeDelete: (change, doomed, run) =>
         this.#subscriptions.probeDeletes(change, doomed, run),

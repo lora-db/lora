@@ -4,14 +4,30 @@
 
 import type { GraphQLDirective, GraphQLObjectType } from "graphql";
 import type { ModelProblem } from "../../errors.js";
-import { codeOnly, scanParams } from "../cypher-lexer.js";
+import { codeOnly, maskLiterals, scanParams } from "../cypher-lexer.js";
 import type { MutationOperation, NodeType, Trigger } from "../types.js";
 import { directive, directiveNodes } from "./directive-args.js";
 
 const WRITE_CLAUSES = /\b(CREATE|MERGE|SET|DELETE|REMOVE|DETACH)\b/i;
 
-/** A result column that reports what the statement wrote. */
-const REPORTS = /\bAS\s+`?(created|updated)`?(?![A-Za-z0-9_])/i;
+/**
+ * Whether the statement's last RETURN names a `created` or `updated`
+ * column, read from its text: a result that matched no row has no
+ * columns to ask. Names are case-sensitive, as the columns are; an alias
+ * in an earlier WITH does not count.
+ */
+function reportsWrites(statement: string): boolean {
+  const code = maskLiterals(statement);
+  const returns = [...code.matchAll(/\bRETURN\b/gi)];
+  const last = returns[returns.length - 1];
+  if (!last) return false;
+  return (
+    // Strings, comments and quoted names are blanked here.
+    /\b[Aa][Ss]\s+(created|updated)(?![A-Za-z0-9_])/.test(
+      code.slice(last.index),
+    ) || /\b[Aa][Ss]\s+`(created|updated)`/.test(statement.slice(last.index))
+  );
+}
 
 /** What a trigger statement may read as a `$parameter`. */
 export const TRIGGER_PARAMS: readonly string[] = ["jwt", "viewer", "operation"];
@@ -77,7 +93,7 @@ export function readTriggers(
       fields,
       params,
       writes: WRITE_CLAUSES.test(codeOnly(statement)),
-      reports: REPORTS.test(codeOnly(statement)),
+      reports: reportsWrites(statement),
     });
   }
   return out;

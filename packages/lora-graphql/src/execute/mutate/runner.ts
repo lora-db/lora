@@ -77,6 +77,8 @@ export class Runner {
   disconnected: RelationshipRef[] = [];
   /** Nodes updated per type, for AFTER validation. */
   updated = new Map<NodeType, { keys: unknown[]; fields: Set<string> }>();
+  /** Whether a trigger function was called: it may have closed the transaction. */
+  triggerFunctionRan = false;
   /** Nodes a trigger added to the write-set: they fire no trigger. */
   triggered = new Set<string>();
   /** The fields each update set, per type and key: `@trigger(fields:)`. */
@@ -395,6 +397,7 @@ export class Runner {
       this.info.nodesCreated += rows.length;
       for (const r of rows) {
         this.change.created.push({ type: node.name, key: r.key });
+        this.triggered.delete(`${node.name}\0${keyOf(r.key)}`);
       }
     }
     for (const pending of creating) await pending;
@@ -1039,7 +1042,12 @@ export class Runner {
     }
     const keys = todo.map((r) => r.key);
     this.info.nodesUpdated += keys.length;
-    for (const key of keys) this.change.updated.push({ type: node.name, key });
+    for (const key of keys) {
+      this.change.updated.push({ type: node.name, key });
+      // The mutation's own write: its triggers fire, whatever a trigger
+      // reported about the node before.
+      this.triggered.delete(`${node.name}\0${keyOf(key)}`);
+    }
     const entry = this.updated.get(node) ?? { keys: [], fields: new Set() };
     entry.keys.push(...keys);
     for (const f of written) entry.fields.add(f.name);

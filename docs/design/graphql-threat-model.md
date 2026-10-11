@@ -187,8 +187,15 @@ each check runs. The user-facing rules are in the package
   that node exists (found in review, `test/trigger-hardening.test.ts`).
   They still run before the hidden-key refusal (G-20), on a graph where
   the hidden node is moved aside, so their errors are the ones a free
-  key gets. `DELETE` triggers run after the delete's own rules passed.
-  Side effects outside the database belong in a worker.
+  key gets, and they do not run at all for a create a hidden key or a
+  taken unique value will refuse. `DELETE` triggers run after the
+  delete's own rules passed. For a nested `delete:` that is before the
+  enclosing mutation's remaining checks, so a trigger's error can
+  outrank a later `FORBIDDEN` there; it tells the caller nothing new,
+  because the same caller may delete the same node with its own mutation
+  and fire the same trigger. Side effects outside the database belong
+  in a worker: a trigger function can be called for a mutation that a
+  later check refuses.
 - **A trigger function holds the writer lock.** It is bounded by
   `triggerTimeoutMs` (default 1 s); past it the mutation fails with
   `TIMEOUT`. A function that never yields the event loop cannot be

@@ -54,11 +54,11 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P3 Triggers, what is left (`docs/design/graphql-triggers.md`): `CONNECT` / `DISCONNECT` triggers on relationship fields, previous values in an `UPDATE` trigger, `lora.publish()` with custom `Subscription` fields for events that are not stored, a trigger and a worker scenario in `bench/load`, the notification flow in `examples/tutorial`.
 - [ ] P2 Relationship rules on interface / union targets (refused today).
 - [ ] P2 FULLTEXT: say when an index skips a value type (non-string list elements and properties are skipped silently).
-- [ ] P2 Mutations with relationship writes still make one round trip per checked statement (each `connect` / `disconnect` group, edge updates, nested deletes, the update's key lookup); a create is one `executeMany` call and an update two (`src/execute/mutate/runner.ts`, `test/mutation-round-trips.test.ts`). Measure with `bench:load` before going further.
+- [ ] P2 A mutation is still three hops under the writer lock at best (`begin`, one `executeMany`, `commit`). Batching the statements gave +10% on creates and updates at 32 in flight and +5% on connects (`docs/design/graphql-load-audit.md`, finding 4), so the statements were not the main cost. Next: a mutation whose statements need no result of one another (a create, most updates) as one native call that begins, runs and commits; then the per-statement round trips relationship writes still make (`src/execute/mutate/runner.ts`).
 - [ ] P2 Compile cache: keyed lookups miss every request because the key variable is in the cache key; rebind variables into parameter slots the way `$jwt` claims are (`src/compile/cache.ts`).
 - [ ] P3 `@populatedBy` callbacks of nested inputs, generated keys, upserts and bulk updates still run inside the transaction, one at a time (`src/execute/mutate/plan.ts`); a mutation's own inputs start before `begin()`.
 - [ ] P2 Add a subscription scenario to `bench/load` (fan-out is indexed by type+key but not load tested over HTTP).
-- [ ] P2 `check()` plan-checks queries only — extend to mutations and subscriptions.
+- [ ] P3 `check()` does not plan-check subscriptions (the statements that test a change for a subscriber). Queries are compiled and planned; mutations are run in a rolled-back transaction and planned.
 - [ ] P2 `@cypher` `cost` argument; document its per-row semantics (`src/model/directives.ts:196`).
 - [ ] P3 Schema lint: warn on low-cardinality inferred indexes (enum, boolean, `@default`); writes no longer pay for them, but they rarely help reads.
 - [ ] P2 Opt-in `totalCount` cap.

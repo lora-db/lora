@@ -361,3 +361,92 @@ describe("a driver that is a class instance", () => {
     expect((await run(`{ ts { id } }`)).data).toEqual({ ts: [{ id: "a" }] });
   });
 });
+
+describe("second review", () => {
+  test("no trigger runs for a create that a hidden key refuses", async () => {
+    const calls: unknown[] = [];
+    const { db, exec } = await build(
+      /* GraphQL */ `
+        type Num
+          @node
+          @mutation
+          @authorization(
+            filter: [{ where: { node: { owner: { eq: "$jwt.sub" } } } }]
+          )
+          @trigger(
+            on: [CREATE]
+            statement: "CREATE (a:Seen {id: toString(this.id)}) RETURN a AS created"
+          ) {
+          id: Int! @key
+          owner: String
+        }
+        type Seen @node {
+          id: ID! @key
+        }
+      `,
+      { Num: { create: ({ keys }) => void calls.push(keys) } },
+    );
+    await db.execute("CREATE (:Num {id: 7, owner: 'someone-else'})");
+    const hidden = await exec(
+      `mutation { createNums(input: [{ id: 7, owner: "m" }]) { nums { id } } }`,
+      { sub: "m" },
+    );
+    expect(hidden.errors?.[0]?.extensions?.["code"]).toBe("FORBIDDEN");
+    expect(calls).toEqual([]);
+    const free = await exec(
+      `mutation { createNums(input: [{ id: 8, owner: "m" }]) { nums { id } } }`,
+      { sub: "m" },
+    );
+    expect(free.errors).toBeUndefined();
+    expect(calls).toEqual([[8]]);
+    const seen = await db.execute("MATCH (s:Seen) RETURN s.id AS id");
+    expect(seen.rows.map((r) => r["id"])).toEqual(["8"]);
+  });
+
+  test.each([
+    [
+      "an alias in an earlier WITH is not a report",
+      "MATCH (o:Other) WITH o, 1 AS updated SET o.n = updated",
+    ],
+    [
+      "a column in another case is not a report",
+      "MATCH (o:Other) SET o.n = 1 RETURN o AS Updated",
+    ],
+    [
+      "a value that is not a node is not a report",
+      "MATCH (o:Other) SET o.n = 1 RETURN o.id AS updated",
+    ],
+  ])("%s: the change is broad", async (_name, statement) => {
+    const { db, exec, changes } = await build(`
+      type T @node @mutation @trigger(on: [CREATE], statement: ${JSON.stringify(statement)}) { id: ID! @key }
+      type Other @node { id: ID! @key  n: Int }
+    `);
+    await db.execute("CREATE (:Other {id: 'o'})");
+    const r = await exec(
+      `mutation { createTs(input: [{ id: "t" }]) { ts { id } } }`,
+    );
+    expect(r.errors).toBeUndefined();
+    expect(changes[0]!.broad).toBe(true);
+  });
+
+  test("a quoted column name reports, and a longer name does not", async () => {
+    const run = async (statement: string) => {
+      const { db, exec, changes } = await build(`
+        type T @node @mutation @trigger(on: [CREATE], statement: ${JSON.stringify(statement)}) { id: ID! @key }
+        type Other @node { id: ID! @key  n: Int }
+      `);
+      await db.execute("CREATE (:Other {id: 'o'})");
+      await exec(`mutation { createTs(input: [{ id: "t" }]) { ts { id } } }`);
+      return changes[0]!;
+    };
+    const quoted = await run(
+      "MATCH (o:Other) SET o.n = 1 RETURN o AS `updated`",
+    );
+    expect(quoted.broad).toBe(false);
+    expect(quoted.updated).toEqual([{ type: "Other", key: "o" }]);
+    const longer = await run(
+      "MATCH (o:Other) SET o.n = 1 RETURN o AS updatedAt",
+    );
+    expect(longer.broad).toBe(true);
+  });
+});

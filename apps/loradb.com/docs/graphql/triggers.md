@@ -403,6 +403,9 @@ Rules worth knowing:
   statements before functions. A write that `@authorization`, a
   constraint or `@uniqueTogether` refuses fires none, so the error a
   denied caller gets never depends on what a trigger would have found.
+  The one exception is a nested `delete:`: its `DELETE` triggers run
+  once the delete's own rules passed, before the rest of the enclosing
+  mutation is checked.
 - **No cascades.** What a trigger writes fires no trigger. The cost of a
   mutation is readable from the schema, and a loop is impossible.
 - **System writes.** A statement is your own Cypher: it is not checked
@@ -425,9 +428,13 @@ subscriptions on their types fire, with no `changeFeed`. In the example
 that is why Ada's open `notificationChanged` subscription hears the
 notification the moment Grace's mutation commits.
 
-A statement that writes and returns neither column makes the mutation's
-change `broad` ("anything may have changed"), which a response cache must
-answer by invalidating everything. `check()` reports it as a lint.
+The names are exact (`updated`, not `Updated`), they are columns of the
+statement's last `RETURN`, and their values are nodes of the model. A
+statement that writes and returns neither column, or returns something
+else under them (a key, a node of a label the schema does not know),
+makes the mutation's change `broad` ("anything may have changed"), which
+a response cache must answer by invalidating everything. `check()`
+reports a writing statement without either column as a lint.
 Relationships a statement creates are not reported as connections: return
 both ends as `updated` when subscribers should hear of it.
 

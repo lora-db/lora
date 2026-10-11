@@ -247,7 +247,14 @@ export async function executeMutation(
     ));
   // The CREATE and UPDATE triggers of everything the mutation wrote, once.
   let triggered: Promise<void> | undefined;
-  const triggers = () => (triggered ??= held(runWriteTriggers(runner)));
+  // A create under a hidden key or a taken unique value is refused at the
+  // end whatever happens: no trigger runs for it.
+  const triggers = () =>
+    (triggered ??= held(
+      runner.hiddenKey || runner.takenUnique
+        ? Promise.resolve()
+        : runWriteTriggers(runner),
+    ));
   const payloadFor = async (
     payloadTypeName: string,
     field: string,
@@ -399,7 +406,7 @@ export async function executeMutation(
     await triggers();
     // A trigger function that swallowed a failed statement leaves the
     // transaction rolled back: the mutation must not report success.
-    if (!tx.isOpen) {
+    if (runner.triggerFunctionRan && !tx.isOpen) {
       throw requestError(
         "DATABASE_ERROR",
         "a trigger left the transaction closed: a statement it ran failed, which rolled the mutation back",
@@ -536,6 +543,11 @@ function emptyChange(op: MutationKind, field: string): WriteChange {
 }
 
 function fillChange(change: WriteChange, runner: Runner): void {
+  // A node a DELETE trigger function already deleted is listed once.
+  const once = new Map(
+    change.deleted.map((e) => [`${e.type}\0${keyOf(e.key)}`, e]),
+  );
+  change.deleted = [...once.values()];
   change.connected.push(...runner.connected);
   change.disconnected.push(...runner.disconnected);
   const entities = new Map<string, EntityRef>();

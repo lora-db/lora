@@ -96,11 +96,26 @@ export class OutboxWorker implements Worker {
   #running = 0;
   /** Whether the last sweep hit its limit: there is more to take. */
   #more = false;
+  /** Nodes in a row whose claim or finishing write threw. */
+  #failures = 0;
   #sweeping: Promise<void> | undefined;
   #waiters: Array<() => void> = [];
 
   constructor(host: WorkerHost, options: WorkerOptions) {
     this.#host = host;
+    for (const [option, least] of [
+      ["concurrency", 1],
+      ["maxAttempts", 1],
+      ["sweepMs", 1],
+      ["leaseMs", 1],
+    ] as const) {
+      const value = options[option];
+      if (value !== undefined && !(Number.isFinite(value) && value >= least)) {
+        throw new Error(
+          `worker("${host.node.name}"): ${option} must be a number of at least ${least}, got ${String(value)}`,
+        );
+      }
+    }
     this.#options = {
       concurrency: 4,
       maxAttempts: 8,
@@ -197,13 +212,27 @@ export class OutboxWorker implements Worker {
       this.#running++;
       this.#active.add(id);
       void this.#process(key)
-        .catch((err: unknown) => this.#report(err))
-        .finally(() => {
+        .then(
+          () => true,
+          (err: unknown) => {
+            this.#report(err);
+            return false;
+          },
+        )
+        .then((ok) => {
           this.#running--;
           this.#active.delete(id);
+          if (ok) this.#failures = 0;
+          else this.#failures++;
           this.#pump();
-          // A sweep that hit its limit left work behind: take the rest.
-          if (this.#more && this.#queue.size === 0) void this.#sweep();
+          // A sweep that hit its limit left work behind: take the rest,
+          // at once while the database answers, after a pause that grows
+          // while it does not (a write that times out must not be
+          // retried in a loop).
+          if (this.#more && this.#queue.size === 0 && this.#running === 0) {
+            if (this.#failures === 0) void this.#sweep();
+            else this.#lookIn(Math.min(250 * 2 ** this.#failures, 30_000));
+          }
           for (const wake of this.#waiters.splice(0)) wake();
         });
     }
@@ -265,10 +294,13 @@ export class OutboxWorker implements Worker {
       });
     } catch (err) {
       const final = attempt >= this.#options.maxAttempts;
-      const wait = this.#options.backoffMs(attempt);
-      await fail(err, final, Date.now() + wait);
+      const asked = this.#options.backoffMs(attempt);
+      // A backoff that is not a time would park the node for good.
+      const wait = Number.isFinite(asked) && asked >= 0 ? asked : 1000;
+      // The handler's error is reported whatever becomes of this write.
       if (final) this.#report(err);
       else this.#lookIn(wait);
+      await fail(err, final, Date.now() + wait);
       return;
     }
     await this.#write(

@@ -319,9 +319,17 @@ async function check(
   const operations: NonNullable<CheckOptions["operations"]> = [];
   for (const path of operationPaths) {
     for (const f of await graphqlFiles(path)) {
-      for (const op of operationsIn(schema, f.path, f.source)) {
+      for (const { mutation, ...op } of operationsIn(
+        schema,
+        f.path,
+        f.source,
+      )) {
         const short = op.name!.split("#")[1] ?? "";
         const given = fixtures[op.name!] ?? fixtures[short];
+        // A mutation is run (and rolled back), so it needs variables that
+        // succeed against this database: checked only when --variables
+        // names it.
+        if (mutation && !given) continue;
         const context = contexts[op.name!] ?? contexts[short] ?? contexts["*"];
         operations.push({
           ...op,
@@ -531,12 +539,17 @@ async function graphqlFiles(
   return out;
 }
 
-/** Each query in a file, with example values for its required variables. */
+/**
+ * Each query and mutation in a file, with example values for its required
+ * variables.
+ */
 function operationsIn(
   schema: GraphQLSchema,
   path: string,
   source: string,
-): NonNullable<CheckOptions["operations"]> {
+): Array<
+  NonNullable<CheckOptions["operations"]>[number] & { mutation: boolean }
+> {
   const doc = parse(source);
   const fragments = new Map(
     doc.definitions
@@ -564,7 +577,7 @@ function operationsIn(
   return doc.definitions
     .filter(
       (d): d is OperationDefinitionNode =>
-        d.kind === Kind.OPERATION_DEFINITION && d.operation === "query",
+        d.kind === Kind.OPERATION_DEFINITION && d.operation !== "subscription",
     )
     .map((op, i) => {
       const variables: Record<string, unknown> = {};
@@ -579,6 +592,7 @@ function operationsIn(
         name: `${path}${op.name ? `#${op.name.value}` : `#${i + 1}`}`,
         document: { kind: Kind.DOCUMENT, definitions: [op, ...used(op)] },
         variables,
+        mutation: op.operation === "mutation",
       };
     });
 }

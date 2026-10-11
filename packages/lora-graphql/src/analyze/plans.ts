@@ -184,6 +184,53 @@ function sourceScan(expand: PlanNode): PlanNode | undefined {
   return undefined;
 }
 
+/**
+ * Plan the statements a mutation ran. Every one starts from keys, so none
+ * may expand from a full scan (`scanExpands`); the engine's row estimate
+ * is held to `rowBudget` when one is given.
+ */
+export async function checkStatements(
+  driver: LoraDriver,
+  statements: readonly Statement[],
+  options: { rowBudget?: number } = {},
+): Promise<PlanReport[]> {
+  if (!driver.explain) {
+    throw new Error(
+      "the driver has no explain(); plan checks need @loradb/lora-node",
+    );
+  }
+  const reports: PlanReport[] = [];
+  for (const statement of statements) {
+    const plan = await driver.explain(statement);
+    const nodes = flatten(plan.tree);
+    const findings = scanExpands(statement, plan);
+    const estimates = nodes
+      .filter((n) => n.operator.endsWith("Scan") && n.estimatedRows !== null)
+      .map((n) => n.estimatedRows!);
+    const estimatedRows = estimates.length > 0 ? Math.max(...estimates) : null;
+    if (
+      options.rowBudget !== undefined &&
+      estimatedRows !== null &&
+      estimatedRows > options.rowBudget
+    ) {
+      findings.push({
+        rule: "row-budget",
+        message: `the engine estimates ${estimatedRows} rows scanned; the budget is ${options.rowBudget}`,
+        statement: statement.text,
+      });
+    }
+    reports.push({
+      statement,
+      plan,
+      operators: nodes.map((n) => n.operator),
+      estimatedRows,
+      findings,
+      notes: [],
+    });
+  }
+  return reports;
+}
+
 function flatten(node: PlanNode): PlanNode[] {
   return [node, ...node.children.flatMap(flatten)];
 }

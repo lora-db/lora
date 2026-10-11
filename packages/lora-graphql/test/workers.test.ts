@@ -363,3 +363,105 @@ describe("review regressions", () => {
     lora.close();
   }, 30_000);
 });
+
+describe("second review", () => {
+  test("a backlog whose writes fail is not retried in a loop", async () => {
+    const db = await createDatabase();
+    await db.execute(
+      "UNWIND range(1, 1200) AS i CREATE (:Notification {id: 'n' + toString(i), kind: 'K', recipientId: 'u', _outbox: 'PENDING'})",
+    );
+    const base = loraDriver(db);
+    let writes = 0;
+    const errors: DatabaseErrorEvent[] = [];
+    const lora = new LoraGraphQL({
+      typeDefs,
+      driver: {
+        ...base,
+        run: (statements, options) => {
+          if (options.mode === "write") {
+            writes++;
+            return Promise.reject(new Error("writer lock timed out"));
+          }
+          return base.run(statements, options);
+        },
+      },
+      onError: (e) => errors.push(e),
+    });
+    const worker = lora.worker("Notification", {
+      handle: () => undefined,
+      sweepMs: 60_000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    // One sweep's worth of claims, then a pause that grows: not tens of
+    // thousands.
+    expect(writes).toBeGreaterThanOrEqual(1000);
+    expect(writes).toBeLessThan(2100);
+    expect(errors.length).toBe(writes);
+    await worker.stop();
+  });
+
+  test("the handler's error is reported even when recording it fails", async () => {
+    const db = await createDatabase();
+    const base = loraDriver(db);
+    let failNext = false;
+    const errors: DatabaseErrorEvent[] = [];
+    const lora = new LoraGraphQL({
+      typeDefs,
+      driver: {
+        ...base,
+        run: (statements, options) => {
+          if (options.mode === "write" && failNext) {
+            failNext = false;
+            return Promise.reject(new Error("write lost"));
+          }
+          return base.run(statements, options);
+        },
+      },
+      onError: (e) => errors.push(e),
+    });
+    await lora.assertSchema({ create: true });
+    const worker = lora.worker("Notification", {
+      handle: () => {
+        failNext = true;
+        throw new Error("smtp down");
+      },
+      maxAttempts: 1,
+    });
+    await lora.execute({ source: NOTE("a") });
+    await expect
+      .poll(() => errors.map((e) => e.message).sort(), { timeout: 2000 })
+      .toEqual(["smtp down", "write lost"]);
+    await worker.stop();
+  });
+
+  test.each([
+    ["concurrency", 0],
+    ["maxAttempts", 0],
+    ["leaseMs", 0],
+    ["sweepMs", Number.NaN],
+  ])("%s: %s is refused", async (option, value) => {
+    const { lora } = await instance();
+    expect(() =>
+      lora.worker("Notification", {
+        handle: () => undefined,
+        [option]: value,
+      }),
+    ).toThrow(`${option} must be a number of at least 1`);
+  });
+
+  test("a backoff that is not a time does not park the node", async () => {
+    const { lora, run, states } = await instance();
+    const worker = lora.worker("Notification", {
+      handle: (_node, { attempt }) => {
+        if (attempt === 1) throw new Error("once");
+      },
+      backoffMs: () => Number.NaN,
+      sweepMs: 60_000,
+    });
+    await run(NOTE("a"));
+    await expect
+      .poll(() => states(), { timeout: 5000 })
+      .toEqual([["a", "DONE", 2]]);
+    await worker.stop();
+  });
+});

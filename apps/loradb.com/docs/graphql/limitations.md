@@ -40,7 +40,8 @@ you plan a production deployment.
   longer pass). A [validator](/docs/graphql/directives#validators) sees
   the input, not what is stored. `@normalize` changes writes only:
   filters and lookups compare with the stored form.
-- **Plan checks for mutations and subscriptions.** `check` plans queries.
+- **Plan checks for subscriptions.** `check` plans queries and
+  mutations (a mutation is run in a transaction that is rolled back).
 - **Triggers for raw Cypher.** [`@trigger`](/docs/graphql/triggers) and
   trigger functions fire for generated mutations only. Raw Cypher and
   `@cypher` mutations fire none; that needs triggers in the engine.

@@ -234,8 +234,15 @@ The authorization lints (they do not fail the run) flag:
 recursively) and can be repeated. Each query in a file is checked on its
 own, with the fragments it spreads. Operations are named
 `<path>#<OperationName>` in the output, or `<path>#<n>` when unnamed.
-Mutations and subscriptions are skipped: mutation statements need the
-data they write against.
+Subscriptions are skipped.
+
+A mutation is checked only when `--variables` names it (an empty object
+will do for one without variables). It is **run**, in a transaction that
+is rolled back, because what a mutation does depends on what it finds:
+nothing is written, but its `@populatedBy` callbacks and trigger
+functions are called, and it must succeed against the database being
+checked. Every statement it ran, a `@trigger`'s included, must start
+from keys; one that expands from a full scan fails the check.
 
 Required variables get sample values (`"x"`, `1`, `true`,
 `"2026-01-01"`, the first enum value, and so on). When a sample would not

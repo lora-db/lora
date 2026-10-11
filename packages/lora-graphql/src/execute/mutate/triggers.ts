@@ -158,7 +158,14 @@ async function call(
     runner.env.triggers?.[node.name]?.[
       operation.toLowerCase() as "create" | "update" | "delete"
     ];
-  if (!fn || keys.length === 0) return;
+  if (!fn) return;
+  if (operation !== "DELETE") {
+    // An earlier trigger function may have deleted some of them.
+    const gone = new Set(runner.change.deleted.map(refId));
+    keys = keys.filter((key) => !gone.has(refId({ type: node.name, key })));
+  }
+  if (keys.length === 0) return;
+  runner.triggerFunctionRan = true;
   // Everything issued so far is in the database before user code reads it.
   await runner.settle();
   const transaction = new LoraTransaction(runner.tx, () => undefined, true);
@@ -227,6 +234,8 @@ function merge(runner: Runner, nested: WriteChange): void {
   for (const list of ["created", "updated"] as const) {
     for (const ref of nested[list]) {
       const id = refId(ref);
+      // Deleted earlier in the transaction and created again: it exists.
+      if (list === "created" && drop(into.deleted, id)) seen.delete(id);
       if (seen.has(id)) continue;
       seen.add(id);
       into[list].push(ref);
@@ -298,9 +307,13 @@ function report(
   result: QueryResult,
 ): EntityRef[] {
   const made: EntityRef[] = [];
-  // Decided by the statement, not by this result: one that matched no
-  // row has no columns either.
-  if (!trigger.reports) {
+  // The result's own columns say what it reports. One that matched no row
+  // has none: then the statement's text does.
+  const reports =
+    result.rows.length > 0
+      ? result.columns.includes("created") || result.columns.includes("updated")
+      : trigger.reports;
+  if (!reports) {
     if (trigger.writes) runner.change.broad = true;
     return made;
   }
@@ -316,8 +329,14 @@ function report(
     for (const row of result.rows) {
       const value = row[column];
       for (const item of Array.isArray(value) ? value : [value]) {
+        if (item === null || item === undefined) continue;
         const ref = entityOf(runner.env.model, item);
-        if (!ref) continue;
+        // Something written that is not a node of the model (a key, a
+        // node of an unknown label): listeners cannot be told what.
+        if (!ref) {
+          if (trigger.writes) runner.change.broad = true;
+          continue;
+        }
         const id = `${ref.type}\0${keyOf(ref.key)}`;
         if (seen.has(id)) continue;
         seen.add(id);

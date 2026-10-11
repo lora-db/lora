@@ -332,3 +332,37 @@ test("migrate neo4j prints the rewritten SDL with TODOs first", async () => {
   expect(lines[0]).toMatch(/^# TODO\(migrate\): /);
   expect(r.out).toContain("id: ID! @key(generate: true)");
 });
+
+test("check runs a mutation that --variables names, and skips one it does not", async () => {
+  const schema = join(dir, "writes.schema.graphql");
+  await writeFile(
+    schema,
+    `type Item @node @mutation @authentication { key: ID! @key  name: String! }`,
+  );
+  const ops = join(dir, "writes");
+  await mkdir(ops);
+  await writeFile(
+    join(ops, "writes.graphql"),
+    `mutation AddItem($name: String!) { createItems(input: [{ key: "a", name: $name }]) { items { key name } } }
+     mutation Skipped($name: String!) { createItems(input: [{ key: "b", name: $name }]) { items { key } } }`,
+  );
+  const vars = join(dir, "write-vars.json");
+  await writeFile(vars, JSON.stringify({ AddItem: { name: "Checked" } }));
+  const ctx = join(dir, "write-ctx.json");
+  await writeFile(ctx, JSON.stringify({ "*": { jwt: { sub: "u1" } } }));
+  const r = await cli(
+    "check",
+    schema,
+    "--operations",
+    ops,
+    "--variables",
+    vars,
+    "--context",
+    ctx,
+  );
+  expect(r.err).toBe("");
+  expect(r.out.split("\n").at(-1)).toBe(
+    "ok       1 root field(s) in 1 operation(s) seek as expected",
+  );
+  expect(r.code).toBe(0);
+});
