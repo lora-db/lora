@@ -62,7 +62,7 @@ import {
   compileCypherRoot,
   MAX_LIST_ARGUMENT,
 } from "./compile/read/cypher-field.js";
-import { compileRoot } from "./compile/read/root.js";
+import { compileRoot, rebindableVariables } from "./compile/read/root.js";
 import { compileSearch } from "./compile/read/search.js";
 import {
   type CompiledRead,
@@ -73,6 +73,7 @@ import {
   coercedVariables,
   fieldArgs,
   variableValuesOf,
+  withVariables,
   type SelectionContext,
 } from "./compile/selection.js";
 import {
@@ -1265,6 +1266,8 @@ export class LoraGraphQL {
     info: GraphQLResolveInfo,
     context: unknown,
     compile: (ctx: CompileContext) => CompiledRead,
+    /** Variables one compile serves every value of (see the cache). */
+    rebindable?: readonly string[],
   ): CompiledRead {
     const base = infoContext(info);
     return this.#compiled.get(
@@ -1275,9 +1278,14 @@ export class LoraGraphQL {
         jwt: this.#jwt(context),
         context,
         statistics: this.#statisticsVersion,
+        rebindable,
       },
-      (jwt) => {
-        const ctx = this.#context(base, context, jwt);
+      (jwt, variables) => {
+        const ctx = this.#context(
+          variables ? withVariables(base, variables) : base,
+          context,
+          jwt,
+        );
         return { ctx, compiled: compile(ctx) };
       },
     );
@@ -1301,14 +1309,18 @@ export class LoraGraphQL {
     info: GraphQLResolveInfo,
     context: unknown,
   ): Promise<unknown> {
-    const compiled = this.#cachedCompile(info, context, (ctx) =>
-      compileRoot(
-        ctx,
-        kind,
-        node,
-        this.#args(ctx, info.parentType, info.fieldNodes),
-        info.fieldNodes,
-      ),
+    const compiled = this.#cachedCompile(
+      info,
+      context,
+      (ctx) =>
+        compileRoot(
+          ctx,
+          kind,
+          node,
+          this.#args(ctx, info.parentType, info.fieldNodes),
+          info.fieldNodes,
+        ),
+      rebindableVariables(kind, node, info.fieldNodes),
     );
     return this.#run(info.fieldName, compiled, context, info);
   }

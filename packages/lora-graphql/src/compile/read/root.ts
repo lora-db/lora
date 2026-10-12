@@ -1,7 +1,12 @@
 // Root fields over one node type: the list, the lookup by @key and the
 // connection (the aggregate and grouped roots are in aggregates.ts).
 
-import type { FieldNode, GraphQLObjectType, SelectionSetNode } from "graphql";
+import {
+  Kind,
+  type FieldNode,
+  type GraphQLObjectType,
+  type SelectionSetNode,
+} from "graphql";
 import { rootFilterCost } from "../cost.js";
 import type { Statement } from "../../driver.js";
 import type { NodeType } from "../../model/types.js";
@@ -71,6 +76,24 @@ export function compileRoot(
     case "grouped":
       return compileGrouped(ctx, node, args, sets);
   }
+}
+
+/**
+ * The variables of a root field whose value only ever becomes a
+ * parameter, so one compile can be shared across their values: the
+ * variable given as the key of a lookup by @key (`festival(key: $key)`),
+ * when it is one.
+ */
+export function rebindableVariables(
+  kind: RootKind,
+  node: NodeType,
+  fieldNodes: readonly FieldNode[],
+): readonly string[] | undefined {
+  if (kind !== "single" || fieldNodes.length !== 1) return undefined;
+  const value = fieldNodes[0]!.arguments?.find(
+    (argument) => argument.name.value === node.key.name,
+  )?.value;
+  return value?.kind === Kind.VARIABLE ? [value.name.value] : undefined;
 }
 
 // ---------------------------------------------------------------------------

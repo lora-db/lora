@@ -28,6 +28,23 @@ export interface SelectionContext {
 
 const GRAPHQL_17 = versionInfo.major >= 17;
 
+/**
+ * `ctx` with `values` in place of the coerced variables they name, on
+ * graphql 16 and 17 alike.
+ */
+export function withVariables(
+  ctx: SelectionContext,
+  values: Record<string, unknown>,
+): SelectionContext {
+  const v = ctx.variables;
+  return {
+    ...ctx,
+    variables: GRAPHQL_17
+      ? { ...v, coerced: { ...(v["coerced"] as object), ...values } }
+      : { ...v, ...values },
+  };
+}
+
 /** The coerced variable values, on graphql 16 and 17 alike. */
 export function coercedVariables(
   variables: unknown,

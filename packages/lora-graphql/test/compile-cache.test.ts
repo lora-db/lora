@@ -5,7 +5,7 @@
 import { createDatabase } from "@loradb/lora-node";
 import { expect, test } from "vitest";
 import { LoraGraphQL, loraDriver, type StatementEvent } from "../src/index.js";
-import { parse as parseDocument, type FieldNode } from "graphql";
+import { GraphQLError, parse as parseDocument, type FieldNode } from "graphql";
 import { CompileCache } from "../src/compile/cache.js";
 import type { CompileContext } from "../src/compile/context.js";
 import type { CompiledRead } from "../src/compile/read/types.js";
@@ -238,4 +238,135 @@ test("the cache is bounded by bytes, and skips requests with large variables", (
   big.get(request(field, undefined, { a: list }), compile);
   expect(calls() - before).toBe(2);
   expect(big.size).toBe(0);
+});
+
+// ---------------------------------------------------------------------------
+// The key of a lookup by @key, rebound per request.
+// ---------------------------------------------------------------------------
+
+/** A compile of `doc(key: $k)`: the key bound whole, as a lookup does. */
+function keyCompile(
+  fail: (jwt: unknown) => Error | undefined = () => undefined,
+) {
+  let calls = 0;
+  const compile =
+    (real: Record<string, unknown>) =>
+    (
+      jwt: Record<string, unknown> | undefined,
+      variables?: Record<string, unknown>,
+    ) => {
+      calls++;
+      const error = fail(jwt);
+      if (error) throw error;
+      const ctx = {
+        claimReads: new Map(),
+        contextReads: [],
+      } as unknown as CompileContext;
+      const compiled = {
+        statements: [
+          {
+            text: "MATCH (n) WHERE n.key = $p0 RETURN n",
+            params: { p0: { ...real, ...variables }["k"] },
+          },
+        ],
+        cost: 1,
+        columns: ["n"],
+      } as unknown as CompiledRead;
+      return { ctx, compiled };
+    };
+  return { compile, calls: () => calls };
+}
+
+const lookup = (fieldNodes: FieldNode[], k: unknown, authenticated = true) => ({
+  ...request(fieldNodes, authenticated ? { sub: "a" } : undefined, { k }),
+  rebindable: ["k"],
+});
+
+test("one compile serves every key of a lookup by @key", () => {
+  const cache = new CompileCache();
+  const field = fieldOf(`query($k: String!) { doc(key: $k) { key } }`);
+  const { compile, calls } = keyCompile();
+  for (const k of ["a", "b", "c"]) {
+    const got = cache.get(lookup(field, k), compile({ k }));
+    expect(got.statements[0]!.params["p0"]).toBe(k);
+  }
+  expect(calls()).toBe(1);
+  expect(cache.size).toBe(1);
+});
+
+test("a request that fails first does not stop later keys sharing", () => {
+  const cache = new CompileCache();
+  const field = fieldOf(`query($k: String!) { doc(key: $k) { key } }`);
+  const { compile, calls } = keyCompile((jwt) =>
+    jwt ? undefined : new GraphQLError("needs an authenticated request"),
+  );
+  expect(() =>
+    cache.get(lookup(field, "a", false), compile({ k: "a" })),
+  ).toThrow("needs an authenticated request");
+  const before = calls();
+  for (const k of ["a", "b", "c"]) cache.get(lookup(field, k), compile({ k }));
+  expect(calls() - before).toBe(1);
+});
+
+test("a key variable the field uses again is keyed on, not rebound", () => {
+  const cache = new CompileCache();
+  const field = fieldOf(
+    `query($k: String!) { doc(key: $k) { parts(where: { name: { eq: $k } }) { key } } }`,
+  );
+  const { compile, calls } = keyCompile();
+  for (const k of ["a", "b", "a"]) {
+    const got = cache.get(lookup(field, k), compile({ k }));
+    expect(got.statements[0]!.params["p0"]).toBe(k);
+  }
+  expect(calls()).toBe(2);
+});
+
+test("an error that is not a request's is not taken for a refused marker", () => {
+  const cache = new CompileCache();
+  const field = fieldOf(`query($k: String!) { doc(key: $k) { key } }`);
+  const { compile, calls } = keyCompile(() => new TypeError("a bug"));
+  expect(() => cache.get(lookup(field, "a"), compile({ k: "a" }))).toThrow(
+    TypeError,
+  );
+  expect(calls()).toBe(1);
+});
+
+test("a lookup by @key reads the right node for each key, limits included", async () => {
+  const db = await createDatabase();
+  const lora = new LoraGraphQL({
+    typeDefs: /* GraphQL */ `
+      type Folder @node {
+        key: String! @key
+        files: [File!]! @relationship(type: "HAS", direction: OUT)
+      }
+      type File @node {
+        key: String! @key
+        name: String! @filterable
+      }
+    `,
+    driver: loraDriver(db),
+    maxStringFilter: 20,
+  });
+  await lora.assertSchema({ create: true });
+  await db.execute(
+    `CREATE (:Folder {key: 'a'})-[:HAS]->(:File {key: 'f', name: 'a'}), (:Folder {key: 'b'})`,
+  );
+  const run = (source: string, k: string) =>
+    lora.execute({ source, variables: { k } });
+
+  const plain = `query($k: String!) { folder(key: $k) { key } }`;
+  for (const k of ["a", "b", "a"]) {
+    expect((await run(plain, k)).data).toEqual({ folder: { key: k } });
+  }
+  expect((await run(plain, "none")).data).toEqual({ folder: null });
+
+  // The key used again in a filter is still held to the filter's limit.
+  const again = `query($k: String!) {
+    folder(key: $k) { files(where: { name: { eq: $k } }) { key } }
+  }`;
+  expect((await run(again, "a")).data).toEqual({
+    folder: { files: [{ key: "f" }] },
+  });
+  const long = await run(again, "x".repeat(50));
+  expect(long.errors?.[0]?.message).toMatch(/at most 20 characters/);
 });
