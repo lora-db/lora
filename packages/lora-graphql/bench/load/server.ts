@@ -170,6 +170,9 @@ async function openLora(config: ServerConfig, dir: string | undefined) {
       ? oneByOne(loraDriver(db))
       : loraDriver(db),
     timeoutMs: config.timeoutMs,
+    // LOAD_NO_SINGLE=1 keeps every mutation in a transaction, to measure
+    // what a single-call create saves.
+    ...(process.env.LOAD_NO_SINGLE ? { singleCallMutations: false } : {}),
   });
   return { db, lora };
 }

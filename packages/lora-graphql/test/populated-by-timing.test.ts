@@ -30,6 +30,12 @@ async function setup() {
       events.push("begin");
       return base.begin!(options);
     },
+    // A single-call create has no begin(): its write batch is the moment
+    // the lock is taken.
+    run: (statements, options) => {
+      if (options.mode === "write") events.push("write");
+      return base.run(statements, options);
+    },
   };
   let running = 0;
   let overlap = 0;
@@ -70,7 +76,7 @@ test("a create's callbacks run before begin(), at once", async () => {
     },
   });
   // Each callback once per input, all started before the transaction.
-  expect(events).toEqual(["slug", "owner", "slug", "owner", "begin"]);
+  expect(events).toEqual(["slug", "owner", "slug", "owner", "write"]);
   expect(overlap()).toBe(4);
 });
 
@@ -90,7 +96,7 @@ test("an update's callback runs before begin(), once", async () => {
   expect(events).toEqual(["slug", "begin"]);
 });
 
-test("a nested create's callback still runs, inside the transaction", async () => {
+test("a nested create's callback runs before its transaction opens too", async () => {
   const { lora, events } = await setup();
   const r = await lora.execute({
     source: `mutation { createPosts(input: [{ key: "p1", comments: { create: [{ node: { key: "c1" } }] } }]) { posts { comments { stamp } } } }`,
@@ -99,7 +105,9 @@ test("a nested create's callback still runs, inside the transaction", async () =
   expect(r.data).toEqual({
     createPosts: { posts: [{ comments: [{ stamp: "stamp" }] }] },
   });
-  expect(events).toEqual(["slug", "owner", "begin", "stamp"]);
+  // The plan is complete before a create decides how to reach the
+  // database, so every callback has run by then.
+  expect(events).toEqual(["slug", "owner", "stamp", "begin"]);
 });
 
 test("a failing callback fails the mutation with its own error", async () => {

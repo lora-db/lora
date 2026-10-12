@@ -279,8 +279,21 @@ export function boundedWrites(
   let waiting = 0;
   // Each method is called on `driver` itself: a driver may be a class
   // instance, whose methods a spread would leave behind.
+  const queued = async <T>(work: () => Promise<T>): Promise<T> => {
+    if (waiting >= max) throw onFull(waiting);
+    waiting++;
+    try {
+      return await work();
+    } finally {
+      waiting--;
+    }
+  };
   return {
-    run: (statements, options) => driver.run(statements, options),
+    // A write batch waits for the writer lock like a transaction does.
+    run: (statements, options) =>
+      options.mode === "write"
+        ? queued(() => driver.run(statements, options))
+        : driver.run(statements, options),
     ...(driver.explain
       ? { explain: (statement: Statement) => driver.explain!(statement) }
       : {}),
@@ -290,16 +303,8 @@ export function boundedWrites(
             driver.changes!(options),
         }
       : {}),
-    begin: async (options) => {
-      if (options.mode !== "write") return begin(options);
-      if (waiting >= max) throw onFull(waiting);
-      waiting++;
-      try {
-        return await begin(options);
-      } finally {
-        waiting--;
-      }
-    },
+    begin: (options) =>
+      options.mode === "write" ? queued(() => begin(options)) : begin(options),
   };
 }
 

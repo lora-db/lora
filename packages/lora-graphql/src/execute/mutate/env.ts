@@ -85,6 +85,8 @@ export interface MutationEnv {
   /** Statistics from `analyze()`, for filter costs. */
   statistics?: Statistics | undefined;
   callbacks: Readonly<Record<string, PopulatedByCallback>>;
+  /** The `singleCallMutations` option; false keeps every mutation in a transaction. */
+  singleCall?: boolean | undefined;
   /** The `triggers` option: functions per node type and operation. */
   triggers?: Readonly<Record<string, TriggerFunctions>> | undefined;
   /** The `triggerTimeoutMs` option, defaulted. */

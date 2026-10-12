@@ -37,7 +37,13 @@ async function setup() {
   const driver: LoraDriver = {
     ...base,
     run: (statements, options) => {
-      if (options.mode === "read") reads++;
+      // The one-time check for assert() is not a subscription's read.
+      if (
+        options.mode === "read" &&
+        !statements[0]!.text.startsWith("RETURN assert(")
+      ) {
+        reads++;
+      }
       return base.run(statements, options);
     },
   };

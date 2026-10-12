@@ -324,6 +324,11 @@ describe("a driver that is a class instance", () => {
     const read = await lora.execute({ source: `{ ts { id } }` });
     expect(read.data).toEqual({ ts: [{ id: "a" }] });
     expect((await lora.check()).cypher).toEqual([]);
+    // A delete runs in a transaction: begin() is the class's own too.
+    const deleted = await lora.execute({
+      source: `mutation { deleteT(id: "a") { nodesDeleted } }`,
+    });
+    expect(deleted.errors).toBeUndefined();
     expect(driver.calls).toContain("begin");
     expect(driver.calls).toContain("run");
   });

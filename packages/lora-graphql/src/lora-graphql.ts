@@ -193,6 +193,7 @@ export class LoraGraphQL {
   readonly #callbacks: Record<string, PopulatedByCallback>;
   readonly #triggers: Record<string, TriggerFunctions>;
   readonly #triggerTimeoutMs: number;
+  readonly #singleCall: boolean;
   readonly #workers = new Set<OutboxWorker>();
   /** Statements of a mutation `check()` is running, by its context. */
   readonly #collected = new WeakMap<object, StatementEvent[]>();
@@ -273,6 +274,7 @@ export class LoraGraphQL {
     this.#callbacks = options.callbacks ?? {};
     this.#triggers = options.triggers ?? {};
     this.#triggerTimeoutMs = options.triggerTimeoutMs ?? 1000;
+    this.#singleCall = options.singleCallMutations ?? true;
     const missing = [...this.model.nodes.values()].flatMap((n) =>
       [...n.fields.values()].flatMap((f) =>
         f.kind === "scalar" &&
@@ -1543,6 +1545,7 @@ export class LoraGraphQL {
       callbacks: this.#callbacks,
       triggers: this.#triggers,
       triggerTimeoutMs: this.#triggerTimeoutMs,
+      singleCall: this.#singleCall,
       inTrigger: (context as LoraGraphQLContext | undefined)?.transaction
         ?.inTrigger,
       validators: this.#validators,

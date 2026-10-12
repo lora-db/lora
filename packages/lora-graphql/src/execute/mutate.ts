@@ -19,7 +19,7 @@ import { bind, newContext, type CompileContext } from "../compile/context.js";
 import { name, printExpr } from "../compile/cypher.js";
 import { keyOf } from "../compile/read/by-keys.js";
 import { collectFields, subSelections } from "../compile/selection.js";
-import type { DriverTransaction } from "../driver.js";
+import type { DriverTransaction, RunOptions } from "../driver.js";
 import { requestError } from "../errors.js";
 import type { NodeType, ScalarField } from "../model/types.js";
 import {
@@ -39,6 +39,12 @@ import {
   hasTriggers,
   runWriteTriggers,
 } from "./mutate/triggers.js";
+import {
+  LazyTransaction,
+  readCanBeRefused,
+  refused,
+  supportsAssert,
+} from "./mutate/single-call.js";
 import { validateInput } from "./mutate/validate.js";
 
 /** The payload's node selection, merged across aliases. */
@@ -80,6 +86,19 @@ function settleClaims(
   authValidate(probe, node, "n", op, "AFTER");
 }
 
+/** Whether a mutation must look up the caller's node key first. */
+function needsViewerKey(env: MutationEnv): boolean {
+  const mapping = env.model.viewer;
+  const viewerNode = mapping && env.model.nodes.get(mapping.type);
+  return !!(
+    mapping &&
+    viewerNode &&
+    mapping.field !== viewerNode.key.name &&
+    env.jwt &&
+    [...env.model.nodes.values()].some((n) => n.key.keyScope)
+  );
+}
+
 async function lookupViewerKey(
   env: MutationEnv,
   tx: DriverTransaction,
@@ -87,15 +106,7 @@ async function lookupViewerKey(
 ): Promise<unknown> {
   const mapping = env.model.viewer;
   const viewerNode = mapping && env.model.nodes.get(mapping.type);
-  if (
-    !mapping ||
-    !viewerNode ||
-    mapping.field === viewerNode.key.name ||
-    !env.jwt ||
-    ![...env.model.nodes.values()].some((n) => n.key.keyScope)
-  ) {
-    return undefined;
-  }
+  if (!needsViewerKey(env) || !mapping || !viewerNode) return undefined;
   const value = claim(ctx, mapping.claim);
   if (typeof value !== "string" && typeof value !== "number") return null;
   const field = viewerNode.fields.get(mapping.field);
@@ -215,13 +226,28 @@ export async function executeMutation(
   await validateInput(env.model, env.validators ?? {}, op, node, args);
   env = { ...env, computed: startCallbacks(env, op, node, args) };
 
+  const begin: RunOptions = {
+    mode: "write",
+    timeoutMs: env.timeoutMs,
+    signal: env.signal,
+  };
+  // A create may be one call into the database, committed as it returns:
+  // when nothing needs a decision between its statements and its commit
+  // that an assertion cannot make. The runner opens a real transaction
+  // if the plan turns out to need more than one round trip.
+  const single =
+    op === "CREATE" &&
+    !owned &&
+    env.singleCall !== false &&
+    !hasTriggers(env) &&
+    !readCanBeRefused(env.model) &&
+    !needsViewerKey(env) &&
+    (await supportsAssert(env.driver));
   const tx =
     owned ??
-    (await env.driver.begin!({
-      mode: "write",
-      timeoutMs: env.timeoutMs,
-      signal: env.signal,
-    }));
+    (single
+      ? new LazyTransaction(env.driver, begin)
+      : await env.driver.begin!(begin));
   const change = emptyChange(op, fieldName);
   // @key(scope: VIEWER) under a @viewer that maps to a non-key field (an
   // opaque subject): the key space is the caller's node's key, looked up
@@ -291,8 +317,9 @@ export async function executeMutation(
             keys,
           );
         await runner.apply(plan, () => {
-          if (!late) created = held(read());
-          unique = held(checkUniqueTogether(runner));
+          if (!late) created = runner.watch(read());
+          unique = runner.watch(checkUniqueTogether(runner));
+          runner.assertNothingMoved();
         });
         payload = {
           [mutationNames.createdField(node)]: await (created ?? read()),
@@ -427,8 +454,19 @@ export async function executeMutation(
     fillChange(change, runner);
     return { payload, change };
   } catch (err) {
+    runner.abandon(err);
     if (tx.isOpen) await tx.rollback();
-    throw err;
+    if (tx instanceof LazyTransaction && tx.committed) {
+      // Everything that can refuse a single-call mutation is a statement
+      // of the call. Reaching this means something refused it afterwards,
+      // when the write was already committed: a bug, and never silent.
+      throw new Error(
+        `lora-graphql: a single-call mutation failed after its commit (${err instanceof Error ? err.message : String(err)}); the write is in the database. Set singleCallMutations: false and report this`,
+        { cause: err },
+      );
+    }
+    // A rule that refused inside the database, as the error it stands for.
+    throw refused(env.model, err);
   }
 }
 

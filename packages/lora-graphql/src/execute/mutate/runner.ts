@@ -47,6 +47,7 @@ import { deleteNodes } from "./delete.js";
 import type { MutationEnv, MutationInfo } from "./env.js";
 import { OUTBOX } from "../../events/outbox.js";
 import { notConnected } from "./errors.js";
+import { LazyTransaction, refusal } from "./single-call.js";
 import {
   andText,
   arrow,
@@ -77,6 +78,17 @@ export class Runner {
   disconnected: RelationshipRef[] = [];
   /** Nodes updated per type, for AFTER validation. */
   updated = new Map<NodeType, { keys: unknown[]; fields: Set<string> }>();
+  /**
+   * Keys and unique values this mutation moved aside, for a single-call
+   * mutation to assert at its end that nothing was there to move.
+   */
+  #moved: Array<{
+    kind: "hidden" | "taken";
+    node: NodeType;
+    property: string;
+    field: string;
+    values: unknown[];
+  }> = [];
   /** Whether a trigger function was called: it may have closed the transaction. */
   triggerFunctionRan = false;
   /** Nodes a trigger added to the write-set: they fire no trigger. */
@@ -105,12 +117,44 @@ export class Runner {
   #unchecked: Array<Promise<QueryResult>> = [];
   /** Whether the queue waits for the next turn of the event loop. */
   #deferred = false;
+  /** Set by `abandon()`: the mutation failed, send nothing more. */
+  #abandoned = false;
 
   constructor(
     readonly env: MutationEnv,
     readonly tx: DriverTransaction,
     readonly change: WriteChange,
   ) {}
+
+  /** Whether the mutation is one call that commits as it returns. */
+  get single(): boolean {
+    return this.tx instanceof LazyTransaction && this.tx.single;
+  }
+
+  /** The mutation needs more than one round trip: open its transaction. */
+  async open(): Promise<void> {
+    if (this.tx instanceof LazyTransaction) await this.tx.open();
+  }
+
+  /**
+   * In a single call, what JavaScript would decide after the mutation's
+   * statements is their last statement instead: an assertion that no node
+   * sat under a key or a unique value this create moved aside. It is last,
+   * so any other error is still the one a free key gets.
+   */
+  assertNothingMoved(): void {
+    if (!this.single) return;
+    for (const { kind, node, property, field, values } of this.#moved) {
+      const ctx = this.ctx();
+      held(
+        this.run(
+          `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(property)} IN ${printExpr(bind(ctx, values))}\n` +
+            `RETURN assert(count(n) = 0, ${printExpr(lit(refusal(kind, node.name, field)))}) AS ok`,
+          ctx,
+        ),
+      );
+    }
+  }
 
   /**
    * Run `statement` in the transaction. Statements issued in the same
@@ -122,12 +166,23 @@ export class Runner {
    * followed by reads.
    */
   send(statement: Statement): Promise<QueryResult> {
+    if (this.#abandoned) {
+      return held(Promise.reject(new Error("the mutation was abandoned")));
+    }
     const result = new Promise<QueryResult>((resolve, reject) => {
       this.#queue.push({ statement, resolve, reject });
     });
     // Awaited later, or not at all when an earlier check throws first.
     result.catch(() => undefined);
-    if (this.#queue.length === 1) queueMicrotask(() => void this.#flush());
+    if (this.#queue.length === 1) {
+      // A single call commits with its batch, so the batch waits for the
+      // event loop to turn: whatever fails while the mutation is still
+      // being put together (a rule the claims settle, a selection that
+      // does not compile) has then been seen, and nothing is sent. No
+      // lock is held meanwhile: the transaction has not begun.
+      if (this.single) this.#deferred = true;
+      queueMicrotask(() => void this.#flush());
+    }
     this.env.onStatement?.(statement);
     return result;
   }
@@ -147,7 +202,27 @@ export class Runner {
     for (const pending of this.#unchecked.splice(0)) await pending;
   }
 
+  /**
+   * `pending`, safe to leave unawaited, and the mutation abandoned the
+   * moment it fails: before a batch still waiting to be sent goes out.
+   */
+  watch<T>(pending: Promise<T>): Promise<T> {
+    pending.catch((err: unknown) => this.abandon(err));
+    return pending;
+  }
+
+  /**
+   * The mutation failed: nothing queued is sent. A single call commits
+   * with its first batch, so a batch must not go out after the error that
+   * should have stopped it.
+   */
+  abandon(err: unknown): void {
+    this.#abandoned = true;
+    for (const queued of this.#queue.splice(0)) queued.reject(err);
+  }
+
   async #flush(): Promise<void> {
+    if (this.#abandoned) return;
     if (this.#deferred) {
       this.#deferred = false;
       nextTurn(() => void this.#flush());
@@ -217,12 +292,29 @@ export class Runner {
     for (const task of plan.pending) await task();
     this.assertBatch(plan);
     assertUniqueKeys(plan);
+    // One call only when every statement is known now: nothing but
+    // creates, and no @uniqueTogether to compare afterwards. Decided
+    // before anything is issued: the first batch of a single call commits.
+    if (
+      this.single &&
+      !(
+        plan.disconnects.length === 0 &&
+        plan.links.length === 0 &&
+        plan.edgeUpdates.length === 0 &&
+        plan.nodeUpdates.length === 0 &&
+        plan.nestedDeletes.length === 0 &&
+        this.disconnected.length === 0 &&
+        [...plan.creates.keys()].every((n) => n.uniqueTogether.length === 0)
+      )
+    ) {
+      await this.open();
+    }
     // Issued together, in this order: the moves precede the creates.
-    const creating = settled([
+    const creating = [
       this.moveHiddenKeys(plan),
       this.moveTakenUniques(plan),
       this.applyCreates(plan),
-    ]);
+    ].map((step) => this.watch(step));
     // A plan that only creates nodes has nothing between its creates and
     // its last checks, so all of it is one batch.
     const createsOnly =
@@ -245,7 +337,7 @@ export class Runner {
       await checkCardinality(this, plan);
       await checkRequired(this);
     }
-    const validating = held(this.validateCreated(plan));
+    const validating = this.watch(this.validateCreated(plan));
     tail?.();
     for (const step of creating) await step;
     await validating;
@@ -302,6 +394,13 @@ export class Runner {
       const visible = authFilter(ctx, node, "n", "READ");
       if (!visible) continue;
       const moves = rows.map((r) => ({ key: r.key, to: placeholderKey(node) }));
+      this.#moved.push({
+        kind: "hidden",
+        node,
+        property: node.key.property,
+        field: node.key.name,
+        values: moves.map((m) => m.to),
+      });
       const key = `n.${name(node.key.property)}`;
       moving.push([
         node,
@@ -349,6 +448,13 @@ export class Runner {
             to: `\u0000taken:${globalThis.crypto.randomUUID()}`,
           }));
         if (moves.length === 0) continue;
+        this.#moved.push({
+          kind: "taken",
+          node,
+          property: f.property,
+          field: f.name,
+          values: moves.map((m) => m.to),
+        });
         const ctx = this.ctx();
         const p = `n.${name(f.property)}`;
         moving.push([
@@ -1134,10 +1240,15 @@ export class Runner {
       }),
     );
     if (!rule) return;
+    // In a single call the rule refuses by failing the statement, which
+    // rolls the mutation back before its commit.
+    const ok = this.single
+      ? `assert(${printExpr(rule)}, ${printExpr(lit(refusal("forbidden", node.name, op)))})`
+      : printExpr(rule);
     const text =
       `UNWIND ${printExpr(bind(ctx, dedupe(keys)))} AS k\n` +
       `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = k\n` +
-      `RETURN n.${name(node.key.property)} AS key, ${printExpr(rule)} AS ok`;
+      `RETURN n.${name(node.key.property)} AS key, ${ok} AS ok`;
     const rows = await this.run(text, ctx);
     if (rows.some((r) => r["ok"] !== true)) throw forbidden(node, op);
   }

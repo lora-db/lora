@@ -320,7 +320,11 @@ describe("limits", () => {
     const driver: LoraDriver = {
       ...base,
       run: (statements, options) => {
-        if (statements[0]!.text.startsWith("UNWIND")) {
+        // The checks are reads; the create itself is a write batch.
+        if (
+          options.mode === "read" &&
+          statements[0]!.text.startsWith("UNWIND")
+        ) {
           timeouts.push(options.timeoutMs);
         }
         return base.run(statements, options);

@@ -1,6 +1,8 @@
-// A mutation holds the writer lock from begin() to commit(), so each call
-// into the transaction is a round trip under the lock. Statements that do
-// not need an earlier result go in one executeMany() call.
+// A mutation in a transaction holds the writer lock from begin() to
+// commit(), so each call into it is a round trip under the lock:
+// statements that do not need an earlier result go in one executeMany()
+// call. A create without relationship writes needs no transaction at
+// all: it is one write batch that commits as it returns.
 
 import { createDatabase } from "@loradb/lora-node";
 import { graphql, type GraphQLSchema } from "graphql";
@@ -28,12 +30,17 @@ const typeDefs = /* GraphQL */ `
 
 let schema: GraphQLSchema;
 /** Statements per call into the transaction, in order. */
-let calls: number[];
+let calls: number[] = [];
 
 /** `driver`, counting the calls each transaction receives. */
 function counting(driver: LoraDriver, many: boolean): LoraDriver {
   return {
     ...driver,
+    // A single-call mutation is one write batch, with no begin().
+    run: (statements, options) => {
+      if (options.mode === "write") calls.push(statements.length);
+      return driver.run(statements, options);
+    },
     begin: async (options) => {
       const tx = await driver.begin!(options);
       return {
@@ -120,12 +127,13 @@ test("a failing create in a batch reports its own error and writes nothing", asy
   expect(await run(`{ venues { key } }`)).toEqual({ venues: [{ key: "v1" }] });
 });
 
-test("a driver without executeMany runs the same statements one by one", async () => {
+test("a driver without executeMany runs a transaction's statements one by one", async () => {
   await setup(false);
+  // A create is a single write batch, which needs no executeMany.
   expect(await run(CREATE)).toEqual({
     createVenues: { venues: [{ key: "v1", name: "One" }] },
   });
-  expect(calls).toEqual([1, 1]);
+  expect(calls).toEqual([2]);
   expect(await run(UPDATE)).toEqual({
     updateVenue: { venue: { key: "v1", name: "Uno" } },
   });

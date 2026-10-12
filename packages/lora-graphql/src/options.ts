@@ -143,6 +143,16 @@ export interface LoraGraphQLOptions extends ModelOptions, ObservabilityOptions {
   /** Named callbacks for `@populatedBy(callback:)`. */
   callbacks?: Record<string, PopulatedByCallback>;
   /**
+   * Send a mutation whose statements are all known up front (today: a
+   * create without relationship writes, on a schema without triggers) as
+   * one call that begins, runs and commits, with its rule checks as
+   * `assert()` statements: the writer lock is then never held across a
+   * hop to the JavaScript thread. Needs a LoraDB with `assert()`; asked
+   * once, and without it every mutation keeps its transaction. Default
+   * true; false keeps every mutation in a transaction.
+   */
+  singleCallMutations?: boolean;
+  /**
    * Trigger functions per node type: `{ Comment: { create, update,
    * delete } }`. Each is called inside the transaction of a generated
    * mutation that wrote nodes of the type, after the type's `@trigger`
