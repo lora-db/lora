@@ -87,6 +87,18 @@ export declare class Database {
     timeoutMs?: number | null,
     cancelToken?: number | null,
   ): Promise<Buffer[]>;
+  /**
+   * Run statements in one read-write transaction on its own thread and
+   * commit, without waiting for the writer lock on a libuv worker.
+   */
+  writeTransaction(
+    statements: Array<{
+      query: string;
+      params?: Record<string, unknown> | null;
+    }>,
+    timeoutMs?: number | null,
+    cancelToken?: number | null,
+  ): Promise<Buffer[]>;
   /** Open an interactive transaction; resolves with its id. */
   beginTransaction(
     mode?:

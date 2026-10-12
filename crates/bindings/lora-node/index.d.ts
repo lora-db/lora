@@ -138,6 +138,14 @@ export declare class Database {
    * timeout bounds the whole batch.
    */
   txExecuteMany(txId: number, statements: Array<{ query: string; params?: Record<string, any> | null }>, timeoutMs?: number | null | undefined, cancelToken?: number | null | undefined): Promise<Buffer[]>
+  /**
+   * Run `statements` in one read-write transaction on its own thread and
+   * commit: the wait for the writer lock never occupies a libuv worker,
+   * and the lock is released before the JS thread hears of the result.
+   * The first failing statement rolls everything back. `timeout_ms`
+   * bounds the wait for the lock, and then the statements.
+   */
+  writeTransaction(statements: Array<{ query: string; params?: Record<string, any> | null }>, timeoutMs?: number | null | undefined, cancelToken?: number | null | undefined): Promise<Buffer[]>
   /** Commit (`commit = true`) or roll back interactive transaction `tx_id`. */
   txFinish(txId: number, commit: boolean): Promise<void>
   /**

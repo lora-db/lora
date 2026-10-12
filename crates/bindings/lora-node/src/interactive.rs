@@ -64,6 +64,9 @@ enum Command {
     ExecuteMany {
         statements: Vec<(String, BTreeMap<String, LoraValue>)>,
         limit: QueryLimit,
+        /// Commit once every statement has run, before answering: the
+        /// writer lock is then never held across a hop to the JS thread.
+        commit: bool,
         done: Done<Vec<QueryResult>>,
     },
     Commit {
@@ -201,6 +204,24 @@ impl TxActor {
         self.send(Command::ExecuteMany {
             statements,
             limit,
+            commit: false,
+            done,
+        })
+    }
+
+    /// [`Self::execute_many`], then commit in the same step. The command
+    /// may be sent before the transaction is open: it runs as soon as the
+    /// actor holds the writer lock.
+    pub(crate) fn execute_many_and_commit(
+        &self,
+        statements: Vec<(String, BTreeMap<String, LoraValue>)>,
+        limit: QueryLimit,
+        done: Done<Vec<QueryResult>>,
+    ) {
+        self.send(Command::ExecuteMany {
+            statements,
+            limit,
+            commit: true,
             done,
         })
     }
@@ -302,6 +323,7 @@ fn run(
             Command::ExecuteMany {
                 statements,
                 limit,
+                commit,
                 done,
             } => {
                 let deadline = limit.deadline();
@@ -328,6 +350,12 @@ fn run(
                     }
                 }
                 match failure {
+                    None if commit => {
+                        let committed = tx.commit().map_err(|e| format_lora_error(&e));
+                        lifecycle.ending();
+                        done.call(committed.map(|()| results));
+                        return;
+                    }
                     None => done.call(Ok(results)),
                     Some(message) => {
                         // Same as a failed `Execute`: the transaction is

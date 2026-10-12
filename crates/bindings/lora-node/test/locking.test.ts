@@ -118,3 +118,67 @@ describe("database directory lock", () => {
     expect(await openInChild(dir)).toEqual({ ok: true, message: "" });
   });
 });
+
+describe("transaction() writes wait for the lock on their own thread", () => {
+  it("queued write batches do not take the libuv pool from reads", async () => {
+    const db = await createDatabase();
+    await db.execute("CREATE (:Seed {id: 0})");
+    const holder = await db.begin();
+    // More than the default libuv pool of 4.
+    const writes = Array.from({ length: 12 }, (_, i) =>
+      db.transaction([{ query: "CREATE (:W {id: $i})", params: { i } }]),
+    );
+    // A read runs on a libuv worker: it must not queue behind the writes.
+    const started = Date.now();
+    const { rows } = await db.execute(
+      "MATCH (s:Seed) RETURN count(s) AS c",
+      {},
+      { timeoutMs: 3000 },
+    );
+    expect(rows[0].c).toBe(1);
+    expect(Date.now() - started).toBeLessThan(1500);
+    await holder.commit();
+    await Promise.all(writes);
+    const after = await db.execute("MATCH (w:W) RETURN count(w) AS c");
+    expect(after.rows[0].c).toBe(12);
+  });
+
+  it("commits every statement or none, naming the one that failed", async () => {
+    const db = await createDatabase();
+    const [created, counted] = await db.transaction([
+      { query: "CREATE (:T {id: 1})" },
+      { query: "MATCH (t:T) RETURN count(t) AS c" },
+    ]);
+    expect(created.rows).toEqual([]);
+    expect(counted.rows[0].c).toBe(1);
+    const err = await db
+      .transaction([
+        { query: "CREATE (:T {id: 2})" },
+        { query: "RETURN assert(1 = 2, 'refused') AS ok" },
+        { query: "CREATE (:T {id: 3})" },
+      ])
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error,
+      );
+    expect(err?.message).toContain("assertion failed: refused");
+    expect(err?.message).toContain("(statement 2 of 3)");
+    const { rows } = await db.execute("MATCH (t:T) RETURN count(t) AS c");
+    expect(rows[0].c).toBe(1);
+  });
+
+  it("gives up waiting for the lock at timeoutMs", async () => {
+    const db = await createDatabase();
+    const holder = await db.begin();
+    const err = await db
+      .transaction([{ query: "CREATE (:T)" }], "read_write", { timeoutMs: 50 })
+      .then(
+        () => undefined,
+        (e: unknown) => e as { code?: string },
+      );
+    expect(err?.code).toBe("LORA_TIMEOUT");
+    await holder.commit();
+    const { rows } = await db.execute("MATCH (t:T) RETURN count(t) AS c");
+    expect(rows[0].c).toBe(0);
+  });
+});

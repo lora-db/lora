@@ -647,6 +647,82 @@ impl Database {
         Ok(promise)
     }
 
+    /// Run `statements` in one read-write transaction on its own thread and
+    /// commit: the wait for the writer lock never occupies a libuv worker,
+    /// and the lock is released before the JS thread hears of the result.
+    /// The first failing statement rolls everything back. `timeout_ms`
+    /// bounds the wait for the lock, and then the statements.
+    #[napi(ts_return_type = "Promise<Buffer[]>")]
+    pub fn write_transaction(
+        &self,
+        env: Env,
+        #[napi(ts_arg_type = "Array<{ query: string; params?: Record<string, any> | null }>")]
+        statements: serde_json::Value,
+        #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
+        #[napi(ts_arg_type = "number | null | undefined")] cancel_token: Option<u32>,
+    ) -> Result<JsObject> {
+        let statements: Vec<_> = tasks::parse_transaction_statements(statements)?
+            .into_iter()
+            .map(|st| (st.query, st.params))
+            .collect();
+        let limit = self.limit(timeout_ms, cancel_token)?;
+        let deadline = limit.deadline();
+        let db = self.inner()?;
+        let mut txs = self
+            .txs
+            .lock()
+            .map_err(|_| NapiError::new(Status::GenericFailure, "transaction registry poisoned"))?;
+        let id = self.next_tx_id.fetch_add(1, Ordering::Relaxed);
+        let (deferred, promise) = env.create_deferred::<Vec<Buffer>, Resolver<Vec<Buffer>>>()?;
+        // Settled once: by a failed open (the lock was not free in time,
+        // the database was disposed) or by the batch.
+        let deferred = Arc::new(Mutex::new(Some(deferred)));
+        let opening = deferred.clone();
+        let actor = Arc::new(interactive::TxActor::spawn(
+            db,
+            lora_database::TransactionMode::ReadWrite,
+            deadline,
+            interactive::done(move |opened| {
+                if let Err(message) = opened {
+                    let taken = opening.lock().ok().and_then(|mut d| d.take());
+                    if let Some(deferred) = taken {
+                        deferred.resolve(Box::new(move |_env| Err(interactive::napi_err(message))));
+                    }
+                }
+            }),
+        ));
+        let registry = self.txs.clone();
+        // The handle rides along to the JS thread and is dropped there,
+        // after the actor has finished (see `tx_finish`).
+        let keep = actor.clone();
+        actor.execute_many_and_commit(
+            statements,
+            limit,
+            interactive::done::<Vec<lora_database::QueryResult>>(move |result| {
+                let encoded = result.map(|results| {
+                    results
+                        .into_iter()
+                        .map(tasks::encode_query_result_rowarrays)
+                        .collect::<Result<Vec<_>>>()
+                });
+                let taken = deferred.lock().ok().and_then(|mut d| d.take());
+                let Some(deferred) = taken else {
+                    return;
+                };
+                deferred.resolve(Box::new(move |_env| {
+                    forget_tx(&registry, id);
+                    drop(keep);
+                    match encoded {
+                        Ok(buffers) => Ok(buffers?.into_iter().map(Buffer::from).collect()),
+                        Err(message) => Err(interactive::napi_err(message)),
+                    }
+                }))
+            }),
+        );
+        txs.insert(id, actor);
+        Ok(promise)
+    }
+
     /// Commit (`commit = true`) or roll back interactive transaction `tx_id`.
     #[napi(ts_return_type = "Promise<void>")]
     pub fn tx_finish(&self, env: Env, tx_id: u32, commit: bool) -> Result<JsObject> {

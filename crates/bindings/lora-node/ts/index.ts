@@ -928,7 +928,10 @@ class DatabaseImpl {
    *
    * Results are returned in statement order. If any statement fails, the
    * native transaction is dropped before commit and all prior writes in the
-   * batch are rolled back.
+   * batch are rolled back; the error of a failing statement of a
+   * read-write batch ends with `(statement i of n)`. `options.timeoutMs`
+   * bounds a read-write batch's wait for the writer lock, and then its
+   * statements.
    */
   async transaction<
     T extends Record<string, LoraValue> = Record<string, LoraValue>,
@@ -941,8 +944,15 @@ class DatabaseImpl {
       const encoded = statements.map((st) =>
         st.params == null ? st : { ...st, params: encodeParams(st.params) },
       );
+      // A write waits for the writer lock on a thread of its own: on a
+      // libuv worker, a few queued writes would take the whole pool and
+      // every read would wait behind them.
+      const write =
+        mode === "read_write" || mode === "readwrite" || mode === "rw";
       const buffers = await this.#limited(options, (timeoutMs, token) =>
-        this.#inner.transaction(encoded, mode, timeoutMs, token),
+        write
+          ? this.#inner.writeTransaction(encoded, timeoutMs, token)
+          : this.#inner.transaction(encoded, mode, timeoutMs, token),
       );
       return buffers.map((buf) => decodeResult(buf)) as Array<QueryResult<T>>;
     } catch (err) {

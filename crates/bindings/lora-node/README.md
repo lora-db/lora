@@ -102,6 +102,23 @@ with the signal's reason at once; if the transaction opens afterwards it
 is rolled back. Both bound the wait, not the transaction: one that is
 opened and never finished holds the lock until it is disposed.
 
+`db.transaction(statements)` runs a batch in one transaction and commits:
+the whole thing is one call. A read-write batch waits for the writer lock
+on a thread of its own, never on a libuv worker, so any number of queued
+write batches leave reads running. The lock is released before
+JavaScript hears of the result. Pair it with `assert(condition,
+message)`, which fails the statement and so rolls the batch back, to
+change data and check the outcome without a round trip:
+
+```ts
+await db.transaction([
+  { query: "MATCH (a:Account {id: $id}) SET a.balance = a.balance - $n", params: { id, n } },
+  { query: "MATCH (a:Account {id: $id}) RETURN assert(a.balance >= 0, 'insufficient funds')", params: { id } },
+]);
+```
+
+The error of a failing statement ends with `(statement i of n)`.
+
 `tx.executeMany()` runs several statements in one native call and returns
 their results in order, saving the round trip each `execute()` costs
 (about 0.1 ms per statement down to 0.03 ms). Each statement sees the
