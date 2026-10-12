@@ -404,6 +404,7 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                     pattern: resolved_pattern,
                     where_: resolved_where.map(Box::new),
                     reads: Vec::new(),
+                    seeks: Vec::new(),
                 };
                 fill_subquery_reads(&mut expr);
                 Ok(expr)
@@ -432,6 +433,7 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                     where_: resolved_where.map(Box::new),
                     map_expr: Box::new(resolved_map),
                     reads: Vec::new(),
+                    seeks: Vec::new(),
                 };
                 fill_subquery_reads(&mut expr);
                 Ok(expr)
@@ -441,14 +443,27 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
 }
 
 /// Record on a pattern subquery the variables it uses, so the executor can
-/// hand it only those bindings without walking the expression per row.
+/// hand it only those bindings without walking the expression per row, and
+/// the WHERE conjuncts it can seek a node by.
 fn fill_subquery_reads(expr: &mut ResolvedExpr) {
     let mut vars = std::collections::BTreeSet::new();
     expr.collect_vars(&mut vars);
-    if let ResolvedExpr::ExistsSubquery { reads, .. }
-    | ResolvedExpr::PatternComprehension { reads, .. } = expr
+    if let ResolvedExpr::ExistsSubquery {
+        pattern,
+        where_,
+        reads,
+        seeks,
+    }
+    | ResolvedExpr::PatternComprehension {
+        pattern,
+        where_,
+        reads,
+        seeks,
+        ..
+    } = expr
     {
         *reads = vars.into_iter().collect();
+        *seeks = crate::PatternSeek::collect(pattern, where_.as_deref());
     }
 }
 

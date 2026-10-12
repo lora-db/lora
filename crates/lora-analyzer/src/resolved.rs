@@ -229,6 +229,14 @@ pub struct ResolvedNode {
     pub properties: Option<ResolvedExpr>,
 }
 
+/// A node pattern of a [`ResolvedPattern`], whichever element holds it.
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedNodeRef<'a> {
+    pub var: Option<VarId>,
+    pub labels: &'a [Vec<String>],
+    pub properties: Option<&'a ResolvedExpr>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedChain {
     pub rel: ResolvedRel,
@@ -313,6 +321,9 @@ pub enum ResolvedExpr {
         /// [`ResolvedExpr::collect_vars`]), sorted: the outer bindings the
         /// subquery can read, computed once so evaluation need not walk it.
         reads: Vec<VarId>,
+        /// WHERE conjuncts that pin a property of one of the pattern's
+        /// nodes (see [`PatternSeek`]).
+        seeks: Vec<PatternSeek>,
     },
     PatternComprehension {
         pattern: ResolvedPattern,
@@ -321,7 +332,95 @@ pub enum ResolvedExpr {
         /// Every variable the pattern, WHERE and projection use, as for
         /// [`ResolvedExpr::ExistsSubquery`].
         reads: Vec<VarId>,
+        /// As for [`ResolvedExpr::ExistsSubquery`].
+        seeks: Vec<PatternSeek>,
     },
+}
+
+/// A WHERE conjunct of a pattern subquery that pins a property of one of
+/// the pattern's nodes to a value the pattern does not bind:
+/// `p.key = $key`, `p.key IN $keys`, `p.key STARTS WITH $prefix`. When the
+/// row does not already bind `var`, the executor finds that node's
+/// candidates through the property's index instead of scanning its label,
+/// as `MATCH` does for the same WHERE. The WHERE itself still judges every
+/// match, so a seek only ever narrows where matching starts.
+#[derive(Debug, Clone)]
+pub struct PatternSeek {
+    pub var: VarId,
+    pub key: String,
+    pub kind: PatternSeekKind,
+    pub value: ResolvedExpr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatternSeekKind {
+    Equals,
+    In,
+    StartsWith,
+}
+
+impl PatternSeek {
+    /// The seekable conjuncts of `where_` over the nodes of `pattern`, in
+    /// WHERE order.
+    pub fn collect(pattern: &ResolvedPattern, where_: Option<&ResolvedExpr>) -> Vec<PatternSeek> {
+        let Some(where_) = where_ else {
+            return Vec::new();
+        };
+        let mut pattern_vars = BTreeSet::new();
+        pattern.collect_vars(&mut pattern_vars);
+        let node_vars: BTreeSet<VarId> = pattern.nodes().filter_map(|node| node.var).collect();
+        // `var.key` of a pattern node, against a value no pattern variable
+        // feeds: it is known before the pattern matches anything.
+        let property = |expr: &ResolvedExpr| match expr {
+            ResolvedExpr::Property { expr, property } => match expr.as_ref() {
+                ResolvedExpr::Variable(var) if node_vars.contains(var) => {
+                    Some((*var, property.clone()))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let outer = |expr: &ResolvedExpr| {
+            let mut reads = BTreeSet::new();
+            expr.collect_vars(&mut reads);
+            reads.is_disjoint(&pattern_vars)
+        };
+
+        let mut seeks = Vec::new();
+        let mut stack = vec![where_];
+        while let Some(expr) = stack.pop() {
+            let ResolvedExpr::Binary { lhs, op, rhs } = expr else {
+                continue;
+            };
+            let kind = match op {
+                BinaryOp::And => {
+                    stack.push(rhs);
+                    stack.push(lhs);
+                    continue;
+                }
+                BinaryOp::Eq => PatternSeekKind::Equals,
+                BinaryOp::In => PatternSeekKind::In,
+                BinaryOp::StartsWith => PatternSeekKind::StartsWith,
+                _ => continue,
+            };
+            let pinned = match (property(lhs), property(rhs)) {
+                (Some((var, key)), _) if outer(rhs) => Some((var, key, rhs)),
+                (_, Some((var, key))) if kind == PatternSeekKind::Equals && outer(lhs) => {
+                    Some((var, key, lhs))
+                }
+                _ => None,
+            };
+            if let Some((var, key, value)) = pinned {
+                seeks.push(PatternSeek {
+                    var,
+                    key,
+                    kind,
+                    value: (**value).clone(),
+                });
+            }
+        }
+        seeks
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -479,7 +578,142 @@ impl ResolvedExpr {
     }
 }
 
+impl ResolvedExpr {
+    /// Call `visit` on this expression and every expression inside it,
+    /// parents first, including the property maps, WHERE and projection of
+    /// pattern subqueries.
+    pub fn walk(&self, visit: &mut dyn FnMut(&ResolvedExpr)) {
+        visit(self);
+        let mut go = |e: &ResolvedExpr| e.walk(visit);
+        match self {
+            ResolvedExpr::Variable(_) | ResolvedExpr::Literal(_) | ResolvedExpr::Parameter(_) => {}
+            ResolvedExpr::Property { expr, .. } | ResolvedExpr::Unary { expr, .. } => go(expr),
+            ResolvedExpr::Binary { lhs, rhs, .. } => {
+                go(lhs);
+                go(rhs);
+            }
+            ResolvedExpr::Function { args, .. } => args.iter().for_each(go),
+            ResolvedExpr::List(items) => items.iter().for_each(go),
+            ResolvedExpr::Map(items) => items.iter().for_each(|(_, v)| go(v)),
+            ResolvedExpr::Case {
+                input,
+                alternatives,
+                else_expr,
+            } => {
+                input.iter().for_each(|e| go(e));
+                for (when, then) in alternatives {
+                    go(when);
+                    go(then);
+                }
+                else_expr.iter().for_each(|e| go(e));
+            }
+            ResolvedExpr::ListPredicate {
+                list, predicate, ..
+            } => {
+                go(list);
+                go(predicate);
+            }
+            ResolvedExpr::ListComprehension {
+                list,
+                filter,
+                map_expr,
+                ..
+            } => {
+                go(list);
+                filter.iter().for_each(|e| go(e));
+                map_expr.iter().for_each(|e| go(e));
+            }
+            ResolvedExpr::Reduce {
+                init, list, expr, ..
+            } => {
+                go(init);
+                go(list);
+                go(expr);
+            }
+            ResolvedExpr::MapProjection { base, selectors } => {
+                go(base);
+                for selector in selectors {
+                    if let ResolvedMapSelector::Literal(_, e) = selector {
+                        go(e);
+                    }
+                }
+            }
+            ResolvedExpr::Index { expr, index } => {
+                go(expr);
+                go(index);
+            }
+            ResolvedExpr::Slice { expr, from, to } => {
+                go(expr);
+                from.iter().for_each(|e| go(e));
+                to.iter().for_each(|e| go(e));
+            }
+            ResolvedExpr::ExistsSubquery {
+                pattern, where_, ..
+            } => {
+                pattern.property_maps().for_each(&mut go);
+                where_.iter().for_each(|e| go(e));
+            }
+            ResolvedExpr::PatternComprehension {
+                pattern,
+                where_,
+                map_expr,
+                ..
+            } => {
+                pattern.property_maps().for_each(&mut go);
+                where_.iter().for_each(|e| go(e));
+                go(map_expr);
+            }
+        }
+    }
+}
+
 impl ResolvedPattern {
+    /// The pattern's node patterns, in written order.
+    pub fn nodes(&self) -> impl Iterator<Item = ResolvedNodeRef<'_>> {
+        self.parts.iter().flat_map(|part| {
+            let (single, head, chain) = match &part.element {
+                ResolvedPatternElement::Node {
+                    var,
+                    labels,
+                    properties,
+                } => (
+                    Some(ResolvedNodeRef {
+                        var: *var,
+                        labels,
+                        properties: properties.as_ref(),
+                    }),
+                    None,
+                    &[][..],
+                ),
+                ResolvedPatternElement::NodeChain { head, chain }
+                | ResolvedPatternElement::ShortestPath { head, chain, .. } => {
+                    (None, Some(head), chain.as_slice())
+                }
+            };
+            single.into_iter().chain(
+                head.into_iter()
+                    .chain(chain.iter().map(|step| &step.node))
+                    .map(|node| ResolvedNodeRef {
+                        var: node.var,
+                        labels: &node.labels,
+                        properties: node.properties.as_ref(),
+                    }),
+            )
+        })
+    }
+
+    /// The inline property maps of the pattern's nodes and relationships.
+    fn property_maps(&self) -> impl Iterator<Item = &ResolvedExpr> {
+        let rels = self.parts.iter().flat_map(|part| match &part.element {
+            ResolvedPatternElement::Node { .. } => &[][..],
+            ResolvedPatternElement::NodeChain { chain, .. }
+            | ResolvedPatternElement::ShortestPath { chain, .. } => chain.as_slice(),
+        });
+        self.nodes()
+            .filter_map(|node| node.properties)
+            .chain(rels.filter_map(|step| step.rel.properties.as_ref()))
+    }
+
     /// Every variable the pattern binds or names, and those its property
     /// maps read.
     pub fn collect_vars(&self, out: &mut BTreeSet<VarId>) {

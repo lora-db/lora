@@ -15,7 +15,7 @@ use lora_store::{GraphStorage, NodeId, RelationshipId};
 use crate::errors::{value_kind, ExecResult, ExecutorError};
 use crate::eval::eval_expr;
 use crate::executor::{
-    bound_node_id_for_expand, bound_relationship_id_for_expand, resolve_range,
+    bound_node_id_for_expand, bound_relationship_id_for_expand, expand_source_id, resolve_range,
     value_matches_property_value,
 };
 use crate::value::{LoraValue, Row};
@@ -86,7 +86,7 @@ impl<'a, S: GraphStorage> RowSource for ExpandSource<'a, S> {
                     Some(row) => {
                         // Resolve src now so we can `continue` out of
                         // rows that don't bind it.
-                        let Some(src_id) = bound_node_id_for_expand(&row, self.src)? else {
+                        let Some(src_id) = expand_source_id(&row, self.src)? else {
                             continue;
                         };
                         self.cur_edges =
@@ -364,7 +364,7 @@ impl<'a, S: GraphStorage> RowSource for VariableLengthExpandSource<'a, S> {
             if self.cur_row.is_none() {
                 match self.upstream.next_row()? {
                     Some(row) => {
-                        let Some(src_id) = bound_node_id_for_expand(&row, self.src)? else {
+                        let Some(src_id) = expand_source_id(&row, self.src)? else {
                             continue;
                         };
                         let bound_dst = bound_node_id_for_expand(&row, self.dst)?;

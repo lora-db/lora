@@ -15,7 +15,7 @@
 use crate::value::LoraPath;
 use crate::value::{LoraValue, Row};
 use lora_analyzer::symbols::VarId;
-use lora_analyzer::{LiteralValue, ResolvedExpr, ResolvedMapSelector};
+use lora_analyzer::{LiteralValue, PatternSeek, ResolvedExpr, ResolvedMapSelector};
 use lora_ast::{BinaryOp, ListPredicateKind};
 use lora_store::GraphStorage;
 use std::borrow::Cow;
@@ -362,14 +362,18 @@ pub fn eval_expr<S: GraphStorage>(
             pattern,
             where_,
             reads,
-        } => eval_exists_subquery(pattern, where_.as_deref(), reads, row, ctx),
+            seeks,
+        } => eval_exists_subquery(pattern, where_.as_deref(), reads, seeks, row, ctx),
 
         ResolvedExpr::PatternComprehension {
             pattern,
             where_,
             map_expr,
             reads,
-        } => eval_pattern_comprehension(pattern, where_.as_deref(), map_expr, reads, row, ctx),
+            seeks,
+        } => {
+            eval_pattern_comprehension(pattern, where_.as_deref(), map_expr, reads, seeks, row, ctx)
+        }
     }
 }
 
@@ -410,11 +414,10 @@ fn eval_exists_subquery<S: GraphStorage>(
     pattern: &lora_analyzer::ResolvedPattern,
     where_: Option<&ResolvedExpr>,
     reads: &[VarId],
+    seeks: &[PatternSeek],
     row: &Row,
     ctx: &EvalContext<'_, S>,
 ) -> LoraValue {
-    use lora_analyzer::ResolvedPatternElement;
-
     if pattern.parts.is_empty() {
         return LoraValue::Bool(exists_candidate_matches(where_, row, ctx));
     }
@@ -424,135 +427,28 @@ fn eval_exists_subquery<S: GraphStorage>(
     // Match on a row holding only what the subquery reads: every candidate
     // clones it, and the outer row may carry large values (collected lists).
     let mut candidate_rows = vec![scoped_row(row, reads)];
+    let last_part = pattern.parts.len() - 1;
 
     for (part_idx, part) in pattern.parts.iter().enumerate() {
-        let is_last_part = part_idx + 1 == pattern.parts.len();
         let mut next_rows = Vec::new();
+        let mut found = false;
         for current_row in &candidate_rows {
             if eval_deadline_hit() {
                 return LoraValue::Null;
             }
-            match &part.element {
-                ResolvedPatternElement::Node {
-                    var,
-                    labels,
-                    properties,
-                } => {
-                    let tmp_node = lora_analyzer::ResolvedNode {
-                        var: *var,
-                        labels: labels.clone(),
-                        properties: properties.clone(),
-                    };
-                    let matched_rows = match_node_pattern(&tmp_node, current_row, ctx);
-                    if is_last_part {
-                        if matched_rows
-                            .iter()
-                            .any(|r| exists_candidate_matches(where_, r, ctx))
-                        {
-                            return LoraValue::Bool(true);
-                        }
-                    } else {
-                        next_rows.extend(matched_rows);
-                    }
+            match_pattern_part(part, current_row, seeks, ctx, &mut |rows| {
+                if part_idx == last_part {
+                    found = rows
+                        .iter()
+                        .any(|r| exists_candidate_matches(where_, r, ctx));
+                    !found
+                } else {
+                    next_rows.extend(rows);
+                    true
                 }
-                ResolvedPatternElement::ShortestPath { head, chain, .. }
-                | ResolvedPatternElement::NodeChain { head, chain } => {
-                    let head_rows = match_node_pattern(head, current_row, ctx);
-                    for hr in head_rows {
-                        let mut frontier = vec![hr];
-                        for step in chain {
-                            let mut step_rows = Vec::new();
-                            for fr in &frontier {
-                                let src_node_id = find_last_node_in_row(fr, head.var, chain, step);
-                                // If the destination variable is already
-                                // bound (e.g. via the outer scope), restrict
-                                // expansion to that node id so EXISTS /
-                                // NOT EXISTS check connectivity to the
-                                // pre-bound endpoint rather than to any
-                                // arbitrary neighbour.
-                                let dst_bound = step.node.var.and_then(|v| match fr.get(v) {
-                                    Some(LoraValue::Node(id)) => Some(*id),
-                                    _ => None,
-                                });
-                                if let Some(range) = &step.rel.range {
-                                    if let Some(sid) = src_node_id {
-                                        expand_var_length_step(
-                                            sid,
-                                            step,
-                                            range,
-                                            fr,
-                                            ctx,
-                                            &mut step_rows,
-                                        );
-                                    }
-                                    continue;
-                                }
-                                if let Some(sid) = src_node_id {
-                                    let _ = ctx.storage.try_for_each_expand_id(
-                                        sid,
-                                        step.rel.direction,
-                                        &step.rel.types,
-                                        |rel_id, dst_id| {
-                                            if eval_deadline_hit() {
-                                                return Err(());
-                                            }
-                                            if let Some(bound) = dst_bound {
-                                                if dst_id != bound {
-                                                    return Ok::<(), ()>(());
-                                                }
-                                            }
-                                            let matched = ctx
-                                                .storage
-                                                .with_node(dst_id, |dst| {
-                                                    crate::executor::node_matches_label_groups(
-                                                        dst.labels(),
-                                                        &step.node.labels,
-                                                    ) && node_matches_properties(
-                                                        dst.properties(),
-                                                        &step.node.properties,
-                                                        fr,
-                                                        ctx,
-                                                    )
-                                                })
-                                                .unwrap_or(false);
-                                            if !matched {
-                                                return Ok::<(), ()>(());
-                                            }
-                                            if !rel_matches_properties(
-                                                rel_id,
-                                                &step.rel.properties,
-                                                fr,
-                                                ctx,
-                                            ) {
-                                                return Ok(());
-                                            }
-                                            let mut r = fr.clone();
-                                            if let Some(rv) = step.rel.var {
-                                                r.insert(rv, LoraValue::Relationship(rel_id));
-                                            }
-                                            if let Some(nv) = step.node.var {
-                                                r.insert(nv, LoraValue::Node(dst_id));
-                                            }
-                                            step_rows.push(r);
-                                            Ok(())
-                                        },
-                                    );
-                                }
-                            }
-                            frontier = step_rows;
-                        }
-                        if is_last_part {
-                            if frontier
-                                .iter()
-                                .any(|r| exists_candidate_matches(where_, r, ctx))
-                            {
-                                return LoraValue::Bool(true);
-                            }
-                        } else {
-                            next_rows.extend(frontier);
-                        }
-                    }
-                }
+            });
+            if found {
+                return LoraValue::Bool(true);
             }
         }
         if next_rows.is_empty() {
@@ -579,6 +475,7 @@ fn eval_pattern_comprehension<S: GraphStorage>(
     where_: Option<&ResolvedExpr>,
     map_expr: &ResolvedExpr,
     reads: &[VarId],
+    seeks: &[PatternSeek],
     row: &Row,
     ctx: &EvalContext<'_, S>,
 ) -> LoraValue {
@@ -594,110 +491,10 @@ fn eval_pattern_comprehension<S: GraphStorage>(
             if eval_deadline_hit() {
                 return LoraValue::Null;
             }
-            match &part.element {
-                lora_analyzer::ResolvedPatternElement::Node {
-                    var,
-                    labels,
-                    properties,
-                } => {
-                    let tmp_node = lora_analyzer::ResolvedNode {
-                        var: *var,
-                        labels: labels.clone(),
-                        properties: properties.clone(),
-                    };
-                    next_rows.extend(match_node_pattern(&tmp_node, current_row, ctx));
-                }
-                lora_analyzer::ResolvedPatternElement::ShortestPath { head, chain, .. }
-                | lora_analyzer::ResolvedPatternElement::NodeChain { head, chain } => {
-                    let head_rows = match_node_pattern(head, current_row, ctx);
-                    for hr in head_rows {
-                        let mut frontier = vec![hr];
-                        for step in chain {
-                            let mut step_rows = Vec::new();
-                            for fr in &frontier {
-                                let src_node_id = find_last_node_in_row(fr, head.var, chain, step);
-                                // A destination (or relationship) already
-                                // bound by the outer row, or earlier in this
-                                // pattern, restricts the expansion to it.
-                                let dst_bound = step.node.var.and_then(|v| match fr.get(v) {
-                                    Some(LoraValue::Node(id)) => Some(*id),
-                                    _ => None,
-                                });
-                                let rel_bound = step.rel.var.and_then(|v| match fr.get(v) {
-                                    Some(LoraValue::Relationship(id)) => Some(*id),
-                                    _ => None,
-                                });
-                                if let Some(range) = &step.rel.range {
-                                    if let Some(sid) = src_node_id {
-                                        expand_var_length_step(
-                                            sid,
-                                            step,
-                                            range,
-                                            fr,
-                                            ctx,
-                                            &mut step_rows,
-                                        );
-                                    }
-                                    continue;
-                                }
-                                if let Some(sid) = src_node_id {
-                                    let _ = ctx.storage.try_for_each_expand_id(
-                                        sid,
-                                        step.rel.direction,
-                                        &step.rel.types,
-                                        |rel_id, dst_id| {
-                                            if eval_deadline_hit() {
-                                                return Err(());
-                                            }
-                                            if dst_bound.is_some_and(|bound| bound != dst_id)
-                                                || rel_bound.is_some_and(|bound| bound != rel_id)
-                                            {
-                                                return Ok::<(), ()>(());
-                                            }
-                                            let matched = ctx
-                                                .storage
-                                                .with_node(dst_id, |dst| {
-                                                    crate::executor::node_matches_label_groups(
-                                                        dst.labels(),
-                                                        &step.node.labels,
-                                                    ) && node_matches_properties(
-                                                        dst.properties(),
-                                                        &step.node.properties,
-                                                        fr,
-                                                        ctx,
-                                                    )
-                                                })
-                                                .unwrap_or(false);
-                                            if !matched {
-                                                return Ok::<(), ()>(());
-                                            }
-                                            if !rel_matches_properties(
-                                                rel_id,
-                                                &step.rel.properties,
-                                                fr,
-                                                ctx,
-                                            ) {
-                                                return Ok(());
-                                            }
-                                            let mut r = fr.clone();
-                                            if let Some(rv) = step.rel.var {
-                                                r.insert(rv, LoraValue::Relationship(rel_id));
-                                            }
-                                            if let Some(nv) = step.node.var {
-                                                r.insert(nv, LoraValue::Node(dst_id));
-                                            }
-                                            step_rows.push(r);
-                                            Ok(())
-                                        },
-                                    );
-                                }
-                            }
-                            frontier = step_rows;
-                        }
-                        next_rows.extend(frontier);
-                    }
-                }
-            }
+            match_pattern_part(part, current_row, seeks, ctx, &mut |rows| {
+                next_rows.extend(rows);
+                true
+            });
         }
         candidate_rows = next_rows;
     }
@@ -740,42 +537,330 @@ fn scoped_row(row: &Row, reads: &[VarId]) -> Row {
     scoped
 }
 
-fn match_node_pattern<S: GraphStorage>(
-    node: &lora_analyzer::ResolvedNode,
+/// What a row says about a variable a pattern subquery names.
+enum Binding<T> {
+    /// Nothing yet: the pattern binds it.
+    Free,
+    /// An entity the pattern must match on.
+    Bound(T),
+    /// `null` (an OPTIONAL MATCH that found nothing, `head([])`), or a
+    /// value that is no node or relationship: the pattern matches nothing,
+    /// as in openCypher. It must not read as free, which would match the
+    /// pattern for every node there is.
+    Nothing,
+}
+
+fn node_binding(row: &Row, var: Option<VarId>) -> Binding<lora_store::NodeId> {
+    match var.and_then(|var| row.get(var)) {
+        None => Binding::Free,
+        Some(LoraValue::Node(id)) => Binding::Bound(*id),
+        Some(_) => Binding::Nothing,
+    }
+}
+
+fn relationship_binding(row: &Row, var: Option<VarId>) -> Binding<lora_store::RelationshipId> {
+    match var.and_then(|var| row.get(var)) {
+        None => Binding::Free,
+        Some(LoraValue::Relationship(id)) => Binding::Bound(*id),
+        Some(_) => Binding::Nothing,
+    }
+}
+
+/// As [`relationship_binding`], for the list a variable-length
+/// relationship binds.
+fn relationship_list_binding(
+    row: &Row,
+    var: Option<VarId>,
+) -> Binding<Vec<lora_store::RelationshipId>> {
+    match var.and_then(|var| row.get(var)) {
+        None => Binding::Free,
+        Some(LoraValue::List(items)) => items
+            .iter()
+            .map(|item| match item {
+                LoraValue::Relationship(id) => Some(*id),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .map_or(Binding::Nothing, Binding::Bound),
+        Some(_) => Binding::Nothing,
+    }
+}
+
+/// One hop of a pattern subquery's chain, in the order it is walked.
+struct WalkStep<'q> {
+    /// The variable of the node the hop starts from.
+    src: Option<VarId>,
+    rel: &'q lora_analyzer::ResolvedRel,
+    /// `rel`'s direction as seen from `src`.
+    direction: lora_ast::Direction,
+    node: &'q lora_analyzer::ResolvedNode,
+}
+
+/// The order to walk `head` and `chain` in for `row`: as written, or from
+/// the last node when that one is the cheaper place to start (the row binds
+/// it, or a property pins it, and the head has neither), as `MATCH` plans
+/// it. `[(g:G)<-[:LIKES]-(p:P) WHERE p.key = $key | g]` then seeks `p` and
+/// follows its relationships instead of scanning `:G`.
+fn chain_walk<'q>(
+    head: &'q lora_analyzer::ResolvedNode,
+    chain: &'q [lora_analyzer::ResolvedChain],
+    reversible: bool,
+    row: &Row,
+    seeks: &[PatternSeek],
+) -> (&'q lora_analyzer::ResolvedNode, Vec<WalkStep<'q>>) {
+    let start_cost = |node: &lora_analyzer::ResolvedNode| match node.var {
+        Some(var) if row.contains_key(var) => 0,
+        var if node.properties.is_some() || seeks.iter().any(|seek| Some(seek.var) == var) => 1,
+        _ => 2,
+    };
+    let from_tail = reversible
+        && chain.last().is_some_and(|last| {
+            start_cost(&last.node) < start_cost(head) && chain_reads_no_own_variable(head, chain)
+        });
+
+    if !from_tail {
+        let mut src = head.var;
+        let steps = chain
+            .iter()
+            .map(|step| {
+                let walk = WalkStep {
+                    src,
+                    rel: &step.rel,
+                    direction: step.rel.direction,
+                    node: &step.node,
+                };
+                src = step.node.var;
+                walk
+            })
+            .collect();
+        return (head, steps);
+    }
+
+    let node_at = |i: usize| if i == 0 { head } else { &chain[i - 1].node };
+    let steps = (0..chain.len())
+        .rev()
+        .map(|i| WalkStep {
+            src: node_at(i + 1).var,
+            rel: &chain[i].rel,
+            direction: match chain[i].rel.direction {
+                lora_ast::Direction::Left => lora_ast::Direction::Right,
+                lora_ast::Direction::Right => lora_ast::Direction::Left,
+                other => other,
+            },
+            node: node_at(i),
+        })
+        .collect();
+    (node_at(chain.len()), steps)
+}
+
+/// Whether a chain can be walked from either end: no variable-length hop
+/// (its list is bound in traversal order), and no property map reading a
+/// variable of the chain itself, which is only bound once the walk in
+/// written order reaches it.
+fn chain_reads_no_own_variable(
+    head: &lora_analyzer::ResolvedNode,
+    chain: &[lora_analyzer::ResolvedChain],
+) -> bool {
+    if chain.iter().any(|step| step.rel.range.is_some()) {
+        return false;
+    }
+    let maps = || {
+        std::iter::once(&head.properties)
+            .chain(
+                chain
+                    .iter()
+                    .flat_map(|step| [&step.rel.properties, &step.node.properties]),
+            )
+            .flatten()
+    };
+    if maps().next().is_none() {
+        return true;
+    }
+    let mut reads = std::collections::BTreeSet::new();
+    maps().for_each(|map| map.collect_vars(&mut reads));
+    let mut own = head.var.iter().chain(
+        chain
+            .iter()
+            .flat_map(|step| step.rel.var.iter().chain(step.node.var.iter())),
+    );
+    !own.any(|var| reads.contains(var))
+}
+
+/// Match one part of a pattern subquery from `row`, handing `sink` the
+/// complete matches found from each starting node in turn. `sink` returns
+/// whether to go on: EXISTS stops at the first match that passes its WHERE.
+fn match_pattern_part<S: GraphStorage>(
+    part: &lora_analyzer::ResolvedPatternPart,
+    row: &Row,
+    seeks: &[PatternSeek],
+    ctx: &EvalContext<'_, S>,
+    sink: &mut dyn FnMut(Vec<Row>) -> bool,
+) {
+    use lora_analyzer::ResolvedPatternElement;
+
+    let (head, chain, reversible) = match &part.element {
+        ResolvedPatternElement::Node {
+            var,
+            labels,
+            properties,
+        } => {
+            sink(match_node_pattern(
+                *var, labels, properties, row, seeks, ctx,
+            ));
+            return;
+        }
+        ResolvedPatternElement::NodeChain { head, chain } => (head, chain, true),
+        ResolvedPatternElement::ShortestPath { head, chain, .. } => (head, chain, false),
+    };
+
+    let (start, steps) = chain_walk(head, chain, reversible, row, seeks);
+    let start_rows =
+        match_node_pattern(start.var, &start.labels, &start.properties, row, seeks, ctx);
+    for start_row in start_rows {
+        let mut frontier = vec![start_row];
+        for step in &steps {
+            let mut step_rows = Vec::new();
+            for fr in &frontier {
+                expand_walk_step(step, fr, ctx, &mut step_rows);
+            }
+            frontier = step_rows;
+            if frontier.is_empty() {
+                break;
+            }
+        }
+        if !sink(frontier) {
+            return;
+        }
+    }
+}
+
+/// Extend `row` over one hop: every relationship of the step's types and
+/// direction from the node `row` binds the hop's source to, ending on a node
+/// that matches the step's node pattern. A destination or relationship the
+/// row already binds (from the outer row, or earlier in this pattern)
+/// restricts the hop to it; one bound to `null` leaves no match.
+fn expand_walk_step<S: GraphStorage>(
+    step: &WalkStep<'_>,
     row: &Row,
     ctx: &EvalContext<'_, S>,
-) -> Vec<Row> {
-    // If the variable is already bound in the row, check the existing binding
-    // without cloning the whole record.
-    if let Some(var) = node.var {
-        if let Some(LoraValue::Node(id)) = row.get(var) {
+    out: &mut Vec<Row>,
+) {
+    let Binding::Bound(src) = node_binding(row, step.src) else {
+        return;
+    };
+    let dst_bound = match node_binding(row, step.node.var) {
+        Binding::Free => None,
+        Binding::Bound(id) => Some(id),
+        Binding::Nothing => return,
+    };
+
+    if let Some(range) = &step.rel.range {
+        let rels_bound = match relationship_list_binding(row, step.rel.var) {
+            Binding::Free => None,
+            Binding::Bound(ids) => Some(ids),
+            Binding::Nothing => return,
+        };
+        let (min_hops, max_hops) = crate::executor::resolve_range(range);
+        let walk = VarLengthWalk {
+            step,
+            row,
+            ctx,
+            min_hops,
+            max_hops,
+            dst_bound,
+            rels_bound,
+        };
+        walk.visit(src, &mut Vec::new(), out);
+        return;
+    }
+
+    let rel_bound = match relationship_binding(row, step.rel.var) {
+        Binding::Free => None,
+        Binding::Bound(id) => Some(id),
+        Binding::Nothing => return,
+    };
+    let _ = ctx.storage.try_for_each_expand_id(
+        src,
+        step.direction,
+        &step.rel.types,
+        |rel_id, dst_id| {
+            if eval_deadline_hit() {
+                return Err(());
+            }
+            if dst_bound.is_some_and(|bound| bound != dst_id)
+                || rel_bound.is_some_and(|bound| bound != rel_id)
+            {
+                return Ok::<(), ()>(());
+            }
             let matched = ctx
                 .storage
-                .with_node(*id, |n| {
-                    crate::executor::node_matches_label_groups(n.labels(), &node.labels)
-                        && node_matches_properties(n.properties(), &node.properties, row, ctx)
+                .with_node(dst_id, |dst| {
+                    crate::executor::node_matches_label_groups(dst.labels(), &step.node.labels)
+                        && node_matches_properties(
+                            dst.properties(),
+                            &step.node.properties,
+                            row,
+                            ctx,
+                        )
                 })
                 .unwrap_or(false);
-            if matched {
-                return vec![row.clone()];
+            if !matched || !rel_matches_properties(rel_id, &step.rel.properties, row, ctx) {
+                return Ok(());
             }
-            return Vec::new();
-        }
+            let mut r = row.clone();
+            if let Some(rv) = step.rel.var {
+                r.insert(rv, LoraValue::Relationship(rel_id));
+            }
+            if let Some(nv) = step.node.var {
+                r.insert(nv, LoraValue::Node(dst_id));
+            }
+            out.push(r);
+            Ok(())
+        },
+    );
+}
+
+/// Rows binding the node pattern `(var:labels {properties})` from `row`.
+fn match_node_pattern<S: GraphStorage>(
+    var: Option<VarId>,
+    labels: &[Vec<String>],
+    properties: &Option<ResolvedExpr>,
+    row: &Row,
+    seeks: &[PatternSeek],
+    ctx: &EvalContext<'_, S>,
+) -> Vec<Row> {
+    let node_matches = |id: lora_store::NodeId| {
+        ctx.storage
+            .with_node(id, |n| {
+                crate::executor::node_matches_label_groups(n.labels(), labels)
+                    && node_matches_properties(n.properties(), properties, row, ctx)
+            })
+            .unwrap_or(false)
+    };
+
+    // If the variable is already bound in the row, check the existing binding
+    // without cloning the whole record.
+    match node_binding(row, var) {
+        Binding::Bound(id) if node_matches(id) => return vec![row.clone()],
+        Binding::Bound(_) | Binding::Nothing => return Vec::new(),
+        Binding::Free => {}
     }
 
     // Candidate discovery only needs IDs — defer record lookup until after
     // label/property filtering so we can borrow once per matching candidate.
     // An inline property map (`(v:Person {subject: $s})`) seeks one of its
     // properties, as `MATCH` does, instead of scanning the label: a pattern
-    // subquery runs once per outer row.
-    let seek =
-        node.properties
+    // subquery runs once per outer row. So does a WHERE conjunct that pins
+    // one (`WHERE v.subject = $s`), which the analyzer recorded in `seeks`;
+    // of several, the one that leaves the fewest nodes.
+    let inline_seek =
+        properties
             .as_ref()
             .and_then(|props_expr| match eval_expr(props_expr, row, ctx) {
                 LoraValue::Map(exp) => exp.iter().next().map(|(key, value)| {
                     crate::executor::indexed_node_property_candidates(
                         ctx.storage,
-                        &node.labels,
+                        labels,
                         key,
                         value,
                     )
@@ -783,7 +868,20 @@ fn match_node_pattern<S: GraphStorage>(
                 }),
                 _ => None,
             });
-    let first_label = node.labels.iter().flat_map(|g| g.iter()).next();
+    let seek = inline_seek.or_else(|| {
+        seeks
+            .iter()
+            .filter(|seek| Some(seek.var) == var)
+            .filter_map(|seek| where_seek_candidates(seek, labels, row, ctx))
+            .min_by_key(|ids| ids.len())
+            .map(|mut ids| {
+                // The order a label scan yields them in.
+                ids.sort_unstable();
+                ids.dedup();
+                ids
+            })
+    });
+    let first_label = labels.iter().flat_map(|g| g.iter()).next();
     let candidate_ids: Vec<lora_store::NodeId> = match (seek, first_label) {
         (Some(ids), _) => ids,
         (None, Some(label)) => ctx.storage.node_ids_by_label(label),
@@ -795,18 +893,11 @@ fn match_node_pattern<S: GraphStorage>(
         if eval_deadline_hit() {
             break;
         }
-        let matched = ctx
-            .storage
-            .with_node(id, |n| {
-                crate::executor::node_matches_label_groups(n.labels(), &node.labels)
-                    && node_matches_properties(n.properties(), &node.properties, row, ctx)
-            })
-            .unwrap_or(false);
-        if !matched {
+        if !node_matches(id) {
             continue;
         }
         let mut r = row.clone();
-        if let Some(v) = node.var {
+        if let Some(v) = var {
             r.insert(v, LoraValue::Node(id));
         }
         out.push(r);
@@ -814,47 +905,71 @@ fn match_node_pattern<S: GraphStorage>(
     out
 }
 
-/// Expand a variable-length step `-[r:T*min..max {k: v}]->(dst)` of a
-/// pattern subquery from node `src`: every path of `min..=max` hops that
+/// The nodes a WHERE conjunct of a pattern subquery can leave for the node
+/// it pins, found through the property's index. A superset is fine: the
+/// WHERE still judges every match. `None` when this conjunct cannot narrow the scan (no index
+/// answers it, or its value is not of a kind an index holds).
+fn where_seek_candidates<S: GraphStorage>(
+    seek: &PatternSeek,
+    labels: &[Vec<String>],
+    row: &Row,
+    ctx: &EvalContext<'_, S>,
+) -> Option<Vec<lora_store::NodeId>> {
+    use lora_analyzer::PatternSeekKind;
+
+    let value = eval_expr(&seek.value, row, ctx);
+    // `x = null`, `x IN null` and `x STARTS WITH null` are never true.
+    if matches!(value, LoraValue::Null) {
+        return Some(Vec::new());
+    }
+    let ids = match seek.kind {
+        PatternSeekKind::Equals => {
+            crate::executor::indexed_node_property_candidates(
+                ctx.storage,
+                labels,
+                &seek.key,
+                &value,
+            )
+            .ids
+        }
+        PatternSeekKind::In => {
+            let LoraValue::List(_) = &value else {
+                return None;
+            };
+            crate::executor::property_scan_candidates(ctx.storage, labels, &seek.key, &value, true)
+                .ids
+        }
+        PatternSeekKind::StartsWith => {
+            let LoraValue::String(_) = &value else {
+                return None;
+            };
+            let [group] = labels else {
+                return None;
+            };
+            let [label] = group.as_slice() else {
+                return None;
+            };
+            let prefix_end = lora_analyzer::FunctionId::builtin("string.prefix_end")?;
+            let hi = match eval_function(prefix_end, std::slice::from_ref(&value), ctx) {
+                LoraValue::Null => None,
+                end => Some(crate::value::lora_value_to_property(end).ok()?),
+            };
+            let lo = crate::value::lora_value_to_property(value).ok()?;
+            ctx.storage
+                .node_range_candidates(label, &seek.key, Some(&lo), hi.as_ref())?
+        }
+    };
+    Some(ids)
+}
+
+/// One variable-length hop `-[r:T*min..max {k: v}]->(dst)` of a pattern
+/// subquery being walked from a node: every path of `min..=max` hops that
 /// repeats no relationship, whose relationships all carry the map's
 /// properties, and that ends on a node matching the step's node pattern (and
 /// on the node or relationship list the row already binds, if any). Each
 /// match extends `row` with `r` bound to the path's relationships.
-fn expand_var_length_step<S: GraphStorage>(
-    src: lora_store::NodeId,
-    step: &lora_analyzer::ResolvedChain,
-    range: &lora_ast::RangeLiteral,
-    row: &Row,
-    ctx: &EvalContext<'_, S>,
-    out: &mut Vec<Row>,
-) {
-    let (min_hops, max_hops) = crate::executor::resolve_range(range);
-    let walk = VarLengthWalk {
-        step,
-        row,
-        ctx,
-        min_hops,
-        max_hops,
-        dst_bound: step.node.var.and_then(|v| match row.get(v) {
-            Some(LoraValue::Node(id)) => Some(*id),
-            _ => None,
-        }),
-        rels_bound: step.rel.var.and_then(|v| match row.get(v) {
-            Some(LoraValue::List(items)) => items
-                .iter()
-                .map(|item| match item {
-                    LoraValue::Relationship(id) => Some(*id),
-                    _ => None,
-                })
-                .collect(),
-            _ => None,
-        }),
-    };
-    walk.visit(src, &mut Vec::new(), out);
-}
-
 struct VarLengthWalk<'q, 'c, S: GraphStorage> {
-    step: &'q lora_analyzer::ResolvedChain,
+    step: &'q WalkStep<'q>,
     row: &'q Row,
     ctx: &'q EvalContext<'c, S>,
     min_hops: u64,
@@ -880,7 +995,7 @@ impl<S: GraphStorage> VarLengthWalk<'_, '_, S> {
         let mut next = Vec::new();
         let _ = self.ctx.storage.try_for_each_expand_id(
             node,
-            self.step.rel.direction,
+            self.step.direction,
             &self.step.rel.types,
             |rel_id, dst_id| {
                 next.push((rel_id, dst_id));
@@ -939,27 +1054,6 @@ impl<S: GraphStorage> VarLengthWalk<'_, '_, S> {
         }
         out.push(r);
     }
-}
-
-/// Find the node ID of the current source node for a chain step.
-fn find_last_node_in_row(
-    row: &Row,
-    head_var: Option<lora_analyzer::symbols::VarId>,
-    chain: &[lora_analyzer::ResolvedChain],
-    current_step: &lora_analyzer::ResolvedChain,
-) -> Option<u64> {
-    // Walk through the chain to find the previous node's variable
-    let mut prev_var = head_var;
-    for step in chain {
-        if std::ptr::eq(step, current_step) {
-            break;
-        }
-        prev_var = step.node.var;
-    }
-    prev_var.and_then(|v| match row.get(v) {
-        Some(LoraValue::Node(id)) => Some(*id),
-        _ => None,
-    })
 }
 
 fn node_matches_properties<'a, S: GraphStorage>(

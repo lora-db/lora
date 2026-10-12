@@ -269,10 +269,21 @@ pub(super) fn limit_rows<S: GraphStorage>(
     Ok(rows)
 }
 
+/// What a pattern variable bound to `null` reads as: an id no node or
+/// relationship ever has (the store never allocates it). A pattern on a
+/// null matches nothing, as in openCypher, which is exactly how every
+/// operator already treats a row bound to an entity that no longer exists:
+/// a scan drops the row, an expansion finds no relationship, an endpoint or
+/// relationship check never matches.
+pub(crate) const ABSENT_ENTITY_ID: u64 = u64::MAX;
+
+/// The node a row already binds `var` to, `None` when it binds nothing
+/// (the operator then binds it), [`ABSENT_ENTITY_ID`] when it binds `null`.
 #[inline]
 pub(crate) fn bound_node_id_for_expand(row: &Row, var: VarId) -> ExecResult<Option<NodeId>> {
     match row.get(var) {
         Some(LoraValue::Node(id)) => Ok(Some(*id)),
+        Some(LoraValue::Null) => Ok(Some(ABSENT_ENTITY_ID)),
         Some(other) => Err(ExecutorError::ExpectedNodeForExpand {
             var: format!("{var:?}"),
             found: value_kind(other),
@@ -281,6 +292,14 @@ pub(crate) fn bound_node_id_for_expand(row: &Row, var: VarId) -> ExecResult<Opti
     }
 }
 
+/// The node an expansion starts from: `None` when the row binds `var` to
+/// nothing or to `null`, and the row then yields no match.
+#[inline]
+pub(crate) fn expand_source_id(row: &Row, var: VarId) -> ExecResult<Option<NodeId>> {
+    Ok(bound_node_id_for_expand(row, var)?.filter(|id| *id != ABSENT_ENTITY_ID))
+}
+
+/// As [`bound_node_id_for_expand`], for a relationship variable.
 #[inline]
 pub(crate) fn bound_relationship_id_for_expand(
     row: &Row,
@@ -288,6 +307,7 @@ pub(crate) fn bound_relationship_id_for_expand(
 ) -> ExecResult<Option<RelationshipId>> {
     match row.get(var) {
         Some(LoraValue::Relationship(id)) => Ok(Some(*id)),
+        Some(LoraValue::Null) => Ok(Some(ABSENT_ENTITY_ID)),
         Some(other) => Err(ExecutorError::ExpectedRelationshipForExpand {
             var: format!("{var:?}"),
             found: value_kind(other),
@@ -696,7 +716,7 @@ pub(super) fn expand_rows<S: GraphStorage>(
     let mut matches: Vec<(u64, u64)> = Vec::new();
 
     for row in input_rows {
-        let Some(src_node_id) = bound_node_id_for_expand(&row, op.src)? else {
+        let Some(src_node_id) = expand_source_id(&row, op.src)? else {
             continue;
         };
 
@@ -795,7 +815,7 @@ pub(super) fn expand_var_len_rows<S: GraphStorage>(
     let mut out = Vec::new();
 
     for row in input_rows {
-        let Some(src_node_id) = bound_node_id_for_expand(&row, op.src)? else {
+        let Some(src_node_id) = expand_source_id(&row, op.src)? else {
             continue;
         };
         // A destination the row already binds is checked, never rebound.
@@ -2577,6 +2597,8 @@ fn emit_one_rel_row(
 fn bind_node_value(row: &mut Row, var: VarId, id: NodeId) -> ExecResult<bool> {
     match row.get(var) {
         Some(LoraValue::Node(existing)) => Ok(*existing == id),
+        // A pattern on a null matches nothing.
+        Some(LoraValue::Null) => Ok(false),
         Some(other) => Err(ExecutorError::ExpectedNodeForExpand {
             var: format!("{var:?}"),
             found: value_kind(other),
@@ -2591,6 +2613,7 @@ fn bind_node_value(row: &mut Row, var: VarId, id: NodeId) -> ExecResult<bool> {
 fn bind_relationship_value(row: &mut Row, var: VarId, id: RelationshipId) -> ExecResult<bool> {
     match row.get(var) {
         Some(LoraValue::Relationship(existing)) => Ok(*existing == id),
+        Some(LoraValue::Null) => Ok(false),
         Some(other) => Err(ExecutorError::ExpectedRelationshipForExpand {
             var: format!("{var:?}"),
             found: value_kind(other),

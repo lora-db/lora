@@ -10,10 +10,11 @@ pub use analyzer::{
 };
 pub use errors::SemanticError;
 pub use resolved::{
-    LiteralValue, ResolvedCallSubquery, ResolvedChain, ResolvedClause, ResolvedCreate,
-    ResolvedDelete, ResolvedExpr, ResolvedForeach, ResolvedMapSelector, ResolvedMatch,
-    ResolvedMerge, ResolvedMergeAction, ResolvedNode, ResolvedPattern, ResolvedPatternElement,
-    ResolvedPatternPart, ResolvedProjection, ResolvedQuery, ResolvedRel, ResolvedRemove,
-    ResolvedRemoveItem, ResolvedReturn, ResolvedSet, ResolvedSetItem, ResolvedSortItem,
-    ResolvedUnionPart, ResolvedUnwind, ResolvedWith,
+    LiteralValue, PatternSeek, PatternSeekKind, ResolvedCallSubquery, ResolvedChain,
+    ResolvedClause, ResolvedCreate, ResolvedDelete, ResolvedExpr, ResolvedForeach,
+    ResolvedMapSelector, ResolvedMatch, ResolvedMerge, ResolvedMergeAction, ResolvedNode,
+    ResolvedNodeRef, ResolvedPattern, ResolvedPatternElement, ResolvedPatternPart,
+    ResolvedProjection, ResolvedQuery, ResolvedRel, ResolvedRemove, ResolvedRemoveItem,
+    ResolvedReturn, ResolvedSet, ResolvedSetItem, ResolvedSortItem, ResolvedUnionPart,
+    ResolvedUnwind, ResolvedWith,
 };

@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use lora_analyzer::{ResolvedExpr, ResolvedProjection};
+use lora_analyzer::{PatternSeekKind, ResolvedExpr, ResolvedProjection};
 use lora_ast::Direction;
 
 use crate::physical::{PhysicalNodeId, PhysicalOp, PhysicalPlan};
@@ -372,12 +372,14 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
         PhysicalOp::Expand(n) => describe_expand(n),
         PhysicalOp::Filter(n) => {
             d.insert("predicate".to_string(), expr_str(&n.predicate));
+            insert_pattern_seeks(&mut d, [&n.predicate]);
             PlanDescription::with_children("Filter", d, vec![n.input])
         }
         PhysicalOp::Projection(n) => describe_projection(n),
         PhysicalOp::Unwind(n) => {
             d.insert("alias".to_string(), var_str(n.alias));
             d.insert("expr".to_string(), expr_str(&n.expr));
+            insert_pattern_seeks(&mut d, [&n.expr]);
             PlanDescription::with_children("Unwind", d, vec![n.input])
         }
         PhysicalOp::HashAggregation(n) => describe_hash_aggregation(n),
@@ -396,6 +398,7 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
                 };
                 d.insert("top_k".to_string(), top_k);
             }
+            insert_pattern_seeks(&mut d, n.items.iter().map(|item| &item.expr));
             PlanDescription::with_children("Sort", d, vec![n.input])
         }
         PhysicalOp::Limit(n) => {
@@ -502,6 +505,7 @@ fn describe_projection(n: &crate::physical::ProjectionExec) -> PlanDescription {
         n.include_existing.to_string(),
     );
     d.insert("items".to_string(), projection_names(&n.items));
+    insert_pattern_seeks(&mut d, n.items.iter().map(|item| &item.expr));
     PlanDescription::with_children("Projection", d, vec![n.input])
 }
 
@@ -509,6 +513,13 @@ fn describe_hash_aggregation(n: &crate::physical::HashAggregationExec) -> PlanDe
     let mut d = BTreeMap::new();
     d.insert("group_by".to_string(), projection_names(&n.group_by));
     d.insert("aggregates".to_string(), projection_names(&n.aggregates));
+    insert_pattern_seeks(
+        &mut d,
+        n.group_by
+            .iter()
+            .chain(&n.aggregates)
+            .map(|item| &item.expr),
+    );
     PlanDescription::with_children("HashAggregation", d, vec![n.input])
 }
 
@@ -530,6 +541,63 @@ fn describe_optional_match(n: &crate::physical::OptionalMatchExec) -> PlanDescri
             .join(", "),
     );
     PlanDescription::with_children("OptionalMatch", d, vec![n.input, n.inner])
+}
+
+/// Add a `pattern_seeks` detail naming the properties the pattern
+/// subqueries (`EXISTS { }`, pattern comprehensions) inside `exprs` find a
+/// node by instead of scanning its label: an inline property map
+/// (`(:P {key: $k})`) or a WHERE conjunct (`WHERE p.key = $k`), e.g.
+/// `P.key =, G.name STARTS WITH`. Such a subquery runs once per row of the
+/// operator, outside the plan tree. A node the row already binds is matched
+/// on directly, whatever this lists.
+fn insert_pattern_seeks<'a>(
+    details: &mut BTreeMap<String, String>,
+    exprs: impl IntoIterator<Item = &'a ResolvedExpr>,
+) {
+    let mut seeks: Vec<String> = Vec::new();
+    for expr in exprs {
+        expr.walk(&mut |e| {
+            let (ResolvedExpr::ExistsSubquery {
+                pattern,
+                seeks: where_seeks,
+                ..
+            }
+            | ResolvedExpr::PatternComprehension {
+                pattern,
+                seeks: where_seeks,
+                ..
+            }) = e
+            else {
+                return;
+            };
+            for node in pattern.nodes() {
+                let labels = label_groups_str(node.labels);
+                // The executor seeks the first key of an inline map, else
+                // whichever WHERE conjunct on the node leaves the fewest.
+                let inline = match node.properties {
+                    Some(ResolvedExpr::Map(pairs)) => {
+                        pairs.iter().map(|(key, _)| key.as_str()).min()
+                    }
+                    _ => None,
+                };
+                if let Some(key) = inline {
+                    seeks.push(format!("{labels}.{key} ="));
+                    continue;
+                }
+                for seek in where_seeks.iter().filter(|seek| Some(seek.var) == node.var) {
+                    let op = match seek.kind {
+                        PatternSeekKind::Equals => "=",
+                        PatternSeekKind::In => "IN",
+                        PatternSeekKind::StartsWith => "STARTS WITH",
+                    };
+                    seeks.push(format!("{labels}.{} {op}", seek.key));
+                }
+            }
+        });
+    }
+    if !seeks.is_empty() {
+        details.insert("pattern_seeks".to_string(), seeks.join(", "));
+    }
 }
 
 fn opt_input(input: Option<PhysicalNodeId>) -> Vec<PhysicalNodeId> {
