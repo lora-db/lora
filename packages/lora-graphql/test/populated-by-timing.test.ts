@@ -80,7 +80,7 @@ test("a create's callbacks run before begin(), at once", async () => {
   expect(overlap()).toBe(4);
 });
 
-test("an update's callback runs before begin(), once", async () => {
+test("an update's callback runs before the write, once", async () => {
   const { lora, events } = await setup();
   await lora.execute({
     source: `mutation { createPosts(input: [{ key: "p1" }]) { posts { key } } }`,
@@ -93,7 +93,7 @@ test("an update's callback runs before begin(), once", async () => {
   expect(r.data).toEqual({
     updatePost: { post: { slug: "slug", title: "T" } },
   });
-  expect(events).toEqual(["slug", "begin"]);
+  expect(events).toEqual(["slug", "write"]);
 });
 
 test("a nested create's callback runs before its transaction opens too", async () => {

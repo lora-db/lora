@@ -17,7 +17,7 @@ import {
   newContext,
   type CompileContext,
 } from "../../compile/context.js";
-import { and, lit, name, printExpr } from "../../compile/cypher.js";
+import { and, lit, name, printExpr, type Expr } from "../../compile/cypher.js";
 import { compileNodeWhere } from "../../compile/filter.js";
 import { compileByKeys, keyOf } from "../../compile/read/by-keys.js";
 import type {
@@ -293,6 +293,191 @@ export class Runner {
       maxListFilter: this.env.maxListFilter,
       maxStringFilter: this.env.maxStringFilter,
     });
+  }
+
+  /**
+   * What an update's input sets on a node and removes from it, with its
+   * `@populatedBy` values; relationship inputs are planned on `plan`.
+   */
+  async #prepareRow(
+    plan: WritePlan,
+    node: NodeType,
+    key: unknown,
+    input: Input,
+    adjust: Input | undefined,
+  ): Promise<{ key: unknown; set: Input; remove: string[] }> {
+    const set: Input = {};
+    const remove: string[] = [];
+    for (const f of node.fields.values()) {
+      if (f.kind === "relationship") {
+        const value = input[f.name];
+        if (value && !settable(f, "UPDATE")) {
+          throw requestError(
+            "BAD_USER_INPUT",
+            `${node.name}.${f.name} cannot be changed after create`,
+          );
+        }
+        if (value) plan.relate(node, key, f, value as Input, true);
+        continue;
+      }
+      if (f.kind !== "scalar" || f.key) continue;
+      if (f.name in input) {
+        if (!settable(f, "UPDATE")) {
+          throw requestError(
+            "BAD_USER_INPUT",
+            `${node.name}.${f.name} cannot be changed after create`,
+          );
+        }
+        if (adjust?.[f.name] != null) {
+          throw requestError(
+            "BAD_USER_INPUT",
+            `${node.name}.${f.name} is both set and adjusted`,
+          );
+        }
+        const value = input[f.name];
+        if (value === null) {
+          if (f.required) {
+            throw requestError(
+              "BAD_USER_INPUT",
+              `${node.name}.${f.name} is required and cannot be null`,
+            );
+          }
+          remove.push(f.property);
+        } else {
+          set[f.property] = toStored(f, value);
+        }
+      } else if (f.populatedBy?.operations.has("UPDATE")) {
+        set[f.property] = toStored(
+          f,
+          await plan.callback(f, "UPDATE", node, key, input),
+        );
+      }
+    }
+    return { key, set, remove };
+  }
+
+  /** The `SET` items of an update: the input, then the type's timestamps. */
+  #setItems(node: NodeType, adjustments: string[]): string[] {
+    const suppliable = new Set(
+      [...node.fields.values()]
+        .filter(
+          (f): f is ScalarField =>
+            f.kind === "scalar" && !!f.timestamp && settable(f, "UPDATE"),
+        )
+        .map((f) => f.property),
+    );
+    return [
+      "n += row.set",
+      ...adjustments,
+      // A @timestamp settable on update keeps a value the input supplied.
+      ...timestamps(node, "UPDATE").map(([p, now]) =>
+        suppliable.has(p)
+          ? `n.${name(p)} = coalesce(row.set.${name(p)}, ${now})`
+          : `n.${name(p)} = ${now}`,
+      ),
+    ];
+  }
+
+  /**
+   * An update of one node by key as one statement, for a single call:
+   * the match under the caller's filter rules, the BEFORE rules, the
+   * write and the AFTER rules, each rule an assertion. Which nodes it
+   * touched is then decided in the database, not between two round
+   * trips. Returns nothing when the update is not that simple (it writes
+   * relationships, adjusts, or cannot be prepared without knowing whether
+   * the node is there): the caller opens a transaction instead.
+   */
+  async updateInOne(
+    plan: WritePlan,
+    node: NodeType,
+    key: unknown,
+    input: Input,
+    adjust: Input | undefined,
+  ): Promise<{ done: Promise<unknown[]> } | undefined> {
+    if (
+      !this.single ||
+      node.uniqueTogether.length > 0 ||
+      Object.values(adjust ?? {}).some((v) => v !== null && v !== undefined) ||
+      [...node.fields.values()].some(
+        (f) => f.kind === "relationship" && input[f.name],
+      )
+    ) {
+      return undefined;
+    }
+    this.assertBatch(undefined, 1);
+    const ctx0 = this.ctx();
+    checkAuthentication(ctx0, node, "UPDATE");
+    const fields = Object.keys(input);
+    const written = fields
+      .map((n) => node.fields.get(n))
+      .filter((f): f is ScalarField => f?.kind === "scalar" && !f.key);
+    for (const f of written) {
+      checkFieldAuthentication(ctx0, node.name, f, "UPDATE");
+    }
+    const ctx = this.ctx();
+    // Rules the claims alone settle against refuse here, node or no node,
+    // as they do in a transaction.
+    const before = and(
+      authValidate(ctx, node, "n", "UPDATE", "BEFORE"),
+      ...written.map((f) =>
+        fieldValidate(ctx, node, f, "n", "UPDATE", "BEFORE"),
+      ),
+    );
+    let prepared: { key: unknown; set: Input; remove: string[] };
+    let after: Expr | undefined;
+    try {
+      // In a transaction these run only once the node is found: a bad
+      // input for a node that is not there answers null, not an error.
+      prepared = await this.#prepareRow(plan, node, key, input, adjust);
+      after = and(
+        authValidate(ctx, node, "n", "UPDATE", "AFTER"),
+        ...fields.map((f) => {
+          const field = node.fields.get(f);
+          return field
+            ? fieldValidate(ctx, node, field, "n", "UPDATE", "AFTER")
+            : undefined;
+        }),
+      );
+    } catch {
+      return undefined;
+    }
+    const previous = node.subscriptionOptions.previousState;
+    const refusedUpdate = printExpr(
+      lit(refusal("forbidden", node.name, "UPDATE")),
+    );
+    const text =
+      `UNWIND ${printExpr(bind(ctx, [{ key: prepared.key, set: prepared.set }]))} AS row\n` +
+      `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = row.key` +
+      // A node the caller cannot read is missing, not forbidden.
+      andText(authFilter(ctx, node, "n", "READ")) +
+      andText(authFilter(ctx, node, "n", "UPDATE")) +
+      `\nWITH n, row` +
+      (previous ? ", properties(n) AS lora_previous" : "") +
+      (before
+        ? `, assert(${printExpr(before)}, ${refusedUpdate}) AS lora_before`
+        : "") +
+      `\nSET ${this.#setItems(node, []).join(", ")}` +
+      (prepared.remove.length > 0
+        ? `\nREMOVE ${prepared.remove.map((p) => `n.${name(p)}`).join(", ")}`
+        : "") +
+      `\nRETURN n.${name(node.key.property)} AS key` +
+      (previous ? ", lora_previous AS props" : "") +
+      (after ? `, assert(${printExpr(after)}, ${refusedUpdate}) AS ok` : "");
+    const done = this.run(text, ctx).then((found) => {
+      const keys = found.map((r) => r["key"]);
+      if (previous) {
+        for (const r of found) {
+          (this.change.before ??= []).push({
+            type: node.name,
+            key: r["key"],
+            properties: (r["props"] as Record<string, unknown>) ?? {},
+          });
+        }
+      }
+      this.#updatedNodes(node, keys, written, [{ key, input }], adjust);
+      return keys;
+    });
+    return { done: this.watch(done) };
   }
 
   /**
@@ -996,6 +1181,8 @@ export class Runner {
     adjust?: Input,
   ): Promise<unknown[]> {
     if (rows.length === 0) return [];
+    // Several round trips: the keys found decide what is written.
+    await this.open();
     this.assertBatch(undefined, rows.length);
     const ctx0 = this.ctx();
     checkAuthentication(ctx0, node, "UPDATE");
@@ -1053,54 +1240,7 @@ export class Runner {
     // Per row: properties to set (with @populatedBy) and to remove.
     const prepared: Array<{ key: unknown; set: Input; remove: string[] }> = [];
     for (const { key, input } of todo) {
-      const set: Input = {};
-      const remove: string[] = [];
-      for (const f of node.fields.values()) {
-        if (f.kind === "relationship") {
-          const value = input[f.name];
-          if (value && !settable(f, "UPDATE")) {
-            throw requestError(
-              "BAD_USER_INPUT",
-              `${node.name}.${f.name} cannot be changed after create`,
-            );
-          }
-          if (value) plan.relate(node, key, f, value as Input, true);
-          continue;
-        }
-        if (f.kind !== "scalar" || f.key) continue;
-        if (f.name in input) {
-          if (!settable(f, "UPDATE")) {
-            throw requestError(
-              "BAD_USER_INPUT",
-              `${node.name}.${f.name} cannot be changed after create`,
-            );
-          }
-          if (adjust?.[f.name] != null) {
-            throw requestError(
-              "BAD_USER_INPUT",
-              `${node.name}.${f.name} is both set and adjusted`,
-            );
-          }
-          const value = input[f.name];
-          if (value === null) {
-            if (f.required) {
-              throw requestError(
-                "BAD_USER_INPUT",
-                `${node.name}.${f.name} is required and cannot be null`,
-              );
-            }
-            remove.push(f.property);
-          } else {
-            set[f.property] = toStored(f, value);
-          }
-        } else if (f.populatedBy?.operations.has("UPDATE")) {
-          set[f.property] = toStored(
-            f,
-            await plan.callback(f, "UPDATE", node, key, input),
-          );
-        }
-      }
-      prepared.push({ key, set, remove });
+      prepared.push(await this.#prepareRow(plan, node, key, input, adjust));
     }
 
     const actx = this.ctx();
@@ -1193,6 +1333,19 @@ export class Runner {
       throw validationError("CONSTRAINT_VIOLATION", broken, brokenTotal);
     }
     const keys = todo.map((r) => r.key);
+    this.#updatedNodes(node, keys, written, todo, adjust);
+    return keys;
+  }
+
+  /** Record nodes an update wrote: counts, the write-set, what to check after. */
+  #updatedNodes(
+    node: NodeType,
+    keys: unknown[],
+    written: ScalarField[],
+    rows: Array<{ key: unknown; input: Input }>,
+    adjust: Input | undefined,
+  ): void {
+    const done = new Set(keys.map(keyOf));
     this.info.nodesUpdated += keys.length;
     for (const key of keys) {
       this.change.updated.push({ type: node.name, key });
@@ -1206,14 +1359,14 @@ export class Runner {
     this.updated.set(node, entry);
     const byKey =
       this.updatedFields.get(node) ?? new Map<string, Set<string>>();
-    for (const { key, input } of todo) {
+    for (const { key, input } of rows) {
+      if (!done.has(keyOf(key))) continue;
       const set = byKey.get(keyOf(key)) ?? new Set<string>();
       for (const name of Object.keys(input)) set.add(name);
       for (const name of Object.keys(adjust ?? {})) set.add(name);
       byKey.set(keyOf(key), set);
     }
     this.updatedFields.set(node, byKey);
-    return keys;
   }
 
   /**

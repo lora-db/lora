@@ -271,7 +271,7 @@ describe("what keeps a transaction", () => {
     expect(paths).toEqual(["begin"]);
   });
 
-  test("a caller-owned transaction, an update and a delete", async () => {
+  test("a caller-owned transaction, and a delete", async () => {
     const { lora, exec, paths } = await setup(PLAIN);
     const tx = await lora.begin();
     paths.length = 0;
@@ -282,11 +282,8 @@ describe("what keeps a transaction", () => {
     expect(r.errors).toBeUndefined();
     expect(paths).toEqual([]);
     await tx.commit();
-    await exec(
-      `mutation { updateItem(key: "a", update: { name: "b" }) { item { key } } }`,
-    );
     await exec(`mutation { deleteItem(key: "a") { nodesDeleted } }`);
-    expect(paths).toEqual(["begin", "begin"]);
+    expect(paths).toEqual(["begin"]);
   });
 });
 

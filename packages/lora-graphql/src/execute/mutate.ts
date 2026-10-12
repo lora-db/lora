@@ -231,12 +231,13 @@ export async function executeMutation(
     timeoutMs: env.timeoutMs,
     signal: env.signal,
   };
-  // A create may be one call into the database, committed as it returns:
+  // A create, or an update of one node by key, may be one call into the
+  // database, committed as it returns:
   // when nothing needs a decision between its statements and its commit
   // that an assertion cannot make. The runner opens a real transaction
   // if the plan turns out to need more than one round trip.
   const single =
-    op === "CREATE" &&
+    (op === "CREATE" || op === "UPDATE") &&
     !owned &&
     env.singleCall !== false &&
     !hasTriggers(env) &&
@@ -330,12 +331,24 @@ export async function executeMutation(
       case "UPDATE": {
         const key = args[node.key.name];
         const field = mutationNames.updatedField(node);
-        const done = await runner.update(
-          plan,
-          node,
-          [{ key, input: (args["update"] as Input | undefined) ?? {} }],
-          args["adjust"] as Input | undefined,
-        );
+        const input = (args["update"] as Input | undefined) ?? {};
+        const adjust = args["adjust"] as Input | undefined;
+        // One statement that matches, checks and writes, with the payload
+        // read behind it: one call, when the update is that simple.
+        const one = await runner.updateInOne(plan, node, key, input, adjust);
+        if (one) {
+          const reading = runner.watch(
+            payloadFor(mutationNames.updatePayload(node), field, [key]),
+          );
+          const found = await one.done;
+          const [value] = await reading;
+          payload = {
+            [field]: found.length > 0 ? (value ?? null) : null,
+            info: runner.info,
+          };
+          break;
+        }
+        const done = await runner.update(plan, node, [{ key, input }], adjust);
         let validating!: Promise<void>;
         let updated: Promise<unknown[]> | undefined;
         const read = () =>

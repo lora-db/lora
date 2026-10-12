@@ -101,12 +101,25 @@ test("nested creates and their link are one call, the payload another", async ()
   expect(calls).toEqual([3, 1]);
 });
 
-test("an update's write shares the call of its payload read", async () => {
+test("an update by key and its payload read are one call", async () => {
   await run(CREATE);
   expect(await run(UPDATE)).toEqual({
     updateVenue: { venue: { key: "v1", name: "Uno" } },
   });
-  expect(calls).toEqual([1, 2]);
+  expect(calls).toEqual([2]);
+});
+
+test("an update that writes a relationship keeps a transaction", async () => {
+  await run(CREATE);
+  expect(
+    await run(
+      `mutation { updateVenue(key: "v1", update: { name: "Uno", stages: { create: [{ node: { key: "s7" } }] } }) { venue { name stages { key } } } }`,
+    ),
+  ).toEqual({
+    updateVenue: { venue: { name: "Uno", stages: [{ key: "s7" }] } },
+  });
+  // The lookup, the writes, then the read: more than one call.
+  expect(calls.length).toBeGreaterThan(1);
 });
 
 test("a create with a connect is two calls", async () => {
@@ -134,8 +147,8 @@ test("a driver without executeMany runs a transaction's statements one by one", 
     createVenues: { venues: [{ key: "v1", name: "One" }] },
   });
   expect(calls).toEqual([2]);
-  expect(await run(UPDATE)).toEqual({
-    updateVenue: { venue: { key: "v1", name: "Uno" } },
+  expect(await run(CONNECT)).toEqual({
+    createStages: { stages: [{ key: "s9", venue: { key: "v1" } }] },
   });
   expect(calls).toEqual([1, 1, 1]);
 });
