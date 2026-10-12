@@ -27,6 +27,9 @@ export function memberFields(
       target: member,
       members: [member],
       via: rel,
+      // Relationship rules test the member as their target.
+      authorization: rel.memberAuthorization?.get(member) ?? rel.authorization,
+      memberAuthorization: undefined,
     }));
     copies.set(rel, list);
   }

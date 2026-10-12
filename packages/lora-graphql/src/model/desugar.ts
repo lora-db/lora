@@ -49,6 +49,13 @@ export interface DesugarContext {
   rules?: NamedRules;
   /** Named rules being expanded, to report a cycle with its chain. */
   expanding?: string[];
+  /**
+   * The member of an interface or union a relationship rule is expanded
+   * for, as its `target`. `isViewer` on a member that is not the viewer
+   * type is then never true, where elsewhere it is a mistake: the rule is
+   * written once for every member.
+   */
+  member?: NodeType;
   at: (message: string) => void;
 }
 
@@ -367,6 +374,8 @@ function isViewer(
     return undefined;
   }
   if (node.name !== ctx.viewer.type) {
+    // No node of this member is the viewer: a test nothing passes.
+    if (ctx.member === node) return [node.key.name, { in: [] }];
     ctx.at(
       `isViewer applies to ${ctx.viewer.type} (the @viewer type), not ${node.name}`,
     );

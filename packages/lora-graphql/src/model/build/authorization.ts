@@ -7,6 +7,7 @@ import type {
   AuthOperation,
   Authorization,
   AuthorizationWhere,
+  NodeType,
   RelationshipField,
 } from "../types.js";
 import { RELATIONSHIP_OPERATIONS } from "../types.js";
@@ -191,6 +192,36 @@ export const isRelationshipRule = (rule: {
   operations: ReadonlySet<AuthOperation>;
 }): boolean =>
   [...rule.operations].some((op) => RELATIONSHIP_OPERATIONS.has(op));
+
+/**
+ * The authorization of a field to an interface or union, per member: its
+ * relationship rules hold per member, each with that member as its
+ * target. Sugar expands differently per member (`target: { isViewer:
+ * true }` is only ever true of one), so each member gets its own copy of
+ * the rules, which `desugar` expands in place.
+ */
+export function memberAuthorization(
+  f: RelationshipField,
+  nodes: ReadonlyMap<string, NodeType>,
+  desugar: (
+    rules: ReadonlyArray<{ where: AuthorizationWhere }>,
+    target: NodeType,
+  ) => void,
+): Map<string, Authorization> {
+  const perMember = new Map<string, Authorization>();
+  const authorization = f.authorization;
+  if (!authorization) return perMember;
+  const rel = authorization.validate.filter(isRelationshipRule);
+  const rest = authorization.validate.filter((r) => !isRelationshipRule(r));
+  for (const member of f.members) {
+    const target = nodes.get(member);
+    if (!target) continue;
+    const own = rel.map((r) => ({ ...r, where: structuredClone(r.where) }));
+    desugar(own, target);
+    perMember.set(member, { ...authorization, validate: [...rest, ...own] });
+  }
+  return perMember;
+}
 
 export const isRecord = (x: unknown): x is Record<string, unknown> =>
   typeof x === "object" && x !== null && !Array.isArray(x);

@@ -730,6 +730,13 @@ type Trip @node @mutation {
   would have to pass without either saying so. Where two tests must both
   hold, combine them with `AND` in one rule. Different operations may sit
   on different sides.
+- On a field to an interface or union the rules hold per member, with
+  that member as the `target`: what a rule tests on the target must be a
+  field of every member, and a missing one is a model error that names
+  the member. `target: { isViewer: true }` is written once and is never
+  true of a member that is not the viewer type. A write from a member's
+  own field (`Person.boards` for `Board.members: [Member!]!`) answers to
+  the same rules.
 - A relationship failing `READ_EDGE` reads its properties as `FORBIDDEN`.
   Unless the claims alone settle the rule, nothing may filter, sort or
   aggregate by that relationship's properties, so a filter cannot probe a
@@ -896,7 +903,7 @@ See it run in the
   `key`, checked on the node as it was inside the deleting transaction.
   With `changeFeed: true` only followers whose claims alone settle the
   rules get it.
-- Relationship rules (`CONNECT`, `DISCONNECT`, `UPDATE_EDGE`, `READ_EDGE`)
-  on a field whose target is an interface or union. They are refused at
-  startup; guard such a field with `@authentication` or rules on the
-  member types.
+- A rule on a relationship property that tests the relationship's ends
+  (`source`, `target`) when a field using the property type points at an
+  interface or union. It is refused at startup; put the rule on the
+  relationship field instead.

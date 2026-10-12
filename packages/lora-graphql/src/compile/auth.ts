@@ -19,6 +19,7 @@ import type {
 } from "../model/types.js";
 import { PLACEHOLDER, RULE_REFERENCES } from "../model/types.js";
 import { ruleParts, testsRelationshipEnds } from "../model/desugar.js";
+import { memberFields } from "../model/relations.js";
 import { and, bin, fn, lit, not, or, prop, v, type Expr } from "./cypher.js";
 import {
   bind,
@@ -746,6 +747,28 @@ export function relationshipRules(
   mode: "write" | "read" = "write",
 ): Expr | false | undefined {
   if (ctx.inAuth) return undefined;
+  if (ctx.model.abstracts.has(rel.target)) {
+    // The declared field to an interface or union: each member's rules,
+    // on the targets that are that member.
+    const perMember = memberFields(ctx.model, rel).map((member) => ({
+      member,
+      rule: relationshipRules(ctx, member, op, vars, mode),
+    }));
+    if (perMember.every(({ rule }) => rule === undefined)) return undefined;
+    if (perMember.every(({ rule }) => rule === false)) return false;
+    const all = foldAnd(
+      perMember.map(({ member, rule }): Folded => {
+        if (rule === undefined) return true;
+        const isMember: Expr = {
+          kind: "hasLabels",
+          variable: vars.target,
+          labels: [ctx.model.nodes.get(member.target)!.labels[0]!],
+        };
+        return bin("OR", not(isMember), rule === false ? lit(false) : rule);
+      }),
+    );
+    return all === true ? undefined : all === false ? false : all;
+  }
   const parts: Folded[] = [];
   for (const { field, flipped } of relationshipRuleFields(ctx, rel)) {
     const rules = (field.authorization?.validate ?? []).filter((r) =>
@@ -834,12 +857,17 @@ export function relationshipRuleFields(
     if (
       f.kind === "relationship" &&
       f !== rel &&
+      f !== rel.via &&
       f.type === rel.type &&
-      f.target === rel.owner &&
-      f.direction !== rel.direction &&
-      hasRules(f)
+      f.members.includes(rel.owner) &&
+      f.direction !== rel.direction
     ) {
-      out.push({ field: f, flipped: true });
+      // A field to an interface or union answers with its copy for this
+      // side's type.
+      const back = memberFields(ctx.model, f).find(
+        (m) => m.target === rel.owner,
+      );
+      if (back && hasRules(back)) out.push({ field: back, flipped: true });
     }
   }
   return out;

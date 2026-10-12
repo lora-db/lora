@@ -179,6 +179,13 @@ export interface RelationshipField extends FieldBase {
   members: readonly string[];
   /** For a member copy of a polymorphic field: the field it came from. */
   via?: RelationshipField | undefined;
+  /**
+   * For a field to an interface or union with relationship rules (CONNECT,
+   * DISCONNECT, UPDATE_EDGE, READ_EDGE): the field's authorization per
+   * member, its rules expanded and checked with that member as their
+   * `target`. A member copy carries its own.
+   */
+  memberAuthorization?: ReadonlyMap<string, Authorization> | undefined;
   filterable: boolean;
   /** UNDIRECTED: reads follow the relationship both ways. */
   queryDirection: "DIRECTED" | "UNDIRECTED";

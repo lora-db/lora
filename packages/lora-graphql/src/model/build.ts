@@ -81,9 +81,11 @@ import {
   claimsOnlyViolations,
   relationshipRuleOperations,
   isRelationshipRule,
+  memberAuthorization,
 } from "./build/authorization.js";
 import {
   checkAuthorizationWhere,
+  checkMemberRules,
   checkRuleWhere,
   abstractsOf,
   type RuleEnds,
@@ -966,9 +968,11 @@ export function buildModel(
     field: string | undefined,
     rules: ReadonlyArray<{ where: AuthorizationWhere }>,
     ends?: { source: NodeType; target: NodeType },
+    member?: NodeType,
   ) => {
     const ctx: DesugarContext = {
       nodes,
+      ...(member ? { member } : {}),
       props: relationshipProperties,
       viewer,
       abstracts,
@@ -1021,6 +1025,26 @@ export function buildModel(
       ]);
       const ends = f.kind === "relationship" ? ruleEnds(f) : undefined;
       if (ends) desugar(undefined, node.name, f.name, rel, ends);
+      else if (
+        f.kind === "relationship" &&
+        rel.length > 0 &&
+        abstracts.has(f.target)
+      ) {
+        // To an interface or union: the rules hold per member, each with
+        // that member as its target.
+        (
+          f as { memberAuthorization?: ReadonlyMap<string, Authorization> }
+        ).memberAuthorization = memberAuthorization(f, nodes, (own, target) =>
+          desugar(
+            undefined,
+            node.name,
+            f.name,
+            own,
+            { source: node, target },
+            target,
+          ),
+        );
+      }
     }
   }
   // A relationship property's rules may test the relationship's ends
@@ -1136,14 +1160,8 @@ export function buildModel(
               message:
                 "@authorization: CONNECT, DISCONNECT, UPDATE_EDGE and READ_EDGE rules belong on a relationship field",
             });
-          } else if (f.kind === "relationship") {
-            problems.push({
-              type: node.name,
-              field: f.name,
-              message:
-                "@authorization: relationship rules need a @node target, not an interface or union",
-            });
           }
+          // To an interface or union: checked per member below.
           continue;
         }
         checkRuleWhere(
@@ -1157,6 +1175,17 @@ export function buildModel(
           jwtShape,
           viewerNode,
           ends,
+        );
+      }
+      if (f.kind === "relationship") {
+        checkMemberRules(
+          nodes,
+          relationshipProperties,
+          node,
+          f,
+          problems,
+          jwtShape,
+          viewerNode,
         );
       }
     }
@@ -1195,12 +1224,15 @@ export function buildModel(
       if (f.kind !== "relationship") continue;
       const own = relationshipRuleOperations(f);
       if (own.size === 0) continue;
-      for (const g of nodes.get(f.target)?.fields.values() ?? []) {
+      const across = f.members.flatMap((member) => [
+        ...(nodes.get(member)?.fields.values() ?? []),
+      ]);
+      for (const g of across) {
         if (
           g.kind !== "relationship" ||
           g === f ||
           g.type !== f.type ||
-          g.target !== f.owner ||
+          !g.members.includes(f.owner) ||
           g.direction === f.direction ||
           // Each pair once: reported on the field that sorts first.
           `${g.owner}.${g.name}` < `${f.owner}.${f.name}`

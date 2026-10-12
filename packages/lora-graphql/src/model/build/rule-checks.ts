@@ -10,7 +10,7 @@ import type {
   RelationshipField,
   RelationshipPropertiesType,
 } from "../types.js";
-import { isRecord } from "./authorization.js";
+import { isRecord, isRelationshipRule } from "./authorization.js";
 import {
   claimRefs,
   viewerRefProblems,
@@ -180,6 +180,55 @@ export function checkRuleWhere(
     }
   };
   visit(where, "");
+}
+
+/**
+ * Check the relationship rules of a field to an interface or union: each
+ * member's copy, with that member as the target.
+ */
+export function checkMemberRules(
+  nodes: ReadonlyMap<string, NodeType>,
+  props: ReadonlyMap<string, RelationshipPropertiesType>,
+  source: NodeType,
+  f: RelationshipField,
+  problems: ModelProblem[],
+  jwtShape?: ReadonlyMap<string, string>,
+  viewerNode?: NodeType,
+) {
+  if (!f.memberAuthorization) return;
+  const edge = f.properties ? props.get(f.properties) : undefined;
+  const same = (a: ModelProblem, b: ModelProblem) =>
+    a.type === b.type && a.field === b.field && a.message === b.message;
+  for (const [member, authorization] of f.memberAuthorization) {
+    const target = nodes.get(member)!;
+    const found: ModelProblem[] = [];
+    for (const rule of authorization.validate) {
+      if (!isRelationshipRule(rule)) continue;
+      checkRuleWhere(
+        nodes,
+        props,
+        undefined,
+        source.name,
+        f.name,
+        rule.where,
+        found,
+        jwtShape,
+        viewerNode,
+        { source, target, edge },
+      );
+    }
+    // What is wrong for every member is said once; what is wrong for one
+    // (a field the others have and it lacks) names it.
+    for (const problem of found) {
+      const named = {
+        ...problem,
+        message: `${problem.message} (with ${f.target} member ${member} as the target)`,
+      };
+      if (!problems.some((p) => same(p, problem) || same(p, named))) {
+        problems.push(named);
+      }
+    }
+  }
 }
 
 export function checkNodeWhere(
