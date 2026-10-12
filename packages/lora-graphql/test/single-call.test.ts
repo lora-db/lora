@@ -442,3 +442,29 @@ describe("review regressions", () => {
     expect(r.errors?.[0]?.message).toContain("assertion failed");
   });
 });
+
+describe("second review", () => {
+  test.each([true, false])(
+    "an aborted request reports the abort (single call: %s)",
+    async (singleCallMutations) => {
+      const { lora, keys } = await setup(PLAIN, {
+        singleCallMutations,
+        maskErrors: false,
+      });
+      const controller = new AbortController();
+      const pending = lora.execute({
+        source: CREATE("a"),
+        context: { signal: controller.signal },
+      });
+      controller.abort();
+      const r = await pending;
+      // Either it finished first or it was aborted: never a TypeError
+      // from rewriting the abort's read-only message.
+      for (const error of r.errors ?? []) {
+        expect(error.message).not.toContain("only a getter");
+      }
+      const stored = await keys("Item");
+      expect(stored).toEqual(r.errors ? [] : ["a"]);
+    },
+  );
+});

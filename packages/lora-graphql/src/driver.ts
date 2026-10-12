@@ -238,12 +238,20 @@ export function loraDriver(db: LoraDatabaseLike): LoraDriver {
                   limits,
                 ).catch((err: unknown) => {
                   // The binding names the failing statement's position in
-                  // the batch; callers see the error a lone statement gives.
-                  if (err instanceof Error) {
-                    err.message = err.message.replace(
-                      / \(statement \d+ of \d+\)$/,
-                      "",
-                    );
+                  // the batch; callers see the error a lone statement
+                  // gives. A read-only message (an abort) stays as it is.
+                  if (
+                    err instanceof Error &&
+                    / \(statement \d+ of \d+\)$/.test(err.message)
+                  ) {
+                    try {
+                      err.message = err.message.replace(
+                        / \(statement \d+ of \d+\)$/,
+                        "",
+                      );
+                    } catch {
+                      // Not ours to rewrite.
+                    }
                   }
                   throw err;
                 }),

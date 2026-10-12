@@ -224,6 +224,9 @@ export async function executeMutation(
   // Value rules next, still before the transaction: a request with a bad
   // value never waits for, or holds, the writer lock.
   await validateInput(env.model, env.validators ?? {}, op, node, args);
+  // An update left out is an empty one: the same object from here on, so
+  // a callback started for it now is the one awaited later, once.
+  if (op === "UPDATE" && !args["update"]) args = { ...args, update: {} };
   env = { ...env, computed: startCallbacks(env, op, node, args) };
 
   const begin: RunOptions = {
@@ -318,7 +321,11 @@ export async function executeMutation(
             keys,
           );
         await runner.apply(plan, () => {
-          if (!late) created = runner.watch(read());
+          // In a single call the rules are assertions ahead of the read
+          // in the batch. In a transaction they are rows judged
+          // afterwards: the read waits for them, so its own failure never
+          // outranks a rule's.
+          if (runner.single) created = runner.watch(read());
           unique = runner.watch(checkUniqueTogether(runner));
           runner.assertNothingMoved();
         });
@@ -350,18 +357,18 @@ export async function executeMutation(
         }
         const done = await runner.update(plan, node, [{ key, input }], adjust);
         let validating!: Promise<void>;
-        let updated: Promise<unknown[]> | undefined;
         const read = () =>
           done.length > 0
             ? payloadFor(mutationNames.updatePayload(node), field, [key])
             : Promise.resolve([null]);
         await runner.apply(plan, () => {
           validating = held(runner.validateUpdated());
-          if (!late) updated = held(read());
           unique = held(checkUniqueTogether(runner));
         });
+        // The payload is read once the rules have answered: its own
+        // failure never outranks theirs.
         await validating;
-        const [value] = await (updated ?? read());
+        const [value] = await read();
         payload = { [field]: value ?? null, info: runner.info };
         break;
       }
@@ -390,7 +397,6 @@ export async function executeMutation(
           args["adjust"] as Input | undefined,
         );
         let validating!: Promise<void>;
-        let updated: Promise<unknown[]> | undefined;
         const read = () =>
           payloadFor(
             mutationNames.updateManyPayload(node),
@@ -399,12 +405,11 @@ export async function executeMutation(
           );
         await runner.apply(plan, () => {
           validating = held(runner.validateUpdated());
-          if (!late) updated = held(read());
           unique = held(checkUniqueTogether(runner));
         });
         await validating;
         payload = {
-          [mutationNames.createdField(node)]: await (updated ?? read()),
+          [mutationNames.createdField(node)]: await read(),
           info: runner.info,
         };
         break;

@@ -89,11 +89,7 @@ export class LazyTransaction implements DriverTransaction {
       this.#succeeded = true;
       return results;
     } catch (err) {
-      // The binding names the failing statement's position in the batch.
-      if (err instanceof Error) {
-        err.message = err.message.replace(/ \(statement \d+ of \d+\)$/, "");
-      }
-      throw err;
+      throw withoutPosition(err);
     } finally {
       this.#open = false;
     }
@@ -114,6 +110,23 @@ export class LazyTransaction implements DriverTransaction {
   get isOpen(): boolean {
     return this.#real ? this.#real.isOpen : this.#open;
   }
+}
+
+/**
+ * `err` without the position the binding appends to the error of a
+ * failing statement of a batch (`(statement 2 of 3)`): callers see the
+ * error a lone statement gives. An error whose message is read-only (the
+ * DOMException of an aborted request) is passed on as it is.
+ */
+export function withoutPosition(err: unknown): unknown {
+  if (err instanceof Error && / \(statement \d+ of \d+\)$/.test(err.message)) {
+    try {
+      err.message = err.message.replace(/ \(statement \d+ of \d+\)$/, "");
+    } catch {
+      // Not ours to rewrite.
+    }
+  }
+  return err;
 }
 
 const asserts = new WeakMap<LoraDriver, Promise<boolean>>();

@@ -397,7 +397,9 @@ export class Runner {
     if (
       !this.single ||
       node.uniqueTogether.length > 0 ||
-      Object.values(adjust ?? {}).some((v) => v !== null && v !== undefined) ||
+      // Any field named in `adjust`, null included: its field rules apply
+      // as for one it adjusts, and the transaction path knows them.
+      Object.keys(adjust ?? {}).length > 0 ||
       [...node.fields.values()].some(
         (f) => f.kind === "relationship" && input[f.name],
       )

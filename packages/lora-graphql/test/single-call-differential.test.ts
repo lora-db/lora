@@ -35,6 +35,14 @@ const typeDefs = /* GraphQL */ `
     slug: String @unique
     locked: Boolean
     open: Boolean
+    n: Int
+    count: Int
+      @authorization(
+        validate: [
+          { operations: [UPDATE], where: { jwt: { role: { eq: "admin" } } } }
+        ]
+      )
+    boom: Int @cypher(statement: "RETURN 1 / this.n AS v")
     note: String
     stamp: String @populatedBy(callback: "stamp", operations: [CREATE, UPDATE])
     secret: String
@@ -52,7 +60,7 @@ const typeDefs = /* GraphQL */ `
 `;
 
 const seed = [
-  "CREATE (:Doc {key: 'mine', owner: 'me', title: 'One', slug: 'one', note: 'n', locked: false, open: true})",
+  "CREATE (:Doc {key: 'mine', owner: 'me', title: 'One', slug: 'one', note: 'n', locked: false, open: true, n: 0})",
   "CREATE (:Doc {key: 'locked', owner: 'me', title: 'Two', locked: true, open: true})",
   "CREATE (:Doc {key: 'theirs', owner: 'other', title: 'Three', slug: 'three', locked: false, open: true})",
   "CREATE (:Tag {key: 't1'})",
@@ -67,6 +75,37 @@ interface Case {
 const me = { sub: "me" };
 
 const cases: Case[] = [
+  // Found in review.
+  {
+    name: "a field named in adjust with null still answers to its rule",
+    source: `mutation { updateDoc(key: "mine", update: { title: "a" }, adjust: { count: null }) { doc { key title } } }`,
+    jwt: me,
+  },
+  {
+    name: "an update left out, on a missing node",
+    source: `mutation { updateDoc(key: "nope") { doc { key } info { nodesUpdated } } }`,
+    jwt: me,
+  },
+  {
+    name: "an update left out, on a node",
+    source: `mutation { updateDoc(key: "mine") { doc { key stamp } info { nodesUpdated } } }`,
+    jwt: me,
+  },
+  {
+    name: "an update left out, refused before",
+    source: `mutation { updateDoc(key: "locked") { doc { key } } }`,
+    jwt: me,
+  },
+  {
+    name: "a rule refuses after the write and the payload read would fail too",
+    source: `mutation { updateDoc(key: "mine", update: { open: false }) { doc { key boom } } }`,
+    jwt: me,
+  },
+  {
+    name: "a payload read that fails",
+    source: `mutation { updateDoc(key: "mine", update: { title: "b" }) { doc { key boom } } }`,
+    jwt: me,
+  },
   // Creates.
   {
     name: "create",
@@ -200,6 +239,7 @@ const cases: Case[] = [
 ];
 
 async function outcome(single: boolean, c: Case) {
+  let calls = 0;
   const db = await createDatabase();
   for (const statement of seed) await db.execute(statement);
   const lora = new LoraGraphQL({
@@ -207,7 +247,12 @@ async function outcome(single: boolean, c: Case) {
     driver: loraDriver(db),
     singleCallMutations: single,
     maskErrors: false,
-    callbacks: { stamp: ({ operation }) => `by-${operation}` },
+    callbacks: {
+      stamp: ({ operation }) => {
+        calls++;
+        return `by-${operation}`;
+      },
+    },
   });
   await lora.assertSchema({ create: true });
   const changes: WriteChange[] = [];
@@ -221,11 +266,14 @@ async function outcome(single: boolean, c: Case) {
   );
   return {
     data: result.data ?? null,
-    errors: (result.errors ?? []).map((e) => ({
-      message: e.message,
-      extensions: e.extensions,
-    })),
+    errors: (result.errors ?? []).map((e) => {
+      // A database error carries a random correlation id.
+      const { id: _id, ...extensions } = e.extensions;
+      return { message: e.message, extensions };
+    }),
     graph: graph.rows,
+    // How often a @populatedBy callback ran.
+    calls,
     changes: changes.map(({ timestamp: _timestamp, ...change }) => change),
   };
 }
