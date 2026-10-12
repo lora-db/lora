@@ -36,4 +36,5 @@ mod regex;
 mod vector;
 
 pub use errors::clear_eval_error;
+pub(crate) use errors::take_eval_error;
 pub use expr::{eval_expr, eval_expr_result, eval_truthy_result, EvalContext, DEADLINE_EXCEEDED};

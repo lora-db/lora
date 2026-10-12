@@ -7,7 +7,7 @@
 use lora_store::GraphStorage;
 
 use crate::errors::ExecResult;
-use crate::executor::SortBuffer;
+use crate::executor::{sort_checked, SortBuffer};
 use crate::value::Row;
 
 use super::{RowSource, StreamCtx};
@@ -118,7 +118,9 @@ impl<'a, S: GraphStorage> SortSource<'a, S> {
         let eval_ctx = ctx.eval_ctx();
         let mut buffer = SortBuffer::new(items, top_k);
         while let Some(row) = upstream.next_row()? {
-            buffer.push(row, &eval_ctx);
+            // Checked per row: reading the next one upstream may clear
+            // an error this row's key raised.
+            sort_checked(|| buffer.push(row, &eval_ctx))?;
         }
         Ok(buffer.finish())
     }

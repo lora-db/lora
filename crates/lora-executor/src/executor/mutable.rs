@@ -38,7 +38,7 @@ use super::helpers::{
     value_matches_property_value,
 };
 use super::optional_match_rows;
-use super::{sort_row_bound, sort_rows_with_top_k};
+use super::{sort_checked, sort_row_bound, sort_rows_with_top_k};
 
 /// Lightweight target for SET property-mutation paths. Lets the SET logic
 /// borrow the row entry (just pulling out the id) instead of cloning the
@@ -593,7 +593,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         };
 
         let bound = sort_row_bound(op.top_k, op.limit.as_ref(), &eval_ctx);
-        sort_rows_with_top_k(&mut rows, &op.items, &eval_ctx, bound);
+        sort_checked(|| sort_rows_with_top_k(&mut rows, &op.items, &eval_ctx, bound))?;
 
         Ok(rows)
     }

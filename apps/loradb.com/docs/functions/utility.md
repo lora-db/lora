@@ -37,11 +37,9 @@ SET a.balance = a.balance - $amount
 WITH a
 RETURN assert(a.balance >= 0, 'insufficient funds') AS ok`} />
 
-It raises where it is evaluated: in `WHERE`, `WITH`, `RETURN`, `SET` and
-inside aggregates, once per row. A row that `SKIP` or `LIMIT` drops
-before the expression is evaluated is not checked, and an error raised
-inside `ORDER BY` is currently dropped, so assert in `WITH` or `RETURN`,
-not in a sort key.
+It raises where it is evaluated: in `WHERE`, `WITH`, `RETURN`, `SET`,
+`ORDER BY` and inside aggregates, once per row. A row that `SKIP` or
+`LIMIT` drops before the expression is evaluated is not checked.
 
 A failing statement writes nothing, and inside a transaction it rolls
 the transaction back. That turns a check into a statement: a batch sent

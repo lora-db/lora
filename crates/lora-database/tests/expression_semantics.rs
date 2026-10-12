@@ -283,3 +283,33 @@ fn assert_fails_the_statement_unless_the_condition_is_true() {
         serde_json::Value::Null
     );
 }
+
+/// Regression: a sort key that raised was dropped and its row sorted as
+/// null, so `ORDER BY 1 / n.zero` and a failed `assert` in ORDER BY
+/// returned rows.
+#[test]
+fn a_failing_sort_key_fails_the_statement() {
+    let db = TestDb::new();
+    db.run("UNWIND range(1, 4) AS i CREATE (:S {k: i, zero: 0})");
+    for query in [
+        "MATCH (n:S) RETURN n.k AS k ORDER BY 1 / n.zero",
+        "MATCH (n:S) RETURN n.k AS k ORDER BY 1 / n.zero LIMIT 2",
+        "MATCH (n:S) WITH n ORDER BY 1 / n.zero RETURN n.k AS k",
+        "UNWIND [3, 0, 1] AS d RETURN d ORDER BY 10 / d",
+    ] {
+        let err = db.run_err(query);
+        assert!(err.contains("by zero"), "`{query}`: {err}");
+    }
+    let err = db.run_err("MATCH (n:S) RETURN n.k AS k ORDER BY assert(n.k < 3, 'too big')");
+    assert!(err.contains("assertion failed: too big"), "{err}");
+    // A key that evaluates sorts as before.
+    assert_eq!(
+        db.column("MATCH (n:S) RETURN n.k AS k ORDER BY 10 / n.k", "k"),
+        vec![
+            serde_json::json!(4),
+            serde_json::json!(3),
+            serde_json::json!(2),
+            serde_json::json!(1)
+        ]
+    );
+}

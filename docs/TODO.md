@@ -19,7 +19,6 @@ next, **P2** planned, **P3** when convenient.
       variable argument (`size(big)`) and row clones share it (`value.rs` `SlotValue`).
 - [ ] P2 General procedures: `CALL db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()` ("unknown procedure").
 - [ ] P3 A failing expression in a seek or range bound of a read is dropped, not raised (`MATCH (n {id: 1/0})` matches nothing): raw `eval_expr` in `lora-executor/src/executor/helpers.rs:432,713,1356` and `pull/scan.rs:413,703`. Writes raise since 2026-10-11.
-- [ ] P2 An expression that raises inside `ORDER BY` is dropped: `RETURN n.k ORDER BY 1 / n.zero` returns its rows, and so does `ORDER BY assert(false)` (`lora-executor/src/executor/sort.rs`, raw `eval_expr`).
 - [ ] P3 Subtraction between values of unrelated types is `null`, not an error (`sub_values` fallback, `eval/binops.rs`); addition raises.
 - [ ] P2 `UNION` inside `CALL {}`, `CALL (x) {}` scope clause, `IN TRANSACTIONS` (`analyzer/state.rs:209`).
 - [ ] P3 Any `RETURN` inside `COUNT { }` or `EXISTS { }` is a parse error (`cypher.pest:372-374` takes one pattern plus `WHERE`); `COLLECT { }` subquery not in the grammar.

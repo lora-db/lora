@@ -19,7 +19,8 @@ use lora_ast::SortDirection;
 use lora_compiler::SortLimit;
 use lora_store::GraphStorage;
 
-use crate::eval::{eval_expr, EvalContext};
+use crate::errors::{ExecResult, ExecutorError};
+use crate::eval::{clear_eval_error, eval_expr, take_eval_error, EvalContext};
 use crate::value::{LoraValue, Row};
 
 use super::helpers::compare_values_total;
@@ -35,6 +36,18 @@ pub(crate) fn sort_rows_with_top_k<S: GraphStorage>(
     }
     let taken = std::mem::take(rows);
     *rows = SortBuffer::from_rows(items, top_k, taken, eval_ctx).finish();
+}
+
+/// Run `f`, which evaluates sort keys, and fail if one of them raised: a
+/// key that cannot be computed (`ORDER BY 1 / n.zero`, a failed
+/// `assert`) is an error of the statement, not a row sorted as null.
+pub(crate) fn sort_checked<T>(f: impl FnOnce() -> T) -> ExecResult<T> {
+    clear_eval_error();
+    let value = f();
+    match take_eval_error() {
+        Some(message) => Err(ExecutorError::from_eval(message)),
+        None => Ok(value),
+    }
 }
 
 /// The row bound a Sort may apply: the static `top_k` and, for `LIMIT

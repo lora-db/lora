@@ -26,6 +26,6 @@ pub fn clear_eval_error() {
     EVAL_ERROR.with(|e| *e.borrow_mut() = None);
 }
 
-pub(super) fn take_eval_error() -> Option<String> {
+pub(crate) fn take_eval_error() -> Option<String> {
     EVAL_ERROR.with(|e| e.borrow_mut().take())
 }

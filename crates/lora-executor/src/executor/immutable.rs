@@ -38,7 +38,7 @@ use super::helpers::{
 };
 use super::{merge_optional_rows, optional_match_rows};
 use super::{project_item, project_item_in_place};
-use super::{sort_row_bound, sort_rows_with_top_k};
+use super::{sort_checked, sort_row_bound, sort_rows_with_top_k};
 
 #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
 const PARALLEL_ROW_THRESHOLD: usize = 20_000;
@@ -1018,7 +1018,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         };
 
         let bound = sort_row_bound(op.top_k, op.limit.as_ref(), &eval_ctx);
-        sort_rows_with_top_k(&mut rows, &op.items, &eval_ctx, bound);
+        sort_checked(|| sort_rows_with_top_k(&mut rows, &op.items, &eval_ctx, bound))?;
 
         Ok(rows)
     }
