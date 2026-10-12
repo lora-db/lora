@@ -19,8 +19,8 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 
 | Clause | Status | Notes |
 |--------|--------|-------|
-| `MATCH` | **Supported** | Node, label, property, relationship, multi-hop, cross-product |
-| `OPTIONAL MATCH` | **Supported** | Returns null rows for missing patterns, including as the query's first clause (`OPTIONAL MATCH (u:Missing) RETURN u` returns one row with `u` null). A pattern anchored on already-bound variables expands from them per row, like `MATCH`, instead of matching the pattern across the whole graph and joining |
+| `MATCH` | **Supported** | Node, label, property, relationship, multi-hop, cross-product. A pattern on a variable an earlier clause bound to `null` matches nothing, so the `MATCH` returns no rows for that row (see section 19) |
+| `OPTIONAL MATCH` | **Supported** | Returns null rows for missing patterns, including as the query's first clause (`OPTIONAL MATCH (u:Missing) RETURN u` returns one row with `u` null). A pattern anchored on already-bound variables expands from them per row, like `MATCH`, instead of matching the pattern across the whole graph and joining. A pattern on a variable bound to `null` finds nothing, and the row is kept with the pattern's new variables null |
 | `WHERE` | **Supported** | All comparison, boolean, string, null, list, regex operators |
 | `RETURN` | **Supported** | Projection, aliases, star, computed expressions |
 | `CREATE` | **Supported** | Nodes, relationships, patterns, batch via UNWIND. A bound variable in a node position must hold a node (and in a relationship position a relationship); a map, `null` or scalar there is an error, never a new blank entity |
@@ -31,7 +31,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `WITH` | **Supported** | Variable piping, renaming, filtering, aggregation, star |
 | `UNWIND` | **Supported** | List unwinding, empty/null handling, `list.range()` |
 | `UNION` / `UNION ALL` | **Supported** | Deduplication, multi-branch, ORDER BY / LIMIT on result |
-| `ORDER BY` | **Supported** | ASC, DESC, multi-key, null ordering. Keys may name projection aliases, aggregates, or (for non-aggregating, non-DISTINCT projections) original variables. With a RANGE index or uniqueness constraint on the sort property and a range predicate on it (`WHERE n.key > $after ORDER BY n.key LIMIT k`), rows stream from the index and the scan stops after `k` rows |
+| `ORDER BY` | **Supported** | ASC, DESC, multi-key, null ordering. Keys may name projection aliases and aggregates. After a plain projection a key may also read the variables from before it. After an aggregating or `DISTINCT` projection only its columns exist, so a key may be any expression over the grouping keys (the projected items): a property of a grouped node, relationship or map (`WITH n, count(m) AS c ORDER BY c DESC, n.key`), a function of one, or a mix with an aggregate. A key that reads anything else from before the projection is an error, as in openCypher, never a silently unsorted result. With a RANGE index or uniqueness constraint on the sort property and a range predicate on it (`WHERE n.key > $after ORDER BY n.key LIMIT k`), rows stream from the index and the scan stops after `k` rows |
 | `SKIP` / `LIMIT` | **Supported** | Pagination patterns. Applied after aggregation and `DISTINCT`. The count must be a non-negative integer (an integral float is accepted): `null` (for example an omitted `$limit`), a negative number or a fraction is an error, as in Neo4j, never "no limit" |
 | `DISTINCT` | **Supported** | In RETURN and WITH |
 | `EXPLAIN` (Cypher syntax) | **Not in grammar — use API** | Provided as `db.explain(query, params?)`; deliberately not exposed as a Cypher keyword. |
@@ -103,7 +103,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | List concatenation `+` | **Supported** | A list and an element append (`[1] + 2`) or prepend (`0 + [1]`) |
 | String concatenation `+` | **Supported** | A string and a number concatenate in either order (`'p' + 1` is `'p1'`); a string with another type is an error |
 | List comprehension `[x IN list WHERE p \| e]` | **Supported** | |
-| Pattern comprehension `[pattern WHERE p \| e]` | **Supported** | A start node the outer row does not bind, with an inline property map (`[(v:Person {subject: $s}) \| v]`), seeks that property instead of scanning the label; the same holds for `EXISTS { }` and `COUNT { }` |
+| Pattern comprehension `[pattern WHERE p \| e]` | **Supported** | A node the outer row does not bind is found through a property's index instead of a scan of its label when the pattern pins that property: an inline property map (`[(v:Person {subject: $s}) \| v]`), or a `WHERE` conjunct `v.key = value`, `v.key IN list` or `v.key STARTS WITH prefix` (the last with a RANGE index or uniqueness constraint on the property) whose value does not come from the pattern itself. A chain is walked from its last node when that one is bound or pinned and the first is not (`[(g:G)<-[:LIKES]-(p:P) WHERE p.key = $key \| g]` starts at `p`). `explain()` lists these under `pattern_seeks` on the operator that evaluates the comprehension. The same holds for `EXISTS { }` and `COUNT { }`. A pattern on a variable bound to `null` matches nothing: the list is empty and `EXISTS` is false (see section 19). The order of the list follows the walk and is not specified; sort it when the order matters |
 | `EXISTS { pattern }` subquery | **Supported** | In WHERE |
 | `COUNT { pattern [WHERE ...] }` subquery | **Supported** | Number of matches; `MATCH` keyword optional |
 | `COLLECT { subquery }` | **Not yet implemented** | Not in grammar; use `collect()` over a `CALL { }` subquery or a pattern comprehension |
@@ -447,6 +447,7 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 | `x IN list` where `x` is absent and `list` contains `null` → `null` | **Supported** (`5 IN [1, null]` is `null`; `1 IN [1, null]` is `true`) |
 | `IS NULL` / `IS NOT NULL` | **Supported** |
 | Aggregates skip nulls (except `count(*)`) | **Supported** |
+| A pattern on a variable bound to `null` matches nothing: `MATCH` returns no rows, `OPTIONAL MATCH` keeps the row with its new variables null, a pattern comprehension is `[]`, `EXISTS { }` is `false`, `COUNT { }` is `0`. It holds whether the null is the first node of the pattern, the last, or a relationship, and however the variable became null (an `OPTIONAL MATCH` that found nothing, `head(collect(v))`, a literal). `CREATE` and `MERGE` on a null variable are still an error | **Supported** |
 
 ## 20. Not yet implemented (summary)
 
