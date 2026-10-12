@@ -87,7 +87,7 @@ Subscriptions have their own limits:
 | `callbacks` | `Record<string, PopulatedByCallback>`: named callbacks for `@populatedBy(callback:)` |
 | `triggers` | `Record<string, { create?, update?, delete? }>`: [trigger functions](/docs/graphql/triggers#trigger-functions) per node type, called inside the mutation's transaction |
 | `triggerTimeoutMs` | Most time one trigger function may take, in milliseconds (default 1000; 0 disables). Past it the mutation fails with `TIMEOUT` and rolls back |
-| `singleCallMutations` | Send a create without relationship writes, or a scalar update of one node by key, as one call that begins, runs and commits, with its rule checks as `assert()` statements, so the writer lock is never held across a hop to JavaScript (default true). Schemas with triggers, `@uniqueTogether` on the type, or a READ validate rule keep a transaction, as does a caller-owned one. `false` keeps every mutation in a transaction |
+| `singleCallMutations` | Send a create (with the nodes it creates and connects), or an update of one node by key that sets or adjusts scalar fields and connects or creates related nodes, as one call that begins, runs and commits, with its rule checks as `assert()` statements, so the writer lock is never held across a hop to JavaScript (default true). Schemas with triggers or a READ validate rule keep a transaction, as does a caller-owned one. `false` keeps every mutation in a transaction |
 | `resolvers` | `Record<Type, Record<field, GraphQLFieldResolver>>`: resolvers of `@customResolver` fields |
 | `scalars` | `Record<string, GraphQLScalarType>`: implementations of `@storedAs` custom scalars. Without one, values pass through |
 | `validators` | `Record<Type, StandardSchemaV1 \| { create?, update?, upsert? }>`: a validator per node type, from any Standard Schema library (zod, valibot, arktype, yup). See [validators](/docs/graphql/directives#validators) |
@@ -671,13 +671,14 @@ transaction whose statements see earlier writes.
 A mutation holds the database's writer lock from `begin()` to `commit()`,
 so every call into the transaction is a round trip under the lock. With
 `executeMany()` the library sends the statements that do not need an
-earlier result in one call: a create with its payload read is one call,
-an update or a create with a `connect` is two. A driver without it runs
+earlier result in one call. A driver without it runs
 the same statements one `execute()` at a time. `timeoutMs` then bounds
 each call, not each statement.
 
-A create without relationship writes, and an update of one node by key
-that sets only scalar fields, do not open a transaction at all. Their
+A create, with the nodes it creates and connects under it, and an
+update of one node by key that sets or adjusts scalar fields and
+connects or creates related nodes, do not open a transaction at all.
+Their
 statements are known before the first is sent, so they go to the
 database as one write batch (`driver.run()`), which begins, runs and
 commits in one native step: the lock is never held while JavaScript
@@ -686,16 +687,31 @@ batch instead. A rule the stored node must pass is an `assert()` that
 fails the batch and rolls it back, and the client gets the same
 `FORBIDDEN` or `CONSTRAINT_VIOLATION`. An update is one statement that
 matches the node under the caller's filter rules, checks the rules
-before the write, writes, and checks the rules after it. A test runs
+before the write, writes, and checks the rules after it. A create that
+connects asserts the same things a transaction reads back: every target
+is there and visible (`NOT_FOUND` names the ones that are not), the
+rules on both ends and on the relationship field hold, and a single
+relationship still holds one node. An update that connects first
+asserts that its node is there: when it is not, the batch rolls back and
+the mutation answers `null`, as it does in a transaction. Its link
+statement tells a new relationship from one that was there, and holds
+the first to the `CONNECT` rules and the second to `UPDATE_EDGE`.
+`@uniqueTogether` is a statement of
+the batch too: it fails on the node that would share its combination.
+A test runs
 every case both ways and holds the answers, the graph and the change
 events to being identical.
 
 Measured at 32 requests in flight: creates run 24% faster this way
 (3,650 against 2,970 req/s, median 3.8 ms against 6.4 ms), and updates
 68% faster (4,300 against 2,560 req/s, median 1.7 ms against 7.6 ms). Everything else
-(deletes, upserts, bulk updates, relationship writes, `adjust`, schemas
-with triggers or a READ validate rule, a type with `@uniqueTogether`, a
-caller-owned transaction) runs in a transaction as described above.
+(deletes, upserts, bulk updates, an update that disconnects, replaces a
+single relationship or updates connected nodes or edges, an `adjust` of
+a field with a value rule such as `@range`, schemas with
+triggers or a READ validate rule, a caller-owned transaction) runs in a
+transaction as described above. So does a create whose links are not certain to be new:
+one that names the same relationship from both of its sides, or sets a
+relationship property that a rule refuses.
 `singleCallMutations: false` turns it off.
 
 ## Standalone exports

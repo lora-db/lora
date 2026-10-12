@@ -2,14 +2,13 @@
 // single relationships hold one node, @uniqueTogether combinations stay
 // unique, required relationships stay set.
 
-import { bind } from "../../compile/context.js";
+import { bind, type CompileContext } from "../../compile/context.js";
 import { name, printExpr } from "../../compile/cypher.js";
 import { keyOf } from "../../compile/read/by-keys.js";
-import { requestError } from "../../errors.js";
 import { declared, memberFields } from "../../model/relations.js";
 import type { NodeType, RelationshipField } from "../../model/types.js";
 import type { EntityRef } from "../changes.js";
-import { HIDDEN, requiredMissing } from "./errors.js";
+import { HIDDEN, requiredMissing, tooMany } from "./errors.js";
 import {
   arrow,
   dedupe,
@@ -33,6 +32,89 @@ export async function checkCardinality(
   runner: Runner,
   plan: WritePlan,
 ): Promise<void> {
+  const model = runner.env.model;
+  for (const { field, keys } of singlesTouched(runner, plan)) {
+    const owner = model.nodes.get(field.owner)!;
+    const ctx = runner.ctx();
+    const text =
+      `UNWIND ${printExpr(bind(ctx, keys))} AS k\n` +
+      `MATCH (a:${name(owner.labels[0]!)}) WHERE a.${name(owner.key.property)} = k\n` +
+      `WITH a, ${related(runner, field)} AS c WHERE c > 1\n` +
+      `RETURN a.${name(owner.key.property)} AS key, c AS count` +
+      `, ${relatedSeen(runner, ctx, field)} AS seen`;
+    const rows = await runner.run(text, ctx);
+    if (rows.length > 0) {
+      const row = rows[0]!;
+      throw tooMany(
+        field,
+        row["key"],
+        Number(row["count"]),
+        Number(row["seen"]),
+      );
+    }
+  }
+}
+
+/**
+ * {@link checkCardinality} for a single call: each check is a statement
+ * that fails on the first node holding more than one, naming the node and
+ * its counts in the message. Nothing is awaited.
+ */
+export function assertCardinality(runner: Runner, plan: WritePlan): void {
+  const model = runner.env.model;
+  for (const { field, keys } of singlesTouched(runner, plan)) {
+    runner.inPlace(() => {
+      const owner = model.nodes.get(field.owner)!;
+      const ctx = runner.ctx();
+      const message = runner.assertions.failsAs((detail) => {
+        const [i, count, seen] = detail.split(",").map(Number);
+        return tooMany(field, keys[i!], count!, seen!);
+      }, "toString(row.i) + ',' + toString(c) + ',' + toString(seen)");
+      void runner.run(
+        `UNWIND ${printExpr(
+          bind(
+            ctx,
+            keys.map((k, i) => ({ i, k })),
+          ),
+        )} AS row\n` +
+          `MATCH (a:${name(owner.labels[0]!)}) WHERE a.${name(owner.key.property)} = row.k\n` +
+          `WITH row, a, ${related(runner, field)} AS c\n` +
+          `WITH row, c, ${relatedSeen(runner, ctx, field)} AS seen\n` +
+          `RETURN assert(c <= 1, ${message}) AS ok`,
+        ctx,
+      );
+    });
+  }
+}
+
+/** How many nodes `a` holds on `field`. */
+function related(runner: Runner, field: RelationshipField): string {
+  return `size([(a)${arrow(field, "", "x", undefined)} WHERE ${memberTest(runner.env.model, "x", field)} | 1])`;
+}
+
+/** How many of them the caller can read. */
+function relatedSeen(
+  runner: Runner,
+  ctx: CompileContext,
+  field: RelationshipField,
+): string {
+  const model = runner.env.model;
+  return `size([(a)${arrow(field, "", "x", undefined)} WHERE ${field.members
+    .map((m) => {
+      const member = model.nodes.get(m)!;
+      return `(${labelTest("x", member)} AND ${readable(ctx, member, "x")})`;
+    })
+    .join(" OR ")} | 1])`;
+}
+
+/**
+ * The single relationship fields the plan's links touch, each with the
+ * keys of the nodes to check: those that may now hold more than one.
+ */
+function singlesTouched(
+  runner: Runner,
+  plan: WritePlan,
+): Array<{ field: RelationshipField; keys: unknown[] }> {
   const model = runner.env.model;
   interface Touched {
     field: RelationshipField;
@@ -63,43 +145,12 @@ export async function checkCardinality(
       if (!f.list) add(f, link.to, link.rel.target);
     }
   }
+  const checks: Array<{ field: RelationshipField; keys: unknown[] }> = [];
   for (const { field, keys: all, fresh } of touched.values()) {
-    const keys = all.filter((k) => fresh.get(keyOf(k)) !== 1);
-    if (keys.length === 0) continue;
-    const owner = model.nodes.get(field.owner)!;
-    const ctx = runner.ctx();
-    const text =
-      `UNWIND ${printExpr(bind(ctx, dedupe(keys)))} AS k\n` +
-      `MATCH (a:${name(owner.labels[0]!)}) WHERE a.${name(owner.key.property)} = k\n` +
-      `WITH a, size([(a)${arrow(field, "", "x", undefined)} WHERE ${memberTest(model, "x", field)} | 1]) AS c WHERE c > 1\n` +
-      `RETURN a.${name(owner.key.property)} AS key, c AS count` +
-      `, size([(a)${arrow(field, "", "x", undefined)} WHERE ${field.members
-        .map((m) => {
-          const member = model.nodes.get(m)!;
-          return `(${labelTest("x", member)} AND ${readable(ctx, member, "x")})`;
-        })
-        .join(" OR ")} | 1]) AS seen`;
-    const target = { name: field.target } as NodeType;
-    const rows = await runner.run(text, ctx);
-    if (rows.length > 0) {
-      const row = rows[0]!;
-      // Held by a node the caller cannot read: replacing it would write
-      // a relationship of a node they cannot see, and the count would
-      // reveal it. Refused like a rule would refuse it.
-      if (Number(row["seen"]) < Number(row["count"])) {
-        throw requestError(
-          "FORBIDDEN",
-          `not allowed to replace ${owner.name}.${field.name}`,
-        );
-      }
-      throw requestError(
-        "CONSTRAINT_VIOLATION",
-        `${owner.name}.${field.name} holds one ${target.name}, but ${owner.name} ${JSON.stringify(row["key"])} would have ${String(row["count"])}`,
-        undefined,
-        { type: owner.name, field: field.name },
-      );
-    }
+    const keys = dedupe(all.filter((k) => fresh.get(keyOf(k)) !== 1));
+    if (keys.length > 0) checks.push({ field, keys });
   }
+  return checks;
 }
 
 /**
@@ -153,6 +204,13 @@ export async function checkUniqueTogether(runner: Runner): Promise<void> {
     end(start, "OUT", finish.type, ref.type);
     end(finish, "IN", start.type, ref.type);
   }
+  if (runner.single) {
+    await assertUniqueTogether(
+      runner,
+      [...touched].map(([node, keys]) => ({ node, keys: [...keys.values()] })),
+    );
+    return;
+  }
   for (const [node, keys] of touched) {
     for (const u of node.uniqueTogether) {
       const ctx = runner.ctx();
@@ -165,6 +223,40 @@ export async function checkUniqueTogether(runner: Runner): Promise<void> {
       if (rows.length > 0) throw notUniqueTogether(node, u, rows[0]!["key"]);
     }
   }
+}
+
+/**
+ * `@uniqueTogether` for a single call, on the nodes with `keys` of each
+ * type: every check is issued before this first waits, as a statement
+ * that fails on the node sharing its combination.
+ */
+export function assertUniqueTogether(
+  runner: Runner,
+  touched: Array<{ node: NodeType; keys: unknown[] }>,
+): Promise<void> {
+  const issued: Array<Promise<unknown>> = [];
+  for (const { node, keys: all } of touched) {
+    const keys = dedupe(all);
+    for (const u of node.uniqueTogether) {
+      runner.inPlace(() => {
+        const ctx = runner.ctx();
+        // The constraint's filter is the data's, not the caller's view.
+        ctx.inAuth = true;
+        issued.push(
+          runner.run(
+            uniqueTogetherStatement(ctx, runner.env.model, node, u, keys, (i) =>
+              runner.assertions.failsAs(
+                (detail) => notUniqueTogether(node, u, keys[Number(detail)]),
+                i,
+              ),
+            ),
+            ctx,
+          ),
+        );
+      });
+    }
+  }
+  return Promise.all(issued).then(() => undefined);
 }
 
 /**

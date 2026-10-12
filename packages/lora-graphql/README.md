@@ -1735,7 +1735,7 @@ binding has, so the WASM binding serves reads.
 | `maxQueuedWrites`            | 512           | Writes waiting for the writer lock; more is `OVERLOADED` |
 | `maxTotalCount`              | none          | Where a root connection's `totalCount` stops counting    |
 | `triggerTimeoutMs`           | 1000          | Per trigger function; past it the mutation fails         |
-| `singleCallMutations`        | true          | A plain create is one call that begins, runs, commits    |
+| `singleCallMutations`        | true          | A create is one call that begins, runs, commits          |
 | `subscriptionScope`          | the context   | What `maxSubscriptions` counts per                       |
 | `maxSubscriptionFilterDepth` | 1             | Relationship filter nesting in a subscription where      |
 | `subscriptionTimeoutMs`      | 2000          | Per statement checking a change for a subscriber         |

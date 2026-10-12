@@ -1,7 +1,7 @@
-// A create without relationship writes is one write batch that commits as
-// it returns: no begin(), no hop to JavaScript while the writer lock is
-// held. Its rule checks are assert() statements of the batch. Everything
-// else keeps a transaction.
+// A create, with the relationships it connects, is one write batch that
+// commits as it returns: no begin(), no hop to JavaScript while the writer
+// lock is held. Its rule checks are assert() statements of the batch.
+// Everything else keeps a transaction.
 
 import { createDatabase } from "@loradb/lora-node";
 import { describe, expect, test } from "vitest";
@@ -56,6 +56,63 @@ const CREATE = (key: string, name = key) =>
   `mutation { createItems(input: [{ key: "${key}", name: "${name}" }]) { items { key name } } }`;
 
 describe("the single call", () => {
+  test("a create with a nested create and a connect is one write batch", async () => {
+    const { exec, paths, db } = await setup(
+      `type Post @node @mutation { key: String! @key  tags: [Tag!]! @relationship(type: "HAS", direction: OUT) }
+       type Tag @node @mutation { key: String! @key }`,
+    );
+    await db.execute("CREATE (:Tag {key: 'old'})");
+    const r = await exec(
+      `mutation { createPosts(input: [{ key: "p", tags: { create: [{ node: { key: "new" } }], connect: [{ key: "old" }] } }]) { posts { key tags(sort: [{ key: ASC }]) { key } } info { nodesCreated relationshipsCreated } } }`,
+    );
+    expect(r.errors).toBeUndefined();
+    expect(r.data).toEqual({
+      createPosts: {
+        posts: [{ key: "p", tags: [{ key: "new" }, { key: "old" }] }],
+        info: { nodesCreated: 2, relationshipsCreated: 2 },
+      },
+    });
+    expect(paths).toHaveLength(1);
+    expect(paths[0]).not.toBe("begin");
+  });
+
+  test("@uniqueTogether is checked in the batch", async () => {
+    const { exec, paths, keys } = await setup(
+      `type Item @node @mutation @uniqueTogether(fields: ["name", "kind"]) { key: String! @key  name: String  kind: String }`,
+    );
+    const create = (key: string) =>
+      `mutation { createItems(input: [{ key: "${key}", name: "n", kind: "k" }]) { items { key } } }`;
+    expect((await exec(create("a"))).errors).toBeUndefined();
+    const r = await exec(create("b"));
+    expect(r.errors?.[0]?.message).toBe(
+      'Item must be unique by (name, kind); Item "b" would share it with another',
+    );
+    expect(r.errors?.[0]?.extensions).toMatchObject({
+      code: "CONSTRAINT_VIOLATION",
+    });
+    expect(paths).toHaveLength(2);
+    expect(paths).not.toContain("begin");
+    expect(await keys("Item")).toEqual(["a"]);
+  });
+
+  test("a connect to a node that is not there writes nothing", async () => {
+    const { exec, paths, keys } = await setup(
+      `type Post @node @mutation { key: String! @key  tags: [Tag!]! @relationship(type: "HAS", direction: OUT) }
+       type Tag @node @mutation { key: String! @key }`,
+    );
+    const r = await exec(
+      `mutation { createPosts(input: [{ key: "p", tags: { connect: [{ key: "a" }, { key: "b" }] } }]) { posts { key } } }`,
+    );
+    expect(r.errors?.[0]?.message).toBe('Post.tags: no Tag with key "a", "b"');
+    expect(r.errors?.[0]?.extensions).toMatchObject({
+      code: "NOT_FOUND",
+      keys: ["a", "b"],
+    });
+    expect(paths).toHaveLength(1);
+    expect(paths[0]).not.toBe("begin");
+    expect(await keys("Post")).toEqual([]);
+  });
+
   test("a create is one write batch and no transaction", async () => {
     const { exec, paths, keys } = await setup(PLAIN);
     const r = await exec(CREATE("a"));
@@ -225,11 +282,14 @@ describe("what keeps a transaction", () => {
     ).toEqual(["begin"]);
   });
 
-  test("a create with a relationship write", async () => {
+  const TAGGED = `type Post @node @mutation { key: String! @key  tags: [Tag!]! @relationship(type: "HAS", direction: OUT) }
+       type Tag @node @mutation { key: String! @key  posts: [Post!]! @relationship(type: "HAS", direction: IN) }`;
+
+  test("a create that names one relationship from both sides", async () => {
+    // The second link finds the first one's relationship: a re-connect.
     const paths = await usesBegin(
-      `type Post @node @mutation { key: String! @key  tags: [Tag!]! @relationship(type: "HAS", direction: OUT) }
-       type Tag @node @mutation { key: String! @key }`,
-      `mutation { createPosts(input: [{ key: "p", tags: { create: [{ node: { key: "t" } }] } }]) { posts { key } } }`,
+      TAGGED,
+      `mutation { createPosts(input: [{ key: "p", tags: { create: [{ node: { key: "t", posts: { connect: [{ key: "p" }] } } }] } }]) { posts { key } } }`,
     );
     expect(paths).toEqual(["begin"]);
   });
@@ -247,14 +307,6 @@ describe("what keeps a transaction", () => {
       `extend schema @authorizationDefaults(requireAuthentication: false)
        type Item @node @mutation { key: String! @key  name: String }
        type Secret @node @authorization(validate: [{ operations: [READ], where: { jwt: { role: { eq: "admin" } } } }]) { key: String! @key }`,
-      CREATE("a"),
-    );
-    expect(paths).toEqual(["begin"]);
-  });
-
-  test("a type with @uniqueTogether", async () => {
-    const paths = await usesBegin(
-      `type Item @node @mutation @uniqueTogether(fields: ["name", "kind"]) { key: String! @key  name: String  kind: String }`,
       CREATE("a"),
     );
     expect(paths).toEqual(["begin"]);

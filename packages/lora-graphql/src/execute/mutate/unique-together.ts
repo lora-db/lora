@@ -65,6 +65,10 @@ export async function checkUniqueTogetherOf(
  * compares it with the nodes that share its first relationship end (or,
  * with scalars only, its first scalar's value) — never a scan of the type.
  * Without `keys`, every node of the type is compared (a scan).
+ *
+ * With `failing`, the statement fails instead of returning that node:
+ * `failing` gives the assertion's message, from an expression for the
+ * node's place in `keys`.
  */
 export function uniqueTogetherStatement(
   ctx: CompileContext,
@@ -72,6 +76,7 @@ export function uniqueTogetherStatement(
   node: NodeType,
   u: UniqueTogether,
   keys: unknown[] | undefined,
+  failing?: (index: string) => string,
 ): string {
   const label = name(node.labels[0]!);
   const key = name(node.key.property);
@@ -120,10 +125,10 @@ export function uniqueTogetherStatement(
     ),
     ...(mWhere ? [`(${printExpr(mWhere)})`] : []),
   ];
+  const bound = keys ? printExpr(bind(ctx, dedupe(keys))) : "";
   return (
     (keys
-      ? `UNWIND ${printExpr(bind(ctx, dedupe(keys)))} AS k\n` +
-        `MATCH (n:${label}) WHERE n.${key} = k\n`
+      ? `UNWIND ${bound} AS k\n` + `MATCH (n:${label}) WHERE n.${key} = k\n`
       : `MATCH (n:${label})\n`) +
     `WITH ${["n", ...ends("n").map((e, i) => `${e} AS ${mine[i]!}`)].join(", ")}` +
     (present.length > 0 ? ` WHERE ${present.join(" AND ")}` : "") +
@@ -131,6 +136,10 @@ export function uniqueTogetherStatement(
     candidates +
     `WITH ${["n", "m", ...mine, ...ends("m").map((e, i) => `${e} AS ${theirs[i]!}`)].join(", ")}` +
     (same.length > 0 ? ` WHERE ${same.join(" AND ")}` : "") +
-    `\nRETURN n.${key} AS key LIMIT 1`
+    (failing && keys
+      ? `\nWITH n LIMIT 1\nRETURN assert(false, ${failing(
+          `toString([i IN range(0, size(${bound}) - 1) WHERE ${bound}[i] = n.${key}][0])`,
+        )}) AS key`
+      : `\nRETURN n.${key} AS key LIMIT 1`)
   );
 }

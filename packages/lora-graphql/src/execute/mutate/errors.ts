@@ -1,6 +1,7 @@
 // Errors mutations raise for what the graph holds: a pair that is not
-// connected, a required relationship left empty, and the engine's
-// constraint errors named by field.
+// connected, a target that is not there, a relationship rule that
+// refuses, a single relationship holding two, a required relationship
+// left empty, and the engine's constraint errors named by field.
 
 import { requestError } from "../../errors.js";
 import type {
@@ -21,6 +22,58 @@ export function notConnected(
     `${owner.name}.${rel.name}: ${to === undefined ? `no ${target.name} is connected` : `${target.name} ${JSON.stringify(to)} is not connected`}`,
     undefined,
     { type: target.name },
+  );
+}
+
+/** The error of a connect whose targets are not there (or not visible). */
+export function noTarget(
+  owner: NodeType,
+  rel: RelationshipField,
+  target: NodeType,
+  missing: unknown[],
+) {
+  return requestError(
+    "NOT_FOUND",
+    `${owner.name}.${rel.name}: no ${target.name} with ${target.key.name} ${missing
+      .map((k) => JSON.stringify(k))
+      .join(", ")}`,
+    undefined,
+    { type: target.name, keys: missing },
+  );
+}
+
+/** The error of a relationship field's rules refusing `op`. */
+export function refusedRule(
+  op: "CONNECT" | "DISCONNECT" | "UPDATE_EDGE",
+  rel: RelationshipField,
+) {
+  return requestError(
+    "FORBIDDEN",
+    `not allowed to ${op.toLowerCase().replace("_", " ")} ${rel.owner}.${rel.name}`,
+  );
+}
+
+/** The error of a single relationship field that would hold `count` nodes. */
+export function tooMany(
+  field: RelationshipField,
+  key: unknown,
+  count: number,
+  seen: number,
+) {
+  // Held by a node the caller cannot read: replacing it would write
+  // a relationship of a node they cannot see, and the count would
+  // reveal it. Refused like a rule would refuse it.
+  if (seen < count) {
+    return requestError(
+      "FORBIDDEN",
+      `not allowed to replace ${field.owner}.${field.name}`,
+    );
+  }
+  return requestError(
+    "CONSTRAINT_VIOLATION",
+    `${field.owner}.${field.name} holds one ${field.target}, but ${field.owner} ${JSON.stringify(key)} would have ${String(count)}`,
+    undefined,
+    { type: field.owner, field: field.name },
   );
 }
 

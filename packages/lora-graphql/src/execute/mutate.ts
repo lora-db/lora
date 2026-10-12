@@ -28,7 +28,7 @@ import {
   type MutationKind,
 } from "../schema/mutations.js";
 import type { EntityRef, WriteChange } from "./changes.js";
-import { checkUniqueTogether } from "./mutate/checks.js";
+import { assertUniqueTogether, checkUniqueTogether } from "./mutate/checks.js";
 import { deleteNodes } from "./mutate/delete.js";
 import { runStatement, type MutationEnv } from "./mutate/env.js";
 import { andText } from "./mutate/fragments.js";
@@ -41,6 +41,7 @@ import {
 } from "./mutate/triggers.js";
 import {
   LazyTransaction,
+  NOT_THERE,
   readCanBeRefused,
   refused,
   supportsAssert,
@@ -123,11 +124,12 @@ async function lookupViewerKey(
 }
 
 /**
- * Start the `@populatedBy` callbacks of the mutation's own inputs, before
- * the transaction opens: of each created node whose key the input gives,
- * and of a keyed update. Nested inputs, generated keys, upserts and bulk
- * updates are computed in the transaction, where their key or operation
- * is known.
+ * Start the `@populatedBy` callbacks of the mutation's own inputs
+ * together, before anything else: of each created node whose key the
+ * input gives, and of a keyed update. A create's nested inputs and
+ * generated keys are computed with its plan, still before the
+ * transaction begins; upserts and bulk updates in the transaction, where
+ * their key or operation is known.
  */
 function startCallbacks(
   env: MutationEnv,
@@ -234,8 +236,9 @@ export async function executeMutation(
     timeoutMs: env.timeoutMs,
     signal: env.signal,
   };
-  // A create, or an update of one node by key, may be one call into the
-  // database, committed as it returns:
+  // A create (with what it creates and connects under it), or an update
+  // of one node by key, may be one call into the database, committed as
+  // it returns:
   // when nothing needs a decision between its statements and its commit
   // that an assertion cannot make. The runner opens a real transaction
   // if the plan turns out to need more than one round trip.
@@ -247,11 +250,8 @@ export async function executeMutation(
     !readCanBeRefused(env.model) &&
     !needsViewerKey(env) &&
     (await supportsAssert(env.driver));
-  const tx =
-    owned ??
-    (single
-      ? new LazyTransaction(env.driver, begin)
-      : await env.driver.begin!(begin));
+  // Otherwise the transaction begins with the mutation's first statement.
+  const tx = owned ?? new LazyTransaction(env.driver, begin, single);
   const change = emptyChange(op, fieldName);
   // @key(scope: VIEWER) under a @viewer that maps to a non-key field (an
   // opaque subject): the key space is the caller's node's key, looked up
@@ -325,8 +325,13 @@ export async function executeMutation(
           // in the batch. In a transaction they are rows judged
           // afterwards: the read waits for them, so its own failure never
           // outranks a rule's.
+          // In a transaction the payload is read before this is awaited:
+          // a combination that is taken must not abandon that read, whose
+          // error ("the mutation was abandoned") would be the one reported.
+          unique = runner.single
+            ? runner.watch(checkUniqueTogether(runner))
+            : held(checkUniqueTogether(runner));
           if (runner.single) created = runner.watch(read());
-          unique = runner.watch(checkUniqueTogether(runner));
           runner.assertNothingMoved();
         });
         payload = {
@@ -342,26 +347,58 @@ export async function executeMutation(
         const adjust = args["adjust"] as Input | undefined;
         // One statement that matches, checks and writes, with the payload
         // read behind it: one call, when the update is that simple.
-        const one = await runner.updateInOne(plan, node, key, input, adjust);
+        let reading!: Promise<unknown[]>;
+        const one = await runner.updateInOne(
+          plan,
+          node,
+          key,
+          input,
+          adjust,
+          () => {
+            // The node may not be there: the check then finds nothing.
+            unique = runner.watch(
+              Promise.all([
+                assertUniqueTogether(runner, [{ node, keys: [key] }]),
+                checkUniqueTogether(runner),
+              ]).then(() => undefined),
+            );
+            reading = runner.watch(
+              payloadFor(mutationNames.updatePayload(node), field, [key]),
+            );
+            // A node created under the update may have taken a key a
+            // hidden node held: the batch fails here, before it commits.
+            runner.assertNothingMoved();
+          },
+        );
         if (one) {
-          const reading = runner.watch(
-            payloadFor(mutationNames.updatePayload(node), field, [key]),
-          );
-          const found = await one.done;
-          const [value] = await reading;
+          let found: unknown[];
+          let value: unknown;
+          try {
+            found = await one.done;
+            [value] = await reading;
+          } catch (err) {
+            if (runner.assertions.refusedBy(err) !== NOT_THERE) throw err;
+            // No node to update: the call rolled back, and the answer is
+            // the one a transaction gives after finding nothing.
+            runner.nothingWritten();
+            unique = Promise.resolve();
+            found = [];
+          }
           payload = {
             [field]: found.length > 0 ? (value ?? null) : null,
             info: runner.info,
           };
           break;
         }
-        const done = await runner.update(plan, node, [{ key, input }], adjust);
+        // The single call may have planned on `plan` before giving up.
+        const rest = runner.plan();
+        const done = await runner.update(rest, node, [{ key, input }], adjust);
         let validating!: Promise<void>;
         const read = () =>
           done.length > 0
             ? payloadFor(mutationNames.updatePayload(node), field, [key])
             : Promise.resolve([null]);
-        await runner.apply(plan, () => {
+        await runner.apply(rest, () => {
           validating = held(runner.validateUpdated());
           unique = held(checkUniqueTogether(runner));
         });
@@ -487,7 +524,7 @@ export async function executeMutation(
     // for. Only this path writes such assertions: a developer's own
     // assert() in a transaction keeps its message.
     throw tx instanceof LazyTransaction && tx.single
-      ? refused(env.model, err)
+      ? (runner.assertions.refusedBy(err) ?? refused(env.model, err))
       : err;
   }
 }

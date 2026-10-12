@@ -20,7 +20,7 @@ const typeDefs = /* GraphQL */ `
   }
 `;
 
-async function setup() {
+async function setup(options: { singleCallMutations?: boolean } = {}) {
   const db = await createDatabase();
   const events: string[] = [];
   const base = loraDriver(db);
@@ -50,6 +50,7 @@ async function setup() {
   const lora = new LoraGraphQL({
     typeDefs,
     driver,
+    ...options,
     callbacks: {
       slug: callback("slug"),
       owner: callback("owner"),
@@ -96,7 +97,7 @@ test("an update's callback runs before the write, once", async () => {
   expect(events).toEqual(["slug", "write"]);
 });
 
-test("a nested create's callback runs before its transaction opens too", async () => {
+test("a nested create's callback runs before the write too", async () => {
   const { lora, events } = await setup();
   const r = await lora.execute({
     source: `mutation { createPosts(input: [{ key: "p1", comments: { create: [{ node: { key: "c1" } }] } }]) { posts { comments { stamp } } } }`,
@@ -107,7 +108,7 @@ test("a nested create's callback runs before its transaction opens too", async (
   });
   // The plan is complete before a create decides how to reach the
   // database, so every callback has run by then.
-  expect(events).toEqual(["slug", "owner", "stamp", "begin"]);
+  expect(events).toEqual(["slug", "owner", "stamp", "write"]);
 });
 
 test("a failing callback fails the mutation with its own error", async () => {
@@ -129,4 +130,14 @@ test("a failing callback fails the mutation with its own error", async () => {
   expect(r.errors?.[0]?.message).toContain("no slug today");
   const read = await lora.execute({ source: `{ posts { key } }` });
   expect(read.data).toEqual({ posts: [] });
+});
+
+test("in a transaction, a create's callbacks run before it begins", async () => {
+  const { lora, events } = await setup({ singleCallMutations: false });
+  const r = await lora.execute({
+    source: `mutation { createPosts(input: [{ key: "p1", comments: { create: [{ node: { key: "c1" } }] } }]) { posts { comments { stamp } } } }`,
+  });
+  expect(r.errors).toBeUndefined();
+  // The nested one too: the transaction begins with its first statement.
+  expect(events).toEqual(["slug", "owner", "stamp", "begin"]);
 });

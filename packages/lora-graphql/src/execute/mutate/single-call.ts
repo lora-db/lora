@@ -8,6 +8,8 @@
 // inside the transaction and rolls it back.
 
 import { forbidden } from "../../compile/auth.js";
+import { lit, printExpr } from "../../compile/cypher.js";
+import { keyOf } from "../../compile/read/by-keys.js";
 import type {
   DriverTransaction,
   LoraDriver,
@@ -17,24 +19,32 @@ import type {
 } from "../../driver.js";
 import { requestError } from "../../errors.js";
 import type { GraphModel, MutationOperation } from "../../model/types.js";
+import type { WritePlan } from "./plan.js";
 
 /**
  * A transaction that is one `driver.run()` call until `open()` makes it a
  * real one. In its single form the first batch is the whole mutation: it
  * is committed when the call returns, so `commit()` has nothing left to
  * do, and a failure has already rolled everything back.
+ *
+ * With `single` false it is never one call, only late: the transaction
+ * begins with its first statement, so what a mutation works out before
+ * that (its plan, its `@populatedBy` callbacks) does not hold the lock.
  */
 export class LazyTransaction implements DriverTransaction {
   readonly #driver: LoraDriver;
   readonly #options: RunOptions;
+  readonly #single: boolean;
   #real: DriverTransaction | undefined;
+  #opening: Promise<void> | undefined;
   #ran = false;
   #succeeded = false;
   #open = true;
 
-  constructor(driver: LoraDriver, options: RunOptions) {
+  constructor(driver: LoraDriver, options: RunOptions, single = true) {
     this.#driver = driver;
     this.#options = options;
+    this.#single = single;
   }
 
   /**
@@ -42,23 +52,30 @@ export class LazyTransaction implements DriverTransaction {
    * no longer undo the write.
    */
   get committed(): boolean {
-    return this.#real === undefined && this.#ran && this.#succeeded;
+    return (
+      this.#single && this.#real === undefined && this.#ran && this.#succeeded
+    );
   }
 
   /** Whether the mutation is still one call. */
   get single(): boolean {
-    return this.#real === undefined;
+    return this.#single && this.#real === undefined;
   }
 
   /** The mutation needs more than one round trip: begin a transaction. */
-  async open(): Promise<void> {
-    if (this.#real) return;
+  open(): Promise<void> {
+    if (this.#real) return Promise.resolve();
     if (this.#ran) {
-      throw new Error(
-        "lora-graphql: a single-call mutation cannot be reopened",
+      return Promise.reject(
+        new Error("lora-graphql: a single-call mutation cannot be reopened"),
       );
     }
-    this.#real = await this.#driver.begin!(this.#options);
+    // Once, however many statements ask for it together.
+    return (this.#opening ??= this.#driver.begin!(this.#options).then(
+      (real) => {
+        this.#real = real;
+      },
+    ));
   }
 
   execute(statement: Statement): Promise<QueryResult> {
@@ -67,6 +84,7 @@ export class LazyTransaction implements DriverTransaction {
   }
 
   async executeMany(statements: Statement[]): Promise<QueryResult[]> {
+    if (!this.#single && this.#open) await this.open();
     if (this.#real) {
       if (this.#real.executeMany) return this.#real.executeMany(statements);
       const results: QueryResult[] = [];
@@ -181,6 +199,53 @@ export function readCanBeRefused(model: GraphModel): boolean {
   return any;
 }
 
+/**
+ * What the guard of a single-call update that writes relationships stands
+ * for: the node is not there (or not the caller's to update), so the call
+ * rolled back and the mutation answers null, as a transaction would after
+ * finding nothing.
+ */
+export const NOT_THERE = Symbol("lora-graphql: no node to update");
+
+/**
+ * Whether `plan`'s links can go out in a single call: when each is
+ * known to create its relationship. A transaction asks the database
+ * whether the pair was connected already, and applies other rules to a
+ * re-connect; here it must be certain beforehand. It is when one end is
+ * a node this plan creates (it has no relationships yet) and no two
+ * links name the same relationship (one from each side's field). An
+ * update's links ask the database instead (`plan.reconnects`). A
+ * property the rules refuse depends on what the link found, in
+ * JavaScript.
+ */
+export function linksInOne(plan: WritePlan): boolean {
+  const model = plan.model;
+  const pairs = new Set<string>();
+  const edges = new Set<string>();
+  for (const { rel, from, to, refused } of plan.links) {
+    if (refused) return false;
+    // An update's links tell in the database whether they are new.
+    if (plan.reconnects) continue;
+    const owner = model.nodes.get(rel.owner)!;
+    const target = model.nodes.get(rel.target)!;
+    if (!plan.isFresh(owner.name, from) && !plan.isFresh(target.name, to)) {
+      return false;
+    }
+    const pair = `${rel.owner}.${rel.name}\0${keyOf(from)}\0${keyOf(to)}`;
+    if (pairs.has(pair)) continue;
+    pairs.add(pair);
+    const a = `${owner.name}\0${keyOf(from)}`;
+    const b = `${target.name}\0${keyOf(to)}`;
+    const edge =
+      rel.direction === "OUT"
+        ? `${rel.type}\0${a}\0${b}`
+        : `${rel.type}\0${b}\0${a}`;
+    if (edges.has(edge)) return false;
+    edges.add(edge);
+  }
+  return true;
+}
+
 const PREFIX = "lora-graphql:";
 
 /** The message of an `assert()` that stands for a refused rule. */
@@ -218,4 +283,37 @@ export function refused(model: GraphModel, err: unknown): unknown {
     node,
     kind === "hidden" ? "CREATE" : (detail as MutationOperation),
   );
+}
+
+/**
+ * The assertions of one single call that stand for an error only this
+ * mutation can name (the row a check failed on, a target that is not
+ * there): each is numbered, and its number is its message.
+ */
+export class Assertions {
+  readonly #errors: Array<(detail: string) => unknown> = [];
+
+  /**
+   * The message, a Cypher expression, of an assertion that stands for
+   * `error`: {@link Assertions.refusedBy} gives the error back. `detail`
+   * is an expression appended to it, for an error that names what the
+   * rows held.
+   */
+  failsAs(error: (detail: string) => unknown, detail?: string): string {
+    this.#errors.push(error);
+    const prefix = `${PREFIX}at:${this.#errors.length - 1}:`;
+    return detail
+      ? `${printExpr(lit(prefix))} + ${detail} + ';'`
+      : printExpr(lit(`${prefix};`));
+  }
+
+  /** The error an assertion of {@link Assertions.failsAs} stood for, if `err` is one. */
+  refusedBy(err: unknown): unknown {
+    const message = err instanceof Error ? err.message : String(err);
+    const found = /assertion failed: lora-graphql:at:(\d+):([^\s(;]*);/.exec(
+      message,
+    );
+    const error = found ? this.#errors[Number(found[1])] : undefined;
+    return error ? error(found![2]!) : undefined;
+  }
 }

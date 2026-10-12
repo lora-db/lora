@@ -1,8 +1,8 @@
 // A mutation in a transaction holds the writer lock from begin() to
 // commit(), so each call into it is a round trip under the lock:
 // statements that do not need an earlier result go in one executeMany()
-// call. A create without relationship writes needs no transaction at
-// all: it is one write batch that commits as it returns.
+// call. A create needs no transaction at all, with the relationships it
+// connects: it is one write batch that commits as it returns.
 
 import { createDatabase } from "@loradb/lora-node";
 import { graphql, type GraphQLSchema } from "graphql";
@@ -94,11 +94,11 @@ test("a create and its payload read are one call", async () => {
   expect(calls).toEqual([2]);
 });
 
-test("nested creates and their link are one call, the payload another", async () => {
+test("nested creates, their link and the payload read are one call", async () => {
   expect(await run(NESTED)).toEqual({
     createVenues: { venues: [{ key: "v2", stages: [{ key: "s1" }] }] },
   });
-  expect(calls).toEqual([3, 1]);
+  expect(calls).toEqual([4]);
 });
 
 test("an update by key and its payload read are one call", async () => {
@@ -109,7 +109,7 @@ test("an update by key and its payload read are one call", async () => {
   expect(calls).toEqual([2]);
 });
 
-test("an update that writes a relationship keeps a transaction", async () => {
+test("an update that creates or connects is one call", async () => {
   await run(CREATE);
   expect(
     await run(
@@ -118,16 +118,29 @@ test("an update that writes a relationship keeps a transaction", async () => {
   ).toEqual({
     updateVenue: { venue: { name: "Uno", stages: [{ key: "s7" }] } },
   });
-  // The lookup, the writes, then the read: more than one call.
+  // The guard, the update, the create, the link and the read.
+  expect(calls).toEqual([5]);
+});
+
+test("an update that disconnects keeps a transaction", async () => {
+  await run(NESTED);
+  // A stage requires its venue, which the transaction finds out.
+  await expect(
+    run(
+      `mutation { updateVenue(key: "v2", update: { stages: { disconnect: ["s1"] } }) { venue { key } } }`,
+    ),
+  ).rejects.toMatchObject({ extensions: { code: "CONSTRAINT_VIOLATION" } });
+  // The lookup, the disconnect, the check: more than one call.
   expect(calls.length).toBeGreaterThan(1);
 });
 
-test("a create with a connect is two calls", async () => {
+test("a create with a connect is one call", async () => {
   await run(CREATE);
   expect(await run(CONNECT)).toEqual({
     createStages: { stages: [{ key: "s9", venue: { key: "v1" } }] },
   });
-  expect(calls).toEqual([2, 1]);
+  // The create, the link and the read.
+  expect(calls).toEqual([3]);
 });
 
 test("a failing create in a batch reports its own error and writes nothing", async () => {
@@ -150,5 +163,10 @@ test("a driver without executeMany runs a transaction's statements one by one", 
   expect(await run(CONNECT)).toEqual({
     createStages: { stages: [{ key: "s9", venue: { key: "v1" } }] },
   });
-  expect(calls).toEqual([1, 1, 1]);
+  expect(calls).toEqual([3]);
+  await run(
+    `mutation { updateVenue(key: "v1", update: { stages: { disconnect: ["s9"] } }) { venue { key } } }`,
+  ).catch(() => undefined);
+  expect(calls.length).toBeGreaterThan(1);
+  expect(calls.every((n) => n === 1)).toBe(true);
 });

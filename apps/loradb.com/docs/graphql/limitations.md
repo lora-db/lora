@@ -31,7 +31,6 @@ you plan a production deployment.
 - **Reading the properties of a single relationship.** Only list
   relationships have a connection. See
   [relationships](/docs/graphql/relationships#reading).
-- **Relationship rules on a relationship to an interface or union.**
 - **Validation of stored data.** `@length`, `@range` and the other
   [validation rules](/docs/graphql/directives#validation) check what
   clients send through the generated API. Raw Cypher and `@cypher`
@@ -113,9 +112,13 @@ LoraDB commits one write transaction at a time. Readers use snapshots and
 are never blocked by a writer: in a mixed test, keyed lookups kept a
 median under 1 ms while 512 updates queued.
 
-Writes are a different matter. A mutation holds the writer lock from its
+Writes are a different matter. A create, and an update by key that sets
+scalars and connects, go to the engine as one call and hold the writer
+lock only while it runs. Every other mutation holds the lock from its
 first statement to its commit, across several round trips between
-JavaScript and the engine. Measured ceilings were about 3,100 keyed
+JavaScript and the engine
+([how a mutation is sent](/docs/graphql/api-reference#drivers)).
+Measured ceilings, from before those single calls, were about 3,100 keyed
 updates, 1,600 creates and 2,400 connects per second in memory, and about
 35% lower with a write-ahead log. Past saturation, latency is queue depth
 divided by throughput.
@@ -124,8 +127,15 @@ What this means for you:
 
 - Keep `lora.begin()` transactions short and never hold one across a
   network call. Every other write waits.
-- `@populatedBy` callbacks run inside the lock, one at a time. Keep them
-  fast and free of I/O.
+- `@populatedBy` callbacks of a create (nested creates included) and of
+  an update by key run before the lock is taken. Those of an upsert, a
+  bulk update and an update of a connected node run inside it, one at a
+  time: there the operation or the key is only known once the mutation
+  has read the graph. Keep those fast and free of I/O. Running before the
+  lock also means running before the mutation knows its outcome: the
+  callbacks of nodes created under an update by key run even when that
+  update then finds no node and answers `null`. A callback should compute
+  a value, not record that a write happened.
 - A bulk delete looks up each node's neighbours with one statement per
   key, up to `maxBatch` statements in one lock hold. Prefer smaller
   `limit`s on write-heavy systems.
@@ -166,10 +176,10 @@ in-memory databases in separate processes are simply different databases.
 
 Within one process, `worker_threads` that open the same directory share
 one engine and see each other's writes. In a preliminary test two workers
-roughly doubled keyed reads over the main thread alone. Two caveats: this
-has not been confirmed on a quiet machine, and `onWrite` is per
-`LoraGraphQL` instance, so invalidating a cache across threads needs
-`changeFeed: true` or your own broadcast.
+roughly doubled keyed reads over the main thread alone; this has not been
+confirmed on a quiet machine. How to set it up, and what stays per
+thread, is in
+[several threads over one database](/docs/graphql/serving#several-threads-over-one-database).
 
 ### Memory and durability
 

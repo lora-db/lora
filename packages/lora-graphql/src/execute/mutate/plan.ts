@@ -101,6 +101,11 @@ export class WritePlan {
   }> = [];
   /** `@populatedBy` callbacks for planned creates. */
   pending: Array<() => Promise<void>> = [];
+  /**
+   * The plan is an update's: a link may find its relationship there
+   * already, which a single call must then tell in the database.
+   */
+  reconnects = false;
 
   constructor(
     readonly env: MutationEnv,

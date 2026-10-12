@@ -42,18 +42,33 @@ import { assertReadable } from "../../schema/guard.js";
 import { settable } from "../../schema/mutations.js";
 import type { RelationshipRef, WriteChange } from "../changes.js";
 import { compileAdjust } from "./adjust.js";
-import { checkCardinality, checkRequired } from "./checks.js";
+import {
+  assertCardinality,
+  checkCardinality,
+  checkRequired,
+} from "./checks.js";
 import { deleteNodes } from "./delete.js";
+import {
+  applyLinks,
+  checkEnds,
+  checkRelationshipRules,
+  endRules,
+  linkInOne,
+} from "./links.js";
 import type { MutationEnv, MutationInfo } from "./env.js";
 import { OUTBOX } from "../../events/outbox.js";
 import { notConnected } from "./errors.js";
-import { LazyTransaction, refusal } from "./single-call.js";
+import {
+  Assertions,
+  LazyTransaction,
+  linksInOne,
+  NOT_THERE,
+  refusal,
+} from "./single-call.js";
 import {
   andText,
-  arrow,
   dedupe,
   edgeStamps,
-  orFresh,
   relRef,
   seekThenExpand,
   timestamps,
@@ -63,7 +78,6 @@ import {
   WritePlan,
   type CreateRow,
   type Input,
-  type Link,
 } from "./plan.js";
 
 export class Runner {
@@ -106,6 +120,12 @@ export class Runner {
    */
   takenUnique: { node: NodeType; field: ScalarField } | undefined;
 
+  /** What the assertions of a single call stand for. */
+  readonly assertions = new Assertions();
+  /** Statements issued so far, and how many when the links began. */
+  #issued = 0;
+  #linking: number | undefined;
+
   /** Statements issued and not sent yet; see {@link Runner.send}. */
   #queue: Array<{
     statement: Statement;
@@ -114,7 +134,7 @@ export class Runner {
   }> = [];
 
   /** Writes issued with `later`, not awaited yet. */
-  #unchecked: Array<Promise<QueryResult>> = [];
+  #unchecked: Array<Promise<unknown>> = [];
   /** Whether the queue waits for the next turn of the event loop. */
   #deferred = false;
   /** Set by `abandon()`: the mutation failed, send nothing more. */
@@ -157,6 +177,31 @@ export class Runner {
   }
 
   /**
+   * Put a statement together and issue it. A single call puts every
+   * statement together before the first is sent, where a transaction
+   * does so once the one before it answered. An error raised meanwhile (a
+   * rule the claims settle) must not outrank what an earlier statement
+   * raises in the database: it becomes a statement that fails with it, in
+   * its place. Before the links' first statement it is thrown, as a
+   * transaction throws it: nothing was sent yet there either.
+   */
+  inPlace(issue: () => void): void {
+    try {
+      issue();
+    } catch (err) {
+      if (this.#linking === undefined || this.#issued === this.#linking) {
+        throw err;
+      }
+      this.#unchecked.push(
+        this.run(
+          `RETURN assert(false, ${this.assertions.failsAs(() => err)}) AS ok`,
+          this.ctx(),
+        ),
+      );
+    }
+  }
+
+  /**
    * Run `statement` in the transaction. Statements issued in the same
    * tick, without awaiting one before issuing the next, go to the
    * database in one call (`executeMany`), in the order issued: one round
@@ -183,6 +228,7 @@ export class Runner {
       if (this.single) this.#deferred = true;
       queueMicrotask(() => void this.#flush());
     }
+    this.#issued++;
     this.env.onStatement?.(statement);
     return result;
   }
@@ -195,6 +241,19 @@ export class Runner {
   later(statement: Statement): void {
     this.#unchecked.push(this.send(statement));
     this.#deferred = true;
+  }
+
+  /**
+   * Leave `pending` (a statement issued, with what follows from its
+   * rows) for `settle()` to await.
+   */
+  defer(pending: Promise<unknown>): void {
+    this.#unchecked.push(held(pending));
+  }
+
+  /** The links of a single call begin; see {@link Runner.inPlace}. */
+  linking(): void {
+    this.#linking = this.#issued;
   }
 
   /** Wait for the writes issued with `later`; throws the first failure. */
@@ -384,8 +443,9 @@ export class Runner {
    * write and the AFTER rules, each rule an assertion. Which nodes it
    * touched is then decided in the database, not between two round
    * trips. Returns nothing when the update is not that simple (it writes
-   * relationships, adjusts, or cannot be prepared without knowing whether
-   * the node is there): the caller opens a transaction instead.
+   * relationships, adjusts a field with a constraint, or cannot be
+   * prepared without knowing whether the node is there): the caller opens
+   * a transaction instead.
    */
   async updateInOne(
     plan: WritePlan,
@@ -393,23 +453,30 @@ export class Runner {
     key: unknown,
     input: Input,
     adjust: Input | undefined,
+    tail: () => void,
   ): Promise<{ done: Promise<unknown[]> } | undefined> {
     if (
       !this.single ||
-      node.uniqueTogether.length > 0 ||
-      // Any field named in `adjust`, null included: its field rules apply
-      // as for one it adjusts, and the transaction path knows them.
-      Object.keys(adjust ?? {}).length > 0 ||
-      [...node.fields.values()].some(
-        (f) => f.kind === "relationship" && input[f.name],
-      )
+      // A constraint on an adjusted field is checked on what the
+      // statement stored, in JavaScript: that needs a transaction.
+      Object.entries(adjust ?? {}).some(([fieldName, ops]) => {
+        const f = node.fields.get(fieldName);
+        return ops != null && f?.kind === "scalar" && !!f.constraints;
+      })
     ) {
       return undefined;
     }
+    const relating = [...node.fields.values()].some(
+      (f) => f.kind === "relationship" && input[f.name],
+    );
     this.assertBatch(undefined, 1);
     const ctx0 = this.ctx();
     checkAuthentication(ctx0, node, "UPDATE");
-    const fields = Object.keys(input);
+    // Any field named in `adjust`, null included: its field rules apply
+    // as for one it adjusts.
+    const fields = [
+      ...new Set([...Object.keys(input), ...Object.keys(adjust ?? {})]),
+    ];
     const written = fields
       .map((n) => node.fields.get(n))
       .filter((f): f is ScalarField => f?.kind === "scalar" && !f.key);
@@ -427,10 +494,27 @@ export class Runner {
     );
     let prepared: { key: unknown; set: Input; remove: string[] };
     let after: Expr | undefined;
+    let adjustments: string[];
     try {
       // In a transaction these run only once the node is found: a bad
       // input for a node that is not there answers null, not an error.
       prepared = await this.#prepareRow(plan, node, key, input, adjust);
+      adjustments = compileAdjust(ctx, node, adjust);
+      if (relating) {
+        // Only connects and creates: what else an update does to its
+        // relationships is read back between statements.
+        plan.reconnects = true;
+        if (!this.#inOne(plan)) return undefined;
+        this.assertBatch(plan, 1);
+        assertUniqueKeys(plan);
+        // Nothing is sent while user code runs: a batch that went out
+        // without the statements that follow would commit without them.
+        for (const computed of plan.pending
+          .splice(0)
+          .map((task) => held(task()))) {
+          await computed;
+        }
+      }
       after = and(
         authValidate(ctx, node, "n", "UPDATE", "AFTER"),
         ...fields.map((f) => {
@@ -458,13 +542,31 @@ export class Runner {
       (before
         ? `, assert(${printExpr(before)}, ${refusedUpdate}) AS lora_before`
         : "") +
-      `\nSET ${this.#setItems(node, []).join(", ")}` +
+      `\nSET ${this.#setItems(node, adjustments).join(", ")}` +
       (prepared.remove.length > 0
         ? `\nREMOVE ${prepared.remove.map((p) => `n.${name(p)}`).join(", ")}`
         : "") +
       `\nRETURN n.${name(node.key.property)} AS key` +
       (previous ? ", lora_previous AS props" : "") +
-      (after ? `, assert(${printExpr(after)}, ${refusedUpdate}) AS ok` : "");
+      // With relationships to write, the rules after the write wait for
+      // them: they may well test what the node is connected to.
+      (after && !relating
+        ? `, assert(${printExpr(after)}, ${refusedUpdate}) AS ok`
+        : "");
+    if (relating) {
+      // The statements after the update take the node as found. When it
+      // is not there, this fails the call before any of them runs.
+      const gctx = this.ctx();
+      this.#unchecked.push(
+        this.run(
+          `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = ${printExpr(bind(gctx, key))}` +
+            andText(authFilter(gctx, node, "n", "READ")) +
+            andText(authFilter(gctx, node, "n", "UPDATE")) +
+            `\nWITH count(n) AS found\nRETURN assert(found > 0, ${this.assertions.failsAs(() => NOT_THERE)}) AS ok`,
+          gctx,
+        ),
+      );
+    }
     const done = this.run(text, ctx).then((found) => {
       const keys = found.map((r) => r["key"]);
       if (previous) {
@@ -479,7 +581,58 @@ export class Runner {
       this.#updatedNodes(node, keys, written, [{ key, input }], adjust);
       return keys;
     });
-    return { done: this.watch(done) };
+    if (!relating) {
+      tail();
+      return { done: this.watch(done) };
+    }
+    // Not awaited before it has issued everything: `apply` has nothing
+    // left to wait for ahead of its statements.
+    const applied = this.apply(plan, () => {
+      this.#unchecked.push(
+        held(
+          this.validateAfter(
+            node,
+            [key],
+            "UPDATE",
+            new Set(written.map((f) => f.name)),
+          ),
+        ),
+      );
+      tail();
+    });
+    return {
+      done: this.watch(Promise.all([done, applied]).then(([keys]) => keys)),
+    };
+  }
+
+  /**
+   * The single call found no node to update and rolled back: nothing of
+   * what was planned happened.
+   */
+  nothingWritten(): void {
+    for (const count of Object.keys(this.info) as Array<keyof MutationInfo>) {
+      this.info[count] = 0;
+    }
+    this.connected = [];
+    this.change.created.length = 0;
+    this.updated.clear();
+    this.updatedFields.clear();
+    this.#unchecked = [];
+  }
+
+  /**
+   * Whether `plan` can go out in a single call: creates and links only,
+   * each link's outcome known or told in the database.
+   */
+  #inOne(plan: WritePlan): boolean {
+    return (
+      plan.disconnects.length === 0 &&
+      linksInOne(plan) &&
+      plan.edgeUpdates.length === 0 &&
+      plan.nodeUpdates.length === 0 &&
+      plan.nestedDeletes.length === 0 &&
+      this.disconnected.length === 0
+    );
   }
 
   /**
@@ -508,26 +661,17 @@ export class Runner {
    * checks) shares their round trip.
    */
   async apply(plan: WritePlan, tail?: () => void): Promise<void> {
-    for (const task of plan.pending) await task();
+    // Started together; the first to fail, in order, is the one reported.
+    for (const computed of plan.pending.map((task) => held(task()))) {
+      await computed;
+    }
     this.assertBatch(plan);
     assertUniqueKeys(plan);
     // One call only when every statement is known now: nothing but
-    // creates, and no @uniqueTogether to compare afterwards. Decided
-    // before anything is issued: the first batch of a single call commits.
-    if (
-      this.single &&
-      !(
-        plan.disconnects.length === 0 &&
-        plan.links.length === 0 &&
-        plan.edgeUpdates.length === 0 &&
-        plan.nodeUpdates.length === 0 &&
-        plan.nestedDeletes.length === 0 &&
-        this.disconnected.length === 0 &&
-        [...plan.creates.keys()].every((n) => n.uniqueTogether.length === 0)
-      )
-    ) {
-      await this.open();
-    }
+    // creates and the links between them and to nodes that are there.
+    // Decided before anything is issued: the first batch of a single
+    // call commits.
+    if (this.single && !this.#inOne(plan)) await this.open();
     // Issued together, in this order: the moves precede the creates.
     const creating = [
       this.moveHiddenKeys(plan),
@@ -543,13 +687,18 @@ export class Runner {
       plan.nodeUpdates.length === 0 &&
       plan.nestedDeletes.length === 0 &&
       this.disconnected.length === 0;
-    if (!createsOnly) {
+    if (!createsOnly && this.single) {
+      // Creates and the relationships between them and to nodes that are
+      // there: every statement is issued now, each decision an assertion.
+      linkInOne(this, plan);
+      assertCardinality(this, plan);
+    } else if (!createsOnly) {
       // The creates wait for the first statement of what follows (a read
       // of the nodes to connect, usually) and share its round trip. A
       // create that fails rejects that statement with its error.
       if (this.#queue.length > 0) this.#deferred = true;
       await this.applyDisconnects(plan);
-      await this.applyLinks(plan);
+      await applyLinks(this, plan);
       await this.applyEdgeUpdates(plan);
       await this.applyNodeUpdates(plan);
       await this.applyNestedDeletes(plan);
@@ -797,11 +946,12 @@ export class Runner {
         }) !== undefined
       ) {
         const doomed = await this.run(`${matchText}RETURN ${returned}`, ctx);
-        await this.checkRelationshipRules("DISCONNECT", rel, pairs(doomed));
+        await checkRelationshipRules(this, "DISCONNECT", rel, pairs(doomed));
       }
-      if (this.endRules(owner, target, "DELETE_RELATIONSHIP", "BEFORE")) {
+      if (endRules(owner, target, "DELETE_RELATIONSHIP", "BEFORE")) {
         const doomed = await this.run(`${matchText}RETURN ${returned}`, ctx);
-        await this.checkEnds(
+        await checkEnds(
+          this,
           "DELETE_RELATIONSHIP",
           owner,
           target,
@@ -813,7 +963,8 @@ export class Runner {
         `${matchText}DELETE r RETURN ${returned}`,
         ctx,
       );
-      await this.checkEnds(
+      await checkEnds(
+        this,
         "DELETE_RELATIONSHIP",
         owner,
         target,
@@ -824,226 +975,6 @@ export class Runner {
       for (const row of rows) {
         this.disconnected.push(relRef(rel, row["from"], row["key"]));
       }
-    }
-  }
-
-  async applyLinks(plan: WritePlan): Promise<void> {
-    // Connecting a pair twice in one input is one relationship: the
-    // last mention's properties win.
-    const unique = new Map<string, Link>();
-    for (const link of plan.links) {
-      unique.set(
-        `${link.rel.owner}.${link.rel.name}\0${keyOf(link.from)}\0${keyOf(link.to)}`,
-        link,
-      );
-    }
-    const groups = new Map<RelationshipField, Link[]>();
-    for (const link of unique.values()) {
-      const list = groups.get(link.rel) ?? [];
-      list.push(link);
-      groups.set(link.rel, list);
-    }
-    for (const [rel, links] of groups) {
-      const owner = this.env.model.nodes.get(rel.owner)!;
-      const target = this.env.model.nodes.get(rel.target)!;
-      const pairs = links.map((l) => ({ from: l.from, to: l.to }));
-      await this.checkEnds(
-        "CREATE_RELATIONSHIP",
-        owner,
-        target,
-        pairs,
-        "BEFORE",
-      );
-      // Connecting an already-connected pair keeps one relationship and
-      // updates its properties: MERGE on both bound ends (E14 is fixed).
-      // `existed` tells a new relationship from an updated one.
-      const lctx = this.ctx();
-      const rows = printExpr(
-        bind(
-          lctx,
-          links.map((l) => ({
-            from: l.from,
-            to: l.to,
-            props: l.props,
-            defaults: l.defaults,
-            // Created by this mutation: not a node the caller must be
-            // able to see already. Its READ filter may well depend on
-            // the relationship this statement creates.
-            fresh: plan.isFresh(target.name, l.to),
-          })),
-        ),
-      );
-      const props = rel.properties
-        ? this.env.model.relationshipProperties.get(rel.properties)
-        : undefined;
-      const onCreate = [
-        "r += row.defaults",
-        ...(props ? timestamps(props, "CREATE") : []).map(
-          ([p, now]) => `r.${name(p)} = ${now}`,
-        ),
-      ];
-      // A re-connect that sets properties updates the relationship.
-      const onMatch = (props ? timestamps(props, "UPDATE") : []).map(
-        ([p, now]) =>
-          `r.${name(p)} = CASE WHEN size(keys(row.props)) > 0 THEN ${now} ELSE r.${name(p)} END`,
-      );
-      const text =
-        `UNWIND ${rows} AS row\n` +
-        `MATCH (a:${name(owner.labels[0]!)}) WHERE a.${name(owner.key.property)} = row.from` +
-        andText(authFilter(lctx, owner, "a", "CREATE_RELATIONSHIP")) +
-        `\nMATCH (b:${name(target.labels[0]!)}) WHERE b.${name(target.key.property)} = row.to` +
-        andText(orFresh(authFilter(lctx, target, "b", "READ"))) +
-        andText(authFilter(lctx, target, "b", "CREATE_RELATIONSHIP")) +
-        `\nWITH a, b, row, size([(a)${arrow(rel, "", "b", undefined)} | 1]) > 0 AS existed` +
-        `\nMERGE (a)${arrow(rel, "r", "b", undefined)}\n` +
-        // Defaults apply when the relationship is created, never to an
-        // existing one (a re-connect keeps what it has).
-        `ON CREATE SET ${onCreate.join(", ")}\n` +
-        (onMatch.length > 0 ? `ON MATCH SET ${onMatch.join(", ")}\n` : "") +
-        `SET r += row.props\nRETURN row.from AS from, row.to AS key, existed`;
-      const linked = await this.run(text, lctx);
-      // Rules on the properties set, now that new and existing
-      // relationships are told apart; a refusal rolls the mutation back.
-      const byPair = new Map(
-        links.map((l) => [`${keyOf(l.from)}\0${keyOf(l.to)}`, l]),
-      );
-      for (const row of linked) {
-        const refused = byPair.get(
-          `${keyOf(row["from"])}\0${keyOf(row["key"])}`,
-        )?.refused;
-        const error =
-          row["existed"] === true ? refused?.update : refused?.create;
-        if (error) throw error;
-      }
-      if (linked.length < links.length) {
-        const found = new Set(linked.map((r) => keyOf(r["key"])));
-        const missing = links
-          .map((l) => l.to)
-          .filter((k) => !found.has(keyOf(k)));
-        throw requestError(
-          "NOT_FOUND",
-          `${owner.name}.${rel.name}: no ${target.name} with ${target.key.name} ${missing
-            .map((k) => JSON.stringify(k))
-            .join(", ")}`,
-          undefined,
-          { type: target.name, keys: missing },
-        );
-      }
-      // Rules on the relationship field: a new relationship is a CONNECT,
-      // an existing one given properties an UPDATE_EDGE.
-      await this.checkRelationshipRules(
-        "CONNECT",
-        rel,
-        linked
-          .filter((r) => r["existed"] !== true)
-          .map((r) => ({ from: r["from"], to: r["key"] })),
-      );
-      await this.checkRelationshipRules(
-        "UPDATE_EDGE",
-        rel,
-        linked
-          .filter(
-            (r) =>
-              r["existed"] === true &&
-              Object.keys(
-                byPair.get(`${keyOf(r["from"])}\0${keyOf(r["key"])}`)?.props ??
-                  {},
-              ).length > 0,
-          )
-          .map((r) => ({ from: r["from"], to: r["key"] })),
-      );
-      await this.checkEnds(
-        "CREATE_RELATIONSHIP",
-        owner,
-        target,
-        pairs,
-        "AFTER",
-      );
-      this.info.relationshipsCreated += linked.filter(
-        (r) => r["existed"] !== true,
-      ).length;
-      for (const l of links) this.connected.push(relRef(rel, l.from, l.to));
-    }
-  }
-
-  /**
-   * Rules on the relationship field (and on a field declaring the same
-   * relationship from the other side) for `op`, on each pair's
-   * relationship as it stands: after the write for CONNECT and
-   * UPDATE_EDGE, before it for DISCONNECT. FORBIDDEN when any fails; the
-   * mutation rolls back.
-   */
-  async checkRelationshipRules(
-    op: "CONNECT" | "DISCONNECT" | "UPDATE_EDGE",
-    rel: RelationshipField,
-    pairs: Array<{ from: unknown; to: unknown }>,
-  ): Promise<void> {
-    if (pairs.length === 0) return;
-    const ctx = this.ctx();
-    const cond = relationshipRules(ctx, rel, op, {
-      owner: "a",
-      target: "b",
-      rel: "r",
-    });
-    if (cond === undefined) return;
-    const owner = this.env.model.nodes.get(rel.owner)!;
-    const target = this.env.model.nodes.get(rel.target)!;
-    const rows = await this.run(
-      `UNWIND ${printExpr(bind(ctx, pairs))} AS row\n` +
-        `MATCH (a:${name(owner.labels[0]!)}) WHERE a.${name(owner.key.property)} = row.from\n` +
-        `MATCH (b:${name(target.labels[0]!)}) WHERE b.${name(target.key.property)} = row.to\n` +
-        `MATCH (a)${arrow(rel, "r", "b", undefined)}\n` +
-        `RETURN coalesce(${printExpr(cond === false ? lit(false) : cond)}, false) AS ok`,
-      ctx,
-    );
-    if (rows.some((r) => r["ok"] !== true)) {
-      throw requestError(
-        "FORBIDDEN",
-        `not allowed to ${op.toLowerCase().replace("_", " ")} ${owner.name}.${rel.name}`,
-      );
-    }
-  }
-
-  /** Whether either end has validate rules for `op` at `when`. */
-  endRules(
-    owner: NodeType,
-    target: NodeType,
-    op: "CREATE_RELATIONSHIP" | "DELETE_RELATIONSHIP",
-    when: "BEFORE" | "AFTER",
-  ): boolean {
-    return [owner, target].some((n) =>
-      n.authorization?.validate.some(
-        (r) => r.operations.has(op) && r.when.has(when),
-      ),
-    );
-  }
-
-  /**
-   * Validate rules for connecting or disconnecting, on both ends of each
-   * pair: FORBIDDEN when either end fails them.
-   */
-  async checkEnds(
-    op: "CREATE_RELATIONSHIP" | "DELETE_RELATIONSHIP",
-    owner: NodeType,
-    target: NodeType,
-    pairs: Array<{ from: unknown; to: unknown }>,
-    when: "BEFORE" | "AFTER",
-  ): Promise<void> {
-    if (pairs.length === 0) return;
-    const ctx = this.ctx();
-    const a = authValidate(ctx, owner, "a", op, when);
-    const b = authValidate(ctx, target, "b", op, when);
-    if (!a && !b) return;
-    const rows = await this.run(
-      `UNWIND ${printExpr(bind(ctx, pairs))} AS row\n` +
-        `MATCH (a:${name(owner.labels[0]!)}) WHERE a.${name(owner.key.property)} = row.from\n` +
-        `MATCH (b:${name(target.labels[0]!)}) WHERE b.${name(target.key.property)} = row.to\n` +
-        `RETURN ${a ? printExpr(a) : "true"} AS a, ${b ? printExpr(b) : "true"} AS b`,
-      ctx,
-    );
-    for (const row of rows) {
-      if (row["a"] !== true) throw forbidden(owner, op);
-      if (row["b"] !== true) throw forbidden(target, op);
     }
   }
 
@@ -1075,7 +1006,8 @@ export class Runner {
         `\nRETURN b.${name(target.key.property)} AS key`;
       const rows = await this.run(text, ctx);
       if (rows.length === 0) throw notConnected(owner, u.rel, target, u.to);
-      await this.checkRelationshipRules(
+      await checkRelationshipRules(
+        this,
         "UPDATE_EDGE",
         u.rel,
         rows.map((r) => ({ from: u.from, to: r["key"] })),
@@ -1417,15 +1349,20 @@ export class Runner {
   ): Promise<void> {
     if (keys.length === 0) return;
     const ctx = this.ctx();
-    const rule = and(
-      authValidate(ctx, node, "n", op, "AFTER"),
-      ...[...fields].map((f) => {
-        const field = node.fields.get(f);
-        return field
-          ? fieldValidate(ctx, node, field, "n", op, "AFTER")
-          : undefined;
-      }),
-    );
+    let rule: Expr | undefined;
+    // Behind the links of a single call, a rule the claims refuse waits
+    // its turn (see `inPlace`).
+    this.inPlace(() => {
+      rule = and(
+        authValidate(ctx, node, "n", op, "AFTER"),
+        ...[...fields].map((f) => {
+          const field = node.fields.get(f);
+          return field
+            ? fieldValidate(ctx, node, field, "n", op, "AFTER")
+            : undefined;
+        }),
+      );
+    });
     if (!rule) return;
     // In a single call the rule refuses by failing the statement, which
     // rolls the mutation back before its commit.
