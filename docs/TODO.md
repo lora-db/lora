@@ -19,6 +19,7 @@ next, **P2** planned, **P3** when convenient.
       variable argument (`size(big)`) and row clones share it (`value.rs` `SlotValue`).
 - [ ] P2 General procedures: `CALL db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()` ("unknown procedure").
 - [ ] P3 A failing expression in a seek or range bound of a read is dropped, not raised (`MATCH (n {id: 1/0})` matches nothing): raw `eval_expr` in `lora-executor/src/executor/helpers.rs:432,713,1356` and `pull/scan.rs:413,703`. Writes raise since 2026-10-11.
+- [ ] P2 An expression that raises inside `ORDER BY` is dropped: `RETURN n.k ORDER BY 1 / n.zero` returns its rows, and so does `ORDER BY assert(false)` (`lora-executor/src/executor/sort.rs`, raw `eval_expr`).
 - [ ] P3 Subtraction between values of unrelated types is `null`, not an error (`sub_values` fallback, `eval/binops.rs`); addition raises.
 - [ ] P2 `UNION` inside `CALL {}`, `CALL (x) {}` scope clause, `IN TRANSACTIONS` (`analyzer/state.rs:209`).
 - [ ] P3 Any `RETURN` inside `COUNT { }` or `EXISTS { }` is a parse error (`cypher.pest:372-374` takes one pattern plus `WHERE`); `COLLECT { }` subquery not in the grammar.
@@ -50,7 +51,7 @@ next, **P2** planned, **P3** when convenient.
 
 ## lora-graphql
 
-- [ ] P3 Input validation, what is left (`docs/design/graphql-input-validation.md`): a `regexEngine` hook, normalising filter operands and lookup keys of a `@normalize`d field, relationship properties in the stored-value scan, mapping a third-party `@constraint` in `migrate neo4j`.
+- [ ] P3 Input validation, what is left (`docs/design/graphql-input-validation.md`): a `regexEngine` hook, normalising filter operands and lookup keys of a `@normalize`d field, mapping a third-party `@constraint` in `migrate neo4j`.
 - [ ] P3 Triggers, what is left (`docs/design/graphql-triggers.md`): `CONNECT` / `DISCONNECT` triggers on relationship fields, previous values in an `UPDATE` trigger, `lora.publish()` with custom `Subscription` fields for events that are not stored, a trigger and a worker scenario in `bench/load`, the notification flow in `examples/tutorial`.
 - [ ] P2 Relationship rules on interface / union targets (refused today).
 - [ ] P2 Single-call mutations cover a create without relationship writes (one `driver.run()` with `assert()` statements for its rules: +24% creates/s and 3.5 ms against 6.2 ms median at 32 in flight). Still in a transaction, three hops under the lock: updates (the key lookup decides what is written), relationship writes (connect targets, cardinality and relationship rules are read back), any schema with triggers, a type with `@uniqueTogether`, a schema with a READ validate rule (the payload read can refuse). Each needs its decision moved into an `assert()` statement (`src/execute/mutate/single-call.ts`, `runner.ts`).

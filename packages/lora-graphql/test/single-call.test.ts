@@ -193,12 +193,12 @@ describe("the single call", () => {
       timeoutMs: 80,
     });
     const holder = await lora.begin();
+    // A transaction holds the lock, so every batch counted is waiting.
     const waiting = exec(CREATE("a"));
     const refused = await exec(CREATE("b"));
     expect(refused.errors?.[0]?.extensions?.["code"]).toBe("OVERLOADED");
     // The one that waits gives up at timeoutMs.
-    const timedOut = await waiting;
-    expect(timedOut.errors).toHaveLength(1);
+    expect((await waiting).errors).toHaveLength(1);
     await holder.commit();
     expect(await keys("Item")).toEqual([]);
     expect((await exec(CREATE("c"))).errors).toBeUndefined();
@@ -287,5 +287,161 @@ describe("what keeps a transaction", () => {
     );
     await exec(`mutation { deleteItem(key: "a") { nodesDeleted } }`);
     expect(paths).toEqual(["begin", "begin"]);
+  });
+});
+
+describe("review regressions", () => {
+  const RULED = /* GraphQL */ `
+    extend schema @authorizationDefaults(requireAuthentication: false)
+    type Doc
+      @node
+      @mutation
+      @authorization(
+        validate: [
+          {
+            operations: [CREATE]
+            where: { node: { owner: { eq: "$jwt.sub" } } }
+          }
+        ]
+      ) {
+      key: String! @key
+      owner: String
+      a: String @unique
+      b: String @unique
+    }
+  `;
+
+  // A batch fails as a whole. With several statements issued together
+  // (one create per shape of input), every one of them rejects: all must
+  // be handled, or Node ends the process on the unhandled rejection.
+  // vitest fails the run on one, so these pass only when none is left.
+  test("a refused create with several shapes leaves no unhandled rejection", async () => {
+    const { exec, keys } = await setup(RULED);
+    const r = await exec(
+      `mutation { createDocs(input: [{ key: "x", owner: "me" }, { key: "y", owner: "other", a: "1" }]) { docs { key } } }`,
+      { sub: "me" },
+    );
+    expect(r.errors?.[0]?.extensions?.["code"]).toBe("FORBIDDEN");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await keys("Doc")).toEqual([]);
+  });
+
+  test("a taken unique value among several leaves none either", async () => {
+    const { db, exec, keys } = await setup(RULED);
+    await db.execute("CREATE (:Doc {key: 'held', owner: 'other', a: 'taken'})");
+    const r = await exec(
+      `mutation { createDocs(input: [{ key: "x", owner: "me", a: "taken", b: "free" }]) { docs { key } } }`,
+      { sub: "me" },
+    );
+    expect(r.errors?.[0]?.extensions).toMatchObject({
+      code: "CONSTRAINT_VIOLATION",
+      field: "a",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await keys("Doc")).toEqual(["held"]);
+  });
+
+  test("a duplicate key among several shapes, in a transaction too", async () => {
+    const { exec, keys } = await setup(PLAIN, { singleCallMutations: false });
+    await exec(CREATE("a"));
+    const r = await exec(
+      `mutation { createItems(input: [{ key: "a" }, { key: "b", name: "n" }]) { items { key } } }`,
+    );
+    expect(r.errors?.[0]?.extensions?.["code"]).toBe("CONSTRAINT_VIOLATION");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await keys("Item")).toEqual(["a"]);
+  });
+
+  test.each([true, false])(
+    "a tracer that throws does not fail a write that ran (single call: %s)",
+    async (singleCallMutations) => {
+      const { exec, keys } = await setup(PLAIN, {
+        singleCallMutations,
+        tracer: {
+          startActiveSpan: (_name, fn) =>
+            fn({
+              setAttribute: () => undefined,
+              setStatus: () => undefined,
+              recordException: () => undefined,
+              end: () => {
+                throw new Error("span exporter down");
+              },
+            }),
+        },
+      });
+      const r = await exec(CREATE("a"));
+      expect(r.errors).toBeUndefined();
+      expect(await keys("Item")).toEqual(["a"]);
+    },
+  );
+
+  test("with the lock free, one create runs and maxQueuedWrites more may wait", async () => {
+    // A write batch is counted until it returns: the one running must
+    // not use up the queue's only place.
+    const slow = (driver: LoraDriver): LoraDriver => ({
+      ...driver,
+      run: async (statements, options) => {
+        if (options.mode === "write") {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+        }
+        return driver.run(statements, options);
+      },
+    });
+    const { exec, keys } = await setup(PLAIN, { maxQueuedWrites: 1 }, slow);
+    const first = exec(CREATE("a"));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = exec(CREATE("b"));
+    const third = await exec(CREATE("c"));
+    expect(third.errors?.[0]?.extensions?.["code"]).toBe("OVERLOADED");
+    expect((await first).errors).toBeUndefined();
+    expect((await second).errors).toBeUndefined();
+    expect(await keys("Item")).toEqual(["a", "b"]);
+  });
+
+  test("a worker's own writes are never refused by the write queue", async () => {
+    const db = await createDatabase();
+    const errors: string[] = [];
+    const lora = new LoraGraphQL({
+      typeDefs: `type Job @node @mutation @outbox { key: String! @key }`,
+      driver: loraDriver(db),
+      maxQueuedWrites: 1,
+      onError: (e) => errors.push(e.message),
+    });
+    await lora.assertSchema({ create: true });
+    let handled = 0;
+    const worker = lora.worker("Job", { handle: () => void handled++ });
+    await lora.execute({
+      source: `mutation { createJobs(input: [{ key: "j" }]) { jobs { key } } }`,
+    });
+    await worker.idle();
+    // Hold the lock with the queue full, as a slow writer would.
+    const holder = await lora.begin();
+    const waiting = lora.execute({
+      source: `mutation { createJobs(input: [{ key: "k" }]) { jobs { key } } }`,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await holder.commit();
+    await waiting;
+    await worker.idle();
+    expect(handled).toBe(2);
+    expect(errors).toEqual([]);
+    const { rows } = await db.execute(
+      "MATCH (j:Job) RETURN j.key AS key, j._outbox AS state ORDER BY key",
+    );
+    expect(rows).toEqual([
+      { key: "j", state: "DONE" },
+      { key: "k", state: "DONE" },
+    ]);
+    lora.close();
+  });
+
+  test("a developer's own assert in a transaction keeps its message", async () => {
+    const { exec } = await setup(
+      `type Item @node @mutation @trigger(on: [CREATE], statement: "RETURN assert(false, 'lora-graphql:forbidden:Item:CREATE') AS ok") { key: String! @key  name: String }`,
+      { maskErrors: false },
+    );
+    const r = await exec(CREATE("a"));
+    expect(r.errors?.[0]?.extensions?.["code"]).toBe("DATABASE_ERROR");
+    expect(r.errors?.[0]?.message).toContain("assertion failed");
   });
 });

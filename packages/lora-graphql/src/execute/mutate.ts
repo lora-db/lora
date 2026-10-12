@@ -465,8 +465,12 @@ export async function executeMutation(
         { cause: err },
       );
     }
-    // A rule that refused inside the database, as the error it stands for.
-    throw refused(env.model, err);
+    // A rule that refused inside the database, as the error it stands
+    // for. Only this path writes such assertions: a developer's own
+    // assert() in a transaction keeps its message.
+    throw tx instanceof LazyTransaction && tx.single
+      ? refused(env.model, err)
+      : err;
   }
 }
 

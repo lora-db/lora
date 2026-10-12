@@ -242,14 +242,39 @@ export class Runner {
       } else {
         // One call, timed once: the first statement carries the batch's
         // duration, the others are observed as done the moment it is.
-        let all: QueryResult[] = [];
-        await observe(batch[0]!.statement, async () => {
-          all = await run();
-          return all[0]!;
-        });
-        results = all;
+        // What the database answered decides the batch, not the
+        // observer: a tracer that throws must not turn a committed write
+        // into an error, nor hide the error of a failed one.
+        let outcome:
+          | { results: QueryResult[] }
+          | { error: unknown }
+          | undefined;
+        try {
+          await observe(batch[0]!.statement, async () => {
+            try {
+              const all = await run();
+              outcome = { results: all };
+              return all[0]!;
+            } catch (error) {
+              outcome = { error };
+              throw error;
+            }
+          });
+        } catch (error) {
+          outcome ??= { error };
+        }
+        const settled = outcome as
+          | { results: QueryResult[] }
+          | { error: unknown };
+        if ("error" in settled) throw settled.error;
+        results = settled.results;
         for (const [i, b] of batch.entries()) {
-          if (i > 0) await observe(b.statement, async () => results[i]!);
+          if (i === 0) continue;
+          try {
+            await observe(b.statement, async () => results[i]!);
+          } catch {
+            // As above.
+          }
         }
       }
       for (const [i, b] of batch.entries()) b.resolve(results[i]!);
@@ -270,12 +295,19 @@ export class Runner {
     });
   }
 
-  async run(
+  /**
+   * `send()` for a statement's rows. The promise is safe to leave
+   * unawaited: a batch fails as a whole, so when one statement of several
+   * issued together is refused, the others reject too, and whoever
+   * stopped at the first must not leave the rest unhandled.
+   */
+  run(
     text: string,
     ctx: CompileContext,
   ): Promise<Array<Record<string, unknown>>> {
-    const result = await this.send({ text, params: ctx.params });
-    return result.rows;
+    return held(
+      this.send({ text, params: ctx.params }).then((result) => result.rows),
+    );
   }
 
   plan(): WritePlan {

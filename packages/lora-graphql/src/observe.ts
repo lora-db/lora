@@ -91,7 +91,8 @@ export class Observer {
   ): Promise<T> {
     const tracer = this.#options.tracer;
     if (!tracer) return fn();
-    return tracer.startActiveSpan("lora.graphql.field", async (span) => {
+    return tracer.startActiveSpan("lora.graphql.field", async (raw) => {
+      const span = quiet(raw);
       span.setAttribute("graphql.field.name", meta.field);
       if (meta.operationName) {
         span.setAttribute("graphql.operation.name", meta.operationName);
@@ -148,7 +149,7 @@ export class Observer {
       }
     };
     return tracer
-      ? tracer.startActiveSpan("lora.cypher", (span) => body(span))
+      ? tracer.startActiveSpan("lora.cypher", (raw) => body(quiet(raw)))
       : body();
   }
 
@@ -196,6 +197,29 @@ export class Observer {
       // Observers must not fail the request.
     }
   }
+}
+
+/**
+ * `span` with every call guarded: observers must not fail the request. A
+ * span that throws when it ends (an exporter that is down) would
+ * otherwise turn a committed write into an error.
+ */
+function quiet(span: SpanLike): SpanLike {
+  const guard =
+    <A extends unknown[]>(call: (...args: A) => unknown) =>
+    (...args: A): void => {
+      try {
+        call(...args);
+      } catch {
+        // Dropped: the request's outcome is the database's, not the tracer's.
+      }
+    };
+  return {
+    setAttribute: guard((key, value) => span.setAttribute(key, value)),
+    setStatus: guard((status) => span.setStatus(status)),
+    recordException: guard((exception) => span.recordException(exception)),
+    end: guard(() => span.end()),
+  };
 }
 
 function countRows(result: QueryResult | QueryResult[]): number {

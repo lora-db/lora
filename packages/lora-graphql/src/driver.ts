@@ -45,6 +45,11 @@ export interface RunOptions {
    * only stored properties. Cheap enough to run synchronously.
    */
   bounded?: boolean;
+  /**
+   * A mutation sent as one write batch: counted against
+   * `maxQueuedWrites`, as a transaction waiting for the lock is.
+   */
+  queued?: boolean;
 }
 
 /** An open interactive transaction: statements see earlier writes. */
@@ -279,8 +284,8 @@ export function boundedWrites(
   let waiting = 0;
   // Each method is called on `driver` itself: a driver may be a class
   // instance, whose methods a spread would leave behind.
-  const queued = async <T>(work: () => Promise<T>): Promise<T> => {
-    if (waiting >= max) throw onFull(waiting);
+  const queued = async <T>(work: () => Promise<T>, limit = max): Promise<T> => {
+    if (waiting >= limit) throw onFull(waiting);
     waiting++;
     try {
       return await work();
@@ -288,11 +293,25 @@ export function boundedWrites(
       waiting--;
     }
   };
+  // Write transactions begun through this driver and still open: one of
+  // them holds the lock.
+  const open = new Set<DriverTransaction>();
+  const lockHeldByTransaction = () => {
+    for (const tx of open) if (!tx.isOpen) open.delete(tx);
+    return open.size > 0;
+  };
   return {
-    // A write batch waits for the writer lock like a transaction does.
+    // A mutation sent as one write batch (`queued`) waits for the writer
+    // lock like a transaction does. It is counted until it returns, not
+    // until it holds the lock: unless a transaction holds the lock, one
+    // of those counted is the one running, and one more is let in.
+    // Other write batches (a worker's bookkeeping, DDL) are never refused.
     run: (statements, options) =>
-      options.mode === "write"
-        ? queued(() => driver.run(statements, options))
+      options.mode === "write" && options.queued
+        ? queued(
+            () => driver.run(statements, options),
+            lockHeldByTransaction() ? max : max + 1,
+          )
         : driver.run(statements, options),
     ...(driver.explain
       ? { explain: (statement: Statement) => driver.explain!(statement) }
@@ -303,8 +322,12 @@ export function boundedWrites(
             driver.changes!(options),
         }
       : {}),
-    begin: (options) =>
-      options.mode === "write" ? queued(() => begin(options)) : begin(options),
+    begin: async (options) => {
+      if (options.mode !== "write") return begin(options);
+      const tx = await queued(() => begin(options));
+      open.add(tx);
+      return tx;
+    },
   };
 }
 

@@ -82,7 +82,10 @@ export class LazyTransaction implements DriverTransaction {
     }
     this.#ran = true;
     try {
-      const results = await this.#driver.run(statements, this.#options);
+      const results = await this.#driver.run(statements, {
+        ...this.#options,
+        queued: true,
+      });
       this.#succeeded = true;
       return results;
     } catch (err) {
@@ -129,7 +132,13 @@ export function supportsAssert(driver: LoraDriver): Promise<boolean> {
       })
       .then(
         ([result]) => result?.rows[0]?.["ok"] === true,
-        () => false,
+        (err: unknown) => {
+          // Only "there is no such function" is an answer. Anything else
+          // (a timeout, a database being opened) is asked again.
+          const message = err instanceof Error ? err.message : String(err);
+          if (!/unknown function|assert/i.test(message)) asserts.delete(driver);
+          return false;
+        },
       );
     asserts.set(driver, known);
   }

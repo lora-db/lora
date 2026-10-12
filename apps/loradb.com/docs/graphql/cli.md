@@ -319,7 +319,9 @@ Rules are checked when a value is written through the API. A rule added
 or tightened later does not revisit what is stored, and raw Cypher is
 never checked, so this is how you find such values, typically with
 `--database`. They are reported, not failures: the schema is sound and
-the data is old. At most 10,000 nodes per type are read.
+the data is old. At most 10,000 nodes per type are read. Relationship
+properties with rules are read too, named by the node that declares the
+relationship: `stored   Person "ada".ratings.stars must be at most 5`.
 
 The same pass reports values a [`@fulltext`](/docs/graphql/directives#fulltext)
 index cannot hold. The engine indexes strings and skips anything else

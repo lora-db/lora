@@ -532,7 +532,7 @@ follows is how they behaved before.
 | 2 | `@normalize`; constraints on custom scalars; the `validators` hook | Built |
 | 2b | The same directives on `@cypher` arguments | Built |
 | 3 | `diff` awareness; the stored-value scan in `check`; JSON Schema export; rules in input descriptions; two lints | Built |
-| Open | A `regexEngine` hook; normalising filter operands and lookup keys; relationship properties in the stored-value scan; `migrate` mapping of a third-party `@constraint`; a `describeConstraints` option | |
+| Open | A `regexEngine` hook; normalising filter operands and lookup keys; `migrate` mapping of a third-party `@constraint`; a `describeConstraints` option | |
 
 What phase 1 did differently from this design, and why:
 
