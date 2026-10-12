@@ -69,7 +69,7 @@ impl Database<InMemoryGraph> {
                             Err(TryLockError::WouldBlock)
                                 if lora_executor::cancel::deadline_reached(deadline) =>
                             {
-                                return Err(lora_executor::ExecutorError::QueryTimeout.into());
+                                return Err(lora_executor::ExecutorError::WriterLockTimeout.into());
                             }
                             Err(TryLockError::WouldBlock) => {
                                 std::thread::sleep(std::time::Duration::from_millis(1));

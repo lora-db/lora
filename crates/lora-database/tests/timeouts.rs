@@ -228,6 +228,17 @@ fn a_bounded_write_gives_up_waiting_for_the_writer_lock() {
     ] {
         let took = timed_out(&db, query, Duration::from_millis(50));
         assert!(took < Duration::from_secs(2), "waited {took:?}");
+        // The error says the write never got the lock, not that it ran
+        // out of time while running.
+        let err = db
+            .service
+            .execute_with_params_timeout(query, None, BTreeMap::new(), Duration::from_millis(20))
+            .expect_err("the lock is held");
+        assert_eq!(err.code(), LoraErrorCode::Timeout, "{err}");
+        assert!(
+            err.to_string().contains("waiting for the writer lock"),
+            "{err}"
+        );
     }
     holder.commit().unwrap();
     assert_eq!(
@@ -257,6 +268,10 @@ fn a_transaction_gives_up_waiting_for_the_writer_lock_at_its_deadline() {
         .err()
         .expect("the lock is held");
     assert_eq!(err.code(), LoraErrorCode::Timeout, "{err}");
+    assert!(
+        err.to_string().contains("waiting for the writer lock"),
+        "{err}"
+    );
     assert!(start.elapsed() < Duration::from_secs(2));
     db.service
         .begin_transaction_deadline(

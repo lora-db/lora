@@ -161,7 +161,7 @@ where
                 Err(TryLockError::WouldBlock)
                     if lora_executor::cancel::deadline_reached(deadline) =>
                 {
-                    return Err(ExecutorError::QueryTimeout.into());
+                    return Err(ExecutorError::WriterLockTimeout.into());
                 }
                 Err(TryLockError::WouldBlock) => {
                     std::thread::sleep(Duration::from_millis(1));

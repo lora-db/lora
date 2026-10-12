@@ -245,6 +245,13 @@ fn query_timeout() {
 }
 
 #[test]
+fn writer_lock_timeout_says_what_it_waited_for() {
+    let message = ExecutorError::WriterLockTimeout.to_string();
+    assert!(message.starts_with("query deadline exceeded"), "{message}");
+    assert!(message.contains("waiting for the writer lock"), "{message}");
+}
+
+#[test]
 fn runtime_error_passes_message_through() {
     let err = ExecutorError::RuntimeError("boom".into());
     assert_eq!(err.to_string(), "boom");

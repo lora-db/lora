@@ -102,6 +102,12 @@ pub enum ExecutorError {
     #[error("query deadline exceeded")]
     QueryTimeout,
 
+    /// A write (or a read-write transaction) reached its deadline before
+    /// another writer released the lock: it never started, and nothing of
+    /// it ran.
+    #[error("query deadline exceeded waiting for the writer lock: another write or open transaction holds it")]
+    WriterLockTimeout,
+
     /// A registered constraint rejected a proposed mutation. The
     /// payload already includes the GQLSTATUS code (22N77/78/79) so the
     /// outer error format is just the inner message.

@@ -370,7 +370,7 @@ fn executor_code(err: &ExecutorError) -> LoraErrorCode {
         | ExecutorError::ReadOnlySet { .. }
         | ExecutorError::ReadOnlyRemove { .. }
         | ExecutorError::ReadOnlyForeach { .. } => LoraErrorCode::ReadOnlyViolation,
-        ExecutorError::QueryTimeout => LoraErrorCode::Timeout,
+        ExecutorError::QueryTimeout | ExecutorError::WriterLockTimeout => LoraErrorCode::Timeout,
         ExecutorError::ConstraintViolation(message) => constraint_message_code(message),
         ExecutorError::DeleteNodeWithRelationships { .. } => LoraErrorCode::ForeignKeyViolation,
         ExecutorError::RelationshipCreateFailed { .. } => LoraErrorCode::ForeignKeyViolation,

@@ -226,7 +226,16 @@ describe("begin() bounds its wait for the writer lock", () => {
     );
     expect(err).toBeInstanceOf(LoraError);
     expect((err as LoraError).code).toBe("LORA_TIMEOUT");
+    expect((err as LoraError).message).toContain("waiting for the writer lock");
     expect(Date.now() - started).toBeLessThan(2000);
+    // An auto-commit write refused for the same reason says so too: it
+    // never ran, where "query deadline exceeded" alone reads as if it had.
+    await expect(
+      db.execute("CREATE (:Blocked)", {}, { timeoutMs: 50 }),
+    ).rejects.toMatchObject({
+      code: "LORA_TIMEOUT",
+      message: expect.stringContaining("waiting for the writer lock"),
+    });
     await holder.commit();
     // Nothing was left holding the lock: a write goes through.
     await db.execute("CREATE (:After)");
