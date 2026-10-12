@@ -19,7 +19,13 @@ import { parseArgs } from "node:util";
 import { Worker } from "node:worker_threads";
 import { graphSize } from "../seed.js";
 import type { LoadgenInput, LoadgenOutput, Outcome } from "./loadgen.js";
-import { operations, scenarios, type Operation } from "./scenarios.js";
+import {
+  HOT_FESTIVALS,
+  operations,
+  scenarios,
+  type Operation,
+} from "./scenarios.js";
+import { subscribe, type Subscribers } from "./subscribers.js";
 import type { ServerConfig, ServerMessage, ServerStats } from "./server.js";
 
 const help = `Usage: yarn bench:load [options]
@@ -36,6 +42,10 @@ const help = `Usage: yarn bench:load [options]
   --workers N         serve from N worker threads over one persistent
                       database directory, each on its own port (implies a
                       WAL-backed directory; default: the main thread, 0)
+  --subscribers N     hold N subscriptions open while the steps run, each
+                      following one of the ${HOT_FESTIVALS} festivals the
+                      touch operation writes, and report what reaches them
+                      (default 0; try --scenario touch)
   --claims KIND       none | shared | unique: JWT claims per request (default none)
   --threads N         client threads (default 4)
   --request-timeout MS  client-side timeout per request (default 15000)
@@ -60,6 +70,7 @@ const { values: args } = parseArgs({
     "uv-threads": { type: "string" },
     workers: { type: "string", default: "0" },
     claims: { type: "string", default: "none" },
+    subscribers: { type: "string", default: "0" },
     threads: { type: "string", default: "4" },
     "request-timeout": { type: "string", default: "15000" },
     slo: { type: "string", default: "100" },
@@ -84,6 +95,14 @@ const scale = Number(args.scale);
 const size = graphSize(scale);
 const clientThreads = Number(args.threads);
 const workers = Number(args.workers);
+const subscriberCount = Number(args.subscribers);
+if (subscriberCount > 0 && workers > 0) {
+  // A write reaches the subscribers of the LoraGraphQL instance that made
+  // it: with several workers, most followers would never hear of it.
+  throw new Error(
+    "--subscribers measures one event loop: leave --workers at 0",
+  );
+}
 const requestTimeoutMs = Number(args["request-timeout"]);
 const slo = Number(args.slo);
 const maxErrorRate = Number(args["max-errors"]) / 100;
@@ -109,6 +128,14 @@ interface Step {
   errorRate: number;
   server: ServerStats | null;
   errors: string[];
+  /** With --subscribers: the events that reached them, from writes of this step. */
+  delivery?: {
+    subscribers: number;
+    perSec: number;
+    p50: number;
+    p99: number;
+    max: number;
+  };
 }
 
 // When bundled by main.mjs, server.js and loadgen.js sit next to this file.
@@ -190,8 +217,11 @@ async function step(
   ports: number[],
   server: Server,
   load: number,
+  subscribers?: Subscribers,
 ): Promise<Step> {
   await server.stats(); // reset the server's counters
+  subscribers?.drain();
+  const measuredFrom = Date.now() + Number(args.warmup) * 1000;
   const shares =
     mode === "closed"
       ? split(load, Math.min(clientThreads, load))
@@ -223,6 +253,24 @@ async function step(
     }),
   );
   const serverStats = await server.stats();
+  let delivery: Step["delivery"];
+  if (subscribers) {
+    // Events of the step's last writes may still be on their way.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const delays = Float64Array.from(
+      subscribers
+        .drain()
+        .filter((d) => d.sent >= measuredFrom)
+        .map((d) => d.latency),
+    ).sort();
+    delivery = {
+      subscribers: subscribers.count,
+      perSec: delays.length / (durationMs / 1000),
+      p50: quantile(delays, 0.5),
+      p99: quantile(delays, 0.99),
+      max: quantile(delays, 1),
+    };
+  }
 
   const latencies = merge(outputs.map((o) => o.latencies));
   latencies.sort();
@@ -275,6 +323,7 @@ async function step(
     errorRate: total === 0 ? 1 : (total - counts.ok) / total,
     server: serverStats,
     errors: [...new Set(outputs.flatMap((o) => o.errors))].slice(0, 5),
+    ...(delivery && { delivery }),
   };
 }
 
@@ -342,7 +391,12 @@ for (const scenario of scenarioNames) {
     persist: args.persist,
     timeoutMs: 10_000,
     workers,
+    subscriptions: subscriberCount > 0,
   });
+  const subscribers =
+    subscriberCount > 0
+      ? await subscribe(ports, subscriberCount, size.festivals)
+      : undefined;
   const ops = Object.keys(scenarios[scenario]!)
     .map((op) =>
       (operations[op as keyof typeof operations] as Operation).write
@@ -355,9 +409,15 @@ for (const scenario of scenarioNames) {
   );
   printRow(columns.map(([name]) => name));
   for (const load of steps) {
-    const s = await step(scenario, ports, server, load);
+    const s = await step(scenario, ports, server, load, subscribers);
     results.push(s);
     printRow(cells(s));
+    if (s.delivery) {
+      console.log(
+        `    ${s.delivery.subscribers} subscribers: ${s.delivery.perSec.toFixed(0)} events/s, ` +
+          `write to event p50 ${ms(s.delivery.p50)} p99 ${ms(s.delivery.p99)} max ${ms(s.delivery.max)}`,
+      );
+    }
     if (s.operations) {
       console.log(
         "    " +
@@ -376,6 +436,7 @@ for (const scenario of scenarioNames) {
       break;
     }
   }
+  subscribers?.close();
   await server.stop();
 }
 
@@ -415,6 +476,7 @@ const meta = {
   uvThreadpool: args["uv-threads"] ?? "default",
   clientThreads,
   claims: args.claims,
+  subscribers: subscriberCount,
   sloP99Ms: slo,
   node: process.version,
   cpu: cpus()[0]?.model,
@@ -452,6 +514,24 @@ const md = [
   `|---|${columns.map(() => "--:").join("|")}|`,
   ...results.map((r) => `| ${r.scenario} | ${cells(r).join(" | ")} |`),
   "",
+  ...(subscriberCount > 0
+    ? [
+        "## Subscribers",
+        "",
+        `${subscriberCount} subscriptions held open, each following one of ${Math.min(HOT_FESTIVALS, size.festivals)} festivals. An event's delay counts from when its write was sent.`,
+        "",
+        `| scenario | ${columns[0][0]} | events/s | p50 | p99 | max |`,
+        "|---|--:|--:|--:|--:|--:|",
+        ...results.flatMap((r) =>
+          r.delivery
+            ? [
+                `| ${r.scenario} | ${r.load} | ${r.delivery.perSec.toFixed(0)} | ${ms(r.delivery.p50)} | ${ms(r.delivery.p99)} | ${ms(r.delivery.max)} |`,
+              ]
+            : [],
+        ),
+        "",
+      ]
+    : []),
 ];
 await writeFile(`${base}.md`, md.join("\n"));
 console.log(`\nresults: ${base}.json, ${base}.md`);

@@ -15,7 +15,7 @@
 // worker's, in-flight the sum.
 
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
@@ -26,7 +26,14 @@ import {
   workerData,
 } from "node:worker_threads";
 import { createDatabase } from "@loradb/lora-node";
-import { execute, parse, validate, type DocumentNode } from "graphql";
+import {
+  execute,
+  parse,
+  subscribe,
+  validate,
+  type DocumentNode,
+  type ExecutionResult,
+} from "graphql";
 import { LoraGraphQL, loraDriver } from "../../src/index.js";
 import type { LoraDriver } from "../../src/index.js";
 import { appTypeDefs } from "../../test/fixtures.js";
@@ -39,6 +46,8 @@ export interface ServerConfig {
   timeoutMs: number;
   /** Serve from this many worker threads over one persistent directory. */
   workers?: number;
+  /** Festivals get `@subscription`, and `/subscribe?key=` streams one's events. */
+  subscriptions?: boolean;
 }
 
 export interface ServerStats {
@@ -115,7 +124,51 @@ async function serve(
     return { status: 200, body: JSON.stringify(result) };
   }
 
+  const followed = parse(
+    `subscription ($key: ID!) { festivalChanged(key: $key) { operation key node { name } } }`,
+  );
+  /** A server-sent-event stream of one festival's changes. */
+  async function follow(
+    key: string,
+    res: ServerResponse,
+    closed: AbortSignal,
+  ): Promise<void> {
+    const events = await subscribe({
+      schema,
+      document: followed,
+      variableValues: { key },
+      contextValue: { signal: closed },
+    });
+    if (!(Symbol.asyncIterator in events)) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify(events));
+      return;
+    }
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+    });
+    res.write("event: ready\n\n");
+    closed.addEventListener("abort", () => {
+      void (events as AsyncGenerator).return?.(undefined);
+    });
+    for await (const event of events as AsyncIterable<ExecutionResult>) {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+    res.end();
+  }
+
   const server = createServer((req, res) => {
+    if (req.method === "GET" && req.url?.startsWith("/subscribe")) {
+      const key = new URL(req.url, "http://x").searchParams.get("key") ?? "";
+      const closed = new AbortController();
+      res.on("close", () => closed.abort());
+      follow(key, res, closed.signal).catch((error: unknown) => {
+        if (!res.headersSent) res.writeHead(500);
+        res.end(String(error));
+      });
+      return;
+    }
     inflight++;
     maxInflight = Math.max(maxInflight, inflight);
     const chunks: Buffer[] = [];
@@ -165,7 +218,12 @@ async function openLora(config: ServerConfig, dir: string | undefined) {
     ? await createDatabase("load", { databaseDir: dir })
     : await createDatabase();
   const lora = new LoraGraphQL({
-    typeDefs: appTypeDefs,
+    typeDefs: config.subscriptions
+      ? appTypeDefs.replace(
+          "type Festival @node @mutation",
+          "type Festival @node @mutation @subscription",
+        )
+      : appTypeDefs,
     driver: process.env.LOAD_NO_BATCH
       ? oneByOne(loraDriver(db))
       : loraDriver(db),

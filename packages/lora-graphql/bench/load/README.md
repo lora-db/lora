@@ -8,6 +8,7 @@ yarn bench:load --scenario mixed --rate 100,200,300       # open loop, fixed arr
 yarn bench:load --scenario page,connection,aggregate --scale 5
 yarn bench:load --scenario byKey --claims unique # a distinct JWT per request
 yarn bench:load --scenario byKey,traverse --workers 4 --uv-threads 8   # 4 GraphQL threads, one engine
+yarn bench:load --scenario touch --subscribers 10000       # writes with 10k subscriptions open
 yarn bench:load --help
 ```
 
@@ -40,6 +41,18 @@ One process can run several GraphQL event loops over one database. With `--worke
 The workers still share one libuv pool (`UV_THREADPOOL_SIZE`), where reads run, so raise `--uv-threads` with the worker count.
 
 **Caveat for a real server:** `lora.onWrite` (and anything built on it, such as a response cache invalidated by writes) is per `LoraGraphQL` instance. A write served by one worker does not fire another worker's listeners. Invalidate across threads from the engine's committed change feed (`changeFeed: true`, then `lora.changes()`), which carries every commit to the shared engine whatever thread made it (not exercised by this harness), or broadcast writes between threads yourself, for example over a `BroadcastChannel`. In-memory databases are not shared between workers: each `createDatabase()` without a directory is its own graph.
+
+## Subscribers (`--subscribers N`)
+
+How writes hold up while subscriptions are open, and how long an event takes to arrive.
+
+- The server's `Festival` gets `@subscription`, and `GET /subscribe?key=` streams one festival's `festivalChanged` events as server-sent events.
+- The runner opens N streams before the ramp. Subscriber `i` follows festival `f(i mod 1000)`, so the 1000 hot festivals each have `N / 1000` followers.
+- Run it with `--scenario touch`: an update of a hot festival that writes the time it was sent into the name. Each step then reports events per second and the delay from that moment to the event's arrival, which covers the request, the commit and the fan-out.
+- Compare with `--subscribers 0` for what the open subscriptions cost the writes. A first run at 32 in flight on a busy machine: 4,140 writes/s without subscribers; 2,790 writes/s with 10,000 (ten followers per festival), delivering 28,200 events/s at a 9 ms median.
+- Every stream is a socket on both ends, so N is bounded by the file descriptor limit (`ulimit -n`).
+- It does not combine with `--workers`: a write reaches the subscribers of the `LoraGraphQL` instance that made it.
+- Not exercised: subscriptions with a `where` filter or rules (each event is then tested by a statement), and `changeFeed: true`.
 
 ## Reading the numbers
 

@@ -30,6 +30,12 @@ const festival = (pick: (n: number) => number, size: GraphSize) =>
 const user = (pick: (n: number) => number, size: GraphSize) =>
   "u" + pick(size.users);
 
+/**
+ * The festivals `touch` writes and `--subscribers` follow: few enough that
+ * every write has followers.
+ */
+export const HOT_FESTIVALS = 1000;
+
 export const operations = {
   byKey: {
     query: `query ($key: ID!) { festival(key: $key) { key name capacity } }`,
@@ -81,6 +87,58 @@ export const operations = {
     variables: (pick, size) => ({
       key: festival(pick, size),
       capacity: pick(5000),
+    }),
+    write: true,
+  },
+  /** A create that connects two existing nodes: one call into the database. */
+  createConnect: {
+    query: `mutation ($name: String!, $genre: String!, $user: String!) {
+      createFestivals(input: [{ name: $name, genre: { connect: { key: $genre } }, followers: { connect: [{ key: $user }] } }]) {
+        festivals { key genre { key } }
+      }
+    }`,
+    variables: (pick, size, seq) => ({
+      name: `load ${seq}`,
+      genre: "g" + pick(10),
+      user: user(pick, size),
+    }),
+    write: true,
+  },
+  /** A bulk update: the keys are looked up, then written, in a transaction. */
+  bulkUpdate: {
+    query: `mutation ($min: Int, $max: Int, $capacity: Int) {
+      updateFestivals(where: { capacity: { gt: $min, lt: $max } }, update: { capacity: $capacity }, limit: 100) {
+        info { nodesUpdated }
+      }
+    }`,
+    variables: (pick) => {
+      // Two capacity values (4 festivals each per unit of scale), written
+      // back into the range they were found in: on average it stays full.
+      const min = pick(4990);
+      return { min, max: min + 3, capacity: min + 1 + pick(2) };
+    },
+    write: true,
+  },
+  /**
+   * A delete of a node with relationships: its neighbours are read first.
+   * The graph shrinks as it runs, and a key drawn again deletes nothing.
+   */
+  delete: {
+    query: `mutation ($key: ID!) { deleteFestival(key: $key) { nodesDeleted relationshipsDeleted } }`,
+    variables: (pick, size) => ({ key: festival(pick, size) }),
+    write: true,
+  },
+  /**
+   * An update of a hot festival that stamps when it was sent, for
+   * `--subscribers`: an event's delay is counted from that moment.
+   */
+  touch: {
+    query: `mutation ($key: ID!, $name: String!) {
+      updateFestival(key: $key, update: { name: $name }) { festival { key } }
+    }`,
+    variables: (pick, size) => ({
+      key: "f" + pick(Math.min(HOT_FESTIVALS, size.festivals)),
+      name: `at ${Date.now()}`,
     }),
     write: true,
   },
