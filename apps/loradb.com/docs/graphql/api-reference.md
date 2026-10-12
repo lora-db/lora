@@ -690,8 +690,9 @@ before the write, writes, and checks the rules after it. A test runs
 every case both ways and holds the answers, the graph and the change
 events to being identical.
 
-Measured at 32 requests in flight, creates run 24% faster this way and
-their median latency drops from 6.2 ms to 3.5 ms. Everything else
+Measured at 32 requests in flight: creates run 24% faster this way
+(3,650 against 2,970 req/s, median 3.8 ms against 6.4 ms), and updates
+68% faster (4,300 against 2,560 req/s, median 1.7 ms against 7.6 ms). Everything else
 (deletes, upserts, bulk updates, relationship writes, `adjust`, schemas
 with triggers or a READ validate rule, a type with `@uniqueTogether`, a
 caller-owned transaction) runs in a transaction as described above.
