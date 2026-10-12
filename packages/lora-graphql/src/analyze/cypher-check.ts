@@ -3,6 +3,7 @@
 // its location and the engine's message.
 
 import { name } from "../compile/cypher.js";
+import { relationshipTriggerPrefix } from "../execute/mutate/triggers.js";
 import type { LoraDriver } from "../driver.js";
 import { renameParams } from "../model/cypher-lexer.js";
 import type { CypherField, GraphModel } from "../model/types.js";
@@ -57,20 +58,41 @@ export async function checkCypherFields(
         params[`a_${p}`] = null;
         return `a_${p}`;
       });
-      const text =
-        `UNWIND $a_keys AS lora_trigger_key\n` +
-        `MATCH (this:${name(node.labels[0]!)}) WHERE this.${name(node.key.property)} = lora_trigger_key\n` +
-        statement;
+      // A CONNECT or DISCONNECT trigger runs per relationship, once per
+      // type its field reaches: `target` is a node of each in turn.
+      const field =
+        trigger.field === undefined
+          ? undefined
+          : node.fields.get(trigger.field);
+      const texts =
+        field?.kind === "relationship"
+          ? field.members.flatMap((member) => {
+              const target = model.nodes.get(member);
+              return target
+                ? [
+                    relationshipTriggerPrefix(node, target, "$a_keys") +
+                      statement,
+                  ]
+                : [];
+            })
+          : [
+              `UNWIND $a_keys AS lora_trigger_key\n` +
+                `MATCH (this:${name(node.labels[0]!)}) WHERE this.${name(node.key.property)} = lora_trigger_key\n` +
+                statement,
+            ];
       const at = (message: string) =>
         findings.push({
           type: node.name,
           field: `@trigger ${i + 1}`,
           message,
         });
-      try {
-        await driver.explain({ text, params: params as never });
-      } catch (err) {
-        at(err instanceof Error ? err.message : String(err));
+      for (const text of texts) {
+        try {
+          await driver.explain({ text, params: params as never });
+        } catch (err) {
+          at(err instanceof Error ? err.message : String(err));
+          break;
+        }
       }
     }
   }

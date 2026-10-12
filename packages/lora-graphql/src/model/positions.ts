@@ -46,6 +46,7 @@ const ARGUMENT_DIRECTIVES: ReadonlySet<string> = new Set([
   "pattern",
   "format",
   "multipleOf",
+  "normalize",
 ]);
 
 /**
@@ -114,6 +115,7 @@ export const DIRECTIVE_POSITIONS: Readonly<
     "filterable",
     "cardinality",
     "limit",
+    "size",
     // Refused with "@x is not allowed on a relationship field".
     "key",
     "unique",

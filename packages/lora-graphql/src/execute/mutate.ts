@@ -27,7 +27,7 @@ import {
   settable,
   type MutationKind,
 } from "../schema/mutations.js";
-import type { EntityRef, WriteChange } from "./changes.js";
+import { fillChange, type WriteChange } from "./changes.js";
 import { assertUniqueTogether, checkUniqueTogether } from "./mutate/checks.js";
 import { deleteNodes } from "./mutate/delete.js";
 import { runStatement, type MutationEnv } from "./mutate/env.js";
@@ -637,30 +637,4 @@ function emptyChange(op: MutationKind, field: string): WriteChange {
     relationshipTypes: [],
     broad: false,
   };
-}
-
-function fillChange(change: WriteChange, runner: Runner): void {
-  // A node a DELETE trigger function already deleted is listed once.
-  const once = new Map(
-    change.deleted.map((e) => [`${e.type}\0${keyOf(e.key)}`, e]),
-  );
-  change.deleted = [...once.values()];
-  change.connected.push(...runner.connected);
-  change.disconnected.push(...runner.disconnected);
-  const entities = new Map<string, EntityRef>();
-  const addEntity = (e: EntityRef) =>
-    entities.set(`${e.type}\0${keyOf(e.key)}`, e);
-  for (const e of [...change.created, ...change.updated, ...change.deleted])
-    addEntity(e);
-  for (const r of [...change.connected, ...change.disconnected]) {
-    addEntity(r.from);
-    addEntity(r.to);
-  }
-  change.entities = [...entities.values()];
-  change.types = [...new Set(change.entities.map((e) => e.type))].sort();
-  change.relationshipTypes = [
-    ...new Set(
-      [...change.connected, ...change.disconnected].map((r) => r.type),
-    ),
-  ].sort();
 }

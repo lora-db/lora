@@ -120,7 +120,8 @@ bite:
   `lora-graphql requirements --ddl` in your migrations.
 - **Subscriptions follow library writes unless you opt into the feed.**
   By default events come from mutations made through the `LoraGraphQL`
-  instance, and `@cypher` mutations produce a broad change. With
+  instance, and a `@cypher` mutation produces a broad change unless its
+  statement returns what it wrote as `created` or `updated`. With
   `changeFeed: true` (lora-node) they come from the engine's committed
   change feed instead, which covers every committed write to the database
   from the process that owns it, raw Cypher included. It is not CDC: a

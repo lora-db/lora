@@ -1,5 +1,6 @@
 // S5: what a write changed, and whether a read could have seen it.
 
+import { keyOf } from "../compile/read/by-keys.js";
 import type { MutationOperation } from "../model/types.js";
 
 export interface EntityRef {
@@ -54,6 +55,39 @@ export interface WriteChange {
    * changed.
    */
   broad: boolean;
+}
+
+/**
+ * Complete `change` with the relationships a mutation wrote: both lists,
+ * and the entities and types that follow from everything in it.
+ */
+export function fillChange(
+  change: WriteChange,
+  wrote: {
+    connected: readonly RelationshipRef[];
+    disconnected: readonly RelationshipRef[];
+  },
+): void {
+  const id = (e: EntityRef) => `${e.type}\0${keyOf(e.key)}`;
+  // A node a DELETE trigger function already deleted is listed once.
+  change.deleted = [...new Map(change.deleted.map((e) => [id(e), e])).values()];
+  change.connected.push(...wrote.connected);
+  change.disconnected.push(...wrote.disconnected);
+  const entities = new Map<string, EntityRef>();
+  for (const e of [...change.created, ...change.updated, ...change.deleted]) {
+    entities.set(id(e), e);
+  }
+  for (const r of [...change.connected, ...change.disconnected]) {
+    entities.set(id(r.from), r.from);
+    entities.set(id(r.to), r.to);
+  }
+  change.entities = [...entities.values()];
+  change.types = [...new Set(change.entities.map((e) => e.type))].sort();
+  change.relationshipTypes = [
+    ...new Set(
+      [...change.connected, ...change.disconnected].map((r) => r.type),
+    ),
+  ].sort();
 }
 
 export interface ReadSetLike {

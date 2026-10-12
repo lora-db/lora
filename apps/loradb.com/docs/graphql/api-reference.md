@@ -49,7 +49,7 @@ options do not supply. `defaultLimit` or `maxLimit` below 1 is a
 | `timeoutMs` | 10 000 | Per statement, in milliseconds, the wait for the writer lock included. `0` disables |
 | `operationTimeoutMs` | 2 × `timeoutMs` | For all root fields of one query together. Past it the operation's statements are aborted and its unfinished fields fail with `TIMEOUT`. `0` disables. Subscriptions are not bounded by it; mutations keep `timeoutMs` per statement |
 | `maxConcurrentStatements` | 2 | Statements one operation runs at once. Aliased root fields queue for a slot, so one request cannot take every worker thread. Lookups by `@key` do not need a slot |
-| `maxBatch` | 1000 | Nodes one mutation may create, update or delete, nested ones included, and ten times as many relationships. Also the default and the ceiling of the `limit` of bulk updates and deletes |
+| `maxBatch` | 1000 | Nodes one mutation may create, update or delete, nested ones included, and ten times as many relationships. Also the default and the ceiling of the `limit` of bulk updates and deletes. [`@size(max:)`](/docs/graphql/directives#size) on a relationship field bounds each nested `connect`, `create`, `disconnect` and `update` list |
 | `maxFilterDepth` | 2 | Relationship levels one `where` may nest. Quantifiers, connection filters, `<field>Exists` and filters through a single relationship count one each. Deeper is `BAD_USER_INPUT` |
 | `maxListFilter` | 1000 | Items in an `in` operand. More is `BAD_USER_INPUT` |
 | `maxStringFilter` | 10 000 | Characters in a string filter operand. More is `BAD_USER_INPUT` |
@@ -574,7 +574,7 @@ it.
 | `connected`, `disconnected` | `{ type, field, from, to }[]` | Relationships, with the declaring `Owner.field` and both ends |
 | `entities` | `{ type, key }[]` | Every node whose observable state changed, relationship ends included |
 | `types`, `relationshipTypes` | `string[]` | Node types and relationship types touched |
-| `broad` | boolean | The write-set is unknown (a `@cypher` mutation): treat everything as changed |
+| `broad` | boolean | The write-set is unknown (a `@cypher` mutation that returns neither `created` nor `updated`): treat everything as changed |
 | `before` | array | Stored properties before the write, for types with `@subscription(previousState: true)` |
 
 `onWrite` and `changes()` carry the full write-set with no read rules

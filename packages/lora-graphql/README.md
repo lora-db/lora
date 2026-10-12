@@ -156,26 +156,26 @@ Model:
 
 API:
 
-| Directive                                             | On                                           | Meaning                                                                                                       |
-| ----------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `@query(read:, aggregate:)`                           | type, interface, union                       | Generated reads                                                                                               |
-| `@mutation(operations: [CREATE, UPDATE, DELETE])`     | type                                         | Generated mutations; none without it                                                                          |
-| `@subscription(operations: [CREATE, UPDATE, DELETE])` | type                                         | Generated subscriptions; none without it                                                                      |
-| `@filterable(byValue: [...])`                         | field                                        | Filter operators. Bare: `EQ` and `IN` (lists: `INCLUDES`). On a relationship: enables relationship filters    |
-| `@sortable`                                           | field                                        | Sort and paginate by this field (on a relationship property: `sort: [{ edge: { ... } }]`)                     |
-| `@groupBy`                                            | field                                        | A grouping key of `<plural>Grouped(by:)` (needs `@query(aggregate: true)`)                                    |
-| `@limit(default:, max:)`                              | type, interface, union, list relationship    | Page size bounds                                                                                              |
-| `@length(min:, max:)`                                 | String / ID field                            | Its length in code points (each item of a list)                                                               |
-| `@pattern(regex:)`                                    | String / ID field                            | An expression the whole value must match; needs `@length(max:)`                                               |
-| `@format(as:)`                                        | String / ID field                            | `email`, `email-strict`, `url`, `uuid`, `hostname`, `ipv4`, `ipv6`, `slug`, `hex-color`, `ulid`, `e164`       |
-| `@range(min:, max:, exclusiveMin:, exclusiveMax:)`    | number field; argument of a `@cypher` field  | Bounds of its value (each item of a list); on an argument, `min` and `max`                                    |
-| `@multipleOf(value:)`                                 | Int / Float field                            | A whole multiple of `value`                                                                                   |
-| `@size(min:, max:, unique:)`                          | list field; list argument of `@cypher`       | How many items it holds; on an argument, `max` (default `maxListArgument`)                                    |
-| `@relayId`                                            | `@key` field                                 | Adds a global `id` and the `Node` interface                                                                   |
-| `@authentication(operations:, jwt:)`                  | type, field                                  | Needs an authenticated request, whose claims satisfy `jwt`                                                    |
-| `@authorization(filter:, validate:)`                  | type (filter and validate), field (validate) | Row-level rules, compiled into statements                                                                     |
-| `@jwt`, `@jwtClaim(path:)`                            | type, field                                  | The claims shape; rules may only use declared claims                                                          |
-| `@viewer(type:, field:)`                              | `@jwt` claim                                 | The claim naming the caller's node (by a `@key` or `@unique` field): enables `isViewer` and `viewer` in rules |
+| Directive                                             | On                                                        | Meaning                                                                                                                                                                   |
+| ----------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@query(read:, aggregate:)`                           | type, interface, union                                    | Generated reads                                                                                                                                                           |
+| `@mutation(operations: [CREATE, UPDATE, DELETE])`     | type                                                      | Generated mutations; none without it                                                                                                                                      |
+| `@subscription(operations: [CREATE, UPDATE, DELETE])` | type                                                      | Generated subscriptions; none without it                                                                                                                                  |
+| `@filterable(byValue: [...])`                         | field                                                     | Filter operators. Bare: `EQ` and `IN` (lists: `INCLUDES`). On a relationship: enables relationship filters                                                                |
+| `@sortable`                                           | field                                                     | Sort and paginate by this field (on a relationship property: `sort: [{ edge: { ... } }]`)                                                                                 |
+| `@groupBy`                                            | field                                                     | A grouping key of `<plural>Grouped(by:)` (needs `@query(aggregate: true)`)                                                                                                |
+| `@limit(default:, max:)`                              | type, interface, union, list relationship                 | Page size bounds                                                                                                                                                          |
+| `@length(min:, max:)`                                 | String / ID field                                         | Its length in code points (each item of a list)                                                                                                                           |
+| `@pattern(regex:)`                                    | String / ID field                                         | An expression the whole value must match; needs `@length(max:)`                                                                                                           |
+| `@format(as:)`                                        | String / ID field                                         | `email`, `email-strict`, `url`, `uuid`, `hostname`, `ipv4`, `ipv6`, `slug`, `hex-color`, `ulid`, `e164`                                                                   |
+| `@range(min:, max:, exclusiveMin:, exclusiveMax:)`    | number field; argument of a `@cypher` field               | Bounds of its value (each item of a list); on an argument, `min` and `max`                                                                                                |
+| `@multipleOf(value:)`                                 | Int / Float field                                         | A whole multiple of `value`                                                                                                                                               |
+| `@size(min:, max:, unique:)`                          | list field; list argument of `@cypher`; list relationship | How many items it holds; on an argument, `max` (default `maxListArgument`); on a relationship, `max` items per nested `connect`, `create`, `disconnect` and `update` list |
+| `@relayId`                                            | `@key` field                                              | Adds a global `id` and the `Node` interface                                                                                                                               |
+| `@authentication(operations:, jwt:)`                  | type, field                                               | Needs an authenticated request, whose claims satisfy `jwt`                                                                                                                |
+| `@authorization(filter:, validate:)`                  | type (filter and validate), field (validate)              | Row-level rules, compiled into statements                                                                                                                                 |
+| `@jwt`, `@jwtClaim(path:)`                            | type, field                                               | The claims shape; rules may only use declared claims                                                                                                                      |
+| `@viewer(type:, field:)`                              | `@jwt` claim                                              | The claim naming the caller's node (by a `@key` or `@unique` field): enables `isViewer` and `viewer` in rules                                                             |
 
 `directiveTypeDefs` (or `lora-graphql directives`) prints these as SDL for
 editors and codegen.
@@ -207,7 +207,8 @@ Email @storedAs(type: STRING) @format(as: "email")`), for every field of
 that type. For a rule across fields, the `validators` option takes a
 Standard Schema validator per node type (zod, valibot, arktype, yup),
 run on each input after the field rules. The same directives go on
-`@cypher` arguments. Each input field says its rules in its description,
+`@cypher` arguments, `@normalize` included: it changes the argument
+before its rules are checked and before the statement sees it. Each input field says its rules in its description,
 `lora.inputSchemas()` (CLI: `json-schema`) exports them as JSON Schema
 for clients, `diff` reports a tightened rule as breaking, and `check`
 lists stored values that no longer pass. See the
@@ -549,7 +550,11 @@ entry), and a delete reaches at most `maxBatch` nodes through
 `onDelete: CASCADE`. Relationships written (connects, each key of a
 `disconnect` list, nested `update` entries) count up to ten times
 `maxBatch`. Going over is `LIMIT_EXCEEDED`, before the writes that
-would exceed it. `@key` is not updatable.
+would exceed it. For a bound per field, `@size(max:)` on a list
+relationship (`following: [Person!]! @relationship(...) @size(max: 50)`)
+caps each nested `connect`, `create`, `disconnect` and `update` list of
+one input; a longer list is `BAD_USER_INPUT` before the transaction
+opens. `@key` is not updatable.
 `info` reports `nodesCreated`, `nodesUpdated`, `nodesDeleted`,
 `relationshipsCreated` and `relationshipsDeleted`.
 
@@ -671,6 +676,22 @@ inferred when the statement's last top-level `RETURN` has one item,
 Fields returning `@node` types are projected with the selection like any
 other node, and read filters apply to them.
 
+A `Mutation` statement says what it wrote in two more columns, read as a
+trigger statement's are: the nodes it returns as `created` and `updated`
+are its write-set, so its change is not `broad` and subscriptions on
+their types fire. Without either column the change is `broad`, and
+`check()` lints the mutation.
+
+```graphql
+type Mutation {
+  addGenre(key: String!, name: String!): Genre
+    @cypher(
+      statement: "CREATE (g:Genre {key: $key, name: $name}) RETURN g, g AS created"
+      columnName: "g"
+    )
+}
+```
+
 Statements are checked, not trusted:
 
 - at startup: every `$parameter` must be an argument, `$jwt` or
@@ -752,7 +773,10 @@ createPost(key: String!, hashtags: [String!] = [] @size(max: 30)): Post
 Int and Float arguments take bounds the same way: `@range(min:, max:)`
 (either or both, inclusive) checks the value, or each item of a list,
 before the statement runs, and a default outside the bounds is a model
-error. Null is not checked; that is the type's business.
+error. Null is not checked; that is the type's business. A String or ID
+argument takes `@normalize` (`text: String! @normalize(trim: true)
+@length(min: 1, max: 280)`): the trimmed value is what `@length` counts
+and what the statement gets.
 
 ```graphql
 nearby(lat: Float! @range(min: -90, max: 90), km: Int = 10 @range(min: 1, max: 500)): [Festival!]!
@@ -1280,8 +1304,8 @@ reported as an API break with no data migration.
 ```ts
 lora.onWrite((change) => {
   // Per type: lists, counts and connections of these types may have
-  // changed, not only the entities. A broad change (a @cypher mutation)
-  // names nothing, so it invalidates every type.
+  // changed, not only the entities. A broad change (a @cypher mutation
+  // that does not say what it wrote) names nothing: every type goes.
   const types = change.broad ? allNodeTypes : change.types;
   cache.invalidate(types.map((typename) => ({ typename })));
 });
@@ -1295,7 +1319,8 @@ relationships `connected` and `disconnected` (by field and both keys),
 included), and the touched `types` and `relationshipTypes`. Every compiled
 read carries a read-set (labels and relationship types);
 `lora.affects(reads, change)` tells whether a cached read may be stale.
-`@cypher` mutations have no known write-set and are reported with
+A `@cypher` mutation's write-set is the nodes its statement returns as
+`created` and `updated`; one that returns neither is reported with
 `broad: true`. Only writes made through the library are seen. A consumer
 that falls `maxQueuedChanges` (default 1000) behind is ended with an error
 rather than buffering without bound.
@@ -1467,6 +1492,12 @@ lora.worker("Notification", {
   every node of the type the mutation wrote; `$jwt`, `$viewer` and
   `$operation` are bound. `fields:` narrows an `UPDATE` trigger to
   updates that named one of them.
+- `@trigger(on: [CONNECT], field: "following", statement: ...)` runs
+  once per relationship the mutation created through that field, from
+  either side, with `this` and `target` bound: "tell a person who
+  followed them" without reading any other relationship. `DISCONNECT`
+  does the same for a relationship removed. A trigger function reads
+  them in `change.connected` and `change.disconnected`.
 - Nodes a statement returns as `created` or `updated` join the
   mutation's write-set, so `onWrite` and subscriptions see them without
   `changeFeed`.
@@ -1722,38 +1753,38 @@ transaction. Mutations need interactive transactions, which only the Node
 binding has, so the WASM binding serves reads.
 `explain()`, and so plan checks, need the Node binding too.
 
-| Option                       | Default       | Meaning                                                  |
-| ---------------------------- | ------------- | -------------------------------------------------------- |
-| `timeoutMs`                  | 10 000        | Per statement and lock wait; a `signal` cancels          |
-| `operationTimeoutMs`         | 2 × timeout   | All root fields of one query; then `TIMEOUT`             |
-| `maxConcurrentStatements`    | 2             | Statements one operation runs at once                    |
-| `maxCost`                    | 50 000        | Estimated rows per operation                             |
-| `maxBatch`                   | 1000          | Nodes written per mutation; bulk `limit` by default      |
-| `compileCacheBytes`          | 64 MiB        | Compile cache and document cache, each                   |
-| `maxQueuedChanges`           | 1000          | How far a change consumer may fall behind                |
-| `maxSubscriptions`           | 100           | Live subscriptions per `subscriptionScope`               |
-| `maxQueuedWrites`            | 512           | Writes waiting for the writer lock; more is `OVERLOADED` |
-| `maxTotalCount`              | none          | Where a root connection's `totalCount` stops counting    |
-| `triggerTimeoutMs`           | 1000          | Per trigger function; past it the mutation fails         |
-| `singleCallMutations`        | true          | A create is one call that begins, runs, commits          |
-| `subscriptionScope`          | the context   | What `maxSubscriptions` counts per                       |
-| `maxSubscriptionFilterDepth` | 1             | Relationship filter nesting in a subscription where      |
-| `subscriptionTimeoutMs`      | 2000          | Per statement checking a change for a subscriber         |
-| `defaultLimit` / `maxLimit`  | 25 / 100      | Global page sizes; `@limit` may only lower `max`         |
-| `callbacks`                  |               | Named callbacks for `@populatedBy`                       |
-| `jwt`                        | `context.jwt` | Where the claims are                                     |
-| `onStatement`                |               | Observe every statement                                  |
-| `cursorSecret`               |               | Sign cursors; reject unsigned or forged ones             |
-| `maskErrors`                 | production    | Clients get `DATABASE_ERROR` and an `id` only            |
-| `onError`                    |               | Receives each database error's detail and `id`           |
-| `guards`                     | see below     | Document limits; `false` turns them off                  |
-| `persistedOnly`              | false         | `execute()`, `subscribe()` run persisted ops only        |
-| `budget`                     |               | Cost limit per request, from the context                 |
-| `onCost`                     |               | Each root field's estimate, total and limit              |
-| `onStatementEnd`             |               | Duration, rows and error of every statement call         |
-| `timing`                     | false         | `extensions.timing` in `execute()` results               |
-| `tracer` / `traceStatements` |               | OpenTelemetry-style spans; Cypher text on request        |
-| `metrics`                    |               | Counters and histograms (see below)                      |
+| Option                       | Default       | Meaning                                                                                                                                                                     |
+| ---------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `timeoutMs`                  | 10 000        | Per statement and lock wait; a `signal` cancels                                                                                                                             |
+| `operationTimeoutMs`         | 2 × timeout   | All root fields of one query; then `TIMEOUT`                                                                                                                                |
+| `maxConcurrentStatements`    | 2             | Statements one operation runs at once                                                                                                                                       |
+| `maxCost`                    | 50 000        | Estimated rows per operation                                                                                                                                                |
+| `maxBatch`                   | 1000          | Nodes written per mutation, and ten times as many relationships; bulk `limit` by default. A nested `connect` list is bounded per field by `@size(max:)` on the relationship |
+| `compileCacheBytes`          | 64 MiB        | Compile cache and document cache, each                                                                                                                                      |
+| `maxQueuedChanges`           | 1000          | How far a change consumer may fall behind                                                                                                                                   |
+| `maxSubscriptions`           | 100           | Live subscriptions per `subscriptionScope`                                                                                                                                  |
+| `maxQueuedWrites`            | 512           | Writes waiting for the writer lock; more is `OVERLOADED`                                                                                                                    |
+| `maxTotalCount`              | none          | Where a root connection's `totalCount` stops counting                                                                                                                       |
+| `triggerTimeoutMs`           | 1000          | Per trigger function; past it the mutation fails                                                                                                                            |
+| `singleCallMutations`        | true          | A create is one call that begins, runs, commits                                                                                                                             |
+| `subscriptionScope`          | the context   | What `maxSubscriptions` counts per                                                                                                                                          |
+| `maxSubscriptionFilterDepth` | 1             | Relationship filter nesting in a subscription where                                                                                                                         |
+| `subscriptionTimeoutMs`      | 2000          | Per statement checking a change for a subscriber                                                                                                                            |
+| `defaultLimit` / `maxLimit`  | 25 / 100      | Global page sizes; `@limit` may only lower `max`                                                                                                                            |
+| `callbacks`                  |               | Named callbacks for `@populatedBy`                                                                                                                                          |
+| `jwt`                        | `context.jwt` | Where the claims are                                                                                                                                                        |
+| `onStatement`                |               | Observe every statement                                                                                                                                                     |
+| `cursorSecret`               |               | Sign cursors; reject unsigned or forged ones                                                                                                                                |
+| `maskErrors`                 | production    | Clients get `DATABASE_ERROR` and an `id` only                                                                                                                               |
+| `onError`                    |               | Receives each database error's detail and `id`                                                                                                                              |
+| `guards`                     | see below     | Document limits; `false` turns them off                                                                                                                                     |
+| `persistedOnly`              | false         | `execute()`, `subscribe()` run persisted ops only                                                                                                                           |
+| `budget`                     |               | Cost limit per request, from the context                                                                                                                                    |
+| `onCost`                     |               | Each root field's estimate, total and limit                                                                                                                                 |
+| `onStatementEnd`             |               | Duration, rows and error of every statement call                                                                                                                            |
+| `timing`                     | false         | `extensions.timing` in `execute()` results                                                                                                                                  |
+| `tracer` / `traceStatements` |               | OpenTelemetry-style spans; Cypher text on request                                                                                                                           |
+| `metrics`                    |               | Counters and histograms (see below)                                                                                                                                         |
 
 Errors carry `extensions.code`: `BAD_USER_INPUT`, `INVALID_CURSOR`,
 `LIMIT_EXCEEDED`, `COST_EXCEEDED`, `OVERLOADED` (more than

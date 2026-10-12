@@ -310,9 +310,9 @@ export async function applyLinks(
       pairs,
       "AFTER",
     );
-    runner.info.relationshipsCreated += linked.filter(
-      (r) => r["existed"] !== true,
-    ).length;
+    const made = linked.filter((r) => r["existed"] !== true);
+    runner.info.relationshipsCreated += made.length;
+    for (const r of made) runner.linked.push(relRef(rel, r["from"], r["key"]));
     for (const l of links) runner.connected.push(relRef(rel, l.from, l.to));
   }
 }

@@ -134,6 +134,20 @@ export function buildRelationshipField(
   }
   const limitArgs = directive(d("limit"), f, at);
   if (limitArgs && !shape.list) at("@limit only applies to lists");
+  // How many items one nested list takes: about the input, where
+  // @cardinality is about what is stored (and refuses nothing).
+  const sizeArgs = directive(d("size"), f, at);
+  const maxItems = (sizeArgs?.["max"] ?? undefined) as number | undefined;
+  if (sizeArgs) {
+    if (!shape.list) at("@size only applies to list relationships");
+    if (sizeArgs["min"] != null || sizeArgs["unique"] != null) {
+      at(
+        "@size on a relationship field takes max: it bounds each nested connect, create, disconnect and update list",
+      );
+    }
+    if (maxItems === undefined) at("@size on a relationship field needs max");
+    else if (maxItems < 1) at("@size(max:) must be at least 1");
+  }
 
   return {
     kind: "relationship",
@@ -162,6 +176,16 @@ export function buildRelationshipField(
     },
     aggregate: rel["aggregate"] as boolean,
     cardinality,
+    ...(sizeArgs && maxItems !== undefined
+      ? {
+          maxItems: {
+            max: maxItems,
+            ...(typeof sizeArgs["message"] === "string"
+              ? { message: sizeArgs["message"] }
+              : {}),
+          },
+        }
+      : {}),
     limit: limitArgs
       ? resolveLimit(limitArgs, globalLimit, t.name, f.name, problems)
       : undefined,

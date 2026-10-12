@@ -41,13 +41,19 @@ export type FilterOperator =
 export type IndexKind = "RANGE" | "TEXT" | "POINT";
 
 export type MutationOperation = "CREATE" | "UPDATE" | "DELETE";
+export type TriggerOperation = MutationOperation | "CONNECT" | "DISCONNECT";
 
 /**
  * `@trigger(on:, statement:, fields:)`: a statement run for the nodes of
  * a type that a generated mutation wrote, inside its transaction.
  */
 export interface Trigger {
-  operations: ReadonlySet<MutationOperation>;
+  operations: ReadonlySet<TriggerOperation>;
+  /**
+   * The relationship field of a CONNECT or DISCONNECT trigger: it fires
+   * per relationship written, with `this` and `target` bound.
+   */
+  field?: string | undefined;
   statement: string;
   /** `UPDATE` fires only for nodes whose update set one of these. */
   fields: readonly string[] | undefined;
@@ -201,6 +207,11 @@ export interface RelationshipField extends FieldBase {
   /** Whether the field's connection and filters offer aggregates. */
   aggregate: boolean;
   cardinality: number | undefined;
+  /**
+   * `@size(max:)`: the most items each nested `connect`, `create`,
+   * `disconnect` and `update` list of one input takes.
+   */
+  maxItems?: { max: number; message?: string } | undefined;
   limit: PageLimit | undefined;
   description: string | undefined;
 }
@@ -247,6 +258,13 @@ export interface CypherField extends FieldBase {
   args: readonly CypherArgument[];
   /** `$parameters` the statement uses, in order of first use. */
   params: readonly string[];
+  /** Whether the statement has a write clause (a Mutation field's may). */
+  writes: boolean;
+  /**
+   * Whether a Mutation field's statement returns a `created` or `updated`
+   * column: the nodes in them are its write-set.
+   */
+  reports: boolean;
   /**
    * `@filterable` / `@sortable`: a scalar stand-in for filters and sorts,
    * whose value the statement computes per row (never through an index).

@@ -17,6 +17,11 @@ import type { CypherField } from "../model/types.js";
 import { uniqueTogetherTouched } from "../model/unique-together.js";
 import { checkUniqueTogetherOf } from "./mutate/unique-together.js";
 import { runStatement, type MutationEnv } from "./mutate/env.js";
+import {
+  outboxStatements,
+  reportedWrites,
+  type Reported,
+} from "./mutate/reported.js";
 
 export async function executeCypherMutation(
   env: MutationEnv,
@@ -25,7 +30,7 @@ export async function executeCypherMutation(
   fieldNodes: readonly FieldNode[],
   /** The field's `viewer` rules, checked in the transaction first. */
   guard?: Statement,
-): Promise<unknown> {
+): Promise<{ value: unknown; written: Reported }> {
   const owned = env.transaction;
   if (!owned && !env.driver.begin) {
     throw requestError(
@@ -68,6 +73,20 @@ export async function executeCypherMutation(
       tx,
       uniqueTogetherTouched(env.model, field.statement),
     );
+    // The nodes it returns as `created` and `updated` are its write-set,
+    // as a trigger statement's are. Read here, and not written to: no
+    // trigger fires for them. Without them it is taken to have written
+    // something, whatever its text looks like.
+    const written = reportedWrites(
+      env.model,
+      { writes: true, reports: field.reports },
+      result,
+    );
+    for (const work of outboxStatements(env.model, written.created, () =>
+      newContext(env.selection, env.model, options),
+    )) {
+      await runStatement(env, tx, work);
+    }
     const values = result.rows.map((row) => row[field.columnName]);
     let value: unknown[] = values;
     if (field.node) {
@@ -99,7 +118,7 @@ export async function executeCypherMutation(
       );
     }
     if (!owned) await tx.commit();
-    return field.type.list ? value : (value[0] ?? null);
+    return { value: field.type.list ? value : (value[0] ?? null), written };
   } catch (err) {
     if (tx.isOpen) await tx.rollback();
     throw err;

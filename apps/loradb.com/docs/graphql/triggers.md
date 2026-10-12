@@ -20,8 +20,9 @@ keywords:
 A trigger fires for writes made by the **generated mutations** of this
 library. Raw Cypher (`db.execute()`, `transaction.execute()`) and
 [`@cypher` mutations](/docs/graphql/cypher-fields) fire none, as they
-skip validation and `@uniqueTogether`: the library does not know what
-such a statement wrote.
+skip validation and `@uniqueTogether`. A `@cypher` mutation can still
+[say what it wrote](/docs/graphql/cypher-fields#saying-what-a-mutation-wrote),
+so that subscriptions hear of it.
 :::
 
 Three things react to a write, at three moments:
@@ -369,15 +370,17 @@ mutation {
 
 ```graphql
 directive @trigger(
-  on: [MutationOperation!]!
+  on: [TriggerOperation!]!
   statement: String!
   fields: [String!]
+  field: String
 ) repeatable on OBJECT
 ```
 
 - **`on`**: `CREATE`, `UPDATE`, `DELETE`. The type needs the generated
   mutation for each (`@mutation(operations:)`); otherwise it is a startup
-  error.
+  error. `CONNECT` and `DISCONNECT` fire per relationship instead, with
+  `field`: see [a trigger per relationship](#a-trigger-per-relationship).
 - **`statement`**: Cypher, run after `this` is matched. The library puts
   `UNWIND $keys AS key MATCH (this:Comment) WHERE this.key = key` in
   front of it, so a statement runs **once per mutation**, for every node
@@ -388,7 +391,8 @@ directive @trigger(
 Three parameters are bound: `$jwt` (the caller's claims, `null` without
 them), `$viewer` (the caller's node's key, with a
 [`@viewer` claim](/docs/graphql/authentication)) and `$operation`
-(`"CREATE"`, `"UPDATE"` or `"DELETE"`). Any other parameter is a startup
+(`"CREATE"`, `"UPDATE"`, `"DELETE"`, `"CONNECT"` or `"DISCONNECT"`). Any
+other parameter is a startup
 error. Nothing from the request is ever put into the statement's text.
 
 Rules worth knowing:
@@ -438,6 +442,263 @@ reports a writing statement without either column as a lint.
 Relationships a statement creates are not reported as connections: return
 both ends as `updated` when subscribers should hear of it.
 
+## A trigger per relationship
+
+"Tell a person who followed them" is a trigger on the write that connects
+the two, and it has to know which relationship that write made. A
+`CREATE` or `UPDATE` trigger does not: `this` is the follower, and the
+person followed is one relationship among all the ones the follower has.
+
+`on: [CONNECT]` with `field:` runs the statement **once per relationship
+the mutation created** through that field, with two nodes bound: `this`,
+the node of the type the trigger is on, and `target`, the node at the
+other end.
+
+```graphql title="schema.graphql"
+type Claims @jwt {
+  sub: String! @viewer(type: "Person", field: "key")
+}
+
+type Person
+  @node
+  @mutation(operations: [UPDATE])
+  @authorization(
+    filter: [{ operations: [UPDATE], where: { node: { isViewer: true } } }]
+  )
+  @trigger(
+    on: [CONNECT]
+    field: "following"
+    statement: """
+    CREATE (target)<-[:FOR]-(n:Notification {
+      key: 'follow:' + this.key + ':' + target.key,
+      kind: 'FOLLOW',
+      text: this.name + ' follows you'
+    })
+    SET target.followerCount = coalesce(target.followerCount, 0) + 1
+    RETURN n AS created, target AS updated
+    """
+  )
+  @trigger(
+    on: [DISCONNECT]
+    field: "following"
+    statement: """
+    SET target.followerCount = target.followerCount - 1
+    RETURN target AS updated
+    """
+  ) {
+  key: String! @key
+  name: String!
+  followerCount: Int @settable(onCreate: false, onUpdate: false)
+  following: [Person!]!
+    @relationship(
+      type: "FOLLOWS"
+      direction: OUT
+      nestedOperations: [CONNECT, DISCONNECT]
+    )
+    @size(max: 50)
+}
+
+type Notification
+  @node
+  @subscription(operations: [CREATE])
+  @authorization(
+    filter: [{ where: { node: { recipient: { isViewer: true } } } }]
+  ) {
+  key: String! @key
+  kind: String!
+  text: String!
+  recipient: Person! @relationship(type: "FOR", direction: OUT)
+}
+```
+
+```cypher title="seed"
+CREATE (:Person {key: 'ada', name: 'Ada'}),
+       (:Person {key: 'grace', name: 'Grace'}),
+       (:Person {key: 'lin', name: 'Lin'})
+```
+
+Grace follows two people in one mutation. The statement runs for each of
+the two relationships, and reads no other relationship of Grace:
+
+```graphql title="As grace"
+mutation {
+  updatePerson(
+    key: "grace"
+    update: { following: { connect: [{ key: "ada" }, { key: "lin" }] } }
+  ) {
+    person {
+      following(sort: [{ key: ASC }]) {
+        key
+      }
+    }
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "updatePerson": {
+      "person": {
+        "following": [
+          {
+            "key": "ada"
+          },
+          {
+            "key": "lin"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+```graphql title="As ada"
+{
+  notifications {
+    key
+    text
+  }
+  persons(where: { key: { eq: "ada" } }) {
+    followerCount
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "notifications": [
+      {
+        "key": "follow:grace:ada",
+        "text": "Grace follows you"
+      }
+    ],
+    "persons": [
+      {
+        "followerCount": 1
+      }
+    ]
+  }
+}
+```
+
+Following someone again connects a pair that is connected already. No
+relationship is created, so nothing fires, and Ada is not told twice:
+
+```graphql title="As grace"
+mutation {
+  updatePerson(
+    key: "grace"
+    update: { following: { connect: [{ key: "ada" }] } }
+  ) {
+    info {
+      relationshipsCreated
+    }
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "updatePerson": {
+      "info": {
+        "relationshipsCreated": 0
+      }
+    }
+  }
+}
+```
+
+`on: [DISCONNECT]` runs once per relationship the mutation removed. Here
+it takes the follower off the count:
+
+```graphql title="As grace"
+mutation {
+  updatePerson(key: "grace", update: { following: { disconnect: ["ada"] } }) {
+    info {
+      relationshipsDeleted
+    }
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "updatePerson": {
+      "info": {
+        "relationshipsDeleted": 1
+      }
+    }
+  }
+}
+```
+
+```graphql title="As ada"
+{
+  persons(sort: [{ key: ASC }]) {
+    key
+    followerCount
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "persons": [
+      {
+        "key": "ada",
+        "followerCount": 0
+      },
+      {
+        "key": "grace",
+        "followerCount": null
+      },
+      {
+        "key": "lin",
+        "followerCount": 1
+      }
+    ]
+  }
+}
+```
+
+The rules:
+
+- **`field`** names a relationship field of the type. `on` lists
+  `CONNECT`, `DISCONNECT` or both, and none of the other three: a
+  statement that runs per node has no `target`, so that is a second
+  trigger.
+- **Whichever side wrote it.** With `followers: [Person!]!
+  @relationship(type: "FOLLOWS", direction: IN)` on the same type, a
+  mutation that connects through `followers` fires the trigger on
+  `following` too, and `this` is still the follower. What counts is the
+  relationship: its type, and the nodes at its start and end.
+- **Only relationships that are new.** `CONNECT` fires for a relationship
+  the mutation created: a `connect`, a nested `create`, or either inside
+  a create. A pair that was connected already fires nothing, with or
+  without relationship properties in the input.
+- **`DISCONNECT` needs both ends.** A relationship that goes because one
+  of its nodes was deleted fires no `DISCONNECT`: there is no `this` or
+  `target` left to bind. Use a `DELETE` trigger for that. The
+  relationship itself is gone when the statement runs, so its properties
+  cannot be read.
+- **An interface or union field** fires once per member type written,
+  with `target` a node of that member.
+- **Reading the relationship.** On `CONNECT` it exists: `MATCH
+(this)-[r:FOLLOWS]->(target)` gives its properties.
+- The parameters, the `created` and `updated` columns, the order and the
+  startup check are those of any trigger statement.
+
+One mutation still connects as many people as its input lists.
+[`@size(max:)`](/docs/graphql/directives#size) on the relationship field
+bounds each list: above, an input that follows more than fifty people is
+refused with `BAD_USER_INPUT` before anything is written.
+
 ## Trigger functions
 
 What Cypher cannot say goes in a function:
@@ -475,7 +736,7 @@ A function gets:
 | `operation`   | `"CREATE"`, `"UPDATE"` or `"DELETE"`                                  |
 | `type`        | The node type                                                         |
 | `keys`        | The `@key` values of the nodes written. For `DELETE` they still exist |
-| `change`      | The mutation's write-set so far                                       |
+| `change`      | The mutation's write-set so far, `connected` and `disconnected` included |
 | `transaction` | The mutation's transaction                                            |
 | `context`     | The request's GraphQL context                                         |
 
@@ -492,6 +753,12 @@ transaction } })` runs a generated mutation in it: its writes join the
   and rolls back. **Keep network calls out of triggers**: that is what
   workers are for.
 - A function cannot commit or roll back the transaction itself.
+- **Relationships.** `change.connected` and `change.disconnected` list
+  the relationships the mutation wrote, each as `{ type, field, from, to
+}` with `from` the node of the field's type. An update that only
+  connects reaches the `update` function of the node it connects from.
+  `connected` also holds a pair that was connected already and connected
+  again; a `CONNECT` trigger statement is the one that tells them apart.
 
 An unknown type, an unknown operation, or one the type has no generated
 mutation for is a startup error.

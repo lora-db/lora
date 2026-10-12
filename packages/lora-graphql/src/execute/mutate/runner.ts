@@ -90,6 +90,12 @@ export class Runner {
   };
   connected: RelationshipRef[] = [];
   disconnected: RelationshipRef[] = [];
+  /**
+   * The relationships of `connected` that were not there before, for
+   * CONNECT triggers. Filled in a transaction, which is where a mutation
+   * of a schema with triggers runs.
+   */
+  linked: RelationshipRef[] = [];
   /** Nodes updated per type, for AFTER validation. */
   updated = new Map<NodeType, { keys: unknown[]; fields: Set<string> }>();
   /**

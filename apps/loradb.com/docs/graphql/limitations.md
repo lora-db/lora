@@ -44,8 +44,9 @@ you plan a production deployment.
 - **Triggers for raw Cypher.** [`@trigger`](/docs/graphql/triggers) and
   trigger functions fire for generated mutations only. Raw Cypher and
   `@cypher` mutations fire none; that needs triggers in the engine.
-  There are no `CONNECT` / `DISCONNECT` triggers, and an `UPDATE`
-  trigger does not get the previous values.
+  An `UPDATE` trigger does not get the previous values, and a
+  `DISCONNECT` trigger cannot read the properties of the relationship
+  that was removed.
 - **Custom events.** A `type Subscription` of your own is refused, and
   there is no `publish()`: an event a client hears is a node that was
   written. Model it as a node (a trigger can write it).

@@ -37,6 +37,17 @@ export function lintModel(
   options: LintOptions = {},
 ): ModelWarning[] {
   const out: ModelWarning[] = [];
+  for (const field of model.mutations) {
+    // As for a trigger statement: what it wrote is what it returns.
+    if (field.writes && !field.reports) {
+      out.push({
+        type: "Mutation",
+        field: field.name,
+        message:
+          "the statement writes but returns neither `created` nor `updated`: its change is reported as broad, so subscriptions do not fire for what it wrote and a response cache has to drop everything. Return the nodes it wrote, e.g. RETURN n, n AS created",
+      });
+    }
+  }
   for (const node of model.nodes.values()) {
     for (const [i, trigger] of node.triggers.entries()) {
       // What a statement wrote is known only from what it returns.

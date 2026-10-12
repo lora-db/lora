@@ -204,7 +204,8 @@ describe.skipIf(!present)("website docs", () => {
     { file: "authentication.md", guarded: true, least: [5, 10] },
     { file: "authorization-recipes.md", guarded: true, least: [5, 30] },
     { file: "examples.md", guarded: false, least: [1, 35] },
-    { file: "triggers.md", guarded: true, least: [1, 8] },
+    { file: "cypher-fields.md", guarded: true, least: [1, 3] },
+    { file: "triggers.md", guarded: true, least: [2, 13] },
     // The tutorial's early steps are open on purpose; the finished
     // schema is checked by the example's own test.
     { file: "tutorial.md", guarded: false, least: [5, 15] },

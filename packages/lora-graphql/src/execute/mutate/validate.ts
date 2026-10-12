@@ -145,6 +145,24 @@ function walkRelationship(
         : [];
     });
   };
+  // @size(max:) on the field: each list, per member of an abstract target.
+  if (rel.maxItems) {
+    const { max, message } = rel.maxItems;
+    for (const op of ["connect", "create", "disconnect", "update"]) {
+      for (const [, given, at] of parts(op)) {
+        if (!Array.isArray(given) || given.length <= max) continue;
+        out.add({
+          path: at,
+          coordinate: `${rel.owner}.${rel.name}`,
+          rule: "maxItems",
+          params: { limit: max },
+          message:
+            message ??
+            `must have at most ${max} ${max === 1 ? "item" : "items"}`,
+        });
+      }
+    }
+  }
   for (const [, given, at] of parts("connect")) {
     for (const [item, itemPath] of items(given, at)) {
       walkEdge(rel, item["edge"], [...itemPath, "edge"], out);

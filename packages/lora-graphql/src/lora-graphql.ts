@@ -84,6 +84,7 @@ import {
 } from "./driver.js";
 import { affects, type WriteChange } from "./execute/changes.js";
 import { executeCypherMutation } from "./execute/cypher-mutation.js";
+import type { Reported } from "./execute/mutate/reported.js";
 import { LoraTransaction } from "./execute/transaction.js";
 import {
   anySignal,
@@ -1409,31 +1410,34 @@ export class LoraGraphQL {
     }
     this.#warnNotAtomic(info, context);
     let value: unknown;
+    let written: Reported;
     try {
-      value = await executeCypherMutation(
+      ({ value, written } = await executeCypherMutation(
         this.#mutationEnv(info, context, ctx.jwt),
         field,
         args,
         info.fieldNodes,
         guard,
-      );
+      ));
     } catch (err) {
       throw this.#databaseError(info.fieldName, err);
     }
-    // A hand-written write has no known write-set: report it broadly,
-    // when the transaction it ran in commits.
+    // A hand-written write is what its statement returns as `created`
+    // and `updated`. One that names neither has no known write-set: it
+    // is reported broadly. Either way when its transaction commits.
+    const entities = [...written.created, ...written.updated];
     const change: WriteChange = {
       operation: "CYPHER",
       field: field.name,
-      created: [],
-      updated: [],
+      created: written.created,
+      updated: written.updated,
       deleted: [],
       connected: [],
       disconnected: [],
-      entities: [],
-      types: [],
+      entities,
+      types: [...new Set(entities.map((e) => e.type))].sort(),
       relationshipTypes: [],
-      broad: true,
+      broad: written.broad,
     };
     const owned = (context as LoraGraphQLContext | undefined)?.transaction;
     if (owned) owned.record(change);

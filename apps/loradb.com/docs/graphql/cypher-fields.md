@@ -184,7 +184,9 @@ A statement sees its arguments as the client sent them, so the library
 checks them before anything runs. Every
 [validation directive](/docs/graphql/directives#validation) works on an
 argument: `@length`, `@pattern`, `@format`, `@range`, `@multipleOf` and
-`@size`.
+`@size`. [`@normalize`](/docs/graphql/directives#normalize) goes on a
+`String` or `ID` argument too: it changes the value before the rules
+judge it and before the statement sees it, as it does on a field.
 
 ```graphql
 type Query {
@@ -230,6 +232,23 @@ type Query {
 A value outside the bounds is `BAD_USER_INPUT`, and a default outside its
 own bounds is a model error.
 
+**Text** a person typed takes `@normalize(trim: true)` ahead of its
+`@length`, so `"   "` is not a comment of three characters and the
+statement needs no `trim()` of its own:
+
+```graphql
+type Mutation {
+  addComment(
+    post: String!
+    text: String! @normalize(trim: true) @length(min: 1, max: 280)
+  ): Comment
+    @cypher(statement: "...")
+}
+```
+
+`emptyToNull` needs a nullable argument: the statement would get a
+`null` for one declared `String!`, so that is a model error.
+
 ## Reads and writes
 
 On `Query` and on object types a statement may not write. The check looks
@@ -238,10 +257,11 @@ strings and comments, at startup.
 
 On `Mutation` a statement may write, with these consequences:
 
-- **The write-set is unknown.** The `onWrite` event is `broad` ("treat
-  everything as changed"), and so are subscription events, unless
-  `changeFeed: true` feeds them from the engine, which sees the real
-  changes.
+- **The write-set is what the statement returns.** Nodes in a `created`
+  or `updated` column are what it wrote: see
+  [saying what a mutation wrote](#saying-what-a-mutation-wrote). Without
+  either column the write-set is unknown, and the `onWrite` event is
+  `broad` ("treat everything as changed").
 - **A field returning a `@node` type must return the nodes themselves**
   (`RETURN p`, not a map). They are read again by key in the same
   transaction, so the client's selection and the type's read rules apply.
@@ -256,7 +276,225 @@ On `Mutation` a statement may write, with these consequences:
   responsibility.
 
 With a [`transaction` in the context](/docs/graphql/generated-api#transactions)
-a `@cypher` mutation runs in it, and its broad event waits for the commit.
+a `@cypher` mutation runs in it, and its event waits for the commit.
+
+## Saying what a mutation wrote
+
+The library cannot read a write-set out of hand-written Cypher, so the
+statement says it, in two result columns:
+
+- `created`: a node, or a list of nodes, it created;
+- `updated`: a node, or a list of nodes, it changed.
+
+They are read exactly as a
+[`@trigger` statement's](/docs/graphql/triggers#telling-the-library-what-a-statement-wrote).
+The nodes are the mutation's write-set: `onWrite` lists them, the change
+is not `broad`, subscriptions on their types fire, and a created node of
+an [`@outbox`](/docs/graphql/directives#outbox) type becomes work.
+
+Here a comment is written by hand, so that the server makes the caller
+its author, and the same statement writes the post author's
+notification. The responses are real: the package's test suite runs this
+section.
+
+```json title="callers.json"
+{
+  "ada": { "sub": "ada" },
+  "grace": { "sub": "grace" }
+}
+```
+
+```graphql title="schema.graphql"
+type Claims @jwt {
+  sub: String! @viewer(type: "Person", field: "key")
+}
+
+type Person @node {
+  key: String! @key
+  name: String!
+}
+
+type Post @node {
+  key: String! @key
+  title: String!
+  author: Person! @relationship(type: "WROTE", direction: IN)
+}
+
+type Comment @node {
+  key: String! @key
+  text: String!
+  author: Person! @relationship(type: "COMMENTED", direction: IN)
+}
+
+type Notification
+  @node
+  @subscription(operations: [CREATE])
+  @authorization(
+    filter: [{ where: { node: { recipient: { isViewer: true } } } }]
+  ) {
+  key: String! @key
+  text: String!
+  recipient: Person! @relationship(type: "FOR", direction: OUT)
+}
+
+type Mutation {
+  addComment(
+    post: String!
+    key: String!
+    text: String! @normalize(trim: true) @length(min: 1, max: 280)
+  ): Comment
+    @authentication
+    @cypher(
+      statement: """
+      MATCH (me:Person {key: $viewer})
+      MATCH (post:Post {key: $post})<-[:WROTE]-(author:Person)
+      CREATE (me)-[:COMMENTED]->(c:Comment {key: $key, text: $text})-[:ON]->(post)
+      CREATE (author)<-[:FOR]-(n:Notification {
+        key: 'comment:' + $key,
+        text: me.name + ' commented on ' + post.title
+      })
+      RETURN c, [c, n] AS created
+      """
+      columnName: "c"
+    )
+}
+```
+
+```cypher title="seed"
+CREATE (ada:Person {key: 'ada', name: 'Ada'}),
+       (:Person {key: 'grace', name: 'Grace'}),
+       (ada)-[:WROTE]->(:Post {key: 'engines', title: 'Engines'})
+```
+
+The statement returns two columns. `c` is the field's value, named by
+`columnName` because a statement with more than one column has to say
+which. `created` is the write-set: the comment and the notification.
+
+```graphql title="As grace"
+mutation {
+  addComment(post: "engines", key: "c1", text: "  Lovely  ") {
+    key
+    text
+    author {
+      name
+    }
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "addComment": {
+      "key": "c1",
+      "text": "Lovely",
+      "author": {
+        "name": "Grace"
+      }
+    }
+  }
+}
+```
+
+The change `onWrite` gets for it:
+
+```json
+{
+  "operation": "CYPHER",
+  "field": "addComment",
+  "created": [
+    { "type": "Comment", "key": "c1" },
+    { "type": "Notification", "key": "comment:c1" }
+  ],
+  "updated": [],
+  "types": ["Comment", "Notification"],
+  "broad": false
+}
+```
+
+So Ada's open `notificationChanged` subscription delivers the
+notification the moment the mutation commits, to her and to nobody else,
+and a response cache drops what reads `Comment` or `Notification` and
+keeps the rest.
+
+```graphql title="As ada"
+{
+  notifications {
+    key
+    text
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "notifications": [
+      {
+        "key": "comment:c1",
+        "text": "Grace commented on Engines"
+      }
+    ]
+  }
+}
+```
+
+The argument rules run first. A comment of spaces is empty once trimmed,
+and the statement never runs:
+
+```graphql title="As grace"
+mutation {
+  addComment(post: "engines", key: "c2", text: "   ") {
+    key
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "addComment": null
+  },
+  "errors": [
+    {
+      "message": "1 value is not valid: text must be at least 1 character",
+      "extensions": {
+        "code": "BAD_USER_INPUT",
+        "violations": [
+          {
+            "path": ["text"],
+            "coordinate": "Mutation.addComment(text:)",
+            "rule": "minLength",
+            "params": { "limit": 1 },
+            "message": "must be at least 1 character"
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+What to know:
+
+- **The names are exact** (`created`, not `Created`), and they are
+  columns of the statement's last `RETURN`. A column of either name that
+  holds something else (a key, a timestamp, a node of a label the schema
+  does not know) leaves the change `broad`.
+- **It is the statement's word.** A node it wrote and did not return is
+  not in the write-set: its subscribers hear nothing, and a response
+  cache keeps what it should have dropped. Return every node written.
+- **Relationships and deletes are not reported.** Return both ends of a
+  relationship as `updated` when subscribers should hear of it. A
+  statement that deletes should return neither column, so its change
+  stays `broad`.
+- **No trigger fires.** A `@trigger` on `Comment` does not run for a
+  comment a `@cypher` mutation created. Write what the trigger would in
+  the statement, as above.
+- **`check()` lints** a writing mutation that returns neither column,
+  as it does a trigger statement.
+- **A statement that matches nothing** wrote nothing: its change is
+  empty and not `broad`.
 
 ## Filtering and sorting by a computed value
 

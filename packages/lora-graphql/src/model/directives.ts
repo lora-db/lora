@@ -134,7 +134,7 @@ export const directiveTypeDefs = /* GraphQL */ `
   "Declared upper bound on a relationship's fan-out, used by cost estimates."
   directive @cardinality(max: Int!) on FIELD_DEFINITION
 
-  "How many items a list holds, with unique refusing the same item twice. On a list field: checked on every write. On a list argument of a @cypher field: checked before the statement runs (without max, maxListArgument applies)."
+  "How many items a list holds, with unique refusing the same item twice. On a list field: checked on every write. On a list argument of a @cypher field: checked before the statement runs (without max, maxListArgument applies). On a list @relationship field, max alone: the most items each nested connect, create, disconnect and update list of one input takes, checked before anything is written."
   directive @size(
     min: Int
     max: Int
@@ -181,7 +181,7 @@ export const directiveTypeDefs = /* GraphQL */ `
     case: TextCase
     unicode: UnicodeForm
     emptyToNull: Boolean
-  ) on FIELD_DEFINITION | SCALAR
+  ) on FIELD_DEFINITION | SCALAR | ARGUMENT_DEFINITION
 
   enum TextCase {
     LOWER
@@ -264,13 +264,25 @@ export const directiveTypeDefs = /* GraphQL */ `
     previousState: Boolean = false
   ) on OBJECT
 
-  "A Cypher statement run inside the transaction of every generated mutation that creates, updates or deletes nodes of this type, before the commit. this is each written node; $jwt, $viewer and $operation are bound. Nodes it returns as created or updated join the mutation's write-set. Raw Cypher and @cypher mutations fire no trigger."
+  "A Cypher statement run inside the transaction of every generated mutation that creates, updates or deletes nodes of this type, before the commit. this is each written node; $jwt, $viewer and $operation are bound. Nodes it returns as created or updated join the mutation's write-set. Raw Cypher and @cypher mutations fire no trigger. With on: [CONNECT] or [DISCONNECT] and field: it runs once per relationship a mutation created or removed through that relationship (from either side), with this the node of this type and target the node at the other end."
   directive @trigger(
-    on: [MutationOperation!]!
+    on: [TriggerOperation!]!
     statement: String!
     "Fire an UPDATE trigger only for nodes whose update set one of these fields."
     fields: [String!]
+    "The relationship field a CONNECT or DISCONNECT trigger fires for."
+    field: String
   ) repeatable on OBJECT
+
+  enum TriggerOperation {
+    CREATE
+    UPDATE
+    DELETE
+    "A relationship of field: was created."
+    CONNECT
+    "A relationship of field: was removed, both ends still there."
+    DISCONNECT
+  }
 
   "Nodes of this type are work for lora.worker(): each one created by a generated mutation or returned as created by a @trigger is handed to the worker's handler after the commit, at least once, with retries. The delivery state is stored on the node, outside the API."
   directive @outbox on OBJECT

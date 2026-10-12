@@ -3,7 +3,7 @@
 
 import type { FieldNode, SelectionSetNode } from "graphql";
 import { requestError, validationError, type Violation } from "../../errors.js";
-import { checkValue } from "../../model/constraints.js";
+import { checkValue, normalizeValue } from "../../model/constraints.js";
 import { scanParams } from "../../model/cypher-lexer.js";
 import type { CypherField } from "../../model/types.js";
 import { authFilter, checkAuthentication, viewerKey } from "../auth.js";
@@ -101,6 +101,7 @@ export function bindStatement(
   field: CypherField,
   args: Args,
 ): string {
+  args = normalized(field, args);
   checkListArguments(ctx, field, args);
   ctx.reads.opaque = true;
   const texts = new Map<string, string>();
@@ -132,6 +133,20 @@ export function bindStatement(
     last = ref.end;
   }
   return out + field.statement.slice(last);
+}
+
+/** `args` as `@normalize` changes them: what the rules and the statement see. */
+function normalized(field: CypherField, args: Args): Args {
+  let out = args;
+  for (const a of field.args) {
+    const value = args[a.name];
+    if (!a.constraints?.normalize || value === null || value === undefined) {
+      continue;
+    }
+    if (out === args) out = { ...args };
+    out[a.name] = normalizeValue(a.constraints, value);
+  }
+  return out;
 }
 
 /** Default `maxListArgument`: the most items a @cypher list argument takes. */

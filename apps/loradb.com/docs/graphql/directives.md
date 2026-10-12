@@ -526,7 +526,9 @@ They validate what clients send through the generated API. Raw Cypher and
 values already stored.
 
 The same directives go on an argument of a [`@cypher`](#cypher) field,
-where they are checked before the statement runs.
+where they are checked before the statement runs. `@normalize` goes
+there too, and changes the argument before the rules and the statement
+see it.
 
 Clients can see the rules. Each generated input field says them in its
 description ("1 to 80 characters. Must be an email address."), so they
@@ -738,6 +740,44 @@ type Query {
 }
 ```
 
+On a list relationship field, `@size(max:)` bounds how many
+relationships one input writes through it: each nested `connect`,
+`create`, `disconnect` and `update` list takes at most `max` items. A
+longer list is `BAD_USER_INPUT` with a `maxItems` violation, before the
+transaction opens.
+
+```graphql
+type Person @node @mutation @authentication {
+  key: String! @key
+  following: [Person!]!
+    @relationship(type: "FOLLOWS", direction: OUT)
+    @cardinality(max: 5000)
+    @size(max: 50)
+}
+```
+
+```graphql
+mutation {
+  updatePerson(
+    key: "grace"
+    update: { following: { connect: [{ key: "ada" }, { key: "lin" }] } }
+  ) {
+    info {
+      relationshipsCreated
+    }
+  }
+}
+```
+
+- Only `max` applies here; `min` and `unique` are a model error.
+- It is about one input list, not about what is stored: a person above
+  may follow five thousand people, fifty per list. `@cardinality` is the
+  estimate of the stored number and refuses nothing.
+- Each list has its own bound, and so does each member type of an
+  interface or union field.
+- Over the whole mutation, [`maxBatch`](/docs/graphql/api-reference)
+  still applies: ten times as many relationships as nodes.
+
 ### @normalize {#normalize}
 
 Changes a `String` or `ID` before it is validated and stored. Validation
@@ -766,6 +806,29 @@ Arguments, applied in this order:
   the steps above. Useful for optional fields filled from a form.
 
 On a list field each item is normalised.
+
+On a `String` or `ID` argument of a [`@cypher`](#cypher) field it
+changes the argument before its rules are checked and before the
+statement sees it. `emptyToNull` needs a nullable argument there.
+
+```graphql
+type Comment @node {
+  key: String! @key
+  text: String!
+}
+
+type Mutation {
+  addComment(
+    key: String!
+    text: String! @normalize(trim: true) @length(min: 1, max: 280)
+  ): Comment
+    @authentication
+    @cypher(
+      statement: "CREATE (c:Comment {key: $key, text: $text}) RETURN c, c AS created"
+      columnName: "c"
+    )
+}
+```
 
 It matters most on a `@unique` field. LoraDB compares strings exactly:
 without it, `ada@example.com`, `Ada@Example.com` and `ada@example.com `
@@ -1609,11 +1672,36 @@ type Comment
 Arguments:
 
 - `on`: `CREATE`, `UPDATE`, `DELETE`. The type must have the generated
-  mutation for each.
+  mutation for each. Or `CONNECT`, `DISCONNECT`, with `field`.
 - `statement`: runs once per mutation with `this` bound to each node of
   the type it wrote. `$jwt`, `$viewer` and `$operation` are bound.
 - `fields`: an `UPDATE` trigger fires only for nodes whose update named
   one of these.
+- `field`: the relationship field a `CONNECT` or `DISCONNECT` trigger
+  fires for. Its statement runs once per relationship the mutation
+  created or removed, from either side, with `this` the node of this
+  type and `target` the node at the other end.
+
+```graphql
+type Person
+  @node
+  @mutation(operations: [UPDATE])
+  @authentication
+  @trigger(
+    on: [CONNECT]
+    field: "following"
+    statement: """
+    SET target.followerCount = coalesce(target.followerCount, 0) + 1
+    RETURN target AS updated
+    """
+  ) {
+  key: String! @key
+  followerCount: Int
+  following: [Person!]! @relationship(type: "FOLLOWS", direction: OUT)
+}
+```
+
+See [a trigger per relationship](/docs/graphql/triggers#a-trigger-per-relationship).
 
 Return the nodes the statement wrote as `created` or `updated` and they
 join the mutation's write-set, so `onWrite` and subscriptions see them.

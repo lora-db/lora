@@ -5,7 +5,7 @@
 import type { GraphQLDirective, GraphQLObjectType } from "graphql";
 import type { ModelProblem } from "../../errors.js";
 import { codeOnly, maskLiterals, scanParams } from "../cypher-lexer.js";
-import type { MutationOperation, NodeType, Trigger } from "../types.js";
+import type { NodeType, Trigger, TriggerOperation } from "../types.js";
 import { directive, directiveNodes } from "./directive-args.js";
 
 const WRITE_CLAUSES = /\b(CREATE|MERGE|SET|DELETE|REMOVE|DETACH)\b/i;
@@ -16,7 +16,7 @@ const WRITE_CLAUSES = /\b(CREATE|MERGE|SET|DELETE|REMOVE|DETACH)\b/i;
  * columns to ask. Names are case-sensitive, as the columns are; an alias
  * in an earlier WITH does not count.
  */
-function reportsWrites(statement: string): boolean {
+export function reportsWrites(statement: string): boolean {
   const code = maskLiterals(statement);
   const returns = [...code.matchAll(/\bRETURN\b/gi)];
   const last = returns[returns.length - 1];
@@ -48,22 +48,57 @@ export function readTriggers(
       ok = false;
       problems.push({ type: t.name, message: `@trigger: ${message}` });
     };
-    const args = directive(d("trigger"), { astNode: { directives: [dir] } }, at);
+    const args = directive(
+      d("trigger"),
+      { astNode: { directives: [dir] } },
+      at,
+    );
     if (!args) continue;
-    const operations = new Set(args["on"] as MutationOperation[]);
+    const operations = new Set(args["on"] as TriggerOperation[]);
     const statement = (args["statement"] as string).trim();
     const fields = (args["fields"] ?? undefined) as string[] | undefined;
+    const field = (args["field"] ?? undefined) as string | undefined;
     if (operations.size === 0) at("on is empty");
     if (!statement) at("statement is empty");
+    const ofRelationship = [...operations].filter(
+      (op) => op === "CONNECT" || op === "DISCONNECT",
+    );
+    if (ofRelationship.length > 0) {
+      // It runs per relationship, with `target` bound: another statement
+      // than one that runs per node.
+      if (ofRelationship.length < operations.size) {
+        at(
+          "CONNECT and DISCONNECT run per relationship, the others per node: declare two triggers",
+        );
+      }
+      if (fields !== undefined)
+        at(
+          "fields narrows UPDATE; a CONNECT or DISCONNECT trigger takes field",
+        );
+      const f = field === undefined ? undefined : node.fields.get(field);
+      if (field === undefined) {
+        at(
+          `${ofRelationship.join(" and ")} needs field: the relationship field it fires for`,
+        );
+      } else if (!f) at(`${t.name} has no field ${field}`);
+      else if (f.kind !== "relationship") {
+        at(`${field} is not a @relationship field`);
+      }
+    } else if (field !== undefined) {
+      at(
+        "field names the relationship of a CONNECT or DISCONNECT trigger; fields narrows UPDATE",
+      );
+    }
     // A trigger fires for what generated mutations write.
     for (const op of operations) {
+      if (op === "CONNECT" || op === "DISCONNECT") continue;
       if (!node.mutations.has(op)) {
         at(
           `on lists ${op}, but ${t.name} has no generated ${op} mutation (@mutation(operations:)) to fire it`,
         );
       }
     }
-    if (fields !== undefined) {
+    if (fields !== undefined && ofRelationship.length === 0) {
       if (!operations.has("UPDATE")) {
         at("fields narrows UPDATE, which on does not list");
       }
@@ -89,6 +124,7 @@ export function readTriggers(
     if (!ok) continue;
     out.push({
       operations,
+      ...(field !== undefined ? { field } : {}),
       statement,
       fields,
       params,

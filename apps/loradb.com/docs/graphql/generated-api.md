@@ -579,8 +579,8 @@ try {
 
 Reads see the transaction's writes, and change events wait for the commit.
 Your own Cypher through `tx.execute()` is not part of any write-set.
-`@cypher` mutations run in the transaction too, and their broad event
-waits for the commit.
+`@cypher` mutations run in the transaction too, and their event waits
+for the commit.
 
 A failed mutation rolls the whole transaction back, including your own
 statements. The transaction holds LoraDB's writer lock from `begin()`

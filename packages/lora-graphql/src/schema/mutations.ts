@@ -221,6 +221,13 @@ export function buildMutations(
   const canCreate = (rel: RelationshipField) =>
     model.nodes.get(rel.target)!.mutations.has("CREATE");
 
+  // `@size(max:)` on the field, said on each list it bounds.
+  const atMost = (rel: RelationshipField, text?: string) => {
+    if (!rel.list || !rel.maxItems) return text ? { description: text } : {};
+    const bound = `At most ${rel.maxItems.max} per list.`;
+    return { description: text ? `${text} ${bound}` : bound };
+  };
+
   // Over an interface or union: the same inputs, one field per member.
   const polymorphicFields = (
     owner: NodeType,
@@ -239,7 +246,7 @@ export function buildMutations(
       const fields: GraphQLInputFieldConfigMap = {};
       for (const m of members) {
         const t = type(m);
-        if (t) fields[m.member] = { type: t };
+        if (t) fields[m.member] = { type: t, ...atMost(rel) };
       }
       return Object.keys(fields).length > 0
         ? once(`${owner.name}${upperFirst(rel.name)}${suffix}`, () => fields)
@@ -292,17 +299,24 @@ export function buildMutations(
       const connect = connectInput(owner, rel);
       fields["connect"] = {
         type: rel.list ? listOf(nonNull(connect)) : connect,
+        ...atMost(rel),
       };
     }
     if (allows("CREATE") && canCreate(rel)) {
       const create = nestedCreateInput(owner, rel);
-      fields["create"] = { type: rel.list ? listOf(nonNull(create)) : create };
+      fields["create"] = {
+        type: rel.list ? listOf(nonNull(create)) : create,
+        ...atMost(rel),
+      };
     }
     if (update && allows("DISCONNECT")) {
       fields["disconnect"] = rel.list
         ? {
             type: listOf(nonNull(ctx.inputType(target.key))),
-            description: `${target.key.name}s of the ${target.name} nodes to disconnect.`,
+            ...atMost(
+              rel,
+              `${target.key.name}s of the ${target.name} nodes to disconnect.`,
+            ),
           }
         : {
             type: GraphQLBoolean,
@@ -338,7 +352,10 @@ export function buildMutations(
       if (nested) {
         fields["update"] = {
           type: rel.list ? listOf(nonNull(nested)) : nested,
-          description: `Update connected ${target.name} nodes or their relationship properties in place.`,
+          ...atMost(
+            rel,
+            `Update connected ${target.name} nodes or their relationship properties in place.`,
+          ),
         };
       }
     }

@@ -41,11 +41,11 @@ the code, **Inferred** was deduced.
 
 Three terms, kept apart in code and docs:
 
-| Term | When | What |
-| --- | --- | --- |
-| Trigger | In the transaction, before commit | `@trigger`, `triggers` option |
-| Event | After commit | `WriteChange`, `ChangeEvent` (exist today) |
-| Worker | After commit, retried | `lora.worker()` over an `@outbox` type |
+| Term    | When                              | What                                       |
+| ------- | --------------------------------- | ------------------------------------------ |
+| Trigger | In the transaction, before commit | `@trigger`, `triggers` option              |
+| Event   | After commit                      | `WriteChange`, `ChangeEvent` (exist today) |
+| Worker  | After commit, retried             | `lora.worker()` over an `@outbox` type     |
 
 ## What exists today
 
@@ -71,11 +71,11 @@ Three terms, kept apart in code and docs:
   `model/build.ts:220`). There is no `publish()`.
 - **A composed trigger statement runs in the engine** (Observed, probe on
   2026-10-11 against the built `@loradb/lora-node`): `UNWIND $keys AS key
-  MATCH (this:Comment {id: key})` followed by a hand-written `MATCH ...
-  CREATE ... RETURN n AS created` ran inside `db.begin()`, returned the
+MATCH (this:Comment {id: key})` followed by a hand-written `MATCH ...
+CREATE ... RETURN n AS created` ran inside `db.begin()`, returned the
   created nodes with `labels` and `properties`, accepted `$jwt.sub`, and
   `explain()` reported `shape: "mutating"` and `resultColumns:
-  ["created"]`. A broken statement failed `explain()` with a parse error.
+["created"]`. A broken statement failed `explain()` with a parse error.
 - **Writes inside `CALL { }` are refused by the engine** (Observed,
   `execute/cypher-mutation.ts:1-2`), so a trigger statement is appended
   to its prefix, not wrapped.
@@ -132,11 +132,11 @@ MATCH (this:Comment {id: key})
 
 ### D3. When triggers run
 
-| Operation | Runs | `this` is |
-| --- | --- | --- |
-| `CREATE` | After all writes and checks, before commit (`mutate.ts:294`) | The node as created |
-| `UPDATE` | Same point | The node after the update |
-| `DELETE` | At the `beforeDelete` point (`delete.ts:169`) | The node, still present |
+| Operation | Runs                                                         | `this` is                 |
+| --------- | ------------------------------------------------------------ | ------------------------- |
+| `CREATE`  | After all writes and checks, before commit (`mutate.ts:294`) | The node as created       |
+| `UPDATE`  | Same point                                                   | The node after the update |
+| `DELETE`  | At the `beforeDelete` point (`delete.ts:169`)                | The node, still present   |
 
 - **Fired by write-set.** `CREATE` fires for `change.created` of the
   type, `UPDATE` for `change.updated`, `DELETE` for the doomed nodes,
@@ -249,10 +249,10 @@ const worker = lora.worker("Notification", {
   handle: async (notification, { attempt, signal }) => {
     await push.send(notification.recipientId, notification.kind);
   },
-  concurrency: 4,       // default
-  maxAttempts: 8,       // default, then FAILED and onError
-  sweepMs: 30_000,      // default
-  leaseMs: 60_000,      // default
+  concurrency: 4, // default
+  maxAttempts: 8, // default, then FAILED and onError
+  sweepMs: 30_000, // default
+  leaseMs: 60_000, // default
 });
 ```
 
@@ -270,7 +270,7 @@ const worker = lora.worker("Notification", {
 - **Finish.** Success sets `DONE` (or deletes the node). Failure
   increments the attempt, sets the next attempt with exponential backoff,
   and after `maxAttempts` sets `FAILED` and calls `onError` with `field:
-  "worker:Notification"`.
+"worker:Notification"`.
 - **No noise.** State writes change no API-visible field, so they emit
   no `WriteChange`.
 - **At least once.** A handler may run twice for one node (a crash after
@@ -474,9 +474,29 @@ Phases 1 to 4 as designed, with these differences:
 - **Listeners still run synchronously** on the request path (the open
   P3 line): the worker only enqueues there.
 
-Open: `CONNECT` / `DISCONNECT` triggers, previous values, `publish()`,
-the tutorial project, `bench/load` scenarios, a threat-model entry. Each
-is on the list in `docs/TODO.md`.
+Added 2026-10-12 (Festimap G-48, G-49):
+
+- **`CONNECT` / `DISCONNECT` triggers.** `@trigger(on: [CONNECT], field:
+"following", statement:)` runs once per relationship the mutation
+  created through the field, with `this` and `target` bound
+  (`execute/mutate/triggers.ts`, `pairsFor`). A relationship counts
+  whichever side's field wrote it: its type and the nodes at its start
+  and end are compared. `CONNECT` fires for new relationships only
+  (`Runner.linked`, filled where `applyLinks` reads `existed`), so a
+  re-connect tells nobody twice. `DISCONNECT` fires when both ends are
+  still there. One statement per trigger per target type.
+- **A trigger function reads the relationships.** `change` is the
+  write-set with `connected`, `disconnected`, `entities` and `types`
+  filled in (`changeSoFar`); before, they were filled after the triggers.
+- **A `@cypher` mutation reports like a trigger statement.** Its
+  `created` and `updated` columns are its write-set
+  (`execute/mutate/reported.ts`, shared with triggers), and one that
+  returns neither stays `broad` and is linted by `check()`.
+
+Open: the relationship's properties in a `DISCONNECT` trigger, a
+`deleted` column, previous values, `publish()`, the tutorial project,
+`bench/load` scenarios, a threat-model entry. Each is on the list in
+`docs/TODO.md`.
 
 ## Open questions
 

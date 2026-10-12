@@ -1014,3 +1014,188 @@ describe("the validators option", () => {
     ).rejects.toThrow(/validators.Booking: not a Standard Schema validator/);
   });
 });
+
+// G-50: one input connects, creates, disconnects or updates at most so
+// many relationships through a field, refused before any write.
+describe("@size(max:) on a relationship field", () => {
+  const sdl = /* GraphQL */ `
+    type Claims @jwt {
+      sub: String! @viewer(type: "P", field: "key")
+    }
+    interface Thing {
+      key: String!
+    }
+    type Book implements Thing @node @mutation {
+      key: String! @key
+    }
+    type Film implements Thing @node @mutation {
+      key: String! @key
+    }
+    type P @node @mutation {
+      key: String! @key
+      follows: [P!]!
+        @relationship(
+          type: "F"
+          direction: OUT
+          properties: "Since"
+          nestedOperations: [CONNECT, CREATE, DISCONNECT, UPDATE_EDGE]
+        )
+        @size(max: 2)
+      likes: [Thing!]!
+        @relationship(type: "LIKES", direction: OUT)
+        @size(max: 1, message: "one at a time")
+      best: P @relationship(type: "BEST", direction: OUT)
+    }
+    type Since @relationshipProperties {
+      year: Int
+    }
+  `;
+  const setup = () =>
+    createTestLoraGraphQL({
+      typeDefs: sdl,
+      seed: [
+        "UNWIND ['a','b','c','d'] AS k CREATE (:P {key: k})",
+        "CREATE (:Book {key: 'b1'}), (:Book {key: 'b2'}), (:Film {key: 'f1'})",
+      ],
+    });
+  const relationships = async (m: T) =>
+    (
+      (await m.db.execute(
+        "MATCH ()-[r]->() RETURN count(r) AS c",
+      )) as unknown as {
+        rows: Array<Record<string, unknown>>;
+      }
+    ).rows[0]!["c"];
+  const update = (m: T, input: string) =>
+    m.lora.execute({
+      source: `mutation { updateP(key: "a", update: { ${input} }) { p { key } } }`,
+      context: { jwt: { sub: "a" } },
+    });
+
+  test("a connect list over the bound is refused, having connected nothing", async () => {
+    const m = await setup();
+    m.statements.length = 0;
+    const r = await update(
+      m,
+      `follows: { connect: [{ key: "b" }, { key: "c" }, { key: "d" }] }`,
+    );
+    expect(failure(r)).toMatchObject({
+      code: "BAD_USER_INPUT",
+      violations: [
+        {
+          path: ["update", "follows", "connect"],
+          coordinate: "P.follows",
+          rule: "maxItems",
+          params: { limit: 2 },
+          message: "must have at most 2 items",
+        },
+      ],
+    });
+    expect(m.statements).toHaveLength(0);
+    expect(await relationships(m)).toBe(0);
+  });
+
+  test("a list at the bound passes; each list has its own", async () => {
+    const m = await setup();
+    const r = await update(
+      m,
+      `follows: {
+        connect: [{ key: "b" }, { key: "c" }]
+        create: [{ node: { key: "e" } }, { node: { key: "f" } }]
+      }`,
+    );
+    expect(r.errors).toBeUndefined();
+    expect(await relationships(m)).toBe(4);
+  });
+
+  test("disconnect and update lists, and a create input", async () => {
+    const m = await setup();
+    expect(
+      failure(
+        await update(
+          m,
+          `follows: {
+            disconnect: ["b", "c", "d"]
+            update: [{ key: "b", edge: { year: 1 } }, { key: "c", edge: { year: 1 } }, { key: "d", edge: { year: 1 } }]
+          }`,
+        ),
+      ).violations.map((v) => v.path),
+    ).toEqual([
+      ["update", "follows", "disconnect"],
+      ["update", "follows", "update"],
+    ]);
+    const created = await m.lora.execute({
+      source: `mutation { createPs(input: [{ key: "z", follows: { connect: [{ key: "a" }, { key: "b" }, { key: "c" }] } }]) { ps { key } } }`,
+    });
+    expect(failure(created).violations.map((v) => v.path)).toEqual([
+      ["input", 0, "follows", "connect"],
+    ]);
+  });
+
+  test("an interface target is bounded per member, with the field's message", async () => {
+    const m = await setup();
+    expect(
+      (
+        await update(
+          m,
+          `likes: { connect: { Book: [{ key: "b1" }], Film: [{ key: "f1" }] } }`,
+        )
+      ).errors,
+    ).toBeUndefined();
+    expect(
+      failure(
+        await update(
+          m,
+          `likes: { connect: { Book: [{ key: "b1" }, { key: "b2" }] } }`,
+        ),
+      ).violations,
+    ).toMatchObject([
+      {
+        path: ["update", "likes", "connect", "Book"],
+        coordinate: "P.likes",
+        message: "one at a time",
+      },
+    ]);
+  });
+
+  test("the input says so", async () => {
+    const m = await setup();
+    const fields = m.schema.getType(
+      "PFollowsUpdateRelationInput",
+    ) as unknown as {
+      getFields(): Record<string, { description?: string | null }>;
+    };
+    expect(fields.getFields()["connect"]!.description).toBe(
+      "At most 2 per list.",
+    );
+    expect(fields.getFields()["disconnect"]!.description).toMatch(
+      /At most 2 per list\.$/,
+    );
+  });
+
+  test("at startup: max alone, on a list", () => {
+    const problems = (field: string): string[] => {
+      try {
+        buildModel(`type P @node @mutation { key: String! @key  ${field} }`);
+        return [];
+      } catch (err) {
+        return (err as ModelError).problems.map((p) => p.message);
+      }
+    };
+    const rel = (rest: string, type = "[P!]!") =>
+      `r: ${type} @relationship(type: "R", direction: OUT) ${rest}`;
+    expect(problems(rel("@size(max: 5)"))).toEqual([]);
+    expect(problems(rel("@size(max: 5)", "P"))).toContain(
+      "@size only applies to list relationships",
+    );
+    expect(problems(rel("@size(min: 1, max: 5)"))).toContain(
+      "@size on a relationship field takes max: it bounds each nested connect, create, disconnect and update list",
+    );
+    expect(problems(rel("@size(unique: true)"))).toContain(
+      "@size on a relationship field needs max",
+    );
+    expect(problems(rel("@size(max: 0)"))).toContain(
+      "@size(max:) must be at least 1",
+    );
+  });
+});

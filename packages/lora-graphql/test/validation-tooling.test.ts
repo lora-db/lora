@@ -349,5 +349,60 @@ describe("rules on @cypher arguments", () => {
       /^argument a: @pattern needs @length\(max:\)/,
     );
     expect(problems("a: String @length(max: 3)")).toEqual([]);
+    expect(problems("a: String! @normalize(emptyToNull: true)")).toContain(
+      "argument a: @normalize(emptyToNull:) needs a nullable argument",
+    );
+    expect(problems("a: Int @normalize(trim: true)")).toContain(
+      "argument a: @normalize applies to String and ID fields",
+    );
+  });
+
+  // G-51: a hand-written mutation takes the words a generated one does.
+  test("@normalize changes an argument before its rules and the statement", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: /* GraphQL */ `
+        type P @node {
+          key: String! @key
+        }
+        type Query {
+          tags(of: [String!]! @normalize(trim: true, case: LOWER)): [String!]!
+            @cypher(statement: "UNWIND $of AS t RETURN t")
+          maybe(
+            text: String @normalize(trim: true, emptyToNull: true)
+          ): Boolean @cypher(statement: "RETURN $text IS NULL AS empty")
+        }
+        type Mutation {
+          say(
+            text: String! @normalize(trim: true) @length(min: 1, max: 5)
+          ): String @cypher(statement: "RETURN $text AS s")
+        }
+      `,
+    });
+    expect(
+      (await t.lora.execute({ source: `mutation { say(text: "  hi ") }` }))
+        .data,
+    ).toEqual({ say: "hi" });
+    // Five characters once trimmed.
+    expect(
+      (await t.lora.execute({ source: `mutation { say(text: " hello  ") }` }))
+        .data,
+    ).toEqual({ say: "hello" });
+    const blank = await t.lora.execute({
+      source: `mutation { say(text: "   ") }`,
+    });
+    expect(blank.errors?.[0]?.extensions?.["code"]).toBe("BAD_USER_INPUT");
+    expect(
+      (
+        blank.errors?.[0]?.extensions?.["violations"] as Array<{ rule: string }>
+      ).map((v) => v.rule),
+    ).toEqual(["minLength"]);
+    expect(
+      (
+        await t.lora.execute({
+          source: `query ($of: [String!]!) { tags(of: $of) maybe(text: "  ") }`,
+          variables: { of: [" A ", "b"] },
+        })
+      ).data,
+    ).toEqual({ tags: ["a", "b"], maybe: true });
   });
 });

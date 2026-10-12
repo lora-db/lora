@@ -13,15 +13,22 @@ import type {
   GraphModel,
   MutationOperation,
   NodeType,
+  RelationshipField,
   Trigger,
+  TriggerOperation,
 } from "../../model/types.js";
 import { uniqueTogetherTouched } from "../../model/unique-together.js";
 import { requestError } from "../../errors.js";
-import { OUTBOX } from "../../events/outbox.js";
-import type { EntityRef, WriteChange } from "../changes.js";
+import {
+  fillChange,
+  type EntityRef,
+  type RelationshipRef,
+  type WriteChange,
+} from "../changes.js";
 import { LoraTransaction } from "../transaction.js";
 import type { MutationEnv } from "./env.js";
 import type { Runner } from "./runner.js";
+import { outboxStatements, refId, reportedWrites } from "./reported.js";
 import { checkUniqueTogetherOf } from "./unique-together.js";
 
 const anyTriggers = new WeakMap<GraphModel, boolean>();
@@ -45,14 +52,12 @@ export function hasTriggerFunctions(env: MutationEnv): boolean {
   );
 }
 
-/** The trigger statement for `keys`, with `this` bound to each node. */
-export function triggerStatement(
+/** The statement as written, with `$jwt`, `$viewer` and `$operation` bound. */
+function triggerBody(
   ctx: CompileContext,
-  node: NodeType,
   trigger: Trigger,
-  operation: MutationOperation,
-  keys: unknown[],
-): Statement {
+  operation: TriggerOperation,
+): string {
   const texts = new Map<string, string>();
   for (const p of trigger.params) {
     if (p === "viewer") {
@@ -76,7 +81,18 @@ export function triggerStatement(
       (texts.get(ref.name) ?? `$${ref.name}`);
     last = ref.end;
   }
-  body += trigger.statement.slice(last);
+  return body + trigger.statement.slice(last);
+}
+
+/** The trigger statement for `keys`, with `this` bound to each node. */
+export function triggerStatement(
+  ctx: CompileContext,
+  node: NodeType,
+  trigger: Trigger,
+  operation: TriggerOperation,
+  keys: unknown[],
+): Statement {
+  const body = triggerBody(ctx, trigger, operation);
   // The statement runs as written after the match, not in a CALL { }:
   // the engine refuses writes in a subquery.
   return {
@@ -86,6 +102,63 @@ export function triggerStatement(
       body,
     params: ctx.params,
   };
+}
+
+/**
+ * The text ahead of a CONNECT or DISCONNECT trigger's statement: one row
+ * per pair of `pairs` (a list of `[this key, target key]`), with `this`
+ * and `target` bound.
+ */
+export function relationshipTriggerPrefix(
+  node: NodeType,
+  target: NodeType,
+  pairs: string,
+): string {
+  return (
+    `UNWIND ${pairs} AS lora_trigger_pair\n` +
+    `MATCH (this:${name(node.labels[0]!)}) WHERE this.${name(node.key.property)} = lora_trigger_pair[0]\n` +
+    `MATCH (target:${name(target.labels[0]!)}) WHERE target.${name(target.key.property)} = lora_trigger_pair[1]\n`
+  );
+}
+
+/**
+ * The relationships of `refs` a trigger on `node.field` fires for, as
+ * `[this key, target key]` pairs per target type. A relationship counts
+ * whichever side's field wrote it: what is compared is its type and the
+ * nodes at its start and end.
+ */
+function pairsFor(
+  runner: Runner,
+  node: NodeType,
+  field: RelationshipField,
+  refs: readonly RelationshipRef[],
+): Map<NodeType, unknown[][]> {
+  const { model } = runner.env;
+  const gone = new Set(runner.change.deleted.map(refId));
+  const out = new Map<NodeType, Map<string, unknown[]>>();
+  for (const ref of refs) {
+    if (ref.type !== field.type) continue;
+    const [owner, written] = ref.field.split(".") as [string, string];
+    const via = model.nodes.get(owner)?.fields.get(written);
+    if (via?.kind !== "relationship") continue;
+    // The relationship as stored: from its start node to its end node.
+    const [start, end] =
+      via.direction === "OUT" ? [ref.from, ref.to] : [ref.to, ref.from];
+    const [self, other] =
+      field.direction === "OUT" ? [start, end] : [end, start];
+    if (self.type !== node.name || !field.members.includes(other.type))
+      continue;
+    // A node deleted since is not there to be `this` or `target`.
+    if (gone.has(refId(self)) || gone.has(refId(other))) continue;
+    const target = model.nodes.get(other.type);
+    if (!target) continue;
+    const pairs = out.get(target) ?? new Map<string, unknown[]>();
+    pairs.set(`${keyOf(self.key)}\0${keyOf(other.key)}`, [self.key, other.key]);
+    out.set(target, pairs);
+  }
+  return new Map(
+    [...out].map(([target, pairs]) => [target, [...pairs.values()]]),
+  );
 }
 
 /**
@@ -102,19 +175,61 @@ export async function runWriteTriggers(runner: Runner): Promise<void> {
     runner,
     runner.change.updated.filter((e) => own(e) && !fresh.has(refId(e))),
   );
-  const fired: Array<[NodeType, Trigger, MutationOperation, unknown[]]> = [];
+  const fired: Fired[] = [];
+  const perNode = (
+    node: NodeType,
+    trigger: Trigger,
+    operation: MutationOperation,
+    keys: unknown[],
+  ): Fired => [
+    trigger,
+    (ctx) => triggerStatement(ctx, node, trigger, operation, keys),
+  ];
   for (const node of runner.env.model.nodes.values()) {
     for (const trigger of node.triggers) {
+      const field =
+        trigger.field === undefined
+          ? undefined
+          : node.fields.get(trigger.field);
+      if (field?.kind === "relationship") {
+        // Per relationship: the ones that were not there before, and the
+        // ones removed with both ends still there.
+        for (const [operation, refs] of [
+          ["CONNECT", runner.linked],
+          ["DISCONNECT", runner.disconnected],
+        ] as const) {
+          if (!trigger.operations.has(operation)) continue;
+          for (const [target, pairs] of pairsFor(runner, node, field, refs)) {
+            fired.push([
+              trigger,
+              (ctx) => ({
+                text:
+                  relationshipTriggerPrefix(
+                    node,
+                    target,
+                    printExpr(bind(ctx, pairs)),
+                  ) + triggerBody(ctx, trigger, operation),
+                params: ctx.params,
+              }),
+            ]);
+          }
+        }
+        continue;
+      }
       const creates = trigger.operations.has("CREATE")
         ? (created.get(node) ?? [])
         : [];
-      if (creates.length > 0) fired.push([node, trigger, "CREATE", creates]);
+      if (creates.length > 0) {
+        fired.push(perNode(node, trigger, "CREATE", creates));
+      }
       const updates = trigger.operations.has("UPDATE")
         ? (updated.get(node) ?? []).filter((key) =>
             setOneOf(runner, node, key, trigger.fields),
           )
         : [];
-      if (updates.length > 0) fired.push([node, trigger, "UPDATE", updates]);
+      if (updates.length > 0) {
+        fired.push(perNode(node, trigger, "UPDATE", updates));
+      }
     }
   }
   await fire(runner, fired);
@@ -131,11 +246,14 @@ export async function runDeleteTriggers(
   doomed: ReadonlyArray<{ node: NodeType; keys: unknown[] }>,
 ): Promise<void> {
   if (!hasTriggers(runner.env)) return;
-  const fired: Array<[NodeType, Trigger, MutationOperation, unknown[]]> = [];
+  const fired: Fired[] = [];
   for (const { node, keys } of doomed) {
     for (const trigger of node.triggers) {
       if (trigger.operations.has("DELETE") && keys.length > 0) {
-        fired.push([node, trigger, "DELETE", keys]);
+        fired.push([
+          trigger,
+          (ctx) => triggerStatement(ctx, node, trigger, "DELETE", keys),
+        ]);
       }
     }
   }
@@ -177,7 +295,7 @@ async function call(
         operation,
         type: node.name,
         keys,
-        change: runner.change,
+        change: changeSoFar(runner),
         transaction,
         context: runner.env.requestContext,
       }))();
@@ -205,6 +323,24 @@ async function call(
     clearTimeout(timer);
   }
   for (const nested of transaction.drain()) merge(runner, nested);
+}
+
+/**
+ * The write-set as a trigger function sees it: the nodes written so far
+ * and the relationships connected and disconnected, which the mutation
+ * adds to its change only at its end.
+ */
+function changeSoFar(runner: Runner): WriteChange {
+  const change: WriteChange = {
+    ...runner.change,
+    created: [...runner.change.created],
+    updated: [...runner.change.updated],
+    deleted: [...runner.change.deleted],
+    connected: [...runner.change.connected],
+    disconnected: [...runner.change.disconnected],
+  };
+  fillChange(change, runner);
+  return change;
 }
 
 /**
@@ -248,24 +384,20 @@ function merge(runner: Runner, nested: WriteChange): void {
   into.broad ||= nested.broad;
 }
 
-const refId = (e: EntityRef): string => `${e.type}\0${keyOf(e.key)}`;
+/** A trigger that fires, and its statement for what it fires for. */
+type Fired = [Trigger, (ctx: CompileContext) => Statement];
 
 /** Issue every statement at once, then merge what each reports. */
-async function fire(
-  runner: Runner,
-  fired: Array<[NodeType, Trigger, MutationOperation, unknown[]]>,
-): Promise<void> {
+async function fire(runner: Runner, fired: Fired[]): Promise<void> {
   if (fired.length === 0) return;
-  const pending = fired.map(([node, trigger, operation, keys]) => {
-    const result = runner.send(
-      triggerStatement(runner.ctx(), node, trigger, operation, keys),
-    );
+  const pending = fired.map(([, statement]) => {
+    const result = runner.send(statement(runner.ctx()));
     result.catch(() => undefined);
     return result;
   });
   const touched = new Set<NodeType>();
   const made: EntityRef[] = [];
-  for (const [i, [, trigger]] of fired.entries()) {
+  for (const [i, [trigger]] of fired.entries()) {
     made.push(...report(runner, trigger, await pending[i]!));
     for (const node of uniqueTogetherTouched(
       runner.env.model,
@@ -277,21 +409,10 @@ async function fire(
   // What a statement wrote is not known node by node: every node of each
   // @uniqueTogether type it may write is compared.
   await checkUniqueTogetherOf(runner.env, runner.tx, [...touched]);
-  // A statement's CREATE knows nothing of @outbox: the nodes it reports
-  // as created become work here, in the same transaction.
-  const work = new Map<NodeType, unknown[]>();
-  for (const ref of made) {
-    const node = runner.env.model.nodes.get(ref.type);
-    if (node?.outbox) work.set(node, [...(work.get(node) ?? []), ref.key]);
-  }
-  for (const [node, keys] of work) {
-    const ctx = runner.ctx();
-    await runner.run(
-      `UNWIND ${printExpr(bind(ctx, keys))} AS k\n` +
-        `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = k AND n.${name(OUTBOX.state)} IS NULL\n` +
-        `SET n.${name(OUTBOX.state)} = "PENDING"`,
-      ctx,
-    );
+  for (const statement of outboxStatements(runner.env.model, made, () =>
+    runner.ctx(),
+  )) {
+    await runner.send(statement);
   }
 }
 
@@ -306,66 +427,23 @@ function report(
   trigger: Trigger,
   result: QueryResult,
 ): EntityRef[] {
+  const reported = reportedWrites(runner.env.model, trigger, result);
+  if (reported.broad) runner.change.broad = true;
   const made: EntityRef[] = [];
-  // The result's own columns say what it reports. One that matched no row
-  // has none: then the statement's text does.
-  const reports =
-    result.rows.length > 0
-      ? result.columns.includes("created") || result.columns.includes("updated")
-      : trigger.reports;
-  if (!reports) {
-    if (trigger.writes) runner.change.broad = true;
-    return made;
-  }
   const seen = new Set(
-    [...runner.change.created, ...runner.change.updated].map(
-      (e) => `${e.type}\0${keyOf(e.key)}`,
-    ),
+    [...runner.change.created, ...runner.change.updated].map(refId),
   );
-  for (const [column, into] of [
-    ["created", runner.change.created],
-    ["updated", runner.change.updated],
-  ] as const) {
-    for (const row of result.rows) {
-      const value = row[column];
-      for (const item of Array.isArray(value) ? value : [value]) {
-        if (item === null || item === undefined) continue;
-        const ref = entityOf(runner.env.model, item);
-        // Something written that is not a node of the model (a key, a
-        // node of an unknown label): listeners cannot be told what.
-        if (!ref) {
-          if (trigger.writes) runner.change.broad = true;
-          continue;
-        }
-        const id = `${ref.type}\0${keyOf(ref.key)}`;
-        if (seen.has(id)) continue;
-        seen.add(id);
-        into.push(ref);
-        runner.triggered.add(id);
-        if (column === "created") made.push(ref);
-      }
+  for (const list of ["created", "updated"] as const) {
+    for (const ref of reported[list]) {
+      const id = refId(ref);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      runner.change[list].push(ref);
+      runner.triggered.add(id);
+      if (list === "created") made.push(ref);
     }
   }
   return made;
-}
-
-/** The @node type and key of a node value the engine returned. */
-function entityOf(model: GraphModel, value: unknown): EntityRef | undefined {
-  const node = value as
-    | { labels?: unknown; properties?: Record<string, unknown> }
-    | null
-    | undefined;
-  if (!node || !Array.isArray(node.labels) || !node.properties) {
-    return undefined;
-  }
-  for (const type of model.nodes.values()) {
-    if (!node.labels.includes(type.labels[0])) continue;
-    const key = node.properties[type.key.property];
-    return key === undefined || key === null
-      ? undefined
-      : { type: type.name, key };
-  }
-  return undefined;
 }
 
 function group(

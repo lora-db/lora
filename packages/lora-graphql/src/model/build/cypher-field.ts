@@ -37,6 +37,7 @@ import { readConstraints } from "./constraints.js";
 import { directive } from "./directive-args.js";
 import { buildScalarField } from "./scalar-field.js";
 import { authOps, readOnlyRules, rootFieldRules } from "./authorization.js";
+import { reportsWrites } from "./trigger.js";
 
 const WRITE_CLAUSES = /\b(CREATE|MERGE|SET|DELETE|REMOVE|DETACH)\b/;
 
@@ -179,11 +180,15 @@ export function buildCypherField(
         skip: new Set([
           ...(plainSize ? ["size"] : []),
           ...(plainRange ? ["range"] : []),
-          // An argument is passed on as sent: nothing is stored to normalise.
-          "normalize",
         ]),
       },
     );
+    // The statement would get a null for an argument declared non-null.
+    if (constraints?.normalize?.emptyToNull && argShape.required) {
+      at(
+        `argument ${a.name}: @normalize(emptyToNull:) needs a nullable argument`,
+      );
+    }
     cypherArgs.push({
       name: a.name,
       type: { named: argNamed, ...argShape },
@@ -274,6 +279,8 @@ export function buildCypherField(
     object,
     args: cypherArgs,
     params,
+    writes: WRITE_CLAUSES.test(code),
+    reports: ctx.root === "Mutation" && reportsWrites(statement),
     computed,
     authentication: authOps(directive(d("authentication"), f, at)),
     authenticationJwt: directive(d("authentication"), f, at)?.["jwt"] as

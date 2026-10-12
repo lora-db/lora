@@ -170,7 +170,7 @@ commit it reports a `WriteChange`:
 | `connected`, `disconnected` | Relationships, by declaring field and both keys |
 | `entities` | Every node whose observable state changed, relationship ends included |
 | `types`, `relationshipTypes` | The node and relationship types touched |
-| `broad` | `true` when the write-set is unknown: a `@cypher` mutation, or an engine reset seen through the change feed |
+| `broad` | `true` when the write-set is unknown: a `@cypher` mutation that does not [say what it wrote](/docs/graphql/cypher-fields#saying-what-a-mutation-wrote), or an engine reset seen through the change feed |
 | `timestamp` | When the write was committed |
 | `before` | Stored values before the write, for types with `@subscription(previousState: true)` |
 
@@ -193,8 +193,9 @@ Festival write.
 Limits worth knowing:
 
 - By default only writes made through this `LoraGraphQL` instance are
-  seen, and `@cypher` mutations are reported with `broad: true` and no
-  entities: treat everything as changed.
+  seen. A `@cypher` mutation that returns neither `created` nor
+  `updated` is reported with `broad: true` and no entities: treat
+  everything as changed.
 - With `changeFeed: true` (lora-node), `changes()` and subscriptions are
   fed by the engine's committed change feed: every committed write to that
   database, whichever path in the owning process made it (raw Cypher,

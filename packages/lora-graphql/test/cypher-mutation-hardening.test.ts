@@ -440,3 +440,154 @@ type Mutation {
     expect(rows).toEqual([{ key: "b" }]);
   });
 });
+
+// G-49: a hand-written mutation says what it wrote, as a trigger statement
+// does, so subscriptions fire and a response cache keeps what it can.
+describe("a @cypher mutation's created and updated columns", () => {
+  const typeDefs = /* GraphQL */ `
+    type N @node @subscription(operations: [CREATE]) {
+      key: String! @key
+      seen: Int
+    }
+    type Job @node @outbox {
+      key: String! @key
+    }
+    type Mutation {
+      noted(key: String!): N
+        @cypher(
+          statement: "CREATE (n:N {key: $key}) RETURN n, n AS created"
+          columnName: "n"
+        )
+      seen(key: String!): N
+        @cypher(
+          statement: "MATCH (n:N {key: $key}) SET n.seen = 1 RETURN n AS updated"
+        )
+      both(key: String!): [N!]!
+        @cypher(
+          statement: """
+          MATCH (old:N) SET old.seen = 2
+          WITH collect(old) AS olds
+          CREATE (n:N {key: $key})
+          RETURN n, n AS created, olds + [n] AS updated
+          """
+          columnName: "n"
+        )
+      quiet(key: String!): N
+        @cypher(statement: "CREATE (n:N {key: $key}) RETURN n")
+      stamped(key: String!): String
+        @cypher(statement: "CREATE (n:N {key: $key}) RETURN n.key AS created")
+      queued(key: String!): Job
+        @cypher(
+          statement: "CREATE (j:Job {key: $key}) RETURN j, j AS created"
+          columnName: "j"
+        )
+    }
+  `;
+  const setup = async () => {
+    const t = await createTestLoraGraphQL({ typeDefs });
+    const changes: Array<Record<string, unknown>> = [];
+    t.lora.onWrite((c) =>
+      changes.push(c as unknown as Record<string, unknown>),
+    );
+    const run = async (source: string) => {
+      const r = await t.lora.execute({ source });
+      expect(r.errors).toBeUndefined();
+      return r.data;
+    };
+    return { t, changes, run };
+  };
+
+  test("the nodes returned are the write-set, and the change is not broad", async () => {
+    const { changes, run } = await setup();
+    expect(await run(`mutation { noted(key: "n1") { key } }`)).toEqual({
+      noted: { key: "n1" },
+    });
+    expect(changes).toMatchObject([
+      {
+        operation: "CYPHER",
+        field: "noted",
+        broad: false,
+        created: [{ type: "N", key: "n1" }],
+        updated: [],
+        entities: [{ type: "N", key: "n1" }],
+        types: ["N"],
+      },
+    ]);
+    await run(`mutation { seen(key: "n1") { key } }`);
+    expect(changes[1]).toMatchObject({
+      broad: false,
+      created: [],
+      updated: [{ type: "N", key: "n1" }],
+    });
+    // A node in both columns is created; a list column is read item by item.
+    await run(`mutation { both(key: "n2") { key } }`);
+    expect(changes[2]).toMatchObject({
+      broad: false,
+      created: [{ type: "N", key: "n2" }],
+      updated: [{ type: "N", key: "n1" }],
+    });
+  });
+
+  test("a subscription on the created type hears it", async () => {
+    const { t, run } = await setup();
+    const events = (await t.lora.subscribe({
+      source: `subscription { nChanged { operation key } }`,
+    })) as AsyncIterableIterator<{ data?: unknown }>;
+    const next = events.next();
+    await run(`mutation { noted(key: "n1") { key } }`);
+    expect((await next).value.data).toEqual({
+      nChanged: { operation: "CREATE", key: "n1" },
+    });
+    await events.return?.();
+  });
+
+  test("a statement that returns neither, or something that is no node, stays broad", async () => {
+    const { changes, run } = await setup();
+    await run(`mutation { quiet(key: "q") { key } }`);
+    await run(`mutation { stamped(key: "s") }`);
+    expect(changes.map((c) => [c["broad"], c["created"]])).toEqual([
+      [true, []],
+      [true, []],
+    ]);
+  });
+
+  test("a reporting statement that matches no row is not broad", async () => {
+    const { changes, run } = await setup();
+    expect(await run(`mutation { seen(key: "nobody") { key } }`)).toEqual({
+      seen: null,
+    });
+    expect(changes).toMatchObject([{ broad: false, entities: [] }]);
+  });
+
+  test("a created @outbox node becomes work", async () => {
+    const { t, run } = await setup();
+    await run(`mutation { queued(key: "j1") { key } }`);
+    const stored = await t.db.execute(
+      "MATCH (j:Job) RETURN count(*) AS jobs, properties(j) AS p",
+    );
+    expect(JSON.stringify(stored)).toContain("PENDING");
+  });
+
+  test("inside lora.begin() the change is reported at the commit", async () => {
+    const { t, changes } = await setup();
+    const tx = await t.lora.begin();
+    await t.lora.execute({
+      source: `mutation { noted(key: "n1") { key } }`,
+      context: { transaction: tx },
+    });
+    expect(changes).toEqual([]);
+    await tx.commit();
+    expect(changes).toMatchObject([
+      { broad: false, created: [{ type: "N", key: "n1" }] },
+    ]);
+  });
+
+  test("check() lints a writing mutation that reports nothing", async () => {
+    const { t } = await setup();
+    const lint = (await t.lora.check()).lint.filter(
+      (l) => l.type === "Mutation",
+    );
+    expect(lint.map((l) => l.field).sort()).toEqual(["quiet"]);
+    expect(lint[0]!.message).toMatch(/returns neither `created` nor `updated`/);
+  });
+});
