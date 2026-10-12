@@ -260,14 +260,21 @@ function compileConnection(
         statsColumns.push({ column, path: ["node", field.name, agg] });
       }
     }
+    const returned = aggregateReturn(statsCtx, "this", items, wanted);
     statements.push({
       text: printClauses([
         ...statsRoot.clauses,
         ...countCap(statsCtx, capped),
-        ...aggregateReturn(statsCtx, "this", items, wanted),
+        ...returned,
       ]),
       params: statsCtx.params,
     });
+    // With no page asked for, the count is the first statement, and its
+    // columns are the ones the plan check holds the plan to.
+    const last = returned.at(-1);
+    if (!sel.page && last?.kind === "return") {
+      columns = last.items.map((item) => item.alias ?? "");
+    }
   }
   statsColumns = statsColumns.slice();
 

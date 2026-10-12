@@ -211,7 +211,9 @@ With `@query(aggregate: true)`:
 - A relationship connection has an `aggregate` when its target type has
   `@query(aggregate: true)`. It counts `count { nodes edges }`, which
   differ when several relationships lead to the same node, and aggregates
-  relationship properties under `edge`.
+  relationship properties under `edge`. Such a connection has its own
+  types, `<Owner><Field>Connection` and `<Owner><Field>Edge`, in place of
+  the target's `<Type>Connection` and `<Type>Edge`.
 - `@relationship(aggregate: false)` drops a relationship's aggregates and
   aggregate filter.
 

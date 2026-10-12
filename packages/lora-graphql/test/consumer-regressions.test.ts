@@ -1837,3 +1837,69 @@ describe("G-23: the depth guard lets the standard introspection query through", 
     );
   });
 });
+
+describe("G-47: the plan check passes a root connection that selects only totalCount", () => {
+  const typeDefs =
+    J +
+    `extend schema @authorizationDefaults(requireAuthentication: false)
+     type F @node @query(aggregate: true)
+       @authorization(validate: [{ operations: [READ], where: { node: { open: { eq: true } } } }]) {
+       key: String! @key
+       name: String! @filterable(byValue: [EQ])
+       rank: Int!
+       open: Boolean!
+     }
+     type V @node { key: String! @key  name: String! @filterable(byValue: [EQ]) }`;
+  const seed = [
+    "CREATE (:F {key:'a', name:'A', rank: 1, open: true}), (:F {key:'b', name:'B', rank: 3, open: true})",
+    "CREATE (:V {key:'v', name:'V'}), (:V {key:'w', name:'W'}), (:V {key:'x', name:'V'})",
+  ];
+  // Each selects no page: the count is the operation's first statement.
+  const countOnly = [
+    "{ vsConnection { totalCount } }",
+    '{ n: vsConnection(where: { name: { eq: "V" } }) { totalCount } }',
+    "{ fsConnection { totalCount } }",
+    '{ n: fsConnection(where: { name: { eq: "A" } }) { totalCount } }',
+    "{ fsConnection { totalCount aggregate { node { rank { min max } } } } }",
+  ];
+
+  test("the count answers, and expectSeeks passes it", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    expect((await t.run(countOnly[0]!, {})).data).toEqual({
+      vsConnection: { totalCount: 3 },
+    });
+    expect((await t.run(countOnly[1]!, {})).data).toEqual({
+      n: { totalCount: 2 },
+    });
+    expect((await t.run(countOnly[4]!, {})).data).toEqual({
+      fsConnection: {
+        totalCount: 2,
+        aggregate: { node: { rank: { min: 1, max: 3 } } },
+      },
+    });
+    for (const query of countOnly) await expectSeeks(t.lora, query);
+    // Beside a page, and the aggregate root, as before.
+    await expectSeeks(
+      t.lora,
+      "{ fsConnection(first: 1) { totalCount edges { node { key } } } }",
+    );
+    await expectSeeks(t.lora, "{ fsAggregate { count } }");
+    t.close();
+  });
+
+  test("check() passes it as a reference operation", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const report = await t.lora.check({
+      operations: countOnly.map((document, i) => ({
+        name: `Count${i}`,
+        document,
+      })),
+    });
+    expect(report.errors).toEqual([]);
+    expect(
+      report.plans.flatMap((p) => p.reports.flatMap((r) => r.findings)),
+    ).toEqual([]);
+    expect(report.ok).toBe(true);
+    t.close();
+  });
+});

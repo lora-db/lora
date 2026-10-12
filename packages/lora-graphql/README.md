@@ -98,6 +98,13 @@ Relationship fields take `where`, `sort` and `limit`; list relationships
 also get `…Connection`, whose edges carry the relationship properties and
 filter on them (`where: { node, edge }`).
 
+`@query(aggregate: true)` on a type also gives every relationship
+connection that leads to it types of its own (`CityVenuesConnection` in
+place of `VenueConnection`), since its `aggregate` covers that
+relationship: turning it on renames types in the schema. A count does not
+need it: `{ venuesConnection { totalCount } }` selects no page and reads
+none.
+
 The surface is restrictive: a field is filterable only with `@filterable`,
 and only by the operators listed; sortable only with `@sortable`;
 `printPublicSchema()` prints exactly what clients see, with no directives.

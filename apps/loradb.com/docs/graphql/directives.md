@@ -1188,7 +1188,14 @@ Arguments:
   relationships. Default `true`.
 - `aggregate`: `true` adds `<plural>Aggregate` and `<plural>Grouped`, and
   the `aggregate` field of the type's connections. Default `false`. It
-  has no effect on an interface or union.
+  has no effect on an interface or union. Each relationship connection
+  that leads to the type then gets connection and edge types of its own,
+  named after the owner and the field (`CityVenuesConnection` and
+  `CityVenuesEdge` where it was `VenueConnection` and `VenueEdge`),
+  because its aggregate covers that relationship. Turning the argument on
+  for a type therefore renames types that clients may name in fragments.
+  To count a type's nodes without it, select only `totalCount` on the
+  root connection: `{ venuesConnection { totalCount } }` reads no page.
 
 ```graphql
 {
