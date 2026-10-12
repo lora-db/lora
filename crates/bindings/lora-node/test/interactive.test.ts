@@ -111,6 +111,89 @@ describe("interactive transactions", () => {
     }
   });
 
+  // Regression (Festimap P0-8): a signal that aborts between two statements
+  // of one transaction is refused before the engine sees the statement. The
+  // handle was closed as if the engine had rolled back, the native
+  // transaction kept the writer lock, and no handle was left to release it:
+  // every later write waited forever.
+  describe("a statement the engine never runs still releases the writer lock", () => {
+    const granted = async (db: Awaited<ReturnType<typeof createDatabase>>) => {
+      const next = await db.begin("read_write", { timeoutMs: 5_000 });
+      await next.execute("CREATE (:After)");
+      await next.commit();
+    };
+
+    it("execute() with an already-aborted signal", async () => {
+      const db = await createDatabase();
+      const tx = await db.begin("read_write");
+      await tx.execute("CREATE (:F {key: 'a'})");
+
+      const err = await tx
+        .execute("MATCH (f:F) RETURN f", {}, { signal: AbortSignal.abort() })
+        .catch((e: unknown) => e);
+      expect((err as Error).name).toBe("AbortError");
+
+      // Closed means rolled back: nothing to release, nothing written.
+      expect(tx.isOpen).toBe(false);
+      await expect(tx.rollback()).rejects.toMatchObject({
+        code: "LORA_TRANSACTION",
+      });
+      await granted(db);
+      const { rows } = await db.execute("MATCH (f:F) RETURN count(f) AS n");
+      expect(rows[0].n).toBe(0);
+      // An auto-commit write gets the lock too.
+      await db.execute("CREATE (:F {key: 'b'})", {}, { timeoutMs: 5_000 });
+    });
+
+    it("executeMany() with an already-aborted signal", async () => {
+      const db = await createDatabase();
+      const tx = await db.begin("read_write");
+      await tx.execute("CREATE (:F {key: 'a'})");
+
+      const err = await tx
+        .executeMany([{ query: "MATCH (f:F) RETURN f" }], {
+          signal: AbortSignal.abort(),
+        })
+        .catch((e: unknown) => e);
+      expect((err as Error).name).toBe("AbortError");
+
+      expect(tx.isOpen).toBe(false);
+      await granted(db);
+      const { rows } = await db.execute("MATCH (f:F) RETURN count(f) AS n");
+      expect(rows[0].n).toBe(0);
+    });
+
+    it("a signal that aborts between two statements", async () => {
+      const db = await createDatabase();
+      const controller = new AbortController();
+      const tx = await db.begin("read_write");
+      await tx.execute("CREATE (:F)", {}, { signal: controller.signal });
+      controller.abort();
+      await expect(
+        tx.execute("CREATE (:F)", {}, { signal: controller.signal }),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      await granted(db);
+    });
+
+    it("options or params the binding refuses", async () => {
+      const db = await createDatabase();
+
+      let tx = await db.begin("read_write");
+      await expect(
+        tx.execute("RETURN 1", {}, { timeoutMs: -1 }),
+      ).rejects.toBeInstanceOf(Error);
+      expect(tx.isOpen).toBe(false);
+      await granted(db);
+
+      tx = await db.begin("read_write");
+      await expect(
+        tx.execute("RETURN $x AS x", { x: Symbol("no") as never }),
+      ).rejects.toBeInstanceOf(Error);
+      expect(tx.isOpen).toBe(false);
+      await granted(db);
+    });
+  });
+
   it("read_only transactions reject writes", async () => {
     const db = await createDatabase();
     const tx = await db.begin("read_only");

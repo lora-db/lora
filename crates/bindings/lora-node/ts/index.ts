@@ -1176,6 +1176,15 @@ export type Database = DatabaseImpl;
 
 /**
  * An open interactive transaction from `Database.begin()`.
+ *
+ * A read-write transaction holds the database's writer lock from `begin()`
+ * until it ends. It ends on `commit()`, on `rollback()`, and when a statement
+ * fails, which rolls it back. `isOpen === false` therefore guarantees that
+ * the transaction no longer holds the lock and that nothing it wrote
+ * uncommitted remains: there is nothing left to release, and `commit()` and
+ * `rollback()` reject. That holds however the statement failed, including one
+ * the engine never ran (a signal that was already aborted, a timeout that is
+ * not a number).
  */
 export class Transaction {
   readonly #inner: InstanceType<typeof NativeDatabase>;
@@ -1195,7 +1204,8 @@ export class Transaction {
 
   /**
    * Run one statement inside the transaction. It sees the transaction's
-   * own uncommitted writes. If it fails, the transaction is rolled back.
+   * own uncommitted writes. If it fails, the transaction is rolled back,
+   * and the writer lock is free by the time the promise rejects.
    */
   async execute<
     T extends Record<string, LoraValue> = Record<string, LoraValue>,
@@ -1212,7 +1222,7 @@ export class Transaction {
       );
       return decodeResult(buf) as QueryResult<T>;
     } catch (err) {
-      this.#open = false;
+      await this.#abandon();
       throw wrapError(err);
     }
   }
@@ -1262,7 +1272,7 @@ export class Transaction {
       );
       return buffers.map((buf) => decodeResult(buf)) as Array<QueryResult<T>>;
     } catch (err) {
-      this.#open = false;
+      await this.#abandon();
       throw wrapError(err);
     }
   }
@@ -1289,6 +1299,22 @@ export class Transaction {
       await this.#inner.txFinish(this.#id, commit);
     } catch (err) {
       throw wrapError(err);
+    }
+  }
+
+  /**
+   * Close the handle after a failed statement and make sure the native
+   * transaction went with it. The engine rolls back a statement that fails
+   * while it runs, but not one that never reached it (a signal already
+   * aborted between two statements, invalid options): that transaction
+   * would keep the writer lock with no handle left to release it.
+   */
+  async #abandon(): Promise<void> {
+    this.#open = false;
+    try {
+      await this.#inner.txFinish(this.#id, false);
+    } catch {
+      // Already rolled back by the engine.
     }
   }
 

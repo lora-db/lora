@@ -72,8 +72,10 @@ const bounded = await createDatabase("app", { queryTimeoutMs: 1000 });
 `db.begin()` opens a transaction you can drive statement by statement,
 with application logic in between. A `read_write` transaction holds the
 writer lock until it commits or rolls back, so no other write interleaves
-(other writers wait; keep it short). A failed statement rolls it back, and
-an unfinished transaction rolls back when disposed. Calls still queued on a
+(other writers wait; keep it short). A failed statement rolls it back,
+including one the engine never ran (an already-aborted `signal`, invalid
+options): once `tx.isOpen` is `false` the writer lock is free. An
+unfinished transaction rolls back when disposed. Calls still queued on a
 transaction that failed, committed or rolled back reject with
 `LORA_TRANSACTION`, as does a `begin()` still waiting for the writer lock
 when its database is disposed. A statement's `timeoutMs` starts when it
@@ -97,7 +99,10 @@ writer holds it. Bound the wait with `timeoutMs`, or abandon it with a
 const tx = await db.begin("read_write", { timeoutMs: 2000, signal });
 ```
 
-Past `timeoutMs` nothing is held. An aborted `signal` rejects `begin()`
+Past `timeoutMs` nothing is held, and the error says what it waited for
+(`query deadline exceeded waiting for the writer lock`), as it does for an
+auto-commit write that gives up behind an open transaction. An aborted
+`signal` rejects `begin()`
 with the signal's reason at once; if the transaction opens afterwards it
 is rolled back. Both bound the wait, not the transaction: one that is
 opened and never finished holds the lock until it is disposed.

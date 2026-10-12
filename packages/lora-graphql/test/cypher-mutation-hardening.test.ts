@@ -1,9 +1,16 @@
 // @cypher fields and mutations, hardened: the caller as `$viewer`,
 // claims-and-viewer rules on root fields, and capped list arguments.
 
-import { execute, parse } from "graphql";
+import { createDatabase } from "@loradb/lora-node";
+import { execute, graphql, parse } from "graphql";
 import { describe, expect, test } from "vitest";
-import { buildModel, ModelError } from "../src/index.js";
+import {
+  buildModel,
+  LoraGraphQL,
+  loraDriver,
+  ModelError,
+  type LoraDriver,
+} from "../src/index.js";
 import { createTestLoraGraphQL } from "../src/testing.js";
 
 const codes = (r: { errors?: ReadonlyArray<{ extensions?: unknown }> }) =>
@@ -356,5 +363,80 @@ type Query {
 }`,
       ),
     ).toContain("argument n: @range applies to arguments of @cypher fields");
+  });
+});
+
+// Regression (Festimap P0-8): a @cypher mutation that returns a node runs
+// two statements in one transaction (the statement, then the read of what
+// it returned) and passes the request's signal to each. A request cancelled
+// between the two met an aborted signal before the engine saw the second
+// statement: lora-node closed its handle without rolling the transaction
+// back, the cleanup here skipped its rollback (`isOpen` was false), and the
+// writer lock stayed held until the process restarted.
+describe("a request cancelled between a @cypher mutation's statements", () => {
+  const abortTypeDefs = `
+type Post @node { key: String! @key  caption: String! }
+type Mutation {
+  createPost(key: String!, caption: String!): Post
+    @cypher(statement: "CREATE (p:Post {key: $key, caption: $caption}) RETURN p")
+}`;
+  const create = (key: string) =>
+    `mutation { createPost(key: "${key}", caption: "c") { key caption } }`;
+
+  /** `driver`, calling `afterFirst` once a transaction's first statement ran. */
+  const abortingAfterFirst = (
+    driver: LoraDriver,
+    afterFirst: () => void,
+  ): LoraDriver => ({
+    ...driver,
+    begin: async (options) => {
+      const tx = await driver.begin!(options);
+      let ran = 0;
+      return {
+        execute: async (statement) => {
+          const result = await tx.execute(statement);
+          if (++ran === 1) afterFirst();
+          return result;
+        },
+        commit: () => tx.commit(),
+        rollback: () => tx.rollback(),
+        get isOpen() {
+          return tx.isOpen;
+        },
+      };
+    },
+  });
+
+  test("leaves the writer lock free for the next mutation", async () => {
+    const db = await createDatabase();
+    let cancel = () => {};
+    const lora = new LoraGraphQL({
+      typeDefs: abortTypeDefs,
+      driver: abortingAfterFirst(loraDriver(db), () => cancel()),
+      timeoutMs: 3_000,
+    });
+    await lora.assertSchema({ create: true });
+    const schema = lora.getSchema();
+
+    const controller = new AbortController();
+    cancel = () => controller.abort();
+    const cancelled = await graphql({
+      schema,
+      source: create("a"),
+      contextValue: { signal: controller.signal },
+    });
+    expect(cancelled.errors).toHaveLength(1);
+    expect(cancelled.data).toEqual({ createPost: null });
+
+    // Nothing of the cancelled mutation was committed, and the next one
+    // gets the writer lock instead of waiting for it.
+    cancel = () => {};
+    const next = await graphql({ schema, source: create("b") });
+    expect(next.errors).toBeUndefined();
+    expect(next.data).toEqual({ createPost: { key: "b", caption: "c" } });
+    const { rows } = await db.execute(
+      "MATCH (p:Post) RETURN p.key AS key ORDER BY key",
+    );
+    expect(rows).toEqual([{ key: "b" }]);
   });
 });
