@@ -346,6 +346,102 @@ The [Yoga example](https://github.com/lora-db/lora/tree/main/packages/lora-graph
 does all three with `@graphql-yoga/plugin-response-cache`. Types need a
 `@relayId` field for the plugin to tag cached objects by `id`.
 
+## Several threads over one database
+
+One Node process can serve from several event loops over one database.
+`worker_threads` that open the same database directory share one engine:
+every thread reads and writes the same graph, and there is still one
+writer at a time. Each thread builds its own `LoraGraphQL` and runs
+GraphQL execution, compilation and JSON on its own core, which is what a
+single JavaScript thread runs out of first
+([limits and scaling](/docs/graphql/limitations#scaling)).
+
+This needs a database directory. An in-memory database belongs to the
+thread that created it, and separate processes cannot share a directory.
+
+```ts title="server.ts"
+import { createServer } from "node:http";
+import { availableParallelism } from "node:os";
+import { isMainThread, Worker, workerData } from "node:worker_threads";
+import { createDatabase } from "@loradb/lora-node";
+import { LoraGraphQL, loraDriver } from "@loradb/lora-graphql";
+import { typeDefs } from "./schema.js";
+
+const dir = "./data";
+
+async function open() {
+  // The same directory in the same process is the same engine.
+  const db = await createDatabase("app", { databaseDir: dir });
+  return new LoraGraphQL({
+    typeDefs,
+    driver: loraDriver(db),
+    // Subscriptions and changes() then hear every thread's writes.
+    changeFeed: true,
+  });
+}
+
+if (isMainThread) {
+  // Indexes and constraints once, before any thread serves.
+  const lora = await open();
+  await lora.assertSchema({ create: true });
+  const threads = Math.max(1, availableParallelism() - 2);
+  for (let i = 0; i < threads; i++) {
+    new Worker(new URL(import.meta.url), { workerData: { port: 4000 + i } });
+  }
+} else {
+  const lora = await open();
+  const { port } = workerData as { port: number };
+
+  // This thread's cache: dropped for a write made on any thread.
+  const cache = new Map<string, string>();
+  void (async () => {
+    for await (const change of lora.changes()) {
+      if (change.entities.length > 0) cache.clear();
+    }
+  })();
+
+  createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", async () => {
+      const closed = new AbortController();
+      res.on("close", () => closed.abort());
+      const { query, variables } = JSON.parse(Buffer.concat(chunks).toString());
+      const result = await lora.execute({
+        source: query,
+        variableValues: variables,
+        context: { signal: closed.signal },
+      });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(result));
+    });
+  }).listen(port);
+}
+```
+
+What to know:
+
+- **Ports.** Each thread above listens on its own port, for a proxy to
+  balance across. On Linux the threads can share one port instead:
+  `server.listen({ port, reusePort: true })`. macOS has no `reusePort`.
+- **`onWrite` is per instance.** It reports the mutations made through
+  that thread's `LoraGraphQL`, never another thread's. A write made
+  elsewhere arrives through `lora.changes()` with `changeFeed: true`, as
+  a change whose `operation` is `EXTERNAL`: its `created`, `updated`,
+  `deleted` and `entities` are filled in, its `field` is empty.
+- **Subscriptions** follow the same feed: with `changeFeed: true` a
+  subscriber connected to one thread receives the writes of all of them.
+  Without it, only that thread's.
+- **Per-instance state is per thread:** the compile and document caches,
+  `lora.analyze()` statistics and `maxSubscriptions` counts. Run
+  `analyze()` on each thread that should plan with it.
+- **The libuv pool is shared.** Reads from every thread run on the one
+  pool, so raise `UV_THREADPOOL_SIZE` along with the thread count.
+- **Writes do not scale with threads.** There is one writer. Threads add
+  read throughput and keep slow GraphQL work on one thread from stalling
+  requests on another.
+- Call `lora.close()` in each thread on shutdown.
+
 ## Production checklist
 
 - Verify tokens in the server; put only verified claims in `jwt`.
