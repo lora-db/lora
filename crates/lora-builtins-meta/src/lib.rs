@@ -473,6 +473,7 @@ pub const BUILTIN_SPECS: &[BuiltinSpec] = &[
     spec("value.is_null", 1, Some(1)),
     spec("value.is_not_null", 1, Some(1)),
     spec("value.id", 1, Some(1)),
+    spec("value.assert", 1, Some(2)),
     // -- type.* -------------------------------------------------------------
     spec("type.of", 1, Some(1)),
     spec_type("type.is", 2, Some(2), &[1]),
@@ -521,6 +522,7 @@ pub const BUILTIN_ALIASES: &[BuiltinAlias] = &[
     alias("first", "list.first"),
     alias("last", "list.last"),
     alias("coalesce", "value.coalesce"),
+    alias("assert", "value.assert"),
     alias("tolower", "string.lower"),
     alias("toupper", "string.upper"),
     alias("left", "string.prefix"),

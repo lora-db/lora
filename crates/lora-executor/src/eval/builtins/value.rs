@@ -6,6 +6,7 @@
 
 use lora_store::GraphStorage;
 
+use super::super::errors::set_eval_error;
 use super::super::expr::EvalContext;
 use crate::value::LoraValue;
 
@@ -23,6 +24,7 @@ pub(super) fn dispatch<S: GraphStorage>(
         "is_null" => is_null(args),
         "is_not_null" => is_not_null(args),
         "id" => id(args),
+        "assert" => assert(args),
         _ => return None,
     })
 }
@@ -31,9 +33,34 @@ pub(super) fn dispatch<S: GraphStorage>(
 pub(super) fn known(op: &str) -> Option<()> {
     matches!(
         op,
-        "size" | "keys" | "properties" | "reverse" | "coalesce" | "is_null" | "is_not_null" | "id"
+        "size"
+            | "keys"
+            | "properties"
+            | "reverse"
+            | "coalesce"
+            | "is_null"
+            | "is_not_null"
+            | "id"
+            | "assert"
     )
     .then_some(())
+}
+
+/// `assert(condition[, message])`: `true` when the condition is `true`,
+/// otherwise the statement fails with `assertion failed: <message>`. A
+/// `null` or non-boolean condition fails too: a check that could not be
+/// decided did not pass. Inside a transaction the failure rolls it back,
+/// which makes a check a statement instead of a round trip.
+fn assert(args: &[LoraValue]) -> LoraValue {
+    if matches!(args.first(), Some(LoraValue::Bool(true))) {
+        return LoraValue::Bool(true);
+    }
+    let message = match args.get(1) {
+        Some(LoraValue::String(message)) => message.as_str(),
+        _ => "the condition is not true",
+    };
+    set_eval_error(format!("assertion failed: {message}"));
+    LoraValue::Null
 }
 
 fn id(args: &[LoraValue]) -> LoraValue {

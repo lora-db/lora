@@ -140,6 +140,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `keys(node \| rel \| map)` | **Supported** |
 | `properties(node \| rel \| map)` | **Supported** |
 | `coalesce(expr, ...)` | **Supported** |
+| `assert(condition[, message])` / `value.assert` | **Supported** | `true` when the condition is `true`; otherwise (also for `null`) the statement fails with `assertion failed: <message>`, which rolls back the transaction it runs in |
 | `temporal.timestamp()` / `timestamp()` | **Supported** |
 | `temporal.timezone()` / `timezone()` | **Supported** |
 | `uuid.new()` / `new()` | **Supported** |

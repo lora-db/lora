@@ -18,12 +18,29 @@ validated before execution, and most invalid or missing inputs return
 |---|---|
 | `type.*` | `type.of(x)`, `type.is(x, TYPE)` |
 | `cast.*` | `cast.to(x, TYPE)`, `cast.try(x, TYPE)`, `cast.can(x, TYPE)` |
-| `value.*` | `value.size(x)`, `value.keys(x)`, `value.properties(x)`, `value.reverse(x)`, `value.coalesce(a, b, ...)`, `value.is_null(x)`, `value.is_not_null(x)`, `value.id(x)` |
+| `value.*` | `value.size(x)`, `value.keys(x)`, `value.properties(x)`, `value.reverse(x)`, `value.coalesce(a, b, ...)`, `value.is_null(x)`, `value.is_not_null(x)`, `value.id(x)`, `value.assert(condition, message)` |
 
 <QueryCodeBlock code={String.raw`RETURN type.of([1, 2, 3]);              // 'LIST<INTEGER>'
 RETURN type.is('2026-05-01'::DATE, DATE); // true
 RETURN cast.try($maybe_int, INTEGER);   // null if conversion fails
 RETURN value.coalesce(null, 'fallback') // 'fallback'`} />
+
+### assert
+
+`assert(condition, message)` (also `value.assert`) returns `true` when the
+condition is `true`. Otherwise the statement fails with
+`assertion failed: <message>`, also for `null`: a check that could not be
+decided did not pass. `message` is optional.
+
+<QueryCodeBlock code={String.raw`MATCH (a:Account {id: $id})
+SET a.balance = a.balance - $amount
+WITH a
+RETURN assert(a.balance >= 0, 'insufficient funds') AS ok`} />
+
+A failing statement writes nothing, and inside a transaction it rolls
+the transaction back. That turns a check into a statement: a batch sent
+with `db.transaction([...])` can change data and verify the result in
+one call, without a round trip to decide whether to commit.
 
 Prefer `value::TYPE`, `CAST(value AS TYPE)`, and
 `TRY_CAST(value AS TYPE)` in handwritten query text. The function forms

@@ -251,3 +251,35 @@ fn local_temporals_take_duration_arithmetic() {
         Some("08:07:00+01:00".to_string())
     );
 }
+
+/// `assert(condition, message)` fails the statement unless the condition
+/// is true, so a check can be a statement of a transaction.
+#[test]
+fn assert_fails_the_statement_unless_the_condition_is_true() {
+    let db = TestDb::new();
+    assert_eq!(
+        db.scalar("RETURN assert(1 = 1, 'never') AS v"),
+        serde_json::json!(true)
+    );
+    assert_error(
+        "RETURN assert(1 = 2, 'one is not two') AS v",
+        "assertion failed: one is not two",
+    );
+    assert_error("RETURN assert(null, 'undecided') AS v", "undecided");
+    assert_error("RETURN assert(1) AS v", "the condition is not true");
+    // Per row: the first failing row stops the statement.
+    assert_error(
+        "UNWIND [1, 2, 3] AS i RETURN assert(i < 3, 'row ' + toString(i)) AS v",
+        "assertion failed: row 3",
+    );
+    // In a write, nothing of the statement is kept.
+    db.run("CREATE (:Kept {id: 1})");
+    let err = db.run_err(
+        "MATCH (k:Kept) SET k.touched = true WITH k RETURN assert(k.id = 2, 'wrong node')",
+    );
+    assert!(err.contains("wrong node"), "{err}");
+    assert_eq!(
+        db.scalar("MATCH (k:Kept) RETURN k.touched AS v"),
+        serde_json::Value::Null
+    );
+}
