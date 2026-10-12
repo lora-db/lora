@@ -41,6 +41,9 @@ pub enum SemanticError {
     #[error("`{0}` aggregates, so outside its aggregate functions it can only use grouping keys; project that value as its own column")]
     ImplicitGroupingKey(String),
 
+    #[error("after DISTINCT, ORDER BY can only use the projected columns; project that value as its own column")]
+    OrderByAfterDistinct,
+
     #[error("ORDER BY can't aggregate here: {0}")]
     AggregationInOrderBy(String),
 

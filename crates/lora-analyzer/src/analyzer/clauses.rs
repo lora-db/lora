@@ -442,12 +442,20 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                 })
             })
             .collect::<Result<Vec<_>, SemanticError>>()?;
+        let shadowed: Vec<(VarId, VarId)> = exported_aliases
+            .iter()
+            .filter_map(|alias| Some((self.scopes.resolve(&alias.name)?, alias.id)))
+            .collect();
         let order = self.lift_order_aggregates(
             order,
-            &written,
             &mut lifted_aggregates,
-            body.distinct,
-            first_var,
+            OrderProjection {
+                written: &written,
+                shadowed: &shadowed,
+                distinct: body.distinct,
+                include_existing,
+                first_var,
+            },
         )?;
 
         let skip = body
@@ -527,21 +535,30 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
         Ok(lifted)
     }
 
-    /// Point ORDER BY keys of an aggregating projection at what they mean
-    /// on the grouped rows. A key that restates an item (as written, before
-    /// lifting) sorts by that item's column; an aggregate in any other key
-    /// is lifted into a hidden column like a nested one in an item, the
-    /// planner keeping it until the sort. A projection that doesn't
-    /// aggregate can't aggregate in ORDER BY, and after DISTINCT a key can
-    /// only aggregate what is projected (openCypher rejects both).
+    /// Point ORDER BY keys of an aggregating or DISTINCT projection at what
+    /// they mean on the rows it produces, where only its columns exist. A
+    /// key that restates an item (as written, before lifting) sorts by that
+    /// item's column, and so does any part of a key that restates a grouping
+    /// key (`n.key` with `n` grouped). An aggregate in any other key is
+    /// lifted into a hidden column like a nested one in an item, the planner
+    /// keeping it until the sort. Whatever a key still reads from before the
+    /// projection has no single value per produced row, so it is rejected,
+    /// as in openCypher. A projection that doesn't aggregate can't aggregate
+    /// in ORDER BY, and after DISTINCT a key can only aggregate what is
+    /// projected (openCypher rejects both).
     fn lift_order_aggregates(
         &mut self,
         order: Vec<ResolvedSortItem>,
-        written: &[(String, VarId, bool)],
         lifted: &mut Vec<ResolvedProjection>,
-        distinct: bool,
-        first_var: VarId,
+        projection: OrderProjection<'_>,
     ) -> Result<Vec<ResolvedSortItem>, SemanticError> {
+        let OrderProjection {
+            written,
+            shadowed,
+            distinct,
+            include_existing,
+            first_var,
+        } = projection;
         let aggregating = written.iter().any(|(_, _, aggregates)| *aggregates);
         if !aggregating {
             if order.iter().any(|key| expr_contains_aggregate(&key.expr)) {
@@ -549,7 +566,11 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                     "the projection doesn't aggregate".into(),
                 ));
             }
-            return Ok(order);
+            // A plain projection sorts with the bindings from before it
+            // still in the row.
+            if !distinct {
+                return Ok(order);
+            }
         }
 
         let keys: Vec<(String, VarId)> = written
@@ -565,10 +586,16 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                     key.expr = ResolvedExpr::Variable(*output);
                     return Ok(key);
                 }
-                if !expr_contains_aggregate(&key.expr) {
-                    return Ok(key);
+                // A bare name that is both an alias and an earlier binding
+                // (`RETURN n.name AS n, count(*) AS c ORDER BY n`) can only
+                // mean the alias here: the earlier binding is gone.
+                if let ResolvedExpr::Variable(var) = &key.expr {
+                    if let Some((_, column)) = shadowed.iter().find(|(earlier, _)| earlier == var) {
+                        key.expr = ResolvedExpr::Variable(*column);
+                        return Ok(key);
+                    }
                 }
-                if distinct {
+                if distinct && expr_contains_aggregate(&key.expr) {
                     return Err(SemanticError::AggregationInOrderBy(
                         "after DISTINCT it can only sort by an aggregate that is projected".into(),
                     ));
@@ -580,13 +607,34 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                     lifted,
                     Span::default(),
                 );
-                if reads_ungrouped(&key.expr, &keys, first_var) {
-                    return Err(SemanticError::ImplicitGroupingKey("ORDER BY".into()));
+                // `WITH *` / `RETURN *` keep the earlier bindings as columns.
+                if !include_existing && reads_ungrouped(&key.expr, &keys, first_var) {
+                    return Err(if aggregating {
+                        SemanticError::ImplicitGroupingKey("ORDER BY".into())
+                    } else {
+                        SemanticError::OrderByAfterDistinct
+                    });
                 }
                 Ok(key)
             })
             .collect()
     }
+}
+
+/// The projection an ORDER BY belongs to, as its keys see it.
+struct OrderProjection<'a> {
+    /// Each item as written, before lifting: its `Debug` form, its column,
+    /// and whether it aggregates.
+    written: &'a [(String, VarId, bool)],
+    /// Aliases that reuse the name of a binding from before the projection
+    /// (`RETURN n.name AS n`), as (earlier binding, column).
+    shadowed: &'a [(VarId, VarId)],
+    distinct: bool,
+    /// `WITH *` / `RETURN *`: the earlier bindings stay columns.
+    include_existing: bool,
+    /// The first id the projection allocated: lower ids are earlier
+    /// bindings.
+    first_var: VarId,
 }
 
 /// Whether `expr`, after lifting, reads a binding from before the
