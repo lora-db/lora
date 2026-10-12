@@ -678,6 +678,7 @@ impl Database {
         // the database was disposed) or by the batch.
         let deferred = Arc::new(Mutex::new(Some(deferred)));
         let opening = deferred.clone();
+        let failed_open = self.txs.clone();
         let actor = Arc::new(interactive::TxActor::spawn(
             db,
             lora_database::TransactionMode::ReadWrite,
@@ -686,7 +687,12 @@ impl Database {
                 if let Err(message) = opened {
                     let taken = opening.lock().ok().and_then(|mut d| d.take());
                     if let Some(deferred) = taken {
-                        deferred.resolve(Box::new(move |_env| Err(interactive::napi_err(message))));
+                        deferred.resolve(Box::new(move |_env| {
+                            // Never opened (the lock was not free in time):
+                            // nothing else will forget the transaction.
+                            forget_tx(&failed_open, id);
+                            Err(interactive::napi_err(message))
+                        }));
                     }
                 }
             }),
