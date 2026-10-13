@@ -58,7 +58,7 @@ pub use mutable::{MutableExecutionContext, MutableExecutor};
 // each other through `super::helpers::*`). The names that remain here
 // are exactly the ones referenced as `crate::executor::*` from
 // outside `crate::executor`.
-pub(crate) use aggregation::aggregate_rows;
+pub(crate) use aggregation::{aggregate_rows, group_key, insert_group_by_values};
 #[allow(unused_imports)]
 pub(crate) use helpers::{
     bound_node_id_for_expand, bound_relationship_id_for_expand, build_path_value,
@@ -73,6 +73,7 @@ pub(crate) use helpers::{
 };
 pub(crate) use helpers::{other_kind_node_ids, OrderedRangeCursor, OtherKindScan};
 pub(crate) use helpers::{project_item, project_item_in_place};
+pub(crate) use helpers::{RowKeyBuilder, RowKeyPart};
 pub(crate) use optional::{
     merge_optional_rows, null_extend_optional_row, optional_can_correlate, optional_match_rows,
     optional_rows_compatible,

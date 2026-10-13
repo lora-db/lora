@@ -24,7 +24,10 @@ use lora_store::{GraphStorage, LoraDuration};
 
 use crate::errors::{ExecResult, ExecutorError};
 use crate::eval::eval_expr_result;
-use crate::executor::{compare_values_total, compute_aggregate_expr, GroupValueKey};
+use crate::executor::{
+    compare_values_total, compute_aggregate_expr, group_key, insert_group_by_values, RowKeyBuilder,
+    RowKeyPart,
+};
 use crate::value::{LoraValue, Row};
 
 use super::{drain, RowSource, StreamCtx};
@@ -318,18 +321,14 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
 
         let input_rows = drain(upstream.as_mut())?;
         let eval_ctx = ctx.eval_ctx();
-        let mut groups: BTreeMap<Vec<GroupValueKey>, Vec<Row>> = BTreeMap::new();
+        let mut groups: BTreeMap<Vec<RowKeyPart>, Vec<Row>> = BTreeMap::new();
 
         if group_by.is_empty() {
             groups.insert(Vec::new(), input_rows);
         } else {
+            let mut keys = RowKeyBuilder::default();
             for row in input_rows {
-                let mut key = Vec::with_capacity(group_by.len());
-                for proj in group_by {
-                    let value = eval_expr_result(&proj.expr, &row, &eval_ctx)
-                        .map_err(ExecutorError::from_eval)?;
-                    key.push(GroupValueKey::from_value(&value));
-                }
+                let key = group_key(&mut keys, group_by, &row, &eval_ctx)?;
                 groups.entry(key).or_default().push(row);
             }
         }
@@ -338,11 +337,7 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
         for rows in groups.into_values() {
             let mut result = Row::new();
             if let Some(first) = rows.first() {
-                for proj in group_by {
-                    let value = eval_expr_result(&proj.expr, first, &eval_ctx)
-                        .map_err(ExecutorError::from_eval)?;
-                    result.insert_named(proj.output, proj.name.clone(), value);
-                }
+                insert_group_by_values(&mut result, group_by, first, &eval_ctx)?;
             }
             for proj in aggregates {
                 let value = compute_aggregate_expr(&proj.expr, &rows, &eval_ctx)?;
@@ -391,15 +386,11 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
             return Ok(vec![result]);
         }
 
-        let mut groups: BTreeMap<Vec<GroupValueKey>, StreamingGroup> = BTreeMap::new();
+        let mut groups: BTreeMap<Vec<RowKeyPart>, StreamingGroup> = BTreeMap::new();
+        let mut keys = RowKeyBuilder::default();
 
         while let Some(row) = upstream.next_row()? {
-            let mut key = Vec::with_capacity(group_by.len());
-            for proj in group_by {
-                let value = eval_expr_result(&proj.expr, &row, &eval_ctx)
-                    .map_err(ExecutorError::from_eval)?;
-                key.push(GroupValueKey::from_value(&value));
-            }
+            let key = group_key(&mut keys, group_by, &row, &eval_ctx)?;
 
             // First time we see this key, capture the row as the
             // representative for group_by output evaluation. Subsequent
@@ -422,11 +413,7 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
         let mut out = Vec::with_capacity(groups.len());
         for group in groups.into_values() {
             let mut result = Row::new();
-            for proj in group_by {
-                let value = eval_expr_result(&proj.expr, &group.first_row, &eval_ctx)
-                    .map_err(ExecutorError::from_eval)?;
-                result.insert_named(proj.output, proj.name.clone(), value);
-            }
+            insert_group_by_values(&mut result, group_by, &group.first_row, &eval_ctx)?;
             for (i, proj) in aggregates.iter().enumerate() {
                 let value = group.aggs[i].clone().finalize(specs[i].kind)?;
                 result.insert_named(proj.output, proj.name.clone(), value);

@@ -3,14 +3,16 @@
 
 use std::collections::BTreeMap;
 
-use lora_analyzer::ResolvedProjection;
+use lora_analyzer::{ResolvedExpr, ResolvedProjection};
 use lora_store::GraphStorage;
 
 use crate::errors::{ExecResult, ExecutorError};
 use crate::eval::{eval_expr_result, EvalContext};
 use crate::value::{LoraValue, Row};
 
-use super::helpers::{compute_aggregate_expr, GroupValueKey};
+use super::helpers::{
+    compute_aggregate_expr, project_item, GroupValueKey, RowKeyBuilder, RowKeyPart,
+};
 
 /// Group `input_rows` and fold `aggregates` per group.
 ///
@@ -45,13 +47,14 @@ fn aggregate_buffered_rows<S>(
 where
     S: GraphStorage,
 {
-    let mut groups: BTreeMap<Vec<GroupValueKey>, Vec<Row>> = BTreeMap::new();
+    let mut groups: BTreeMap<Vec<RowKeyPart>, Vec<Row>> = BTreeMap::new();
 
     if group_by.is_empty() {
         groups.insert(Vec::new(), input_rows);
     } else {
+        let mut keys = RowKeyBuilder::default();
         for row in input_rows {
-            let key = group_key(group_by, &row, eval_ctx)?;
+            let key = group_key(&mut keys, group_by, &row, eval_ctx)?;
             groups.entry(key).or_default().push(row);
         }
     }
@@ -80,10 +83,11 @@ where
         return aggregate_single_group(input_rows, aggregates, specs, eval_ctx);
     }
 
-    let mut groups: BTreeMap<Vec<GroupValueKey>, StreamingGroup> = BTreeMap::new();
+    let mut groups: BTreeMap<Vec<RowKeyPart>, StreamingGroup> = BTreeMap::new();
+    let mut keys = RowKeyBuilder::default();
 
     for row in input_rows {
-        let key = group_key(group_by, &row, eval_ctx)?;
+        let key = group_key(&mut keys, group_by, &row, eval_ctx)?;
         let entry = groups
             .entry(key)
             .or_insert_with(|| StreamingGroup::new(specs, row.clone()));
@@ -155,7 +159,7 @@ where
     Ok(result)
 }
 
-fn insert_group_by_values<S>(
+pub(crate) fn insert_group_by_values<S>(
     result: &mut Row,
     group_by: &[ResolvedProjection],
     row: &Row,
@@ -165,27 +169,35 @@ where
     S: GraphStorage,
 {
     for proj in group_by {
-        let value =
-            eval_expr_result(&proj.expr, row, eval_ctx).map_err(ExecutorError::from_eval)?;
-        result.insert_named(proj.output, proj.name.clone(), value);
+        project_item(result, row, proj, eval_ctx)?;
     }
 
     Ok(())
 }
 
-fn group_key<S>(
+/// `row`'s grouping key. A grouping key that is a bare variable is keyed
+/// from the row's slot: a carried list is neither copied nor, when the
+/// previous row shared it, keyed again.
+pub(crate) fn group_key<S>(
+    keys: &mut RowKeyBuilder,
     group_by: &[ResolvedProjection],
     row: &Row,
     eval_ctx: &EvalContext<'_, S>,
-) -> ExecResult<Vec<GroupValueKey>>
+) -> ExecResult<Vec<RowKeyPart>>
 where
     S: GraphStorage,
 {
     let mut key = Vec::with_capacity(group_by.len());
-    for proj in group_by {
+    for (column, proj) in group_by.iter().enumerate() {
+        if let ResolvedExpr::Variable(var) = &proj.expr {
+            if let Some(value) = row.get(*var) {
+                key.push(keys.part(column, row, *var, value));
+                continue;
+            }
+        }
         let value =
             eval_expr_result(&proj.expr, row, eval_ctx).map_err(ExecutorError::from_eval)?;
-        key.push(GroupValueKey::from_value(&value));
+        key.push(RowKeyPart::Inline(GroupValueKey::from_value(&value)));
     }
     Ok(key)
 }

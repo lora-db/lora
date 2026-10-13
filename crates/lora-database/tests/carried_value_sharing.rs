@@ -2,7 +2,8 @@
 //! operator makes one row per candidate.
 //!
 //! An expand, an OPTIONAL MATCH, a variable-length expand, UNWIND, FOREACH and
-//! the list constructs each clone their working row per candidate. A list
+//! the list constructs each clone their working row per candidate, and a
+//! grouping key, DISTINCT and UNION each key every row. A list
 //! collected earlier in the query (Festimap's E-4: a `CALL` that collects a
 //! page before its counts) used to be copied with it, so a 200-row hop over
 //! a row carrying a 10k-element list ran ~250x slower than the same hop
@@ -66,6 +67,40 @@ const SITES: &[(&str, &str)] = &[
     (
         "reduce",
         "RETURN reduce(s = 0, i IN range(1, 200) | s + i) AS n, size(big) AS b",
+    ),
+    (
+        "grouping key",
+        "MATCH (c)<-[:IN]-(m:M) WITH big, count(m) AS n RETURN n, size(big) AS b",
+    ),
+    (
+        "grouping key of a buffered aggregate",
+        "MATCH (c)<-[:IN]-(m:M) WITH big, collect(m) AS ms RETURN size(ms) AS n, size(big) AS b",
+    ),
+    (
+        "distinct",
+        "MATCH (c)<-[:IN]-(m:M) WITH DISTINCT m, big RETURN count(m) AS n, size(big) AS b",
+    ),
+    (
+        "coalesce",
+        "MATCH (c)<-[:IN]-(m:M) WITH m, coalesce(big, []) AS l RETURN count(m) AS n, size(l) AS b",
+    ),
+    (
+        "case",
+        "MATCH (c)<-[:IN]-(m:M) WITH m, CASE WHEN m.i > 0 THEN big ELSE [] END AS l \
+         RETURN count(m) AS n, size(l) AS b",
+    ),
+    (
+        "function of a coalesce",
+        "MATCH (c)<-[:IN]-(m:M) WHERE size(coalesce(big, [])) >= 0 RETURN count(m) AS n, size(big) AS b",
+    ),
+    (
+        "comparison",
+        "MATCH (c)<-[:IN]-(m:M) WHERE big <> [m.i] RETURN count(m) AS n, size(big) AS b",
+    ),
+    (
+        "quantifier over the carried list",
+        "MATCH (c)<-[:IN]-(m:M) WHERE any(x IN big WHERE x = 1) OR size(big) = 0 \
+         RETURN count(m) AS n, size(big) AS b",
     ),
     (
         "quantifier",
@@ -151,6 +186,63 @@ fn shared_values_are_independent_after_a_copy() {
     let rows = db.run("WITH range(1, 64) AS big OPTIONAL MATCH (x:Nope) RETURN x, size(big) AS b");
     assert_eq!(rows[0]["x"], serde_json::Value::Null);
     assert_eq!(rows[0]["b"], 64);
+
+    // Grouping and DISTINCT tell equal lists from different ones, shared
+    // or not.
+    let rows = db.run(
+        "MATCH (m:M) WITH m, CASE WHEN m.i = 3 THEN range(2, 65) ELSE range(1, 64) END AS big \
+         WITH big, count(m) AS n RETURN big[0] AS first, n ORDER BY first",
+    );
+    assert_eq!(rows.len(), 2);
+    assert_eq!((&rows[0]["first"], &rows[0]["n"]), (&1.into(), &2.into()));
+    assert_eq!((&rows[1]["first"], &rows[1]["n"]), (&2.into(), &1.into()));
+    let rows = db.run(
+        "WITH range(1, 64) AS big MATCH (m:M) WITH big, m.i % 2 AS odd \
+         WITH DISTINCT big, odd RETURN size(big) AS b, odd ORDER BY odd",
+    );
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["b"], 64);
+    let rows = db.run(
+        "WITH range(1, 64) AS big MATCH (m:M) RETURN big \
+         UNION WITH range(1, 64) AS big RETURN big",
+    );
+    assert_eq!(rows.len(), 1);
+
+    // coalesce and CASE hand back the carried list or the fallback, per row.
+    let rows = db.run(
+        "WITH range(1, 64) AS big MATCH (m:M) \
+         WITH m, big, CASE WHEN m.i = 2 THEN null ELSE big END AS maybe \
+         WITH m, coalesce(maybe, [m.i]) AS l, CASE m.i WHEN 3 THEN big ELSE [] END AS k \
+         RETURN m.i AS i, size(l) AS l, size(k) AS k, l = k AS same ORDER BY i",
+    );
+    let got: Vec<_> = rows
+        .iter()
+        .map(|r| {
+            (
+                r["l"].as_i64().unwrap(),
+                r["k"].as_i64().unwrap(),
+                r["same"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(got, [(64, 0, false), (1, 0, false), (64, 64, true)]);
+
+    // An error in a coalesce argument past the first non-null one still fails.
+    db.run_err("WITH range(1, 64) AS big RETURN coalesce(big, 1 / 0) AS l");
+
+    // Quantifiers, comprehensions and reduce walk the carried list.
+    let rows = db.run(
+        "WITH range(1, 64) AS big MATCH (m:M) \
+         RETURN m.i AS i, all(x IN big WHERE x > 0) AS a, none(x IN big WHERE x = m.i) AS n, \
+                size([x IN big WHERE x > m.i | x * 2]) AS c, reduce(s = 0, x IN big | s + x) AS r \
+         ORDER BY i",
+    );
+    for (row, i) in rows.iter().zip(1..) {
+        assert_eq!(row["a"], true);
+        assert_eq!(row["n"], false);
+        assert_eq!(row["c"], 64 - i);
+        assert_eq!(row["r"], 2080);
+    }
 
     // FOREACH over rows carrying a list writes once per element.
     db.run(

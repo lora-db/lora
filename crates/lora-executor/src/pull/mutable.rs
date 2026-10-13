@@ -7,7 +7,7 @@ use lora_compiler::CompiledQuery;
 use lora_store::{GraphStorage, GraphStorageMut};
 
 use crate::errors::{ExecResult, ExecutorError};
-use crate::executor::{GroupValueKey, MutableExecutionContext, MutableExecutor};
+use crate::executor::{MutableExecutionContext, MutableExecutor, RowKeyBuilder, RowKeyPart};
 use crate::value::{LoraValue, Row};
 
 use super::traits::write_op_input;
@@ -107,7 +107,8 @@ pub struct MutableUnionSource<'a, S: GraphStorageMut + GraphStorage + 'a> {
     branch_idx: usize,
     current: Option<Box<dyn RowSource + 'a>>,
     needs_dedup: bool,
-    seen: BTreeSet<Vec<(String, GroupValueKey)>>,
+    seen: BTreeSet<Vec<(String, RowKeyPart)>>,
+    keys: RowKeyBuilder,
     _phantom: std::marker::PhantomData<&'a mut S>,
 }
 
@@ -126,6 +127,7 @@ impl<'a, S: GraphStorageMut + GraphStorage + 'a> MutableUnionSource<'a, S> {
             current: None,
             needs_dedup,
             seen: BTreeSet::new(),
+            keys: RowKeyBuilder::default(),
             _phantom: std::marker::PhantomData,
         })
     }
@@ -172,16 +174,8 @@ impl<'a, S: GraphStorageMut + GraphStorage + 'a> RowSource for MutableUnionSourc
 
             match current.next_row()? {
                 Some(row) => {
-                    if self.needs_dedup {
-                        let key = row
-                            .iter_named()
-                            .map(|(_, name, val)| {
-                                (name.into_owned(), GroupValueKey::from_value(val))
-                            })
-                            .collect();
-                        if !self.seen.insert(key) {
-                            continue;
-                        }
+                    if self.needs_dedup && !self.seen.insert(self.keys.named_row_key(&row)) {
+                        continue;
                     }
                     return Ok(Some(row));
                 }

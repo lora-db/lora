@@ -34,6 +34,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Weak};
 
 use web_time::Instant;
 
@@ -47,7 +48,10 @@ use lora_compiler::physical::{
 use lora_store::{GraphStorage, NodeId, Properties, PropertyValue, RelationshipId};
 
 use crate::errors::{value_kind, ExecResult, ExecutorError};
-use crate::eval::{eval_expr, eval_expr_result, eval_truthy_result, EvalContext};
+use crate::eval::{
+    eval_expr, eval_expr_result, eval_projected_result, eval_truthy_result, passes_through,
+    EvalContext, Projected,
+};
 use crate::value::{lora_value_to_property, LoraPath, LoraValue, Row};
 
 /// Deadline guard. Returns `QueryTimeout` once the deadline has
@@ -97,6 +101,21 @@ pub(crate) fn project_item<S: GraphStorage>(
             return Ok(());
         }
     }
+    // Only a `coalesce` or a `CASE` can hand a variable back; the rest, the
+    // hot path of every projection, are evaluated straight.
+    if passes_through(&item.expr) {
+        match eval_projected_result(&item.expr, source, eval_ctx)
+            .map_err(ExecutorError::from_eval)?
+        {
+            Projected::Var(var) => {
+                projected.insert_named_from(item.output, item.name.clone(), source, var);
+            }
+            Projected::Value(value) => {
+                projected.insert_named(item.output, item.name.clone(), value)
+            }
+        }
+        return Ok(());
+    }
     let value = eval_expr_result(&item.expr, source, eval_ctx).map_err(ExecutorError::from_eval)?;
     projected.insert_named(item.output, item.name.clone(), value);
     Ok(())
@@ -113,6 +132,15 @@ pub(crate) fn project_item_in_place<S: GraphStorage>(
         if row.insert_named_from_self(item.output, item.name.clone(), *var) {
             return Ok(());
         }
+    }
+    if passes_through(&item.expr) {
+        match eval_projected_result(&item.expr, row, eval_ctx).map_err(ExecutorError::from_eval)? {
+            Projected::Var(var) => {
+                row.insert_named_from_self(item.output, item.name.clone(), var);
+            }
+            Projected::Value(value) => row.insert_named(item.output, item.name.clone(), value),
+        }
+        return Ok(());
     }
     let value = eval_expr_result(&item.expr, row, eval_ctx).map_err(ExecutorError::from_eval)?;
     row.insert_named(item.output, item.name.clone(), value);
@@ -868,15 +896,12 @@ pub(super) fn properties_to_value_map<'a>(props: impl Into<lora_store::PropsRef<
 /// a Vec<GroupValueKey> keyed on VarId iteration order — avoids the per-row
 /// column-name String clones of `dedup_rows`. Used by DISTINCT projection.
 pub(crate) fn dedup_rows_by_vars(rows: Vec<Row>) -> Vec<Row> {
-    let mut seen: BTreeSet<Vec<GroupValueKey>> = BTreeSet::new();
+    let mut seen: BTreeSet<Vec<RowKeyPart>> = BTreeSet::new();
+    let mut keys = RowKeyBuilder::default();
     let mut out = Vec::new();
 
     for row in rows {
-        let key: Vec<GroupValueKey> = row
-            .iter()
-            .map(|(_, val)| GroupValueKey::from_value(val))
-            .collect();
-        if seen.insert(key) {
+        if seen.insert(keys.row_key(&row)) {
             out.push(row);
         }
     }
@@ -888,15 +913,12 @@ pub(crate) fn dedup_rows_by_vars(rows: Vec<Row>) -> Vec<Row> {
 /// column name + value are collapsed. Needed for UNION where each branch has
 /// its own VarIds.
 pub(crate) fn dedup_rows(rows: Vec<Row>) -> Vec<Row> {
-    let mut seen: BTreeSet<Vec<(String, GroupValueKey)>> = BTreeSet::new();
+    let mut seen: BTreeSet<Vec<(String, RowKeyPart)>> = BTreeSet::new();
+    let mut keys = RowKeyBuilder::default();
     let mut out = Vec::new();
 
     for row in rows {
-        let key: Vec<(String, GroupValueKey)> = row
-            .iter_named()
-            .map(|(_, name, val)| (name.into_owned(), GroupValueKey::from_value(val)))
-            .collect();
-        if seen.insert(key) {
+        if seen.insert(keys.named_row_key(&row)) {
             out.push(row);
         }
     }
@@ -2350,6 +2372,104 @@ impl GroupValueKey {
             LoraValue::Point(p) => Self::String(p.to_string()),
             LoraValue::Vector(v) => Self::String(format!("vector:{}", v.to_key_string())),
         }
+    }
+}
+
+/// One column of a row's grouping, DISTINCT or UNION key. The key of a value
+/// the row shares is shared too, so rows that carry one list (E-4) compare
+/// by pointer instead of walking it.
+#[derive(Debug, Clone)]
+pub(crate) enum RowKeyPart {
+    Inline(GroupValueKey),
+    Shared(Arc<GroupValueKey>),
+}
+
+impl RowKeyPart {
+    fn key(&self) -> &GroupValueKey {
+        match self {
+            RowKeyPart::Inline(key) => key,
+            RowKeyPart::Shared(key) => key,
+        }
+    }
+}
+
+impl Ord for RowKeyPart {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if let (RowKeyPart::Shared(a), RowKeyPart::Shared(b)) = (self, other) {
+            if Arc::ptr_eq(a, b) {
+                return Ordering::Equal;
+            }
+        }
+        self.key().cmp(other.key())
+    }
+}
+
+impl PartialOrd for RowKeyPart {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for RowKeyPart {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for RowKeyPart {}
+
+/// Builds row keys, remembering per column the key of the last shared value
+/// it saw: a list carried by every row is keyed once, not once per row.
+#[derive(Default)]
+pub(crate) struct RowKeyBuilder {
+    /// Weak, so the row's value can still be moved out once the row is the
+    /// only holder; the allocation stays put, so its address is not reused.
+    last: Vec<Option<(Weak<LoraValue>, Arc<GroupValueKey>)>>,
+}
+
+impl RowKeyBuilder {
+    /// The key of `value`, which `row` holds for `var`, as key column
+    /// `column`.
+    pub(crate) fn part(
+        &mut self,
+        column: usize,
+        row: &Row,
+        var: VarId,
+        value: &LoraValue,
+    ) -> RowKeyPart {
+        let Some(shared) = row.shared(var) else {
+            return RowKeyPart::Inline(GroupValueKey::from_value(value));
+        };
+        if self.last.len() <= column {
+            self.last.resize_with(column + 1, || None);
+        }
+        if let Some((seen, key)) = &self.last[column] {
+            if std::ptr::eq(seen.as_ptr(), Arc::as_ptr(shared)) {
+                return RowKeyPart::Shared(key.clone());
+            }
+        }
+        let key = Arc::new(GroupValueKey::from_value(shared));
+        self.last[column] = Some((Arc::downgrade(shared), key.clone()));
+        RowKeyPart::Shared(key)
+    }
+
+    /// The key of a row among rows with the same variables.
+    pub(crate) fn row_key(&mut self, row: &Row) -> Vec<RowKeyPart> {
+        row.iter()
+            .enumerate()
+            .map(|(column, (var, value))| self.part(column, row, *var, value))
+            .collect()
+    }
+
+    /// The key of a row by column name, for rows of different variables
+    /// (UNION branches).
+    pub(crate) fn named_row_key(&mut self, row: &Row) -> Vec<(String, RowKeyPart)> {
+        row.iter_named()
+            .enumerate()
+            .map(|(column, (var, name, value))| {
+                (name.into_owned(), self.part(column, row, *var, value))
+            })
+            .collect()
     }
 }
 

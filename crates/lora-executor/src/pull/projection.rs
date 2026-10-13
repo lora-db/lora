@@ -13,7 +13,7 @@ use lora_store::GraphStorage;
 
 use crate::errors::{ExecResult, ExecutorError};
 use crate::eval::eval_expr_result;
-use crate::executor::{project_item, project_item_in_place, GroupValueKey};
+use crate::executor::{project_item, project_item_in_place, RowKeyBuilder, RowKeyPart};
 use crate::value::{LoraValue, Row};
 
 use super::{RowSource, StreamCtx};
@@ -154,7 +154,8 @@ impl<'a, S: GraphStorage> RowSource for UnwindSource<'a, S> {
 /// soon as upstream produces it.
 pub struct DistinctSource<'a> {
     upstream: Box<dyn RowSource + 'a>,
-    seen: BTreeSet<Vec<GroupValueKey>>,
+    seen: BTreeSet<Vec<RowKeyPart>>,
+    keys: RowKeyBuilder,
 }
 
 impl<'a> DistinctSource<'a> {
@@ -162,6 +163,7 @@ impl<'a> DistinctSource<'a> {
         Self {
             upstream,
             seen: BTreeSet::new(),
+            keys: RowKeyBuilder::default(),
         }
     }
 }
@@ -169,11 +171,7 @@ impl<'a> DistinctSource<'a> {
 impl<'a> RowSource for DistinctSource<'a> {
     fn next_row(&mut self) -> ExecResult<Option<Row>> {
         while let Some(row) = self.upstream.next_row()? {
-            let key = row
-                .iter()
-                .map(|(_, val)| GroupValueKey::from_value(val))
-                .collect();
-            if self.seen.insert(key) {
+            if self.seen.insert(self.keys.row_key(&row)) {
                 return Ok(Some(row));
             }
         }

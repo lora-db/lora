@@ -14,9 +14,13 @@ next, **P2** planned, **P3** when convenient.
 
 ## Engine — Cypher correctness
 
-- [ ] P3 A function with two or more arguments (`coalesce(big, [])`), an operator
-      (`big + [x]`) or a map/list literal still copies a carried list per call; a lone
-      variable argument (`size(big)`) and row clones share it (`value.rs` `SlotValue`).
+- [ ] P3 A map or list literal (`{l: big}`), a function with two or more arguments
+      other than `coalesce`, and every returned row still copy a carried list: a
+      `LoraValue` list owns its elements, so sharing one inside another value needs
+      a shared list representation. Row clones, grouping, `DISTINCT` and `UNION`
+      keys, comparisons, `coalesce`, `CASE`, quantifiers, comprehensions, `reduce`
+      and a lone function argument share or read it in place (`value.rs`
+      `SlotValue`, `eval/expr.rs` `eval_source`).
 - [ ] P2 General procedures: `CALL db.labels()`, `db.relationshipTypes()`, `db.propertyKeys()` ("unknown procedure").
 - [ ] P3 A failing expression in a seek or range bound of a read is dropped, not raised (`MATCH (n {id: 1/0})` matches nothing): raw `eval_expr` in `lora-executor/src/executor/helpers.rs:432,713,1356` and `pull/scan.rs:413,703`. Writes raise since 2026-10-11.
 - [ ] P3 Subtraction between values of unrelated types is `null`, not an error (`sub_values` fallback, `eval/binops.rs`); addition raises.

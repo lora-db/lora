@@ -21,7 +21,7 @@ use lora_store::GraphStorage;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use super::binops::{eval_binary, eval_in, eval_unary, value_eq};
+use super::binops::{eval_binary, eval_comparison, eval_in, eval_unary, value_eq};
 use super::errors::{clear_eval_error, take_eval_error};
 use super::functions::eval_function;
 
@@ -98,6 +98,18 @@ pub fn eval_expr<S: GraphStorage>(
             eval_binary(op, l, r)
         }
 
+        ResolvedExpr::Binary {
+            lhs,
+            op:
+                op @ (BinaryOp::Eq
+                | BinaryOp::Ne
+                | BinaryOp::Lt
+                | BinaryOp::Gt
+                | BinaryOp::Le
+                | BinaryOp::Ge),
+            rhs,
+        } if reads_variable(lhs) || reads_variable(rhs) => compare_in_place(lhs, op, rhs, row, ctx),
+
         ResolvedExpr::Binary { lhs, op, rhs } => {
             let l = eval_expr(lhs, row, ctx);
             let r = eval_expr(rhs, row, ctx);
@@ -123,10 +135,9 @@ pub fn eval_expr<S: GraphStorage>(
             list,
             predicate,
         } => {
-            let list_val = eval_expr(list, row, ctx);
-            match list_val {
-                LoraValue::List(items) => {
-                    let total = items.len();
+            match list_items(list, row, ctx) {
+                ListItems::Items(items) => {
+                    let mut total = items.len();
                     // Clone the row once, then rebind `variable` per iteration
                     // instead of cloning the entire row + item per element.
                     let mut inner_row = row.clone();
@@ -138,6 +149,18 @@ pub fn eval_expr<S: GraphStorage>(
                         inner_row.insert_inline(*variable, item);
                         if eval_expr(predicate, &inner_row, ctx).is_truthy() {
                             count += 1;
+                            // One match settles `any` and `none`, a second
+                            // settles `single`: the rest of a long list is
+                            // not walked.
+                            match kind {
+                                ListPredicateKind::Any | ListPredicateKind::None => break,
+                                ListPredicateKind::Single if count > 1 => break,
+                                _ => {}
+                            }
+                        } else if matches!(kind, ListPredicateKind::All) {
+                            // One miss settles `all`.
+                            total = usize::MAX;
+                            break;
                         }
                     }
                     match kind {
@@ -147,8 +170,8 @@ pub fn eval_expr<S: GraphStorage>(
                         ListPredicateKind::Single => LoraValue::Bool(count == 1),
                     }
                 }
-                LoraValue::Null => LoraValue::Null,
-                _ => LoraValue::Bool(false),
+                ListItems::Null => LoraValue::Null,
+                ListItems::NotAList => LoraValue::Bool(false),
             }
         }
 
@@ -158,9 +181,8 @@ pub fn eval_expr<S: GraphStorage>(
             filter,
             map_expr,
         } => {
-            let list_val = eval_expr(list, row, ctx);
-            match list_val {
-                LoraValue::List(items) => {
+            match list_items(list, row, ctx) {
+                ListItems::Items(items) => {
                     let mut result = Vec::with_capacity(items.len());
                     let mut inner_row = row.clone();
                     for item in items {
@@ -186,8 +208,7 @@ pub fn eval_expr<S: GraphStorage>(
                     }
                     LoraValue::List(result)
                 }
-                LoraValue::Null => LoraValue::Null,
-                _ => LoraValue::Null,
+                ListItems::Null | ListItems::NotAList => LoraValue::Null,
             }
         }
 
@@ -199,9 +220,8 @@ pub fn eval_expr<S: GraphStorage>(
             expr,
         } => {
             let init_val = eval_expr(init, row, ctx);
-            let list_val = eval_expr(list, row, ctx);
-            match list_val {
-                LoraValue::List(items) => {
+            match list_items(list, row, ctx) {
+                ListItems::Items(items) => {
                     // One cloned row reused across all iterations; accumulator
                     // and variable rebind per item.
                     let mut inner_row = row.clone();
@@ -216,8 +236,7 @@ pub fn eval_expr<S: GraphStorage>(
                     }
                     acc
                 }
-                LoraValue::Null => LoraValue::Null,
-                _ => LoraValue::Null,
+                ListItems::Null | ListItems::NotAList => LoraValue::Null,
             }
         }
 
@@ -328,35 +347,16 @@ pub fn eval_expr<S: GraphStorage>(
             input,
             alternatives,
             else_expr,
-        } => {
-            if let Some(input) = input {
-                let input_val = eval_expr(input, row, ctx);
-
-                for (when, then) in alternatives {
-                    let when_val = eval_expr(when, row, ctx);
-                    if value_eq(&input_val, &when_val) {
-                        return eval_expr(then, row, ctx);
-                    }
-                }
-
-                else_expr
-                    .as_ref()
-                    .map(|e| eval_expr(e, row, ctx))
-                    .unwrap_or(LoraValue::Null)
-            } else {
-                for (when, then) in alternatives {
-                    let when_val = eval_expr(when, row, ctx);
-                    if when_val.is_truthy() {
-                        return eval_expr(then, row, ctx);
-                    }
-                }
-
-                else_expr
-                    .as_ref()
-                    .map(|e| eval_expr(e, row, ctx))
-                    .unwrap_or(LoraValue::Null)
-            }
-        }
+        } => match case_branch(
+            input.as_deref(),
+            alternatives,
+            else_expr.as_deref(),
+            row,
+            ctx,
+        ) {
+            Some(branch) => eval_expr(branch, row, ctx),
+            None => LoraValue::Null,
+        },
 
         ResolvedExpr::ExistsSubquery {
             pattern,
@@ -377,12 +377,102 @@ pub fn eval_expr<S: GraphStorage>(
     }
 }
 
-static NULL: LoraValue = LoraValue::Null;
+/// The branch a `CASE` takes, or `None` when no alternative matches and
+/// there is no `ELSE`.
+fn case_branch<'e, S: GraphStorage>(
+    input: Option<&ResolvedExpr>,
+    alternatives: &'e [(ResolvedExpr, ResolvedExpr)],
+    else_expr: Option<&'e ResolvedExpr>,
+    row: &Row,
+    ctx: &EvalContext<'_, S>,
+) -> Option<&'e ResolvedExpr> {
+    let input = input.map(|input| eval_ref(input, row, ctx));
+    for (when, then) in alternatives {
+        let when = eval_ref(when, row, ctx);
+        let taken = match &input {
+            Some(input) => value_eq(input, &when),
+            None => when.is_truthy(),
+        };
+        if taken {
+            return Some(then);
+        }
+    }
+    else_expr
+}
 
-/// `expr`'s value, borrowed from the row when `expr` is a bare variable.
-/// Reading one element, slice, key or property of a carried list or map, or
-/// testing `x IN list`, must not copy the whole value: a pattern subquery
-/// evaluates its WHERE once per candidate.
+/// Where an expression's value comes from: a variable the row holds, whose
+/// value can be read or shared in place, or a value computed for this call.
+enum Source<'r> {
+    Var(VarId, &'r LoraValue),
+    Value(LoraValue),
+}
+
+/// `expr`'s [`Source`]. A bare variable, and a `coalesce` or `CASE` that
+/// hands one back unchanged (`coalesce(items, [])`), yield the variable:
+/// the callers below then read or share a carried list instead of copying
+/// it once per row.
+#[inline(never)]
+fn eval_source<'r, S: GraphStorage>(
+    expr: &ResolvedExpr,
+    row: &'r Row,
+    ctx: &EvalContext<'_, S>,
+) -> Source<'r> {
+    match expr {
+        ResolvedExpr::Variable(var) => match row.get(*var) {
+            Some(value) => Source::Var(*var, value),
+            None => Source::Value(LoraValue::Null),
+        },
+        ResolvedExpr::Function { function, args, .. } if is_coalesce(*function) => {
+            let mut args = args.iter();
+            let mut first = Source::Value(LoraValue::Null);
+            for arg in args.by_ref() {
+                let source = eval_source(arg, row, ctx);
+                let is_null = match &source {
+                    Source::Var(_, value) => matches!(value, LoraValue::Null),
+                    Source::Value(value) => matches!(value, LoraValue::Null),
+                };
+                if !is_null {
+                    first = source;
+                    break;
+                }
+            }
+            // The arguments after the first non-null one decide nothing,
+            // but an error in one still fails the query, as it always has.
+            for arg in args {
+                if !matches!(arg, ResolvedExpr::Variable(_) | ResolvedExpr::Literal(_)) {
+                    eval_expr(arg, row, ctx);
+                }
+            }
+            first
+        }
+        ResolvedExpr::Case {
+            input,
+            alternatives,
+            else_expr,
+        } => match case_branch(
+            input.as_deref(),
+            alternatives,
+            else_expr.as_deref(),
+            row,
+            ctx,
+        ) {
+            Some(branch) => eval_source(branch, row, ctx),
+            None => Source::Value(LoraValue::Null),
+        },
+        _ => Source::Value(eval_expr(expr, row, ctx)),
+    }
+}
+
+fn is_coalesce(function: lora_analyzer::FunctionId) -> bool {
+    matches!(function.name(), "value.coalesce" | "value.first_non_null")
+}
+
+/// `expr`'s value, borrowed from the row when it is a variable's (see
+/// [`eval_source`]). Reading one element, slice, key or property of a
+/// carried list or map, comparing it, or testing `x IN list`, must not copy
+/// the whole value: a pattern subquery evaluates its WHERE once per
+/// candidate.
+#[inline]
 fn eval_ref<'r, S: GraphStorage>(
     expr: &ResolvedExpr,
     row: &'r Row,
@@ -390,21 +480,145 @@ fn eval_ref<'r, S: GraphStorage>(
 ) -> Cow<'r, LoraValue> {
     match expr {
         ResolvedExpr::Variable(var) => Cow::Borrowed(row.get(*var).unwrap_or(&NULL)),
+        _ if passes_through(expr) => match eval_source(expr, row, ctx) {
+            Source::Var(_, value) => Cow::Borrowed(value),
+            Source::Value(value) => Cow::Owned(value),
+        },
         _ => Cow::Owned(eval_expr(expr, row, ctx)),
     }
 }
 
-/// A function call. A lone variable argument (`size(big)`, `head(list)`) is
-/// read in place instead of copied per call.
+static NULL: LoraValue = LoraValue::Null;
+
+/// Whether `expr`'s value can be a variable's, read in place.
+#[inline]
+fn reads_variable(expr: &ResolvedExpr) -> bool {
+    matches!(expr, ResolvedExpr::Variable(_)) || passes_through(expr)
+}
+
+/// A comparison with an operand that is a variable's value: a carried list
+/// is compared where it sits, not copied first.
+#[inline(never)]
+fn compare_in_place<S: GraphStorage>(
+    lhs: &ResolvedExpr,
+    op: &BinaryOp,
+    rhs: &ResolvedExpr,
+    row: &Row,
+    ctx: &EvalContext<'_, S>,
+) -> LoraValue {
+    let l = eval_ref(lhs, row, ctx);
+    let r = eval_ref(rhs, row, ctx);
+    eval_comparison(op, &l, &r)
+}
+
+/// Whether `expr` is a `coalesce` or a `CASE`, which can hand a variable's
+/// value back unchanged. Everything else, the hot path of every read, is
+/// evaluated straight.
+#[inline]
+pub fn passes_through(expr: &ResolvedExpr) -> bool {
+    match expr {
+        ResolvedExpr::Case { .. } => true,
+        ResolvedExpr::Function { function, .. } => is_coalesce(*function),
+        _ => false,
+    }
+}
+
+/// What a projection item evaluates to: the row's own value for a variable,
+/// which the projected row can share, or a new value.
+pub enum Projected {
+    Var(VarId),
+    Value(LoraValue),
+}
+
+/// [`eval_expr_result`] for a projection item that [`passes_through`],
+/// naming the variable instead of copying its value when the item hands one
+/// back unchanged.
+#[inline(never)]
+pub fn eval_projected_result<S: GraphStorage>(
+    expr: &ResolvedExpr,
+    row: &Row,
+    ctx: &EvalContext<'_, S>,
+) -> Result<Projected, String> {
+    clear_eval_error();
+    let projected = match eval_source(expr, row, ctx) {
+        Source::Var(var, _) => Projected::Var(var),
+        Source::Value(value) => Projected::Value(value),
+    };
+    if crate::cancel::eval_tripped() {
+        clear_eval_error();
+        return Err(DEADLINE_EXCEEDED.to_string());
+    }
+    match take_eval_error() {
+        Some(err) => Err(err),
+        None => Ok(projected),
+    }
+}
+
+/// The elements of a list expression, for the constructs that bind each to
+/// a variable. A carried list is walked in place, its elements cloned one
+/// at a time; a list built for this call is consumed.
+enum ListItems<'r> {
+    Items(ItemIter<'r>),
+    Null,
+    NotAList,
+}
+
+enum ItemIter<'r> {
+    Borrowed(std::slice::Iter<'r, LoraValue>),
+    Owned(std::vec::IntoIter<LoraValue>),
+}
+
+impl Iterator for ItemIter<'_> {
+    type Item = LoraValue;
+
+    #[inline]
+    fn next(&mut self) -> Option<LoraValue> {
+        match self {
+            ItemIter::Borrowed(items) => items.next().cloned(),
+            ItemIter::Owned(items) => items.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            ItemIter::Borrowed(items) => items.size_hint(),
+            ItemIter::Owned(items) => items.size_hint(),
+        }
+    }
+}
+
+impl ExactSizeIterator for ItemIter<'_> {}
+
+#[inline(never)]
+fn list_items<'r, S: GraphStorage>(
+    list: &ResolvedExpr,
+    row: &'r Row,
+    ctx: &EvalContext<'_, S>,
+) -> ListItems<'r> {
+    match eval_source(list, row, ctx) {
+        Source::Var(_, LoraValue::List(items)) => {
+            ListItems::Items(ItemIter::Borrowed(items.iter()))
+        }
+        Source::Value(LoraValue::List(items)) => {
+            ListItems::Items(ItemIter::Owned(items.into_iter()))
+        }
+        Source::Var(_, LoraValue::Null) | Source::Value(LoraValue::Null) => ListItems::Null,
+        _ => ListItems::NotAList,
+    }
+}
+
+/// A function call. A lone argument that is a variable's value
+/// (`size(big)`, `head(coalesce(list, []))`) is read in place instead of
+/// copied per call.
 fn eval_call<S: GraphStorage>(
     function: lora_analyzer::FunctionId,
     args: &[ResolvedExpr],
     row: &Row,
     ctx: &EvalContext<'_, S>,
 ) -> LoraValue {
-    if let [ResolvedExpr::Variable(var)] = args {
-        let value = row.get(*var).unwrap_or(&NULL);
-        return eval_function(function, std::slice::from_ref(value), ctx);
+    if let [arg] = args {
+        let value = eval_ref(arg, row, ctx);
+        return eval_function(function, std::slice::from_ref(&*value), ctx);
     }
     let args: Vec<LoraValue> = args.iter().map(|a| eval_expr(a, row, ctx)).collect();
     eval_function(function, &args, ctx)

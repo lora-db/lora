@@ -595,6 +595,16 @@ impl Row {
         true
     }
 
+    /// The pointer behind `key`'s value when the row shares it: the same
+    /// pointer in every row cloned from this one.
+    #[inline]
+    pub(crate) fn shared(&self, key: VarId) -> Option<&Arc<LoraValue>> {
+        match self.slot(key)? {
+            SlotValue::Shared(value) => Some(value),
+            SlotValue::Inline(_) => None,
+        }
+    }
+
     #[inline]
     fn slot(&self, key: VarId) -> Option<&SlotValue> {
         self.entries

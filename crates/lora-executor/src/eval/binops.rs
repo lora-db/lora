@@ -58,6 +58,51 @@ pub(super) fn eval_in(lhs: &LoraValue, rhs: &LoraValue) -> LoraValue {
     }
 }
 
+/// `=`, `<>`, `<`, `>`, `<=`, `>=`. Takes its operands by reference: a
+/// comparison against a list the row carries must not copy it.
+pub(super) fn eval_comparison(op: &BinaryOp, lhs: &LoraValue, rhs: &LoraValue) -> LoraValue {
+    match op {
+        // Lora null semantics: any comparison involving null returns null.
+        BinaryOp::Eq => {
+            if matches!(lhs, LoraValue::Null) || matches!(rhs, LoraValue::Null) {
+                LoraValue::Null
+            } else {
+                LoraValue::Bool(value_eq(lhs, rhs))
+            }
+        }
+        BinaryOp::Ne => {
+            if matches!(lhs, LoraValue::Null) || matches!(rhs, LoraValue::Null) {
+                LoraValue::Null
+            } else {
+                LoraValue::Bool(!value_eq(lhs, rhs))
+            }
+        }
+
+        // Cypher ordering: null or incomparable operands give null; lists
+        // compare element by element. Two temporals of different kinds are
+        // an error rather than Cypher's null: `d >= date()` against a
+        // DATETIME `d` would otherwise drop every row without a word.
+        BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge => {
+            match compare_values(lhs, rhs) {
+                None => {
+                    if let Some(msg) = temporal_kind_mismatch(lhs, rhs) {
+                        set_eval_error(msg);
+                    }
+                    LoraValue::Null
+                }
+                Some(ord) => LoraValue::Bool(match op {
+                    BinaryOp::Lt => ord.is_lt(),
+                    BinaryOp::Gt => ord.is_gt(),
+                    BinaryOp::Le => ord.is_le(),
+                    _ => ord.is_ge(),
+                }),
+            }
+        }
+
+        _ => LoraValue::Null,
+    }
+}
+
 pub(super) fn eval_binary(op: &BinaryOp, lhs: LoraValue, rhs: LoraValue) -> LoraValue {
     match op {
         // Lora three-valued boolean logic:
@@ -99,41 +144,8 @@ pub(super) fn eval_binary(op: &BinaryOp, lhs: LoraValue, rhs: LoraValue) -> Lora
             }
         }
 
-        // Lora null semantics: any comparison involving null returns null.
-        BinaryOp::Eq => {
-            if matches!(lhs, LoraValue::Null) || matches!(rhs, LoraValue::Null) {
-                LoraValue::Null
-            } else {
-                LoraValue::Bool(value_eq(&lhs, &rhs))
-            }
-        }
-        BinaryOp::Ne => {
-            if matches!(lhs, LoraValue::Null) || matches!(rhs, LoraValue::Null) {
-                LoraValue::Null
-            } else {
-                LoraValue::Bool(!value_eq(&lhs, &rhs))
-            }
-        }
-
-        // Cypher ordering: null or incomparable operands give null; lists
-        // compare element by element. Two temporals of different kinds are
-        // an error rather than Cypher's null: `d >= date()` against a
-        // DATETIME `d` would otherwise drop every row without a word.
-        BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge => {
-            match compare_values(&lhs, &rhs) {
-                None => {
-                    if let Some(msg) = temporal_kind_mismatch(&lhs, &rhs) {
-                        set_eval_error(msg);
-                    }
-                    LoraValue::Null
-                }
-                Some(ord) => LoraValue::Bool(match op {
-                    BinaryOp::Lt => ord.is_lt(),
-                    BinaryOp::Gt => ord.is_gt(),
-                    BinaryOp::Le => ord.is_le(),
-                    _ => ord.is_ge(),
-                }),
-            }
+        BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Le | BinaryOp::Ge => {
+            eval_comparison(op, &lhs, &rhs)
         }
 
         BinaryOp::Add => add_values(lhs, rhs),
