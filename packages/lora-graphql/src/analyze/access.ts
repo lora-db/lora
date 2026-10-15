@@ -306,6 +306,7 @@ export function operationAccess(
   const context = (p: Principal) =>
     newContext({ schema, fragments: {}, variables: {} }, p.model ?? model, {
       jwt: p.jwt,
+      unknownContext: true,
     });
   const targets = rootTargets(model)[operation.operation];
   const fields: RootFieldAccess[] = [];
@@ -461,6 +462,7 @@ export function accessMatrix(
   const context = (p: Principal) =>
     newContext({ schema, fragments: {}, variables: {} }, p.model ?? model, {
       jwt: p.jwt,
+      unknownContext: true,
     });
   for (const node of [...model.nodes.values()].sort(byName)) {
     const ops: AuthOperation[] = [

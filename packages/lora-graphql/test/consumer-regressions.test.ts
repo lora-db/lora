@@ -1903,3 +1903,136 @@ describe("G-47: the plan check passes a root connection that selects only totalC
     t.close();
   });
 });
+
+describe("G-52: a @cypher field's missing node from head([...]) reads null", () => {
+  test("head([]) and an empty MATCH both answer a clean null", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: `type F @node { key: String! @key }
+        type N @node { key: String! @key
+          viaHead: F @cypher(statement: "RETURN head([(this)-[:AT]->(f:F) | f]) AS f")
+          viaMatch: F @cypher(statement: "MATCH (this)-[:AT]->(f:F) RETURN f") }`,
+      seed: [
+        "CREATE (:N {key: 'lonely'})",
+        "CREATE (:N {key: 'linked'})-[:AT]->(:F {key: 'f'})",
+      ],
+    });
+    const r = await t.run(
+      "{ ns(sort: [{ key: ASC }]) { key viaHead { key } viaMatch { key } } }",
+    );
+    expect(r.errors).toBeUndefined();
+    expect(r.data).toEqual({
+      ns: [
+        { key: "linked", viaHead: { key: "f" }, viaMatch: { key: "f" } },
+        { key: "lonely", viaHead: null, viaMatch: null },
+      ],
+    });
+    t.close();
+  });
+});
+
+describe("G-53 / G-54: a block filter for a signed-out reader", () => {
+  const schema = (author: string) =>
+    `extend schema @authorizationDefaults(requireAuthentication: false)
+     type Claims @jwt { sub: String! @viewer(type: "P", field: "key") }
+     type P @node { key: String! @key
+       blocked: [P!]! @relationship(type: "BLOCKS", direction: OUT)
+       blockedBy: [P!]! @relationship(type: "BLOCKS", direction: IN) }
+     type C @node @mutation
+       @authorization(filter: [{ operations: [READ], where: { node: { author: ${author} } } }]) {
+       key: String! @key
+       author: P! @relationship(type: "WROTE", direction: IN) }`;
+  const noneIsViewer =
+    "{ blocked: { none: { isViewer: true } }, blockedBy: { none: { isViewer: true } } }";
+  const noneContext =
+    '{ blocked: { none: { key: { eq: "$context.viewerKey" } } }, blockedBy: { none: { key: { eq: "$context.viewerKey" } } } }';
+  const seed = [
+    `CREATE (a:P {key: 'a'}), (b:P {key: 'b'}), (:P {key: 'x'}),
+       (a)-[:WROTE]->(:C {key: 'ca'}), (b)-[:BLOCKS]->(a)`,
+  ];
+  const keys = async (t: Test, context?: Record<string, unknown>) =>
+    (
+      await t.data<{ cs: Array<{ key: string }> }>(
+        "{ cs { key } }",
+        {},
+        context,
+      )
+    ).cs.map((c) => c.key);
+  const readC = (m: ReturnType<LoraGraphQL["accessMatrix"]>) =>
+    Object.fromEntries(
+      m
+        .filter((e) => e.type === "C" && e.operation === "READ" && !e.field)
+        .map((e) => [e.principal, e.verdict]),
+    );
+
+  test("G-53: none: { isViewer } holds with no viewer", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: schema(noneIsViewer),
+      seed,
+    });
+    // Anonymous, twice: the compile cache must not mix the callers up.
+    expect(await keys(t)).toEqual(["ca"]);
+    expect(await keys(t, { jwt: { sub: "x" } })).toEqual(["ca"]);
+    expect(await keys(t, { jwt: { sub: "b" } })).toEqual([]);
+    expect(await keys(t, { jwt: { sub: "a" } })).toEqual(["ca"]);
+    expect(await keys(t)).toEqual(["ca"]);
+    // A token without the claim has no viewer either.
+    expect(await keys(t, { jwt: {} })).toEqual(["ca"]);
+    // Signed out, the dead BLOCKS walks fold away.
+    const [anonymous] = await t.lora.explain("{ cs { key } }");
+    expect(JSON.stringify(anonymous)).not.toContain("BLOCKS");
+    expect(readC(t.lora.accessMatrix())).toMatchObject({
+      anonymous: "filtered",
+      authenticated: "filtered",
+    });
+    t.close();
+  });
+
+  test("G-53: NOT … some holds too; some and a bare isViewer still fail", async () => {
+    const notSome = await createTestLoraGraphQL({
+      typeDefs: schema("{ NOT: { blockedBy: { some: { isViewer: true } } } }"),
+      seed,
+    });
+    expect(await keys(notSome)).toEqual(["ca"]);
+    expect(await keys(notSome, { jwt: { sub: "b" } })).toEqual([]);
+    notSome.close();
+
+    const some = await createTestLoraGraphQL({
+      typeDefs: schema("{ blockedBy: { some: { isViewer: true } } }"),
+      seed,
+    });
+    expect(await keys(some)).toEqual([]);
+    expect(await keys(some, { jwt: { sub: "b" } })).toEqual(["ca"]);
+    some.close();
+
+    const bare = await createTestLoraGraphQL({
+      typeDefs: schema("{ isViewer: true }"),
+      seed,
+    });
+    expect(await keys(bare)).toEqual([]);
+    expect(await keys(bare, { jwt: { sub: "a" } })).toEqual(["ca"]);
+    // Only the viewer passes: nothing for a signed-out reader.
+    expect(readC(bare.lora.accessMatrix())).toMatchObject({
+      anonymous: "denied",
+    });
+    bare.close();
+  });
+
+  test("G-54: the matrix reads a $context comparison as filtered", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs: schema(noneContext),
+      seed,
+    });
+    expect(await keys(t, { viewerKey: "" })).toEqual(["ca"]);
+    expect(await keys(t, { jwt: { sub: "x" }, viewerKey: "x" })).toEqual([
+      "ca",
+    ]);
+    expect(await keys(t, { jwt: { sub: "b" }, viewerKey: "b" })).toEqual([]);
+    // Without the value the request still fails closed.
+    expect(await keys(t)).toEqual([]);
+    expect(readC(t.lora.accessMatrix())).toMatchObject({
+      anonymous: "filtered",
+      authenticated: "filtered",
+    });
+    t.close();
+  });
+});

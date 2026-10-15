@@ -11,6 +11,7 @@ import type {
   RelationshipField,
 } from "../types.js";
 import { RELATIONSHIP_OPERATIONS } from "../types.js";
+import { VIEWER_TEST } from "../desugar.js";
 
 export function authOps(
   args: Record<string, unknown> | undefined,
@@ -128,7 +129,9 @@ export const PROPERTY_OPS = new Set<AuthOperation>([
 /**
  * Whether a request without a token could pass the rule: some branch
  * reads no claim. A claim read without a token denies its branch (and
- * the whole rule under NOT), so those branches never pass.
+ * the whole rule under NOT), so those branches never pass. An `isViewer`
+ * test is the exception: without a token it is false for every node (see
+ * `VIEWER_TEST`), so under `none`, `NOT` or `all` it can pass.
  */
 export function passableWithoutClaims(where: unknown): boolean {
   if (!isRecord(where)) return false;
@@ -140,11 +143,17 @@ export function passableWithoutClaims(where: unknown): boolean {
       return Array.isArray(value) && value.some(passableWithoutClaims);
     }
     if (k === "jwt" || k === "viewer") return false;
-    return !readsClaims(value);
+    return !readsClaims(value, k === "NOT" ? "negated" : "plain");
   });
 }
 
-function readsClaims(value: unknown): boolean {
+/**
+ * Where a test stands: `plain` (it must hold), `negated` (under `none` or
+ * `NOT`: it must fail), or `any` (under `all`: an empty list passes).
+ */
+type Polarity = "plain" | "negated" | "any";
+
+function readsClaims(value: unknown, polarity: Polarity = "plain"): boolean {
   if (typeof value === "string") {
     return (
       value.startsWith("$jwt.") ||
@@ -152,11 +161,24 @@ function readsClaims(value: unknown): boolean {
       value.includes("${viewer.")
     );
   }
-  if (Array.isArray(value)) return value.some(readsClaims);
+  if (Array.isArray(value)) return value.some((v) => readsClaims(v, polarity));
   if (!isRecord(value)) return false;
-  return Object.entries(value).some(
-    ([k, v]) => k === "jwt" || k === "viewer" || readsClaims(v),
-  );
+  // A false `isViewer` passes a negated test, and `all` over no nodes.
+  if (VIEWER_TEST in value) return polarity === "plain";
+  return Object.entries(value).some(([k, v]) => {
+    if (k === "jwt" || k === "viewer") return true;
+    const inner: Polarity =
+      polarity === "any"
+        ? "any"
+        : k === "all"
+          ? "any"
+          : k === "none" || k === "NOT"
+            ? polarity === "plain"
+              ? "negated"
+              : "plain"
+            : polarity;
+    return readsClaims(v, inner);
+  });
 }
 
 export function claimsOnlyViolations(where: unknown, path = ""): string[] {

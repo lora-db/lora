@@ -18,7 +18,11 @@ import type {
   RelationshipPropertiesType,
 } from "../model/types.js";
 import { PLACEHOLDER, RULE_REFERENCES } from "../model/types.js";
-import { ruleParts, testsRelationshipEnds } from "../model/desugar.js";
+import {
+  ruleParts,
+  testsRelationshipEnds,
+  VIEWER_TEST,
+} from "../model/desugar.js";
 import { memberFields } from "../model/relations.js";
 import { and, bin, fn, lit, not, or, prop, v, type Expr } from "./cypher.js";
 import {
@@ -669,7 +673,12 @@ function compileRulePart(
     } else if (key === "jwt") {
       parts.push(matchClaims(ctx, value as Where));
     } else if (key === "node" && node) {
-      const bound = substitute(value, ctx, { node: { node, variable } });
+      const plain = withoutViewer(ctx, node, value);
+      if (typeof plain === "boolean") {
+        parts.push(plain);
+        continue;
+      }
+      const bound = substitute(plain, ctx, { node: { node, variable } });
       if (!bound.ok) throw new MissingClaim();
       const wasInAuth = ctx.inAuth;
       ctx.inAuth = true;
@@ -1101,11 +1110,16 @@ function referenceString(
       parts.push(read);
       continue;
     }
-    const resolved =
+    let resolved =
       source === "jwt"
         ? claim(ctx, path)
         : lookupPath(ctx.requestContext, path);
-    if (source === "context") ctx.contextReads.push([path, resolved]);
+    if (source === "context") {
+      ctx.contextReads.push([path, resolved]);
+      if (resolved === undefined || resolved === null) {
+        resolved = unknownContext(ctx, path);
+      }
+    }
     if (
       typeof resolved === "string" ||
       typeof resolved === "number" ||
@@ -1181,6 +1195,102 @@ function ruleReference(
   return undefined;
 }
 
+/**
+ * A rule's node filter as a request with no viewer reads it: every
+ * `isViewer` test is false (see `VIEWER_TEST`), and the branches that
+ * decides are folded away, so a signed-out read does not walk a pattern
+ * that cannot match. True or false when the filter is decided; what is
+ * left is substituted as usual, where a viewer test the fold kept (under
+ * `all`, through an abstract type or a connection) still reads false.
+ */
+function withoutViewer(
+  ctx: CompileContext,
+  node: NodeType,
+  where: unknown,
+): boolean | unknown {
+  const mapping = ctx.model.viewer;
+  if (!mapping) return where;
+  const id = claim(ctx, mapping.claim, true);
+  if (id !== undefined && id !== null) return where;
+  const fold = (owner: NodeType, w: unknown): boolean | unknown => {
+    if (!isRecord(w)) return w;
+    const out: Where = {};
+    for (const [key, value] of Object.entries(w)) {
+      if (key === "AND" || key === "OR") {
+        if (!Array.isArray(value)) {
+          out[key] = value;
+          continue;
+        }
+        const items = value.map((x) => fold(owner, x));
+        const decides = key === "AND" ? false : true;
+        if (items.includes(decides)) {
+          if (key === "AND") return false;
+          continue;
+        }
+        const rest = items.filter((x) => typeof x !== "boolean");
+        if (rest.length === 0 && key === "OR") return false;
+        if (rest.length > 0) out[key] = rest;
+        continue;
+      }
+      if (key === "NOT") {
+        const inner = fold(owner, value);
+        if (inner === true) return false;
+        if (inner !== false) out[key] = inner;
+        continue;
+      }
+      if (isRecord(value) && VIEWER_TEST in value) return false;
+      const f = owner.fields.get(key);
+      const target =
+        f?.kind === "relationship" ? ctx.model.nodes.get(f.target) : undefined;
+      if (!f || f.kind !== "relationship" || !target || !isRecord(value)) {
+        out[key] = value;
+        continue;
+      }
+      if (!f.list) {
+        const inner = fold(target, value);
+        if (inner === false) return false;
+        if (inner !== true) {
+          out[key] = inner;
+          continue;
+        }
+        // Every node passes: what is left is that there is one.
+        const exists = `${key}Exists`;
+        if (w[exists] === false) return false;
+        out[exists] = true;
+        continue;
+      }
+      const quantified: Where = {};
+      for (const [q, inner] of Object.entries(value)) {
+        const r = q === "all" ? inner : fold(target, inner);
+        if (r === false) {
+          if (q === "some" || q === "single") return false;
+          if (q === "none") continue;
+        }
+        quantified[q] = typeof r === "boolean" ? inner : r;
+      }
+      if (Object.keys(quantified).length > 0) out[key] = quantified;
+    }
+    return Object.keys(out).length === 0 ? true : out;
+  };
+  return fold(node, where);
+}
+
+const isRecord = (x: unknown): x is Where =>
+  typeof x === "object" && x !== null && !Array.isArray(x);
+
+/** The operators of a test no value passes: `isViewer` with no viewer. */
+const NOBODY: Readonly<Record<string, unknown>> = Object.freeze({ in: [] });
+
+/**
+ * A `$context` value the request lacks, where `unknownContext` asks to
+ * keep the test (the access analyses, which have no request context): a
+ * stand-in bound like any value, so the test reads as one that may or may
+ * not hold for a row, never as one that cannot.
+ */
+function unknownContext(ctx: CompileContext, path: string): unknown {
+  return ctx.unknownContext ? `$context.${path}` : undefined;
+}
+
 function substitute(
   value: unknown,
   ctx: CompileContext,
@@ -1208,6 +1318,7 @@ function substitute(
         else {
           v = lookupPath(ctx.requestContext, path);
           ctx.contextReads.push([path, v]);
+          if (v === undefined || v === null) v = unknownContext(ctx, path);
         }
         if (
           typeof v === "string" ||
@@ -1233,6 +1344,8 @@ function substitute(
     else {
       v = lookupPath(ctx.requestContext, value.slice(9));
       ctx.contextReads.push([value.slice(9), v]);
+      if (v === undefined || v === null)
+        v = unknownContext(ctx, value.slice(9));
     }
     return v === undefined || v === null
       ? { ok: false, value: undefined }
@@ -1246,6 +1359,11 @@ function substitute(
     };
   }
   if (value !== null && typeof value === "object") {
+    if (VIEWER_TEST in value && ctx.model.viewer) {
+      // `isViewer` with no viewer: no node is the viewer (see VIEWER_TEST).
+      const id = claim(ctx, ctx.model.viewer.claim, true);
+      if (id === undefined || id === null) return { ok: true, value: NOBODY };
+    }
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
       const r = substitute(v, ctx, refs);

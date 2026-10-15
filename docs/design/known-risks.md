@@ -69,6 +69,8 @@
 
 | Issue | Classification | Risk |
 |-------|---------------|------|
+| lora-graphql: `isViewer` with no viewer is false, not unknown | Changed | Low, by design (G-53). Through 0.25.2 `isViewer` without the claim was unknown like any claim test, so `none: { isViewer: true }` and `NOT { isViewer: true }` denied a signed-out reader every row. No node is the viewer then, so the test is false: `none` / `NOT` over it hold, a bare `isViewer` or `some` still admits nothing. A schema that used `NOT isViewer` to keep anonymous callers out must say so with a claim test or `@authentication` (`lora-graphql/test/auth-viewer.test.ts`, `consumer-regressions.test.ts`) |
+| lora-graphql: the access matrix read a `$context` comparison as `denied` | Fixed | Low (G-54): the matrix has no request context, so the rule compiled as a missing value and read `denied` for every caller. It now reads `filtered`; at run time a request without the value still fails closed |
 | No authentication on HTTP API | Observed | **High** for any network-exposed deployment |
 | No TLS | Observed | **High** — queries and data in plaintext |
 | Bind address defaults to `127.0.0.1:4747` (configurable via `--host`/`--port`, `LORA_SERVER_HOST`/`LORA_SERVER_PORT`) | Observed | Low — localhost-only default mitigates exposure |

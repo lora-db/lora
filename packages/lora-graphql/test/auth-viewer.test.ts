@@ -97,7 +97,7 @@ describe("isViewer", () => {
     );
   });
 
-  test("signed out, NOT isViewer grants nothing", async () => {
+  test("signed out, nobody is the viewer: NOT isViewer holds", async () => {
     const t = await createTestLoraGraphQL({
       typeDefs:
         claims +
@@ -107,7 +107,33 @@ describe("isViewer", () => {
         ),
       seed,
     });
-    // Anonymous: the NOT branch is unknown, so only published posts show.
+    // Anonymous: no node is the viewer, so "not written by the viewer"
+    // holds for every post (G-53). A test of a missing claim is still
+    // unknown under NOT: see the next test.
+    const keys = async (context?: Record<string, unknown>) =>
+      (
+        await t.data<{ posts: Array<{ key: string }> }>(
+          "{ posts(sort: [{ key: ASC }]) { key } }",
+          {},
+          context,
+        )
+      ).posts.map((p) => p.key);
+    expect(await keys()).toEqual(["draft", "pub"]);
+    expect(await keys(lou)).toEqual(["pub"]);
+    expect(await keys(bo)).toEqual(["draft", "pub"]);
+  });
+
+  test("signed out, NOT on a missing claim still grants nothing", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs:
+        claims +
+        people.replace(
+          "{ node: { author: { isViewer: true } } }",
+          '{ node: { NOT: { author: { name: { eq: "$jwt.sub" } } } } }',
+        ),
+      seed,
+    });
+    // The claim is unknown, so only published posts show.
     const r = await t.data<{ posts: Array<{ key: string }> }>(
       "{ posts { key } }",
     );

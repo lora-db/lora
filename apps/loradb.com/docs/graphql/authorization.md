@@ -238,8 +238,14 @@ Rules can then say:
   with one seek by the claim.
 
 Both are resolved from the verified claim, never from anything the client
-sends. Without the claim both are unknown, so a `NOT` over `isViewer`
-never grants a signed-out caller.
+sends. Without the claim there is no viewer, so no node is the viewer:
+`isViewer` is false for every node. A bare `isViewer` or `some: {
+isViewer: true }` admits nothing for a signed-out caller, while `none: {
+isViewer: true }` and a `NOT` over `isViewer` hold ("nobody on the other
+side of a block from the reader" reads every row signed out). A
+signed-out read folds those tests away, so it walks no relationship that
+cannot match. `viewer: { … }` and `"${viewer.key}"` stay unknown without
+the claim, like any claim test.
 `isViewer` takes `true` only; use `NOT` for the opposite. It works
 through relationships and union members
 (`author: { Person: { isViewer: true } }`). In a filter over an interface
@@ -365,7 +371,9 @@ setting for the whole schema:
   anonymous caller gets `UNAUTHENTICATED`, not `FORBIDDEN`;
 - a READ filter that needs claims admits no row for them: they read an
   empty list, and the access matrix calls it `denied`;
-- a claim read without a token denies its branch, also under `NOT`.
+- a claim read without a token denies its branch, also under `NOT`
+  (`isViewer` is the exception: it is false, not unknown, see
+  [`@viewer`](#viewer)).
 
 The setting reaches every rule, writes included: a CREATE, UPDATE, DELETE
 or CONNECT rule that reads no claims decides for signed-out callers too.
@@ -478,7 +486,9 @@ shows both, and what each refusal looks like to the client.
   `${...}` placeholder in its operand is a model error.
 - **A test that needs a claim or context value the request lacks is
   unknown.** It is false where it stands, and a `NOT` over it is false too,
-  so negation can never turn a missing claim into a grant.
+  so negation can never turn a missing claim into a grant. `isViewer` is
+  not such a test: with no viewer, no node is the viewer, so it is false
+  and `NOT` / `none` over it hold.
 - Claim and context paths read own properties only, so `constructor`,
   `__proto__` and other inherited names resolve to nothing.
 - Node conditions follow Cypher: `NOT` over a null property is not true.
@@ -862,6 +872,10 @@ See it run in the
   as `roles:admin`), with the verdict (`allowed`, `filtered`, `validated`,
   `masked`, `denied`, `unauthenticated`) and the rules that decide it. The
   order is stable, so a snapshot in CI turns access changes into diffs.
+  The matrix has no request context, so a rule comparing with a
+  `$context` value reads `filtered` (it may or may not match a row),
+  never `denied`; at run time a request without that value still fails
+  closed.
   See [the CLI](/docs/graphql/cli).
 - `lora.operationAccess(document)` answers the same question for one
   operation: which kinds of caller can run it, root field by root field,

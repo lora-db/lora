@@ -61,6 +61,17 @@ export interface DesugarContext {
 
 type Where = Record<string, unknown>;
 
+/**
+ * Marks the operator object `isViewer` expands to (`{ eq: "$jwt.<claim>" }`
+ * on the viewer field). With a claim to compare, it compiles like the
+ * hand-written test. Without one (a signed-out caller, or a token without
+ * the claim) there is no viewer, so no node is the viewer: the test is
+ * false for every node, rather than unknown like a test of a missing claim.
+ * `none` and `NOT … some` then hold, while `some` and a bare `isViewer`
+ * fail. A symbol key, so operator walks (`Object.entries`) never see it.
+ */
+export const VIEWER_TEST: unique symbol = Symbol("isViewer");
+
 const isRecord = (x: unknown): x is Where =>
   typeof x === "object" && x !== null && !Array.isArray(x);
 
@@ -381,7 +392,10 @@ function isViewer(
     );
     return undefined;
   }
-  return [ctx.viewer.field, { eq: `$jwt.${ctx.viewer.claim}` }];
+  return [
+    ctx.viewer.field,
+    { eq: `$jwt.${ctx.viewer.claim}`, [VIEWER_TEST]: true },
+  ];
 }
 
 /** Model problems for a `@viewer` mapping, once the node types are built. */

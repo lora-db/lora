@@ -38,6 +38,12 @@ export interface CompileContext extends SelectionContext {
   /** The GraphQL context, for `"$context.path"` values in rules. */
   requestContext: unknown;
   /**
+   * The access analyses: no request context exists, so a `$context` value
+   * is unknown, not absent. A rule testing one compiles with a stand-in
+   * (it may hold for a row) instead of denying.
+   */
+  unknownContext?: boolean | undefined;
+  /**
    * Variables holding computed (`@cypher`) field values in the current
    * statement, by `variable + "\0" + field`: set by the root match.
    */
@@ -66,6 +72,7 @@ export function newContext(
     degrees?: ReadonlyMap<string, number>;
     statistics?: Statistics | undefined;
     requestContext?: unknown;
+    unknownContext?: boolean | undefined;
     maxListArgument?: number | undefined;
     maxFilterDepth?: number | undefined;
     maxListFilter?: number | undefined;
@@ -89,6 +96,7 @@ export function newContext(
     maxStringFilter: options.maxStringFilter,
     maxTotalCount: options.maxTotalCount,
     requestContext: options.requestContext,
+    unknownContext: options.unknownContext,
     computed: new Map(),
     contextReads: [],
     claimReads: new Map(),

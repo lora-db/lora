@@ -889,9 +889,11 @@ type Post
   startup and compiles to exactly the same statement. With `@viewer`
   declared, writing that expansion out by hand is a model error: the
   mapping lives in one place. `viewer: { verified:
-{ eq: true } }` tests the caller's own node: one seek by the claim. Both
-  are unknown without the claim, so `NOT { isViewer: true }` never grants a
-  signed-out caller. `isViewer` takes `true` only; use `NOT` for the
+{ eq: true } }` tests the caller's own node: one seek by the claim, and
+  is unknown without the claim. Without the claim no node is the viewer:
+  `isViewer` is false for every node, so a bare `isViewer` or `some`
+  admits nothing signed out, while `none: { isViewer: true }` and
+  `NOT { isViewer: true }` hold. `isViewer` takes `true` only; use `NOT` for the
   opposite. It works through relationships and union members
   (`author: { Person: { isViewer: true } }`); in a filter over an
   interface it is a model error, since there is no single type to expand
@@ -932,8 +934,9 @@ type Post
   value gets. A create that would succeed answers `CONSTRAINT_VIOLATION`.
 - **A test that needs a claim or context value the request lacks is
   unknown**: false where it stands, and a `NOT` over it is false too, so
-  negation can never turn a missing claim into a grant. Node conditions
-  follow Cypher: `NOT` over a null property is not true.
+  negation can never turn a missing claim into a grant (`isViewer` is
+  false without the claim, not unknown). Node conditions follow Cypher:
+  `NOT` over a null property is not true.
 - `filter` rules (any passing rule grants) make other nodes invisible:
   in lists, lookups, counts, aggregates, search, nested relationships,
   relationship filters, subscriptions, and as targets of updates, deletes
