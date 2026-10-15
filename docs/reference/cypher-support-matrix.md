@@ -111,7 +111,7 @@ Source of truth for syntax is `crates/lora-parser/src/cypher.pest`. Source of tr
 | `REDUCE(acc = init, x IN list \| expr)` | **Supported** | |
 | List predicates (`all`, `any`, `none`, `single`) | **Supported** | |
 | Operator precedence | **Supported** | Parenthesized expressions |
-| Map projection `n {.name, .age, .*}` | **Supported** | |
+| Map projection `n {.name, .age, .*}` | **Supported** | A projection of `null` is `null` (an `OPTIONAL MATCH` miss, `head([])`), never a map of nulls; `collect` then drops it |
 
 ## 5. Aggregation functions
 

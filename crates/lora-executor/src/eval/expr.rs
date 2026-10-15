@@ -298,6 +298,11 @@ pub fn eval_expr<S: GraphStorage>(
 
         ResolvedExpr::MapProjection { base, selectors } => {
             let base_val = eval_ref(base, row, ctx);
+            // A projection of null is null (openCypher): an OPTIONAL MATCH
+            // miss or `head([])` projects as nothing, not as a map of nulls.
+            if matches!(&*base_val, LoraValue::Null) {
+                return LoraValue::Null;
+            }
             let mut result = BTreeMap::new();
 
             for sel in selectors {

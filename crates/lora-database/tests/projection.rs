@@ -443,6 +443,30 @@ fn extended_map_projection() {
 }
 
 #[test]
+fn map_projection_of_null_is_null() {
+    // openCypher: `null {.key}` is null, whatever the selectors. A missing
+    // node (OPTIONAL MATCH, `head([])`) projects as null, and `collect`
+    // then drops it.
+    let db = TestDb::new();
+    db.run("CREATE (:N {key: 'lonely'})");
+    for query in [
+        "WITH null AS f RETURN f {.key} AS m",
+        "WITH null AS f RETURN f {.key, x: 1} AS m",
+        "WITH null AS f RETURN f {.*} AS m",
+        "OPTIONAL MATCH (f:Missing) RETURN f {.key} AS m",
+        "MATCH (n:N) RETURN head([(n)-[:AT]->(f) | f]) {.key} AS m",
+    ] {
+        let rows = db.run(query);
+        assert!(rows[0]["m"].is_null(), "{query}: {:?}", rows[0]["m"]);
+    }
+    let rows = db.run(
+        "MATCH (n:N) WITH head([(n)-[:AT]->(f) | f]) AS f \
+         RETURN collect(f {.key}) AS m",
+    );
+    assert_eq!(rows[0]["m"], serde_json::json!([]));
+}
+
+#[test]
 fn pattern_comprehension_in_return() {
     // Lora: pattern comprehension in RETURN
     let db = TestDb::new();

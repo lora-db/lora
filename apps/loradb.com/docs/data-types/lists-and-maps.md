@@ -155,6 +155,9 @@ RETURN p {.*};                     // all properties
 RETURN p {.name, yob: p.born};     // rename / computed
 RETURN p {.name, friends: [(p)-[:KNOWS]->(f) | f.name]}`} />
 
+A projection of `null` is `null`, whatever its keys: a node an
+`OPTIONAL MATCH` did not find projects as `null`, not as a map of nulls.
+
 The last form embeds a [pattern comprehension](../functions/list#pattern-comprehension)
 inline.
 
