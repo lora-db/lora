@@ -6,6 +6,7 @@ import type {
   GraphModel,
   ModelWarning,
 } from "../model/types.js";
+import { rootSortable } from "./indexes.js";
 
 /** Filter operators a RANGE index answers. */
 const INDEXED_OPS: ReadonlySet<FilterOperator> = new Set<FilterOperator>([
@@ -103,7 +104,8 @@ export function lintModel(
           !f.unique &&
           !f.key &&
           f.indexes.length === 0 &&
-          (f.sortable || [...f.filters].some((op) => INDEXED_OPS.has(op)))
+          (rootSortable(model, node, f) ||
+            [...f.filters].some((op) => INDEXED_OPS.has(op)))
         ) {
           out.push({
             type: node.name,

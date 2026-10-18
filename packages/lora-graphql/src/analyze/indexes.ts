@@ -6,6 +6,8 @@ import type {
   FilterOperator,
   GraphModel,
   IndexKind,
+  NodeType,
+  ScalarField,
   ScalarType,
 } from "../model/types.js";
 import { OUTBOX } from "../events/outbox.js";
@@ -71,7 +73,8 @@ const TEXT_OPS = new Set<FilterOperator>([
  * - `@sortable` on a non-null field → existence constraint: keyset
  *   pagination may then bound the scan with `>=` without losing nulls.
  * - `EQ` / `IN` → nothing: LoraDB builds exact-match indexes lazily.
- * - `LT` / `LTE` / `GT` / `GTE` or `@sortable` → RANGE.
+ * - `LT` / `LTE` / `GT` / `GTE` → RANGE; `@sortable` too, when a root list
+ *   or connection can sort by it (see `rootSortable`).
  * - `CONTAINS` / `STARTS_WITH` / `ENDS_WITH` → TEXT.
  * - `WITHIN_BBOX` / `DISTANCE` on a Point → POINT.
  * - `@index(kind:)` → that index.
@@ -144,7 +147,7 @@ export function inferRequirements(model: GraphModel): SchemaRequirement[] {
         const range = ops.filter((op) => RANGE_OPS.has(op));
         if (range.length > 0) {
           kinds.set("RANGE", `${at} is @filterable by ${range.join(", ")}`);
-        } else if (f.sortable) {
+        } else if (rootSortable(model, node, f)) {
           kinds.set("RANGE", `${at} is @sortable`);
         }
       }
@@ -189,6 +192,32 @@ export function inferRequirements(model: GraphModel): SchemaRequirement[] {
     });
   }
   return out;
+}
+
+/**
+ * Whether a root list or connection can sort by a `@sortable` field: the
+ * type's own, or an interface's or union's that sorts its members by it.
+ * Only those plans seek the index (a keyset bound, an ordered walk). A
+ * nested list sorts each parent's few related nodes after the expand, so a
+ * field only nested lists sort by needs no index (G-56).
+ */
+export function rootSortable(
+  model: GraphModel,
+  node: NodeType,
+  field: ScalarField,
+): boolean {
+  if (!field.sortable) return false;
+  if (node.read) return true;
+  for (const abstract of model.abstracts.values()) {
+    if (
+      abstract.read &&
+      abstract.members.includes(node.name) &&
+      abstract.fields.get(field.name)?.sortable
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function schemaName(label: string, property: string, suffix: string): string {

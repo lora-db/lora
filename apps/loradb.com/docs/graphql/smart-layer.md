@@ -34,7 +34,8 @@ with the reason for each:
 | `@unique` | uniqueness constraint |
 | non-null `@sortable` field | existence constraint |
 | `EQ`, `IN` | nothing: LoraDB indexes equality lazily |
-| `LT`, `LTE`, `GT`, `GTE`, `@sortable` | RANGE index |
+| `LT`, `LTE`, `GT`, `GTE` | RANGE index |
+| `@sortable`, when a root list can sort by it | RANGE index |
 | `CONTAINS`, `STARTS_WITH`, `ENDS_WITH` | TEXT index |
 | `WITHIN_BBOX`, `DISTANCE` | POINT index |
 | `@fulltext`, `@vector` | FULLTEXT and VECTOR indexes, by name |

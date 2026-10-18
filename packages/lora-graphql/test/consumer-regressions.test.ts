@@ -2036,3 +2036,54 @@ describe("G-53 / G-54: a block filter for a signed-out reader", () => {
     t.close();
   });
 });
+
+describe("G-56: @sortable infers a RANGE index only where a root sort seeks it", () => {
+  const ranges = (t: Test) =>
+    t.lora
+      .requirements()
+      .filter((r) => r.kind === "index" && r.index === "RANGE")
+      .map((r) => `${r.label}.${(r as { property: string }).property}`);
+
+  test("a field only nested lists sort by gets no index", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs:
+        J +
+        `type Album @node { key: ID! @key
+           tracks: [Track!]! @relationship(type: "HAS_TRACK", direction: OUT) }
+         type Track @node @query(read: false) { key: ID! @key  number: Int! @sortable }`,
+      seed: [
+        "CREATE (a:Album {key: 'a'})-[:HAS_TRACK]->(:Track {key: 't2', number: 2}), (a)-[:HAS_TRACK]->(:Track {key: 't1', number: 1})",
+      ],
+    });
+    expect(ranges(t)).not.toContain("Track.number");
+    // The existence constraint stays; the nested sort still works.
+    expect(
+      t.lora
+        .requirements()
+        .some((r) => r.kind === "constraint" && r.constraint === "NOT_NULL"),
+    ).toBe(true);
+    expect(
+      await t.data(
+        "{ albums { tracks(sort: [{ number: ASC }]) { key } } }",
+        {},
+        admin,
+      ),
+    ).toEqual({ albums: [{ tracks: [{ key: "t1" }, { key: "t2" }] }] });
+    t.close();
+  });
+
+  test("a root sort, or an interface's, still gets one", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs:
+        J +
+        `type Track @node { key: ID! @key  number: Int! @sortable }
+         interface Item { rank: Int @sortable }
+         type Hidden implements Item @node @query(read: false) { key: ID! @key  rank: Int  other: Int @sortable }`,
+    });
+    expect(ranges(t)).toEqual(
+      expect.arrayContaining(["Track.number", "Hidden.rank"]),
+    );
+    expect(ranges(t)).not.toContain("Hidden.other");
+    t.close();
+  });
+});

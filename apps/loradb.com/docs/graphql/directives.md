@@ -1345,8 +1345,12 @@ greater than the `upperRight` one means the box crosses the antimeridian.
 
 ### @sortable {#sortable}
 
-Clients may sort and paginate by the field. It gets a RANGE index, and
-it becomes part of the type's aggregates.
+Clients may sort and paginate by the field. It becomes part of the type's
+aggregates, and gets a RANGE index when a root list or connection can sort
+by it: the type's own, or an interface's or union's that lists the field.
+A type with `@query(read: false)` that only nested lists sort by, such as
+an album's tracks by `number`, gets no index: those sorts run per parent,
+on its few related nodes, and no plan would seek it.
 
 ```graphql
 type Festival @node {
