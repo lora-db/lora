@@ -641,3 +641,33 @@ fn return_exists_subquery_in_projection() {
                 EXISTS { MATCH (p)-[:MANAGES]->() } AS is_manager",
     );
 }
+
+// ============================================================
+// Dynamic property access
+// ============================================================
+
+#[test]
+fn dynamic_property_access_on_node_and_relationship() {
+    let db = TestDb::new();
+    db.run("CREATE (:User {name: 'Alice', age: 30})-[:KNOWS {since: 2020}]->(:User {name: 'Bob'})");
+    let rows = db.run(
+        "MATCH (a:User {name: 'Alice'})-[r:KNOWS]->() \
+         WITH a, r, 'name' AS k \
+         RETURN a[k] AS name, a['age'] AS age, a['missing'] AS missing, r['since'] AS since, \
+                [key IN keys(a) | a[key] = a.name OR a[key] = a.age] AS same",
+    );
+    assert_eq!(rows[0]["name"], "Alice");
+    assert_eq!(rows[0]["age"], 30);
+    assert!(rows[0]["missing"].is_null());
+    assert_eq!(rows[0]["since"], 2020);
+    assert_eq!(rows[0]["same"], serde_json::json!([true, true]));
+}
+
+#[test]
+fn dynamic_property_access_with_a_null_or_non_string_key_is_null() {
+    let db = TestDb::new();
+    db.run("CREATE (:User {name: 'Alice'})");
+    let rows = db.run("MATCH (n:User) RETURN n[null] AS a, n[1] AS b");
+    assert!(rows[0]["a"].is_null());
+    assert!(rows[0]["b"].is_null());
+}

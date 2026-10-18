@@ -261,6 +261,10 @@ pub fn eval_expr<S: GraphStorage>(
                 (LoraValue::Map(m), LoraValue::String(key)) => {
                     m.get(&key).cloned().unwrap_or(LoraValue::Null)
                 }
+                // `n[k]` reads the property `n.k` would.
+                (LoraValue::Node(_) | LoraValue::Relationship(_), LoraValue::String(key)) => {
+                    eval_property(&base, &key, ctx)
+                }
                 _ => LoraValue::Null,
             }
         }
