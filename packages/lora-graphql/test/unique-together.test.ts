@@ -8,6 +8,7 @@ import {
   ModelError,
   scanExpands,
 } from "../src/index.js";
+import { uniqueTogetherTouched } from "../src/model/unique-together.js";
 import { festivalHarness, type Harness } from "./harness.js";
 
 const typeDefs = /* GraphQL */ `
@@ -441,5 +442,84 @@ describe("model errors", () => {
     ).toContain(
       "@uniqueTogether is not supported on a relationship properties type",
     );
+  });
+});
+
+// G-55: only the write clauses of a @cypher mutation decide which
+// @uniqueTogether types it may write; a read of the type does not.
+describe("@uniqueTogether types a @cypher mutation may write", () => {
+  const sdl = (body: string) => `
+    type Person @node {
+      key: ID! @key
+      rooms: [Room!]! @relationship(type: "IN_ROOM", direction: OUT)
+    }
+    type Room @node
+      @uniqueTogether(fields: ["people"])
+      @uniqueTogether(fields: ["name"], where: { open: { eq: true } }) {
+      key: ID! @key
+      name: String
+      open: Boolean
+      topic: String
+      people: [Person!]! @relationship(type: "IN_ROOM", direction: IN)
+    }
+    type Mark @node { key: ID! @key }
+    type Mutation {
+      touch(key: ID!): Mark @cypher(statement: """
+        ${body}
+      """, columnName: "k")
+    }`;
+  const touched = (body: string) =>
+    uniqueTogetherTouched(buildModel(sdl(body)), body).map((n) => n.name);
+  const warned = (body: string) =>
+    buildModel(sdl(body)).warnings.some((w) => w.field === "touch");
+  const merge = "MERGE (k:Mark {key: $key}) RETURN k";
+
+  test.each([
+    `MATCH (v:Person {key: $key}) WHERE size([(v)-[:IN_ROOM]->(:Room) | 1]) > 0 ${merge}`,
+    `MATCH (v:Person {key: $key}) WHERE size([(v)-->(:Room) | 1]) > 0 ${merge}`,
+    `MATCH (v:Person {key: $key}) MATCH (v)-[:IN_ROOM]->(room:Room) WITH v, room ${merge}`,
+    `MATCH (v:Person {key: $key}) WHERE size([(v)-->() | 1]) > 0 ${merge}`,
+    `MATCH (r:Room) WITH r ${merge} // CREATE (:Room)`,
+    `MATCH (r:Room) WITH r, ':Room' AS s ${merge}`,
+    `MATCH (r:Room) MERGE (k:Mark {key: $key}) ON CREATE SET k.at = 1 RETURN k`,
+    `MATCH (r:Room) FOREACH (x IN [1] | MERGE (k:Mark {key: $key})) WITH r MATCH (k:Mark) RETURN k`,
+    `MATCH (r:Room), (k:Mark {key: $key}) SET k += {seen: true} RETURN k`,
+    `MATCH (r:Room)-[e:IN_ROOM]-(), (k:Mark {key: $key}) DETACH DELETE k RETURN k`,
+  ])("reads only: %s", (body) => {
+    expect(touched(body)).toEqual([]);
+    expect(warned(body)).toBe(false);
+  });
+
+  test.each([
+    `MATCH (r:Room {key: $key}) SET r.name = 'x' MERGE (k:Mark {key: $key}) RETURN k`,
+    `MATCH (r:Room {key: $key}) SET r.open = true MERGE (k:Mark {key: $key}) RETURN k`,
+    `MATCH (r:Room {key: $key}) SET r += {topic: 'x'} MERGE (k:Mark {key: $key}) RETURN k`,
+    `MATCH (v:Person {key: $key}), (r {key: $key}) CREATE (v)-[:IN_ROOM]->(r) MERGE (k:Mark {key: $key}) RETURN k`,
+    `MATCH (v:Person {key: $key})-[e:IN_ROOM]->() DELETE e MERGE (k:Mark {key: $key}) RETURN k`,
+    `MATCH (v:Person {key: $key}) DETACH DELETE v MERGE (k:Mark {key: $key}) RETURN k`,
+    `CREATE (:Room {key: $key}) MERGE (k:Mark {key: $key}) RETURN k`,
+    `MATCH (v:Person {key: $key}) FOREACH (r IN [1] | CREATE (v)-[:IN_ROOM]->(:Mark)) MERGE (k:Mark {key: $key}) RETURN k`,
+    `MATCH (v:Person {key: $key}) CALL { WITH v MERGE (v)-[:IN_ROOM]->(:Mark) } MERGE (k:Mark {key: $key}) RETURN k`,
+    // Bound to nothing the text names: the whole statement counts.
+    `MATCH (r:Room {key: $key}) WITH r AS x SET x = {} MERGE (k:Mark {key: $key}) RETURN k`,
+  ])("writes: %s", (body) => {
+    expect(touched(body)).toEqual(["Room"]);
+    expect(warned(body)).toBe(true);
+  });
+
+  test("a read of the type is not checked after the statement", async () => {
+    const h = await festivalHarness({
+      typeDefs: sdl(
+        `MATCH (v:Person {key: $key}) WHERE size([(v)-[:IN_ROOM]->(:Room) | 1]) > 0 ${merge}`,
+      ),
+      seed: [],
+    });
+    // Two rooms with the same people: a scan would refuse any write.
+    await h.db.execute(
+      `CREATE (p:Person {key: 'p'}), (p)-[:IN_ROOM]->(:Room {key: 'a'}), (p)-[:IN_ROOM]->(:Room {key: 'b'})`,
+    );
+    const res = await h.run(`mutation { touch(key: "p") { key } }`);
+    expect(res.errors).toBeUndefined();
+    expect(res.data).toEqual({ touch: { key: "p" } });
   });
 });

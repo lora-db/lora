@@ -266,11 +266,18 @@ On `Mutation` a statement may write, with these consequences:
   (`RETURN p`, not a map). They are read again by key in the same
   transaction, so the client's selection and the type's read rules apply.
 - **`@uniqueTogether` is checked by scan.** After the statement, every
-  `@uniqueTogether` type it might have written (one whose label,
-  constrained relationship type or constrained property the text names) is
-  checked over all its nodes, in the same transaction. The model warns
-  about each such mutation. Prefer a generated mutation for a constrained
-  type.
+  `@uniqueTogether` type it might have written is checked over all its
+  nodes, in the same transaction. A type counts when a write clause
+  (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`) names its label, a
+  constrained relationship type or a constrained property, or writes a
+  variable bound to one of those (`SET r += {…}`, `DELETE e`, or
+  `DETACH DELETE` of a node on a constrained relationship). Reading the
+  type in a `MATCH`, a `WHERE` or a pattern comprehension does not count,
+  so "write my read mark, but only if I'm in the room" is not checked. A
+  write clause on a variable the text binds to no label (`WITH r AS x
+  SET x = {}`) makes every type the statement names count. The model
+  warns about each such mutation. Prefer a generated mutation for a
+  constrained type.
 - **Nothing else is validated.** Cardinality, required relationships and
   the authorization rules of the types it writes are the statement's
   responsibility.
