@@ -209,8 +209,8 @@ describe("update and delete", () => {
       festival: null,
       info: { nodesCreated: 0 },
     });
-    expect(changes).toHaveLength(1);
-    expect(changes[0]!.updated).toEqual([]);
+    // Nothing written, nothing reported.
+    expect(changes).toHaveLength(0);
   });
 
   test("keys are immutable", async () => {

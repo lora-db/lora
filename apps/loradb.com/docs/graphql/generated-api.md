@@ -411,6 +411,21 @@ where a free key would be created. It is never reported as taken, so a
 mutation cannot be used to find out whether a hidden node exists. A key
 held by a node the caller can read is reported as taken.
 
+A row that would change nothing is not written. Its fields already hold
+the values given (a `null` already absent), and each `connect` is already
+there with the edge properties given; a single relationship holds no other
+target. No `SET` and no relationship work run for it, it does not count
+in `nodesUpdated`, and `onWrite`, subscriptions and the response cache see
+no write; it is still in the payload. Re-running a seed over a seeded
+graph costs a read per row. A row is compared only when the comparison
+can stand in for the write: its fields readable by any reader of the node
+(not write-only, masked or behind a field `READ` rule, so a guess at a
+hidden value is always written), its relationship inputs plain `connect`s
+to a concrete type without relationship rules, and no `@populatedBy` on
+update. Any other row is written as before, and the type's `UPDATE` rules
+still hold on an unchanged row. An `@timestamp` on update is not bumped
+for a row that changed nothing.
+
 ### Bulk updates and deletes
 
 `updateFestivals(where:, limit:)` and `deleteFestivals(where:, limit:)`

@@ -1491,6 +1491,9 @@ export class LoraGraphQL {
         info.fieldNodes,
         info.fieldName,
       );
+      // A mutation that wrote nothing (an upsert of unchanged rows, an
+      // update that matched none) reports nothing either.
+      if (change.entities.length === 0 && !change.broad) return payload;
       const owned = (context as LoraGraphQLContext | undefined)?.transaction;
       if (owned) owned.record(change);
       else this.#changes.emit(change);

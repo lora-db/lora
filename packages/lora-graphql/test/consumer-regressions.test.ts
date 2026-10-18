@@ -2087,3 +2087,158 @@ describe("G-56: @sortable infers a RANGE index only where a root sort seeks it",
     t.close();
   });
 });
+
+describe("G-57: an upsert of an unchanged row writes nothing", () => {
+  const typeDefs =
+    J +
+    `type Artist @node @mutation(operations: [CREATE, UPDATE]) { key: ID! @key  name: String }
+     type Genre @node @mutation(operations: [CREATE, UPDATE]) { key: ID! @key }
+     type Credit @relationshipProperties { role: String }
+     type Track @node @mutation(operations: [CREATE, UPDATE]) {
+       key: ID! @key
+       title: String!
+       note: String
+       released: Date
+       secret: String @selectable(onRead: false)
+       artist: Artist @relationship(type: "BY", direction: OUT, properties: "Credit")
+       genres: [Genre!]! @relationship(type: "IN_GENRE", direction: OUT)
+     }`;
+  const seed = [
+    "CREATE (:Artist {key: 'a1'}), (:Artist {key: 'a2'}), (:Genre {key: 'g1'}), (:Genre {key: 'g2'})",
+  ];
+  const info =
+    "info { nodesCreated nodesUpdated relationshipsCreated relationshipsDeleted }";
+  const up = (t: Test, input: string) =>
+    t.data<{
+      upsertTracks: {
+        tracks: Array<{ key: string; title: string }>;
+        info: Record<string, number>;
+      };
+    }>(
+      `mutation { upsertTracks(input: [${input}]) { tracks { key title } ${info} } }`,
+      {},
+      admin,
+    );
+  const row = `{ key: "t", title: "A", note: null, released: "2024-01-02",
+    artist: { connect: { key: "a1", edge: { role: "lead" } } },
+    genres: { connect: [{ key: "g1" }, { key: "g2" }] } }`;
+
+  test("the issue's repro: the second upsert updates nothing", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const changes: unknown[] = [];
+    t.lora.onWrite((c) => changes.push(c));
+    expect(
+      (await up(t, `{ key: "t", title: "A" }`)).upsertTracks.info,
+    ).toMatchObject({ nodesCreated: 1, nodesUpdated: 0 });
+    expect(changes).toHaveLength(1);
+    const again = await up(t, `{ key: "t", title: "A" }`);
+    expect(again.upsertTracks.info).toMatchObject({
+      nodesCreated: 0,
+      nodesUpdated: 0,
+    });
+    // The payload still names the node; nothing is reported as written.
+    expect(again.upsertTracks.tracks).toEqual([{ key: "t", title: "A" }]);
+    expect(changes).toHaveLength(1);
+    t.close();
+  });
+
+  test("properties, a removal, a single and a list connect", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    await up(t, row);
+    const again = await up(t, row);
+    expect(again.upsertTracks.info).toEqual({
+      nodesCreated: 0,
+      nodesUpdated: 0,
+      relationshipsCreated: 0,
+      relationshipsDeleted: 0,
+    });
+    // A changed edge property, title or target is written.
+    expect(
+      (await up(t, row.replace('"lead"', '"guest"'))).upsertTracks.info
+        .nodesUpdated,
+    ).toBe(1);
+    expect(
+      (await up(t, row.replace('"lead"', '"guest"'))).upsertTracks.info
+        .nodesUpdated,
+    ).toBe(0);
+    expect(
+      (await up(t, row.replace('title: "A"', 'title: "B"'))).upsertTracks.info
+        .nodesUpdated,
+    ).toBe(1);
+    const moved = await up(
+      t,
+      row.replace('title: "A"', 'title: "B"').replace('"a1"', '"a2"'),
+    );
+    expect(moved.upsertTracks.info).toMatchObject({
+      nodesUpdated: 1,
+      relationshipsCreated: 1,
+      relationshipsDeleted: 1,
+    });
+    // A note now stored, and removed again by null.
+    expect(
+      (await up(t, `{ key: "t", title: "B", note: "x" }`)).upsertTracks.info
+        .nodesUpdated,
+    ).toBe(1);
+    expect(
+      (await up(t, `{ key: "t", title: "B", note: "x" }`)).upsertTracks.info
+        .nodesUpdated,
+    ).toBe(0);
+    expect(
+      (await up(t, `{ key: "t", title: "B", note: null }`)).upsertTracks.info
+        .nodesUpdated,
+    ).toBe(1);
+    expect(await cypher(t, "MATCH (n:Track) RETURN n.note AS note")).toEqual([
+      { note: null },
+    ]);
+    t.close();
+  });
+
+  test("a single relationship holding a second target is written", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    await up(t, row);
+    await t.db.execute(
+      "MATCH (t:Track), (a:Artist {key: 'a2'}) CREATE (t)-[:BY]->(a)",
+    );
+    const again = await up(t, row);
+    expect(again.upsertTracks.info).toMatchObject({
+      nodesUpdated: 1,
+      relationshipsDeleted: 1,
+    });
+    expect(
+      await cypher(t, "MATCH (:Track)-[:BY]->(a) RETURN a.key AS key"),
+    ).toEqual([{ key: "a1" }]);
+    t.close();
+  });
+
+  test("a write-only field is always written: no equality oracle", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    await up(t, `{ key: "t", title: "A", secret: "s" }`);
+    expect(
+      (await up(t, `{ key: "t", title: "A", secret: "s" }`)).upsertTracks.info
+        .nodesUpdated,
+    ).toBe(1);
+    t.close();
+  });
+
+  test("an unchanged row still meets the update's rules", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs:
+        J +
+        `type Doc @node @mutation(operations: [CREATE, UPDATE])
+           @authorization(validate: [{ operations: [UPDATE], where: { node: { owner: { eq: "$jwt.sub" } } } }]) {
+           key: ID! @key  owner: String  title: String }`,
+      seed: ["CREATE (:Doc {key: 'd', owner: 'root', title: 'A'})"],
+    });
+    const upsert = (sub: string) =>
+      t.run(
+        `mutation { upsertDocs(input: [{ key: "d", title: "A" }]) { info { nodesUpdated } } }`,
+        {},
+        { jwt: { sub, roles: ["admin"] } },
+      );
+    expect((await upsert("root")).data).toEqual({
+      upsertDocs: { info: { nodesUpdated: 0 } },
+    });
+    expect(codes(await upsert("other"))).toEqual(["FORBIDDEN"]);
+    t.close();
+  });
+});

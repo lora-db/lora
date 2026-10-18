@@ -546,8 +546,9 @@ Needs a driver with `begin()`.
 onWrite(listener: (change: WriteChange) => void): () => void
 ```
 
-Called after every committed mutation made through this instance, with
-its exact write-set. Returns an unsubscribe function. A throwing listener
+Called after every committed mutation made through this instance that
+wrote something, with its exact write-set (an update that matched no node
+or an upsert of unchanged rows reports nothing). Returns an unsubscribe function. A throwing listener
 does not fail the write. With `changeFeed: true` it still reports only
 this instance's mutations.
 

@@ -46,6 +46,7 @@ import {
   refused,
   supportsAssert,
 } from "./mutate/single-call.js";
+import { existingRows } from "./mutate/unchanged.js";
 import { validateInput } from "./mutate/validate.js";
 
 /** The payload's node selection, merged across aliases. */
@@ -563,35 +564,31 @@ async function upsert(
   // one the caller cannot read (even where the UPDATE rules would let it
   // through) takes the create path and fails like a denied create
   // (Runner.moveHiddenKeys): updating it would reveal it (G-20).
-  const ctx = runner.ctx();
-  const existing = new Set(
-    (
-      await runner.run(
-        `UNWIND ${printExpr(bind(ctx, keys))} AS k\n` +
-          `MATCH (n:${name(node.labels[0]!)}) WHERE n.${name(node.key.property)} = k` +
-          andText(authFilter(ctx, node, "n", "READ")) +
-          andText(authFilter(ctx, node, "n", "UPDATE")) +
-          `\nRETURN n.${name(node.key.property)} AS key`,
-        ctx,
-      )
-    ).map((r) => keyOf(r["key"])),
+  // Fields and relationships set only on create keep the value they were
+  // created with, so an update writes the rest.
+  const kept = inputs.map((input) =>
+    Object.fromEntries(
+      Object.entries(input).filter(([k]) => {
+        const f = node.fields.get(k);
+        return (
+          (f?.kind !== "scalar" && f?.kind !== "relationship") ||
+          settable(f, "UPDATE")
+        );
+      }),
+    ),
+  );
+  // The same read finds the rows that would write nothing: no SET, no
+  // relationship work, no update counted or reported (G-57).
+  const { existing, same } = await existingRows(
+    runner,
+    node,
+    keys.map((key, i) => ({ key, input: kept[i]! })),
   );
   const updates: Array<{ key: unknown; input: Input }> = [];
   for (const [i, input] of inputs.entries()) {
-    if (existing.has(keyOf(keys[i]))) {
-      // Fields and relationships set only on create keep the value they
-      // were created with.
-      const kept = Object.fromEntries(
-        Object.entries(input).filter(([k]) => {
-          const f = node.fields.get(k);
-          return (
-            (f?.kind !== "scalar" && f?.kind !== "relationship") ||
-            settable(f, "UPDATE")
-          );
-        }),
-      );
-      updates.push({ key: keys[i], input: kept });
-    } else plan.create(node, input);
+    const k = keyOf(keys[i]);
+    if (!existing.has(k)) plan.create(node, input);
+    else if (!same.has(k)) updates.push({ key: keys[i], input: kept[i]! });
   }
   await runner.update(plan, node, updates);
   await runner.apply(plan);
