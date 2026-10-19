@@ -12,6 +12,7 @@
 //!
 //! Modes:
 //!   storage_baseline mem <variant> <N>   one variant, retained heap + RSS
+//!   storage_baseline build <N> [rounds] bulk-build timings, node and relationship phases
 //!   storage_baseline lat <N>             latency suite + snapshot save/load
 //!   storage_baseline wal <N>             Cypher ingest with WAL, then recover()
 //!
@@ -162,6 +163,34 @@ fn build(n: u64, props: Props, rels: bool, rel_props: bool) -> InMemoryGraph {
         }
     }
     g
+}
+
+/// Bulk-build timings: the node phase and the relationship phase of
+/// [`build`] separately, `rounds` times in one process (compare minimums).
+fn build_mode(n: u64, rounds: usize) {
+    for round in 0..rounds {
+        let t = Instant::now();
+        let mut g = InMemoryGraph::new();
+        for i in 0..n {
+            g.create_node(vec!["Person".to_string()], node_props(i, Props::All));
+        }
+        let nodes_s = t.elapsed().as_secs_f64();
+        let t = Instant::now();
+        let w = intern("w");
+        for i in 0..n {
+            for k in 0..DEGREE {
+                let mut p = Properties::new();
+                p.insert(w.clone(), PropertyValue::Int(((i + k) % 100) as i64));
+                g.create_relationship(i, target(i, k, n), "KNOWS", p)
+                    .expect("rel");
+            }
+        }
+        let rels_s = t.elapsed().as_secs_f64();
+        let t = Instant::now();
+        drop(g);
+        let drop_s = t.elapsed().as_secs_f64();
+        println!("build round={round} nodes_s={nodes_s:.3} rels_s={rels_s:.3} drop_s={drop_s:.3}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1260,6 +1289,10 @@ fn main() {
     let _ = Duration::ZERO;
     match args.get(1).map(String::as_str) {
         Some("mem") => mem_mode(&args[2], args[3].parse().unwrap()),
+        Some("build") => build_mode(
+            args[2].parse().unwrap(),
+            args.get(3).map_or(5, |r| r.parse().unwrap()),
+        ),
         Some("lat") => lat_mode(args[2].parse().unwrap()),
         Some("wal") => wal_mode(args[2].parse().unwrap()),
         Some("restart") => restart_mode(args[2].parse().unwrap()),
@@ -1269,7 +1302,7 @@ fn main() {
         Some("labels") => labels_mode(args[2].parse().unwrap()),
         Some("wide") => wide_mode(args[2].parse().unwrap()),
         _ => eprintln!(
-            "usage: storage_baseline mem <variant> <N> | lat <N> | wal <N> | restart <N> | idlat <N> | hop <N> | scan <N> | labels <L> | wide <W>"
+            "usage: storage_baseline mem <variant> <N> | build <N> [rounds] | lat <N> | wal <N> | restart <N> | idlat <N> | hop <N> | scan <N> | labels <L> | wide <W>"
         ),
     }
 }

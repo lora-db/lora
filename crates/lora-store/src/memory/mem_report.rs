@@ -79,10 +79,11 @@ pub struct MemoryReport {
     /// `relationships`: the slot tree plus each encoded record.
     pub relationships_bytes: usize,
 
-    /// `outgoing`: the slot tree plus the heap of every adjacency list
-    /// too long to sit inline.
+    /// Outgoing adjacency: its entries, plus half of the shared slot tree
+    /// and of each node's list header and free space (a node keeps both
+    /// directions in one allocation).
     pub outgoing_bytes: usize,
-    /// Same for `incoming`.
+    /// Incoming adjacency, charged the same way.
     pub incoming_bytes: usize,
 
     /// `nodes_by_label: BTreeMap<String, IdBitmap>`.
@@ -245,8 +246,7 @@ pub(super) fn estimate(graph: &super::InMemoryGraph) -> MemoryReport {
 
     report.nodes_bytes = record_slab_bytes(&graph.nodes) + graph.dicts.heap_bytes();
     report.relationships_bytes = record_slab_bytes(&graph.relationships);
-    report.outgoing_bytes = adjacency_bytes(&graph.outgoing);
-    report.incoming_bytes = adjacency_bytes(&graph.incoming);
+    (report.outgoing_bytes, report.incoming_bytes) = adjacency_bytes(&graph.adjacency);
     report.label_index_bytes = label_or_type_bytes(&graph.nodes_by_label);
     report.type_index_bytes = label_or_type_bytes(&graph.relationships_by_type);
     let sketches = &graph.distinct_stats;
@@ -313,9 +313,17 @@ fn record_slab_bytes(slab: &ChunkedVec<Option<crate::encoded::Blob>>) -> usize {
             .sum::<usize>()
 }
 
-fn adjacency_bytes(adj: &ChunkedVec<super::adjacency::AdjList>) -> usize {
-    // Short lists are inline and own no heap; spilled ones do.
-    chunked_outer_bytes(adj) + adj.iter().map(|list| list.heap_bytes()).sum::<usize>()
+/// Both directions share one slot tree and one allocation per node: the
+/// tree is charged half to each, and see `Adjacency::heap_bytes_by_side`.
+fn adjacency_bytes(adj: &ChunkedVec<super::adjacency::Adjacency>) -> (usize, usize) {
+    let tree = chunked_outer_bytes(adj);
+    let (mut out, mut inc) = (tree / 2, tree - tree / 2);
+    for lists in adj.iter() {
+        let (o, i) = lists.heap_bytes_by_side();
+        out += o;
+        inc += i;
+    }
+    (out, inc)
 }
 
 fn label_or_type_bytes(map: &BTreeMap<String, super::id_bitmap::IdBitmap>) -> usize {

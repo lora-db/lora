@@ -13,7 +13,7 @@ use crate::{
     Properties, PropertyValue, RelationshipId, RelationshipRecord,
 };
 
-use super::adjacency::{AdjEntry, AdjList, TypeFilter};
+use super::adjacency::{AdjEntry, AdjSide, Adjacency, TypeFilter};
 use super::chunked_vec::ChunkedVec;
 use super::constraint_catalog::{
     ConstraintCatalog, ConstraintRequest, CreateConstraintError, CreateConstraintOutcome,
@@ -72,13 +72,12 @@ pub struct InMemoryGraph {
     pub(super) live_node_count: usize,
     pub(super) live_rel_count: usize,
 
-    /// Adjacency keyed by NodeId. `outgoing[id]` lists the relationships
-    /// that leave `id` as `(type, target, relationship id)`; `incoming[id]`
-    /// mirrors it with the source as the neighbour. A hop reads only the
-    /// list: it never touches a relationship record. See
+    /// Adjacency keyed by NodeId. `adjacency[id]` lists the relationships
+    /// that leave `id` as `(type, target, relationship id)` and those that
+    /// enter it with the source as the neighbour, in one allocation. A hop
+    /// reads only the list: it never touches a relationship record. See
     /// [`super::adjacency`].
-    pub(super) outgoing: ChunkedVec<AdjList>,
-    pub(super) incoming: ChunkedVec<AdjList>,
+    pub(super) adjacency: ChunkedVec<Adjacency>,
 
     // secondary indexes
     /// Label -> the ids of the nodes that carry it, ascending. An
@@ -141,8 +140,7 @@ impl std::fmt::Debug for InMemoryGraph {
                 "relationships",
                 &self.iter_rels().map(|(_, r)| r).collect::<Vec<_>>(),
             )
-            .field("outgoing", &self.outgoing)
-            .field("incoming", &self.incoming)
+            .field("adjacency", &self.adjacency)
             .field("nodes_by_label", &self.nodes_by_label)
             .field("relationships_by_type", &self.relationships_by_type)
             .field("indexes", &self.indexes)
@@ -184,8 +182,7 @@ impl Clone for InMemoryGraph {
             relationships: self.relationships.clone(),
             live_node_count: self.live_node_count,
             live_rel_count: self.live_rel_count,
-            outgoing: self.outgoing.clone(),
-            incoming: self.incoming.clone(),
+            adjacency: self.adjacency.clone(),
             dicts: self.dicts.clone(),
             nodes_by_label: self.nodes_by_label.clone(),
             relationships_by_type: self.relationships_by_type.clone(),
@@ -397,19 +394,13 @@ impl InMemoryGraph {
             self.nodes.try_reserve_exact(additional).map_err(|e| {
                 format!("node id {id} requires {target} slots, but allocation failed: {e}")
             })?;
-            self.outgoing.try_reserve_exact(additional).map_err(|e| {
-                format!(
-                    "node id {id} requires {target} adjacency slots, but allocation failed: {e}"
-                )
-            })?;
-            self.incoming.try_reserve_exact(additional).map_err(|e| {
+            self.adjacency.try_reserve_exact(additional).map_err(|e| {
                 format!(
                     "node id {id} requires {target} adjacency slots, but allocation failed: {e}"
                 )
             })?;
             self.nodes.resize_with(target, || None);
-            self.outgoing.resize_with(target, AdjList::new);
-            self.incoming.resize_with(target, AdjList::new);
+            self.adjacency.resize_with(target, Adjacency::default);
         }
         Ok(target - 1)
     }
@@ -471,11 +462,8 @@ impl InMemoryGraph {
             // shrink the outer Vec — leaving the slot lets new ids reuse the
             // same index without growth churn (and `next_node_id` is monotonic
             // anyway, so no immediate reuse).
-            if let Some(out) = self.outgoing.get_mut(idx) {
-                out.clear();
-            }
-            if let Some(inc) = self.incoming.get_mut(idx) {
-                inc.clear();
+            if let Some(adj) = self.adjacency.get_mut(idx) {
+                adj.clear();
             }
         }
         removed.map(|blob| StoredNode::new(id, &blob, &self.dicts).to_record())
@@ -491,13 +479,13 @@ impl InMemoryGraph {
     }
 
     #[inline]
-    pub(super) fn outgoing_at(&self, id: NodeId) -> Option<&AdjList> {
-        self.outgoing.get(Self::slot_index(id)?)
+    pub(super) fn outgoing_at(&self, id: NodeId) -> Option<AdjSide<'_>> {
+        Some(self.adjacency.get(Self::slot_index(id)?)?.outgoing())
     }
 
     #[inline]
-    pub(super) fn incoming_at(&self, id: NodeId) -> Option<&AdjList> {
-        self.incoming.get(Self::slot_index(id)?)
+    pub(super) fn incoming_at(&self, id: NodeId) -> Option<AdjSide<'_>> {
+        Some(self.adjacency.get(Self::slot_index(id)?)?.incoming())
     }
 
     /// Visit the entries of one adjacency list that pass `filter`.
@@ -507,7 +495,7 @@ impl InMemoryGraph {
     fn try_for_each_adjacent_entry<F, E>(
         node_id: NodeId,
         filter: &TypeFilter,
-        adj: &AdjList,
+        adj: AdjSide<'_>,
         skip_self_loops: bool,
         visit: &mut F,
     ) -> Result<(), E>
@@ -627,23 +615,13 @@ impl InMemoryGraph {
     /// never re-used, so the list can never see a duplicate.
     fn adjacency_push(&mut self, node_id: NodeId, outgoing: bool, entry: AdjEntry) {
         if let Ok(idx) = self.ensure_node_slot_checked(node_id) {
-            let lists = if outgoing {
-                &mut self.outgoing
-            } else {
-                &mut self.incoming
-            };
-            lists[idx].push(entry);
+            self.adjacency[idx].push(outgoing, entry);
         }
     }
 
     fn adjacency_remove(&mut self, node_id: NodeId, outgoing: bool, rel_id: RelationshipId) {
-        let lists = if outgoing {
-            &mut self.outgoing
-        } else {
-            &mut self.incoming
-        };
-        if let Some(list) = Self::slot_index(node_id).and_then(|idx| lists.get_mut(idx)) {
-            list.remove(rel_id);
+        if let Some(adj) = Self::slot_index(node_id).and_then(|idx| self.adjacency.get_mut(idx)) {
+            adj.remove(outgoing, rel_id);
         }
     }
 
