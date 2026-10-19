@@ -123,7 +123,7 @@ impl<T> ChunkedVec<T> {
         self.len
     }
 
-    #[inline]
+    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -177,6 +177,7 @@ impl<T> ChunkedVec<T> {
     /// allocation. Collecting `iter()` instead grows the vector by doubling
     /// and copies element by element, which doubled the cost of opening a
     /// label scan.
+    #[cfg(test)]
     pub(super) fn to_vec(&self) -> Vec<T>
     where
         T: Clone,
@@ -294,6 +295,7 @@ impl<T: Clone> ChunkedVec<T> {
     }
 
     /// Remove element `i` by moving the last element into its place.
+    #[cfg(test)]
     pub(super) fn swap_remove(&mut self, i: usize) -> T {
         assert!(i < self.len, "swap_remove index {i} out of bounds");
         let last = self.pop().expect("non-empty");

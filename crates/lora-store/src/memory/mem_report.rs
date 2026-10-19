@@ -85,9 +85,9 @@ pub struct MemoryReport {
     /// Same for `incoming`.
     pub incoming_bytes: usize,
 
-    /// `nodes_by_label: BTreeMap<String, ChunkedVec<NodeId>>`.
+    /// `nodes_by_label: BTreeMap<String, IdBitmap>`.
     pub label_index_bytes: usize,
-    /// `relationships_by_type: BTreeMap<String, ChunkedVec<RelationshipId>>`.
+    /// `relationships_by_type: BTreeMap<String, IdBitmap>`.
     pub type_index_bytes: usize,
 
     /// Hash-bucket property registry (`find_*_by_property`).
@@ -318,14 +318,14 @@ fn adjacency_bytes(adj: &ChunkedVec<super::adjacency::AdjList>) -> usize {
     chunked_outer_bytes(adj) + adj.iter().map(|list| list.heap_bytes()).sum::<usize>()
 }
 
-fn label_or_type_bytes(map: &BTreeMap<String, ChunkedVec<u64>>) -> usize {
+fn label_or_type_bytes(map: &BTreeMap<String, super::id_bitmap::IdBitmap>) -> usize {
     let mut total = 0;
     for (key, ids) in map {
         total += BTREE_PER_ENTRY
             + size_of::<String>()
             + key.capacity()
-            + size_of::<ChunkedVec<u64>>()
-            + chunked_outer_bytes(ids);
+            + size_of::<super::id_bitmap::IdBitmap>()
+            + ids.heap_bytes();
     }
     total
 }

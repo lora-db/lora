@@ -223,13 +223,18 @@ fn mem_mode(variant: &str, n: u64) {
     let build_s = t.elapsed().as_secs_f64();
     let bytes = (live() - live0) as f64;
     let rss = rss_bytes().saturating_sub(rss0) as f64;
-    let estimate = if let Some(g) = keep.downcast_ref::<InMemoryGraph>() {
-        g.memory_estimate().total_bytes() as f64
-    } else if let Some(db) = keep.downcast_ref::<Database<InMemoryGraph>>() {
-        db.with_store(|g| g.memory_estimate().total_bytes()) as f64
+    let report = if let Some(g) = keep.downcast_ref::<InMemoryGraph>() {
+        Some(g.memory_estimate())
     } else {
-        0.0
+        keep.downcast_ref::<Database<InMemoryGraph>>()
+            .map(|db| db.with_store(|g| g.memory_estimate()))
     };
+    let estimate = report.as_ref().map_or(0.0, |r| r.total_bytes() as f64);
+    if std::env::var_os("MEM_REPORT").is_some() {
+        if let Some(r) = &report {
+            eprintln!("{r:#?}");
+        }
+    }
     println!(
         "mem variant={variant} nodes={nodes} rels={rels} props_per_node={props_per_node} \
          live_bytes={bytes:.0} rss_delta={rss:.0} estimate={estimate:.0} \

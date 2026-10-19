@@ -25,6 +25,7 @@ use super::entity_index_store::{
 };
 use super::fulltext_index::FulltextRegistry;
 use super::hnsw::HnswParams;
+use super::id_bitmap::IdBitmap;
 use super::index_catalog::{
     CreateIndexError, CreateIndexOutcome, DropIndexError, DropIndexOutcome, IndexCatalog,
     IndexDefinition, IndexRequest, StoredIndexEntity, StoredIndexKind, StoredIndexState,
@@ -80,13 +81,12 @@ pub struct InMemoryGraph {
     pub(super) incoming: ChunkedVec<AdjList>,
 
     // secondary indexes
-    /// Label -> the (unique, monotonic) node ids that carry it. The inner
-    /// `Vec` instead of `BTreeSet` because every node id is inserted at most
-    /// once per label (no dedup needed) and every consumer iterates the
-    /// whole list anyway — contiguous storage iterates faster than a
-    /// tree-of-pointers, and removes via `swap_remove` stay O(degree-of-label).
-    pub(super) nodes_by_label: BTreeMap<String, ChunkedVec<NodeId>>,
-    pub(super) relationships_by_type: BTreeMap<String, ChunkedVec<RelationshipId>>,
+    /// Label -> the ids of the nodes that carry it, ascending. An
+    /// [`IdBitmap`] holds an id in two bytes or less (an eighth of a byte
+    /// for a label most nodes carry), where a list held eight, and
+    /// removes one by binary search.
+    pub(super) nodes_by_label: BTreeMap<String, IdBitmap>,
+    pub(super) relationships_by_type: BTreeMap<String, IdBitmap>,
 
     /// All index machinery — the declared-index catalog, hash-bucket
     /// property registry, and the per-entity-kind secondary index
@@ -664,7 +664,7 @@ impl InMemoryGraph {
         // `node_id` is unique, so we push unconditionally; the previous
         // `contains` guard turned bulk CREATE into O(n²).
         if let Some(bucket) = self.nodes_by_label.get_mut(label) {
-            bucket.push(node_id);
+            bucket.insert(node_id);
         } else {
             self.nodes_by_label
                 .insert(label.to_string(), std::iter::once(node_id).collect());
@@ -673,10 +673,7 @@ impl InMemoryGraph {
 
     fn remove_node_label_index(&mut self, node_id: NodeId, label: &str) {
         if let Some(ids) = self.nodes_by_label.get_mut(label) {
-            let pos = ids.iter().position(|&id| id == node_id);
-            if let Some(pos) = pos {
-                ids.swap_remove(pos);
-            }
+            ids.remove(node_id);
             if ids.is_empty() {
                 self.nodes_by_label.remove(label);
             }
@@ -686,7 +683,7 @@ impl InMemoryGraph {
     fn insert_relationship_type_index(&mut self, rel_id: RelationshipId, rel_type: &str) {
         // See `insert_node_label_index` for the same hot-path rationale.
         if let Some(bucket) = self.relationships_by_type.get_mut(rel_type) {
-            bucket.push(rel_id);
+            bucket.insert(rel_id);
         } else {
             self.relationships_by_type
                 .insert(rel_type.to_string(), std::iter::once(rel_id).collect());
@@ -695,10 +692,7 @@ impl InMemoryGraph {
 
     fn remove_relationship_type_index(&mut self, rel_id: RelationshipId, rel_type: &str) {
         if let Some(ids) = self.relationships_by_type.get_mut(rel_type) {
-            let pos = ids.iter().position(|&id| id == rel_id);
-            if let Some(pos) = pos {
-                ids.swap_remove(pos);
-            }
+            ids.remove(rel_id);
             if ids.is_empty() {
                 self.relationships_by_type.remove(rel_type);
             }
@@ -2243,7 +2237,7 @@ impl InMemoryGraph {
                 .get(label)
                 .into_iter()
                 .flat_map(|ids| ids.iter())
-                .filter_map(|&id| self.node_at(id))
+                .filter_map(|id| self.node_at(id))
                 .filter(|node| node.properties().get(key).is_some_and(|v| v == *value))
                 .map(|node| node.to_record())
                 .collect(),
@@ -2267,7 +2261,7 @@ impl InMemoryGraph {
                 .get(label)
                 .into_iter()
                 .flat_map(|ids| ids.iter())
-                .filter_map(|&id| {
+                .filter_map(|id| {
                     (self
                         .node_at(id)?
                         .properties()
@@ -2295,7 +2289,7 @@ impl InMemoryGraph {
             .get(label)
             .into_iter()
             .flat_map(|ids| ids.iter())
-            .filter_map(|&id| self.node_at(id))
+            .filter_map(|id| self.node_at(id))
             .any(|node| node.properties().get(key).is_some_and(|v| v == *value))
     }
 
@@ -2311,7 +2305,7 @@ impl InMemoryGraph {
                 .get(rel_type)
                 .into_iter()
                 .flat_map(|ids| ids.iter())
-                .filter_map(|&id| self.rel_at(id))
+                .filter_map(|id| self.rel_at(id))
                 .filter(|rel| rel.properties().get(key).is_some_and(|v| v == *value))
                 .map(|rel| rel.to_record())
                 .collect(),
@@ -2335,7 +2329,7 @@ impl InMemoryGraph {
                 .get(rel_type)
                 .into_iter()
                 .flat_map(|ids| ids.iter())
-                .filter_map(|&id| {
+                .filter_map(|id| {
                     (self
                         .rel_at(id)?
                         .properties()
@@ -2363,7 +2357,7 @@ impl InMemoryGraph {
             .get(rel_type)
             .into_iter()
             .flat_map(|ids| ids.iter())
-            .filter_map(|&id| self.rel_at(id))
+            .filter_map(|id| self.rel_at(id))
             .any(|rel| rel.properties().get(key).is_some_and(|v| v == *value))
     }
 

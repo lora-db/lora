@@ -474,29 +474,24 @@ impl GraphStorage for InMemoryGraph {
         out: &mut Vec<NodeId>,
     ) -> bool {
         let max = max.max(1);
-        let Ok(mut pos) = usize::try_from(*cursor) else {
-            return false;
-        };
-        let mut taken = 0;
         match label {
             Some(label) => {
                 let Some(ids) = self.nodes_by_label.get(label) else {
                     return false;
                 };
-                while taken < max {
-                    let chunk = ids.chunk_from(pos);
-                    if chunk.is_empty() {
-                        break;
-                    }
-                    let chunk = &chunk[..chunk.len().min(max - taken)];
-                    out.extend_from_slice(chunk);
-                    pos += chunk.len();
-                    taken += chunk.len();
+                // The cursor is the next id the scan may return.
+                let mut iter = ids.iter_from(*cursor);
+                for id in iter.by_ref().take(max) {
+                    out.push(id);
+                    *cursor = id + 1;
                 }
-                *cursor = pos as u64;
-                pos < ids.len()
+                iter.next().is_some()
             }
             None => {
+                let Ok(mut pos) = usize::try_from(*cursor) else {
+                    return false;
+                };
+                let mut taken = 0;
                 // The cursor is a slot index; tombstoned slots are skipped.
                 while taken < max {
                     let chunk = self.nodes.chunk_from(pos);
@@ -639,7 +634,7 @@ impl GraphStorage for InMemoryGraph {
             .get(label)
             .into_iter()
             .flat_map(|ids| ids.iter())
-            .filter_map(|&id| self.node_at(id).map(|r| r.to_record()))
+            .filter_map(|id| self.node_at(id).map(|r| r.to_record()))
             .collect()
     }
 
@@ -652,7 +647,7 @@ impl GraphStorage for InMemoryGraph {
             .get(rel_type)
             .into_iter()
             .flat_map(|ids| ids.iter())
-            .filter_map(|&id| self.rel_at(id).map(|r| r.to_record()))
+            .filter_map(|id| self.rel_at(id).map(|r| r.to_record()))
             .collect()
     }
 
@@ -767,7 +762,7 @@ impl GraphStorage for InMemoryGraph {
         let mut keys = BTreeSet::new();
 
         if let Some(ids) = self.nodes_by_label.get(label) {
-            for &id in ids.iter() {
+            for id in ids.iter() {
                 if let Some(node) = self.node_at(id) {
                     for key in node.properties().keys() {
                         keys.insert(key.to_string());
@@ -783,7 +778,7 @@ impl GraphStorage for InMemoryGraph {
         let mut keys = BTreeSet::new();
 
         if let Some(ids) = self.relationships_by_type.get(rel_type) {
-            for &id in ids.iter() {
+            for id in ids.iter() {
                 if let Some(rel) = self.rel_at(id) {
                     for key in rel.properties().keys() {
                         keys.insert(key.to_string());
