@@ -33,6 +33,7 @@
 //!
 //! The API mirrors the subset of `Vec` the store uses.
 
+use super::ARC_HEADER;
 use std::collections::TryReserveError;
 use std::sync::Arc;
 
@@ -187,7 +188,6 @@ impl<T> ChunkedVec<T> {
     /// less the one pointer per leaf the estimator charges per chunk),
     /// for the memory estimator.
     pub(super) fn tree_overhead_bytes(&self) -> usize {
-        const ARC_HEADER: usize = 2 * size_of::<usize>();
         ARC_HEADER + self.root.len() * (size_of::<Interior<T>>() + ARC_HEADER)
     }
 }

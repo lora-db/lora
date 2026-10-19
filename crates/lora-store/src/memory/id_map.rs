@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 /// `std::sync::Arc<T>`: strong + weak refcount header before the value.
-const ARC_HEADER: usize = 2 * std::mem::size_of::<usize>();
+use super::ARC_HEADER;
 
 /// Target chunks per group. Appends fill the last group to this many
 /// chunks before starting a new one.

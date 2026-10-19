@@ -34,9 +34,11 @@
 //! folds it back in. Records of [`LARGE_MIN`] bytes or more are always
 //! loose, so a segment stays small enough for `u32` offsets.
 
+use super::ARC_HEADER;
 use std::sync::Arc;
 
 use super::chunked_vec::{CHUNK, FANOUT};
+use crate::varint;
 
 const SHIFT: u32 = CHUNK.trailing_zeros();
 const MASK: usize = CHUNK - 1;
@@ -57,42 +59,53 @@ const LARGE_MIN: usize = 1 << 16;
 /// Updates a leaf keeps loose, at most, before an update that does not
 /// fit its segment rebuilds the segment instead.
 const LOOSE_MAX: u32 = 32;
-
-#[inline]
-fn varint_len(value: usize) -> usize {
-    (64 - (value as u64 | 1).leading_zeros() as usize).div_ceil(7)
-}
-
-#[inline]
-fn put_varint(out: &mut [u8], pos: &mut usize, mut value: usize) {
-    while value >= 0x80 {
-        out[*pos] = value as u8 | 0x80;
-        *pos += 1;
-        value >>= 7;
-    }
-    out[*pos] = value as u8;
-    *pos += 1;
-}
-
-#[inline]
-fn get_varint(bytes: &[u8], pos: &mut usize) -> usize {
-    let mut value = 0usize;
-    let mut shift = 0;
-    loop {
-        let byte = bytes[*pos];
-        *pos += 1;
-        value |= ((byte & 0x7F) as usize) << shift;
-        if byte < 0x80 {
-            return value;
-        }
-        shift += 7;
-    }
-}
+/// Released entries `loose` may hold before a push compacts it (when
+/// they are also half of it), so a leaf cycling one loose record does not
+/// rescan its offsets on every update.
+const LOOSE_SLACK: u32 = 8;
 
 /// Slots per segment of a leaf's buffer.
 const SEG_SLOTS: usize = 64;
 const SEG_SHIFT: u32 = SEG_SLOTS.trailing_zeros();
 const SEGMENTS: usize = CHUNK / SEG_SLOTS;
+
+/// The most bytes a segment buffer is ever sized for: live records and
+/// the new one (each under `LARGE_MIN` plus a 3-byte length), and spare
+/// room for as much again. Offsets into it must stay below [`LOOSE`].
+const SEG_MAX: usize = 2 * (SEG_SLOTS + 1) * (LARGE_MIN + 3);
+const _: () = assert!(SEG_MAX < LOOSE as usize);
+const _: () = assert!(CHUNK.is_multiple_of(SEG_SLOTS) && SEG_SLOTS.is_power_of_two());
+/// A leaf's loose entries (at most one live per slot, released ones at
+/// most as many again plus the slack) must be indexable below [`LOOSE`].
+const _: () = assert!(2 * CHUNK + LOOSE_SLACK as usize + 1 < LOOSE as usize);
+
+/// Where a slot's record is, decoded from its offset.
+#[derive(Clone, Copy)]
+enum Place {
+    Empty,
+    /// Byte offset into the slot's segment.
+    Segment(usize),
+    /// Index into [`Leaf::loose`].
+    Loose(usize),
+}
+
+impl Place {
+    #[inline]
+    fn of(offset: u32) -> Place {
+        if offset == EMPTY {
+            Place::Empty
+        } else if offset & LOOSE != 0 {
+            Place::Loose((offset & !LOOSE) as usize)
+        } else {
+            Place::Segment(offset as usize)
+        }
+    }
+}
+
+#[inline]
+fn segment_of(slot: usize) -> usize {
+    slot >> SEG_SHIFT
+}
 
 /// The records of [`SEG_SLOTS`] consecutive slots: a fixed-size buffer,
 /// filled from the front and shared between leaf copies until one of
@@ -110,6 +123,28 @@ impl Segment {
     #[inline]
     fn bytes(&self) -> &[u8] {
         self.buf.as_deref().unwrap_or(&[])
+    }
+
+    #[inline]
+    fn live_bytes(&self) -> usize {
+        (self.len - self.garbage) as usize
+    }
+
+    /// The record at byte `offset`: its length prefix and bytes.
+    #[inline]
+    fn record(&self, offset: usize) -> &[u8] {
+        let bytes = self.bytes();
+        let mut pos = offset;
+        let len = varint::read_len(bytes, &mut pos);
+        &bytes[pos..pos + len]
+    }
+
+    /// Bytes the record at `offset` takes, its length prefix included.
+    #[inline]
+    fn stored_len(&self, offset: usize) -> usize {
+        let mut pos = offset;
+        let len = varint::read_len(self.bytes(), &mut pos);
+        pos - offset + len
     }
 }
 
@@ -144,51 +179,47 @@ impl Leaf {
 
     #[inline]
     fn get(&self, slot: usize) -> Option<&[u8]> {
-        let offset = self.offsets[slot];
-        if offset == EMPTY {
-            return None;
+        match Place::of(self.offsets[slot]) {
+            Place::Empty => None,
+            Place::Segment(offset) => Some(self.segments[segment_of(slot)].record(offset)),
+            Place::Loose(index) => self.loose[index].as_deref(),
         }
-        if offset & LOOSE != 0 {
-            return self.loose[(offset & !LOOSE) as usize].as_deref();
-        }
-        let buf = self.segments[slot >> SEG_SHIFT].bytes();
-        let mut pos = offset as usize;
-        let len = get_varint(buf, &mut pos);
-        Some(&buf[pos..pos + len])
+    }
+
+    #[inline]
+    fn contains(&self, slot: usize) -> bool {
+        self.offsets[slot] != EMPTY
     }
 
     /// Account for the record in `slot` becoming unreachable.
     fn release(&mut self, slot: usize) {
-        let offset = self.offsets[slot];
-        if offset == EMPTY {
-            return;
-        }
-        if offset & LOOSE != 0 {
-            let record = self.loose[(offset & !LOOSE) as usize].take();
-            if record.is_some_and(|record| record.len() < LARGE_MIN) {
-                self.loose_small -= 1;
+        match Place::of(self.offsets[slot]) {
+            Place::Empty => return,
+            Place::Segment(offset) => {
+                let segment = &mut self.segments[segment_of(slot)];
+                segment.garbage += segment.stored_len(offset) as u32;
             }
-            self.loose_garbage += 1;
-        } else {
-            let segment = &mut self.segments[slot >> SEG_SHIFT];
-            let mut pos = offset as usize;
-            let len = get_varint(segment.bytes(), &mut pos);
-            segment.garbage += (pos - offset as usize + len) as u32;
+            Place::Loose(index) => {
+                let record = self.loose[index].take();
+                if record.is_some_and(|record| record.len() < LARGE_MIN) {
+                    self.loose_small -= 1;
+                }
+                self.loose_garbage += 1;
+            }
         }
         self.offsets[slot] = EMPTY;
         self.live -= 1;
     }
 
     fn set(&mut self, slot: usize, bytes: &[u8]) {
-        let update = self.offsets[slot] != EMPTY;
+        let update = self.contains(slot);
         self.release(slot);
         self.live += 1;
         if bytes.len() >= LARGE_MIN {
             self.push_loose(slot, bytes);
             return;
         }
-        let seg = slot >> SEG_SHIFT;
-        let need = varint_len(bytes.len()) + bytes.len();
+        let need = varint::len(bytes.len() as u64) + bytes.len();
         // `Arc::get_mut` is an atomic read-modify-write: one per record.
         if self.append(slot, bytes, need) {
             return;
@@ -202,7 +233,7 @@ impl Leaf {
             self.push_loose(slot, bytes);
             return;
         }
-        self.rebuild(seg, need);
+        self.rebuild(segment_of(slot), need);
         let appended = self.append(slot, bytes, need);
         assert!(appended, "rebuild leaves the segment unshared, with room");
     }
@@ -211,7 +242,7 @@ impl Leaf {
     /// segment, if the segment is unshared and has room.
     #[inline]
     fn append(&mut self, slot: usize, bytes: &[u8], need: usize) -> bool {
-        let segment = &mut self.segments[slot >> SEG_SHIFT];
+        let segment = &mut self.segments[segment_of(slot)];
         let start = segment.len as usize;
         let Some(buf) = segment
             .buf
@@ -222,7 +253,7 @@ impl Leaf {
             return false;
         };
         let mut pos = start;
-        put_varint(buf, &mut pos, bytes.len());
+        varint::write(buf, &mut pos, bytes.len() as u64);
         buf[pos..pos + bytes.len()].copy_from_slice(bytes);
         segment.len = (pos + bytes.len()) as u32;
         self.offsets[slot] = start as u32;
@@ -230,32 +261,32 @@ impl Leaf {
     }
 
     fn push_loose(&mut self, slot: usize, bytes: &[u8]) {
-        if self.loose_garbage as usize > self.loose.len() / 2 {
+        if self.loose_garbage >= LOOSE_SLACK && self.loose_garbage as usize > self.loose.len() / 2 {
             self.compact_loose();
         }
         self.offsets[slot] = LOOSE | self.loose.len() as u32;
         self.loose.push(Some(bytes.into()));
     }
 
-    /// The loose record at `offset`, if it is an update that a rebuild
+    /// The loose record at `index`, if it is an update that a rebuild
     /// folds back into its segment.
     #[inline]
-    fn foldable(&self, offset: u32) -> Option<&[u8]> {
-        self.loose[(offset & !LOOSE) as usize]
+    fn foldable(&self, index: usize) -> Option<&[u8]> {
+        self.loose[index]
             .as_deref()
             .filter(|record| record.len() < LARGE_MIN)
     }
 
     fn remove(&mut self, slot: usize) -> bool {
-        let offset = self.offsets[slot];
-        if offset == EMPTY {
+        let place = Place::of(self.offsets[slot]);
+        if matches!(place, Place::Empty) {
             return false;
         }
         self.release(slot);
         if self.live == 0 {
             *self = Leaf::new();
-        } else if offset & LOOSE == 0 {
-            let seg = slot >> SEG_SHIFT;
+        } else if let Place::Segment(_) = place {
+            let seg = segment_of(slot);
             let segment = &self.segments[seg];
             if segment.garbage == segment.len {
                 self.segments[seg] = Segment::default();
@@ -266,85 +297,82 @@ impl Leaf {
         true
     }
 
+    /// Slots of segment `seg`.
+    #[inline]
+    fn slots(seg: usize) -> std::ops::Range<usize> {
+        seg * SEG_SLOTS..(seg + 1) * SEG_SLOTS
+    }
+
+    /// Spare room for a rebuilt segment `seg` that will hold `live`
+    /// records in `live_bytes` and then one more of `need` bytes.
+    fn spare(&self, seg: usize, live: usize, live_bytes: usize, need: usize) -> usize {
+        if need == 0 {
+            // A compaction after removes: nothing is about to be added.
+            return 0;
+        }
+        // Expect the empty slots to fill with records like the present
+        // ones (ids are handed out in order, so a segment fills front to
+        // back), but reserve for at most as many again as are stored, so
+        // a mostly empty segment grows geometrically. A full segment that
+        // is being rewritten grows by an eighth.
+        let empty = SEG_SLOTS.saturating_sub(live + 1);
+        let others = (self.live - 1) as usize;
+        if live == 0 && others > 0 {
+            // A fresh segment of a leaf that already holds records: the
+            // segments before it filled the same way, so size it for all
+            // its slots at once from their average.
+            let leaf_bytes: usize = self.segments.iter().map(Segment::live_bytes).sum();
+            debug_assert_eq!(self.segments[seg].live_bytes(), 0);
+            empty * (leaf_bytes / others).max(1)
+        } else {
+            let avg = live_bytes.checked_div(live).unwrap_or(need);
+            (empty.min(live.max(1)) * avg).max(live_bytes / 8)
+        }
+    }
+
     /// Copy segment `seg`'s reachable records, and its slots' loose
     /// updates, into a buffer of its own in slot order, with room for
     /// `need` more bytes. Run when the segment is full, shared with a
     /// clone, or mostly garbage.
     fn rebuild(&mut self, seg: usize, need: usize) {
-        let slots = seg * SEG_SLOTS..(seg + 1) * SEG_SLOTS;
-        let segment = &self.segments[seg];
-        let mut live_bytes = (segment.len - segment.garbage) as usize;
+        let mut live_bytes = self.segments[seg].live_bytes();
         let mut live = 0;
-        for &offset in &self.offsets[slots.clone()] {
-            if offset == EMPTY {
-                continue;
-            }
-            if offset & LOOSE == 0 {
-                live += 1;
-            } else if let Some(record) = self.foldable(offset) {
-                live += 1;
-                live_bytes += varint_len(record.len()) + record.len();
+        for &offset in &self.offsets[Self::slots(seg)] {
+            match Place::of(offset) {
+                Place::Empty => {}
+                Place::Segment(_) => live += 1,
+                Place::Loose(index) => {
+                    if let Some(record) = self.foldable(index) {
+                        live += 1;
+                        live_bytes += varint::len(record.len() as u64) + record.len();
+                    }
+                }
             }
         }
-        let spare = if need == 0 {
-            0
-        } else {
-            // Expect the empty slots to fill with records like the present
-            // ones (ids are handed out in order, so a segment fills front
-            // to back), but reserve for at most as many again as are
-            // stored, so a mostly empty segment grows geometrically. A
-            // full segment that is being rewritten grows by an eighth.
-            let empty = SEG_SLOTS.saturating_sub(live + 1);
-            if live == 0 && self.live > 1 {
-                // A fresh segment of a leaf that already holds records: the
-                // segments before it filled the same way, so size it for
-                // all its slots at once from their average.
-                let leaf_bytes: usize = self
-                    .segments
-                    .iter()
-                    .map(|segment| (segment.len - segment.garbage) as usize)
-                    .sum();
-                let leaf_live = (self.live - 1) as usize;
-                empty * (leaf_bytes / leaf_live).max(1)
-            } else {
-                let avg = live_bytes.checked_div(live).unwrap_or(need);
-                (empty.min(live.max(1)) * avg).max(live_bytes / 8)
-            }
-        };
-        let mut buf: Arc<[u8]> = std::iter::repeat_n(0, live_bytes + need + spare).collect();
+        let size = live_bytes + need + self.spare(seg, live, live_bytes, need);
+        debug_assert!(size <= SEG_MAX, "segment of {size} bytes");
+        let mut buf: Arc<[u8]> = std::iter::repeat_n(0, size).collect();
         let out = Arc::get_mut(&mut buf).expect("a new buffer is unshared");
-        let old = self.segments[seg].bytes();
+        let old = &self.segments[seg];
         let mut end = 0;
-        for slot in slots {
-            let offset = self.offsets[slot];
-            if offset == EMPTY {
-                continue;
-            }
-            if offset & LOOSE != 0 {
-                let index = (offset & !LOOSE) as usize;
-                let Some(record) = self.loose[index]
-                    .as_deref()
-                    .filter(|record| record.len() < LARGE_MIN)
-                else {
-                    continue;
-                };
-                let mut pos = end;
-                put_varint(out, &mut pos, record.len());
-                out[pos..pos + record.len()].copy_from_slice(record);
-                self.offsets[slot] = end as u32;
-                end = pos + record.len();
-                self.loose[index] = None;
-                self.loose_garbage += 1;
-                self.loose_small -= 1;
-                continue;
-            }
-            let start = offset as usize;
-            let mut pos = start;
-            let len = get_varint(old, &mut pos);
-            let n = pos + len - start;
-            out[end..end + n].copy_from_slice(&old[start..start + n]);
+        for slot in Self::slots(seg) {
+            let (record, folded) = match Place::of(self.offsets[slot]) {
+                Place::Empty => continue,
+                Place::Segment(offset) => (old.record(offset), None),
+                Place::Loose(index) => match self.loose[index].as_deref() {
+                    Some(record) if record.len() < LARGE_MIN => (record, Some(index)),
+                    _ => continue,
+                },
+            };
             self.offsets[slot] = end as u32;
-            end += n;
+            varint::write(out, &mut end, record.len() as u64);
+            out[end..end + record.len()].copy_from_slice(record);
+            end += record.len();
+            if let Some(index) = folded {
+                self.loose[index] = None;
+                self.loose_small -= 1;
+                self.loose_garbage += 1;
+            }
         }
         self.segments[seg] = Segment {
             buf: Some(buf),
@@ -357,10 +385,9 @@ impl Leaf {
     fn compact_loose(&mut self) {
         let mut loose = Vec::with_capacity(self.loose.len() - self.loose_garbage as usize);
         for offset in &mut self.offsets {
-            if *offset != EMPTY && *offset & LOOSE != 0 {
-                let record = self.loose[(*offset & !LOOSE) as usize].take();
+            if let Place::Loose(index) = Place::of(*offset) {
                 *offset = LOOSE | loose.len() as u32;
-                loose.push(record);
+                loose.push(self.loose[index].take());
             }
         }
         self.loose = loose;
@@ -368,7 +395,6 @@ impl Leaf {
     }
 
     fn heap_bytes(&self) -> usize {
-        const ARC_HEADER: usize = 2 * size_of::<usize>();
         self.segments
             .iter()
             .filter_map(|segment| segment.buf.as_ref())
@@ -381,6 +407,55 @@ impl Leaf {
                 .flatten()
                 .map(|record| ARC_HEADER + record.len())
                 .sum::<usize>()
+    }
+
+    /// Panic unless the leaf's counters and offsets agree with each other.
+    #[cfg(test)]
+    fn check_invariants(&self) {
+        let mut live = 0;
+        let mut loose_small = 0;
+        let mut referenced = vec![false; self.loose.len()];
+        let mut used = [0usize; SEGMENTS];
+        for (slot, &offset) in self.offsets.iter().enumerate() {
+            match Place::of(offset) {
+                Place::Empty => continue,
+                Place::Segment(offset) => {
+                    let segment = &self.segments[segment_of(slot)];
+                    let stored = segment.stored_len(offset);
+                    assert!(
+                        offset + stored <= segment.len as usize,
+                        "slot {slot} past len"
+                    );
+                    used[segment_of(slot)] += stored;
+                }
+                Place::Loose(index) => {
+                    let record = self.loose[index].as_deref().expect("live loose entry");
+                    assert!(
+                        !referenced[index],
+                        "loose entry {index} shared by two slots"
+                    );
+                    referenced[index] = true;
+                    loose_small += usize::from(record.len() < LARGE_MIN);
+                }
+            }
+            live += 1;
+        }
+        assert_eq!(live, self.live as usize, "live");
+        assert_eq!(loose_small, self.loose_small as usize, "loose_small");
+        assert!(self.loose_small <= LOOSE_MAX);
+        let released = self.loose.iter().filter(|r| r.is_none()).count();
+        assert_eq!(released, self.loose_garbage as usize, "loose_garbage");
+        assert!(
+            self.loose
+                .iter()
+                .zip(&referenced)
+                .all(|(r, &seen)| r.is_none() || seen),
+            "an unreferenced live loose entry"
+        );
+        for (seg, segment) in self.segments.iter().enumerate() {
+            assert!(segment.len as usize <= segment.bytes().len());
+            assert_eq!(used[seg], segment.live_bytes(), "segment {seg} live bytes");
+        }
     }
 }
 
@@ -427,16 +502,12 @@ impl RecordSlab {
         self.len
     }
 
+    /// The leaf holding slot `i`. Leaves exist for every slot below
+    /// `len`, packed from the front; callers check `i < len`.
     #[inline]
     fn leaf(&self, i: usize) -> &Leaf {
         debug_assert!(i < self.len);
-        // SAFETY: leaves exist for every slot below `len`, packed from the
-        // front (every interior node but the last is full), so `i < len`
-        // puts the node and leaf in bounds. The callers check `i < len`.
-        unsafe {
-            let node = self.root.get_unchecked(i >> SPAN_SHIFT);
-            node.get_unchecked((i >> SHIFT) & FAN_MASK)
-        }
+        &self.root[i >> SPAN_SHIFT][(i >> SHIFT) & FAN_MASK]
     }
 
     #[inline]
@@ -449,7 +520,7 @@ impl RecordSlab {
 
     #[inline]
     pub(super) fn contains(&self, i: usize) -> bool {
-        i < self.len && self.leaf(i).offsets[i & MASK] != EMPTY
+        i < self.len && self.leaf(i).contains(i & MASK)
     }
 
     /// The leaf holding slot `i`, copied first if a clone shares it.
@@ -463,7 +534,7 @@ impl RecordSlab {
     /// held. Returns whether the slot was empty.
     pub(super) fn set(&mut self, i: usize, bytes: &[u8]) -> bool {
         let leaf = self.leaf_mut(i);
-        let was_empty = leaf.offsets[i & MASK] == EMPTY;
+        let was_empty = !leaf.contains(i & MASK);
         leaf.set(i & MASK, bytes);
         was_empty
     }
@@ -520,15 +591,25 @@ impl RecordSlab {
         self.len = self.len.max(new_len);
     }
 
+    /// Each leaf from the one holding slot `from` on: its first slot and
+    /// the range of its slots at or after `from` and below `len`.
+    fn leaves_from(
+        &self,
+        from: usize,
+    ) -> impl Iterator<Item = (usize, &Leaf, std::ops::Range<usize>)> + '_ {
+        let first = from / CHUNK;
+        (first..self.len.div_ceil(CHUNK)).map(move |l| {
+            let base = l * CHUNK;
+            let start = if l == first { from & MASK } else { 0 };
+            let end = (self.len - base).min(CHUNK);
+            (base, self.leaf(base), start..end)
+        })
+    }
+
     /// `(slot, bytes)` of every record from slot `from` on, in slot order.
     pub(super) fn iter_from(&self, from: usize) -> impl Iterator<Item = (usize, &[u8])> + '_ {
-        let leaves = self.len.div_ceil(CHUNK);
-        let first = from / CHUNK;
-        (first..leaves).flat_map(move |l| {
-            let leaf = self.leaf(l * CHUNK);
-            let start = if l == first { from & MASK } else { 0 };
-            let end = (self.len - l * CHUNK).min(CHUNK);
-            (start..end).filter_map(move |s| leaf.get(s).map(|bytes| (l * CHUNK + s, bytes)))
+        self.leaves_from(from).flat_map(|(base, leaf, slots)| {
+            slots.filter_map(move |s| leaf.get(s).map(|bytes| (base + s, bytes)))
         })
     }
 
@@ -539,21 +620,15 @@ impl RecordSlab {
     /// The slots from `from` on that hold a record, in order. Cheaper than
     /// [`Self::iter_from`] when the bytes are not needed.
     pub(super) fn slots_from(&self, from: usize) -> impl Iterator<Item = usize> + '_ {
-        let leaves = self.len.div_ceil(CHUNK);
-        let first = from / CHUNK;
-        (first..leaves).flat_map(move |l| {
-            let leaf = self.leaf(l * CHUNK);
-            let start = if l == first { from & MASK } else { 0 };
-            let end = (self.len - l * CHUNK).min(CHUNK);
-            (start..end)
-                .filter(move |&s| leaf.offsets[s] != EMPTY)
-                .map(move |s| l * CHUNK + s)
+        self.leaves_from(from).flat_map(|(base, leaf, slots)| {
+            slots
+                .filter(move |&s| leaf.contains(s))
+                .map(move |s| base + s)
         })
     }
 
     /// Heap bytes: the tree, every leaf and its buffers.
     pub(super) fn heap_bytes(&self) -> usize {
-        const ARC_HEADER: usize = 2 * size_of::<usize>();
         let tree = ARC_HEADER
             + self
                 .root
@@ -570,19 +645,36 @@ impl RecordSlab {
             .sum();
         tree + leaves
     }
+
+    /// Panic unless the tree's shape matches `len` and every leaf is
+    /// consistent.
+    #[cfg(test)]
+    fn check_invariants(&self) {
+        let leaves = self.len.div_ceil(CHUNK);
+        assert_eq!(self.root.len(), leaves.div_ceil(FANOUT), "interior nodes");
+        for (n, node) in self.root.iter().enumerate() {
+            let expected = if n + 1 < self.root.len() {
+                FANOUT
+            } else {
+                leaves - n * FANOUT
+            };
+            assert_eq!(node.len(), expected, "leaves of node {n}");
+        }
+        for (base, leaf, slots) in self.leaves_from(0) {
+            leaf.check_invariants();
+            assert!(
+                (slots.end..CHUNK).all(|s| !leaf.contains(s)),
+                "a record past len in the leaf at {base}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::test_util::splitmix;
     use std::collections::BTreeMap;
-
-    fn splitmix(mut x: u64) -> u64 {
-        x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        x ^ (x >> 31)
-    }
 
     fn record(seed: u64) -> Vec<u8> {
         let len = match seed % 50 {
@@ -594,6 +686,7 @@ mod tests {
     }
 
     fn check(slab: &RecordSlab, model: &BTreeMap<usize, Vec<u8>>, len: usize) {
+        slab.check_invariants();
         assert_eq!(slab.len(), len);
         for i in 0..len + 3 {
             assert_eq!(slab.get(i), model.get(&i).map(|v| v.as_slice()), "slot {i}");
@@ -602,7 +695,7 @@ mod tests {
         let all: Vec<(usize, Vec<u8>)> = slab.iter().map(|(i, b)| (i, b.to_vec())).collect();
         let expected: Vec<(usize, Vec<u8>)> = model.iter().map(|(&i, v)| (i, v.clone())).collect();
         assert_eq!(all, expected);
-        for from in [0, 1, CHUNK - 1, CHUNK, CHUNK + 1, len / 2, len] {
+        for from in [0, 1, CHUNK - 1, CHUNK, CHUNK + 1, len / 2, len, len + 1] {
             assert!(slab
                 .iter_from(from)
                 .map(|(i, _)| i)
@@ -613,44 +706,80 @@ mod tests {
         }
     }
 
-    #[test]
-    fn matches_a_map_through_sets_removes_and_clones() {
+    /// One random set or remove on `slab` and its model.
+    fn step(
+        slab: &mut RecordSlab,
+        model: &mut BTreeMap<usize, Vec<u8>>,
+        len: usize,
+        x: u64,
+        removes: u64,
+    ) {
+        let i = (splitmix(x) % len as u64) as usize;
+        if splitmix(x ^ 0xA5A5) % 100 < removes {
+            assert_eq!(slab.remove(i), model.remove(&i).is_some());
+        } else {
+            let r = record(splitmix(x ^ 0xFEED));
+            assert_eq!(slab.set(i, &r), model.insert(i, r).is_none());
+        }
+        slab.check_invariants();
+    }
+
+    /// Fill in id order (as creates do), then rewrite and remove at random
+    /// while clones are taken, written to and checked on both sides.
+    fn run_model(seed: u64, steps: u64, removes: u64) {
         let mut slab = RecordSlab::default();
         let mut model = BTreeMap::new();
         let len = CHUNK * 3 + 17;
-        // Fill in id order, as creates do.
         for i in 0..len {
             slab.grow_to(i + 1);
-            if i % 11 != 3 {
-                let r = record(i as u64);
+            if splitmix(seed ^ i as u64) % 11 != 3 {
+                let r = record(seed ^ i as u64);
                 assert!(slab.set(i, &r));
                 model.insert(i, r);
             }
         }
         check(&slab, &model, len);
-        let snapshot = slab.clone();
-        let snapshot_model = model.clone();
-        // Rewrite and remove at random: garbage builds up and leaves compact.
-        for step in 0..20_000u64 {
-            let i = (splitmix(step) % len as u64) as usize;
-            if step % 4 == 0 {
-                assert_eq!(slab.remove(i), model.remove(&i).is_some());
-            } else {
-                let r = record(splitmix(step ^ 0xFEED));
-                assert_eq!(slab.set(i, &r), model.insert(i, r).is_none());
+        let snapshot = (slab.clone(), model.clone());
+        let mut fork: Option<(RecordSlab, BTreeMap<usize, Vec<u8>>)> = None;
+        for n in 0..steps {
+            let x = seed.wrapping_mul(0x9E37) ^ n;
+            step(&mut slab, &mut model, len, x, removes);
+            if n % 997 == 0 {
+                // Fork: both copies are written from here on, each against
+                // its own model, so copy-on-write is tested in both
+                // directions.
+                if let Some((f, fm)) = &fork {
+                    check(f, fm, len);
+                }
+                fork = Some((slab.clone(), model.clone()));
             }
-            if step % 997 == 0 {
-                // A clone in the middle; writes after it copy leaves again.
-                let copy = slab.clone();
-                check(&copy, &model, len);
+            if let Some((f, fm)) = &mut fork {
+                step(f, fm, len, !x, removes);
             }
         }
         check(&slab, &model, len);
-        check(&snapshot, &snapshot_model, len);
-        for i in 0..len {
-            slab.remove(i);
+        check(&snapshot.0, &snapshot.1, len);
+        if let Some((f, fm)) = &fork {
+            check(f, fm, len);
         }
+        for i in 0..len {
+            assert_eq!(slab.remove(i), model.remove(&i).is_some());
+        }
+        slab.check_invariants();
         assert!(slab.iter().next().is_none());
+    }
+
+    #[test]
+    fn matches_a_map_through_sets_removes_and_clones() {
+        for seed in 0..4 {
+            run_model(seed, 6_000, 25);
+        }
+    }
+
+    #[test]
+    fn matches_a_map_when_removes_dominate() {
+        // Segments empty out, compact after removes and are dropped.
+        run_model(17, 8_000, 70);
     }
 
     #[test]

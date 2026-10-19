@@ -26,6 +26,7 @@
 //! return candidates in ascending id order, the same order a label scan
 //! produces.
 
+use super::ARC_HEADER;
 use std::sync::Arc;
 
 /// Largest bucket kept as a sorted vector. Past this a mid-vector
@@ -314,7 +315,6 @@ impl IdSet {
     /// estimator. Chunks shared with another graph copy are charged to
     /// both, like the other copy-on-write structures.
     pub(super) fn heap_bytes(&self) -> usize {
-        const ARC_HEADER: usize = 2 * std::mem::size_of::<usize>();
         match self {
             IdSet::One(_) => 0,
             IdSet::Small(ids) => {

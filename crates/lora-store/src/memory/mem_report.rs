@@ -52,12 +52,10 @@ const BTREE_PER_ENTRY: usize = 24;
 /// hash table load factor.
 const HASHMAP_PER_ENTRY: usize = 24;
 
-/// `std::sync::Arc<T>`: strong + weak refcount header that precedes
-/// the inline `T` allocation.
-const ARC_HEADER: usize = 16;
+use super::ARC_HEADER;
 /// An `Arc<str>` key: the fat pointer plus the allocation's refcounts
 /// (the bytes are charged separately).
-const ARC_STR_BYTES: usize = 16 + ARC_HEADER;
+const ARC_STR_BYTES: usize = size_of::<std::sync::Arc<str>>() + ARC_HEADER;
 
 /// Aggregated retained-heap breakdown of an [`InMemoryGraph`].
 ///
@@ -244,8 +242,8 @@ pub(super) fn estimate(graph: &super::InMemoryGraph) -> MemoryReport {
         ..MemoryReport::default()
     };
 
-    report.nodes_bytes = record_slab_bytes(&graph.nodes) + graph.dicts.heap_bytes();
-    report.relationships_bytes = record_slab_bytes(&graph.relationships);
+    report.nodes_bytes = graph.nodes.heap_bytes() + graph.dicts.heap_bytes();
+    report.relationships_bytes = graph.relationships.heap_bytes();
     (report.outgoing_bytes, report.incoming_bytes) = adjacency_bytes(&graph.adjacency);
     report.label_index_bytes = label_or_type_bytes(&graph.nodes_by_label);
     report.type_index_bytes = label_or_type_bytes(&graph.relationships_by_type);
@@ -300,11 +298,6 @@ fn chunked_outer_bytes<T>(v: &ChunkedVec<T>) -> usize {
     v.capacity() * size_of::<T>()
         + v.chunk_count() * (ARC_HEADER + size_of::<Vec<T>>() + size_of::<usize>())
         + v.tree_overhead_bytes()
-}
-
-/// A slab of encoded records: its tree, leaves and record buffers.
-fn record_slab_bytes(slab: &super::record_slab::RecordSlab) -> usize {
-    slab.heap_bytes()
 }
 
 /// Both directions share one slot tree and one allocation per node: the

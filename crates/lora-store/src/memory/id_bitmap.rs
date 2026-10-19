@@ -18,6 +18,7 @@
 //! touches, at most 8 KB. Ids iterate in ascending order, and inserting
 //! or removing an id is a binary search, not a scan of the list.
 
+use super::ARC_HEADER;
 use std::sync::Arc;
 
 /// Ids per block: the low 16 bits of an id address it within its block.
@@ -227,27 +228,24 @@ impl IdBitmap {
     /// Insert `id`; returns whether it was absent.
     pub(super) fn insert(&mut self, id: u64) -> bool {
         let (high, low) = split(id);
-        let blocks = Arc::make_mut(&mut self.blocks);
-        let index = match blocks.last() {
-            Some(last) if last.high == high => blocks.len() - 1,
-            Some(last) if last.high > high => {
-                match blocks.binary_search_by_key(&high, |e| e.high) {
-                    Ok(index) => index,
-                    Err(index) => {
-                        blocks.insert(index, Entry::empty(high));
-                        index
-                    }
-                }
-            }
-            _ => {
-                blocks.push(Entry::empty(high));
-                blocks.len() - 1
-            }
+        // Look the id up before copying anything: inserting an id that is
+        // already there must not copy a table or block a clone shares.
+        let found = match self.blocks.last() {
+            Some(last) if last.high == high => Ok(self.blocks.len() - 1),
+            Some(last) if last.high > high => self.blocks.binary_search_by_key(&high, |e| e.high),
+            _ => Err(self.blocks.len()),
         };
-        let entry = &mut blocks[index];
-        if !Arc::make_mut(&mut entry.block).insert(low, entry.count as usize) {
+        if found.is_ok_and(|index| self.blocks[index].contains(low)) {
             return false;
         }
+        let blocks = Arc::make_mut(&mut self.blocks);
+        let index = found.unwrap_or_else(|index| {
+            blocks.insert(index, Entry::empty(high));
+            index
+        });
+        let entry = &mut blocks[index];
+        let inserted = Arc::make_mut(&mut entry.block).insert(low, entry.count as usize);
+        debug_assert!(inserted, "absent above");
         entry.count += 1;
         self.len += 1;
         true
@@ -308,7 +306,6 @@ impl IdBitmap {
 
     /// Heap bytes: the entry table and every block.
     pub(super) fn heap_bytes(&self) -> usize {
-        const ARC_HEADER: usize = 2 * size_of::<usize>();
         ARC_HEADER
             + size_of::<Vec<Entry>>()
             + self.blocks.capacity() * size_of::<Entry>()
@@ -329,9 +326,14 @@ impl Entry {
         }
     }
 
+    #[inline]
     fn contains(&self, low: u16) -> bool {
         match &*self.block {
-            Block::Array(lows) => lows.binary_search(&low).is_ok(),
+            // Creates hand out ascending ids: past the last one is common.
+            Block::Array(lows) => match lows.last() {
+                Some(&last) if last < low => false,
+                _ => lows.binary_search(&low).is_ok(),
+            },
             Block::Bits(bits) => bits[low as usize >> 6] & (1 << (low & 63)) != 0,
         }
     }
@@ -360,18 +362,47 @@ impl PartialEq for IdBitmap {
 }
 
 #[cfg(test)]
+impl IdBitmap {
+    /// Panic unless the blocks are ascending, non-empty, counted right and
+    /// in the representation their size calls for.
+    fn check_invariants(&self) {
+        assert!(
+            self.blocks.windows(2).all(|w| w[0].high < w[1].high),
+            "ascending blocks"
+        );
+        let mut len = 0;
+        for entry in self.blocks.iter() {
+            let count = match &*entry.block {
+                Block::Array(lows) => {
+                    assert!(
+                        lows.windows(2).all(|w| w[0] < w[1]),
+                        "sorted, distinct lows"
+                    );
+                    assert!(lows.len() <= ARRAY_MAX, "an array past ARRAY_MAX");
+                    lows.len()
+                }
+                Block::Bits(bits) => {
+                    let count = bits.iter().map(|w| w.count_ones() as usize).sum();
+                    assert!(count >= ARRAY_MIN, "a bitmap below ARRAY_MIN");
+                    count
+                }
+            };
+            assert!(count > 0, "an empty block");
+            assert_eq!(count, entry.count as usize, "block count");
+            len += count;
+        }
+        assert_eq!(len, self.len, "len");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::test_util::splitmix;
     use std::collections::BTreeSet;
 
-    fn splitmix(mut x: u64) -> u64 {
-        x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        x ^ (x >> 31)
-    }
-
     fn check(set: &IdBitmap, model: &BTreeSet<u64>) {
+        set.check_invariants();
         assert_eq!(set.len(), model.len());
         assert!(set.iter().eq(model.iter().copied()));
         for from in [0, 1, 4095, 65_535, 65_536, 70_000, 200_000, u64::MAX] {
@@ -406,6 +437,9 @@ mod tests {
                 assert_eq!(set.remove(id), model.remove(&id));
             }
             assert_eq!(set.contains(id), model.contains(&id));
+            if i % 97 == 0 {
+                set.check_invariants();
+            }
         }
         // Remove most of the dense block so it turns back into an array.
         for id in 0..9_000 {
@@ -414,10 +448,28 @@ mod tests {
         check(&set, &model);
         // The clone taken earlier is unaffected.
         check(&snapshot, &snapshot_model);
+        // The ends of the id space.
+        for id in [u64::MAX, u64::MAX - 1, 1 << 63] {
+            assert_eq!(set.insert(id), model.insert(id));
+        }
+        check(&set, &model);
         for id in model.clone() {
             assert!(set.remove(id));
         }
         assert!(set.is_empty() && set.blocks.is_empty());
+    }
+
+    #[test]
+    fn inserting_a_present_id_copies_nothing_a_clone_shares() {
+        let mut set: IdBitmap = (0..10_000).chain([1 << 20]).collect();
+        let copy = set.clone();
+        for id in [0, 4_097, 9_999, 1 << 20] {
+            assert!(!set.insert(id));
+        }
+        assert!(Arc::ptr_eq(&set.blocks, &copy.blocks));
+        assert!(set.insert(10_000));
+        assert!(!Arc::ptr_eq(&set.blocks, &copy.blocks));
+        assert_eq!((set.len(), copy.len()), (10_002, 10_001));
     }
 
     #[test]

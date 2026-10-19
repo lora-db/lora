@@ -13,7 +13,7 @@ use crate::{
     Properties, PropertyValue, RelationshipId, RelationshipRecord,
 };
 
-use super::adjacency::{AdjEntry, AdjSide, Adjacency, TypeFilter};
+use super::adjacency::{AdjEntry, AdjSide, Adjacency, Side, TypeFilter};
 use super::chunked_vec::ChunkedVec;
 use super::constraint_catalog::{
     ConstraintCatalog, ConstraintRequest, CreateConstraintError, CreateConstraintOutcome,
@@ -58,9 +58,9 @@ pub struct InMemoryGraph {
     /// copy, and for every reader snapshot) shares this storage: a
     /// [`RecordSlab`] clone is one refcount bump, so the whole-graph
     /// clone is O(#labels + #relationship types), not O(N). A write
-    /// copies only the leaf path it touches, and copying a leaf copies its
-    /// records' bytes. A record is immutable: changing it stores a new
-    /// encoding in its slot (see [`Self::update_node`]).
+    /// copies only the leaf path it touches: a leaf's offsets, and at
+    /// most one buffer of 64 records. A record is immutable: changing it
+    /// stores a new encoding in its slot (see [`Self::update_node`]).
     pub(super) nodes: RecordSlab,
     pub(super) relationships: RecordSlab,
     /// Numbers the labels, relationship types and property keys the
@@ -323,9 +323,7 @@ impl InMemoryGraph {
         let idx = Self::slot_index(id)?;
         let mut record = self.node_at(id)?.to_record();
         let result = change(&mut record);
-        let mut out = Scratch::take();
-        encoded::encode_node(&record, &mut self.dicts, &mut out);
-        self.nodes.set(idx, &out);
+        self.store_node(idx, &record);
         Some(result)
     }
 
@@ -339,18 +337,14 @@ impl InMemoryGraph {
         edit: encoded::PropEdit<'_>,
     ) -> Option<Option<PropertyValue>> {
         let idx = Self::slot_index(id)?;
-        let bytes = self.nodes.get(idx)?;
-        let mut out = Scratch::take();
-        let old = encoded::edit_property(
-            bytes,
+        edit_record_property(
+            &mut self.nodes,
+            idx,
             encoded::RecordKind::Node,
             &mut self.dicts.keys,
             key,
             edit,
-            &mut out,
-        )?;
-        self.nodes.set(idx, &out);
-        Some(old)
+        )
     }
 
     pub(super) fn edit_rel_property(
@@ -360,18 +354,14 @@ impl InMemoryGraph {
         edit: encoded::PropEdit<'_>,
     ) -> Option<Option<PropertyValue>> {
         let idx = Self::slot_index(id)?;
-        let bytes = self.relationships.get(idx)?;
-        let mut out = Scratch::take();
-        let old = encoded::edit_property(
-            bytes,
+        edit_record_property(
+            &mut self.relationships,
+            idx,
             encoded::RecordKind::Relationship,
             &mut self.dicts.keys,
             key,
             edit,
-            &mut out,
-        )?;
-        self.relationships.set(idx, &out);
-        Some(old)
+        )
     }
 
     /// Resize the node-keyed Vecs so `id as usize` is in range. Adjacency
@@ -439,9 +429,7 @@ impl InMemoryGraph {
     }
 
     pub(super) fn put_node_at_slot(&mut self, idx: usize, node: &NodeRecord) {
-        let mut out = Scratch::take();
-        encoded::encode_node(node, &mut self.dicts, &mut out);
-        if self.nodes.set(idx, &out) {
+        if self.store_node(idx, node) {
             self.live_node_count += 1;
         }
     }
@@ -452,6 +440,14 @@ impl InMemoryGraph {
         if self.relationships.set(idx, &out) {
             self.live_rel_count += 1;
         }
+    }
+
+    /// Encode `node` into slot `idx`; returns whether the slot was empty.
+    #[inline]
+    fn store_node(&mut self, idx: usize, node: &NodeRecord) -> bool {
+        let mut out = Scratch::take();
+        encoded::encode_node(node, &mut self.dicts, &mut out);
+        self.nodes.set(idx, &out)
     }
 
     pub(super) fn take_node(&mut self, id: NodeId) -> Option<NodeRecord> {
@@ -601,18 +597,18 @@ impl InMemoryGraph {
         })
     }
 
-    /// Add an entry to `node_id`'s outgoing (or incoming) list. Relies on
+    /// Add an entry to `node_id`'s list on `side`. Relies on
     /// the monotonic-id invariant: relationship ids are allocated once and
     /// never re-used, so the list can never see a duplicate.
-    fn adjacency_push(&mut self, node_id: NodeId, outgoing: bool, entry: AdjEntry) {
+    fn adjacency_push(&mut self, node_id: NodeId, side: Side, entry: AdjEntry) {
         if let Ok(idx) = self.ensure_node_slot_checked(node_id) {
-            self.adjacency[idx].push(outgoing, entry);
+            self.adjacency[idx].push(side, entry);
         }
     }
 
-    fn adjacency_remove(&mut self, node_id: NodeId, outgoing: bool, rel_id: RelationshipId) {
+    fn adjacency_remove(&mut self, node_id: NodeId, side: Side, rel_id: RelationshipId) {
         if let Some(adj) = Self::slot_index(node_id).and_then(|idx| self.adjacency.get_mut(idx)) {
-            adj.remove(outgoing, rel_id);
+            adj.remove(side, rel_id);
         }
     }
 
@@ -2334,7 +2330,7 @@ impl InMemoryGraph {
         let type_id = self.dicts.types.id_or_insert(&rel.rel_type);
         self.adjacency_push(
             rel.src,
-            true,
+            Side::Out,
             AdjEntry {
                 type_id,
                 neighbour: rel.dst,
@@ -2343,7 +2339,7 @@ impl InMemoryGraph {
         );
         self.adjacency_push(
             rel.dst,
-            false,
+            Side::In,
             AdjEntry {
                 type_id,
                 neighbour: rel.src,
@@ -2354,8 +2350,8 @@ impl InMemoryGraph {
     }
 
     fn detach_relationship_indexes(&mut self, rel: &RelationshipRecord) {
-        self.adjacency_remove(rel.src, true, rel.id);
-        self.adjacency_remove(rel.dst, false, rel.id);
+        self.adjacency_remove(rel.src, Side::Out, rel.id);
+        self.adjacency_remove(rel.dst, Side::In, rel.id);
 
         self.remove_relationship_type_index(rel.id, &rel.rel_type);
     }
@@ -2540,4 +2536,23 @@ impl InMemoryGraph {
             "relationship property across-scopes index values diverged from scan"
         );
     }
+}
+
+/// Set or remove one property of the record in `slab` slot `idx`,
+/// rewriting only that entry. The previous value; `None` when the slot is
+/// empty or there was nothing to remove.
+#[inline]
+fn edit_record_property(
+    slab: &mut RecordSlab,
+    idx: usize,
+    kind: encoded::RecordKind,
+    keys: &mut crate::dict::NameDict,
+    key: &str,
+    edit: encoded::PropEdit<'_>,
+) -> Option<Option<PropertyValue>> {
+    let bytes = slab.get(idx)?;
+    let mut out = Scratch::take();
+    let old = encoded::edit_property(bytes, kind, keys, key, edit, &mut out)?;
+    slab.set(idx, &out);
+    Some(old)
 }

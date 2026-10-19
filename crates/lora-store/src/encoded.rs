@@ -25,6 +25,7 @@
 //! own id is its slot index and is not stored.
 
 use crate::dict::{Dicts, NameDict};
+use crate::varint;
 use crate::{
     Labels, NodeId, NodeRecord, OtherValue, Properties, PropertyValue, RelationshipId,
     RelationshipRecord, ValueRef,
@@ -41,37 +42,6 @@ const TAG_INT: u8 = 3;
 const TAG_FLOAT: u8 = 4;
 const TAG_STRING: u8 = 5;
 const TAG_OTHER: u8 = 6;
-
-#[inline]
-fn put_varint(out: &mut Vec<u8>, mut value: u64) {
-    while value >= 0x80 {
-        out.push(value as u8 | 0x80);
-        value >>= 7;
-    }
-    out.push(value as u8);
-}
-
-/// Read a varint at `*pos`, advancing it. The bytes are ones this module
-/// wrote, so a malformed varint is a bug, reported by the slice index.
-#[inline]
-fn get_varint(bytes: &[u8], pos: &mut usize) -> u64 {
-    let first = bytes[*pos];
-    *pos += 1;
-    if first < 0x80 {
-        return u64::from(first);
-    }
-    let mut value = u64::from(first & 0x7f);
-    let mut shift = 7;
-    loop {
-        let byte = bytes[*pos];
-        *pos += 1;
-        value |= u64::from(byte & 0x7f) << shift;
-        if byte < 0x80 {
-            return value;
-        }
-        shift += 7;
-    }
-}
 
 #[inline]
 fn zigzag(value: i64) -> u64 {
@@ -97,7 +67,7 @@ fn skip_payload(bytes: &[u8], tag: u8, pos: &mut usize) {
         TAG_NULL | TAG_FALSE | TAG_TRUE => {}
         // TAG_STRING and TAG_OTHER, as `read_value` reads them.
         _ => {
-            let len = get_varint(bytes, pos) as usize;
+            let len = varint::read(bytes, pos) as usize;
             *pos += len;
         }
     }
@@ -127,21 +97,21 @@ fn read_value<'a>(bytes: &'a [u8], tag: u8, pos: &mut usize) -> ValueRef<'a> {
         TAG_NULL => ValueRef::Null,
         TAG_FALSE => ValueRef::Bool(false),
         TAG_TRUE => ValueRef::Bool(true),
-        TAG_INT => ValueRef::Int(unzigzag(get_varint(bytes, pos))),
+        TAG_INT => ValueRef::Int(unzigzag(varint::read(bytes, pos))),
         TAG_FLOAT => {
             let raw: [u8; 8] = bytes[*pos..*pos + 8].try_into().unwrap();
             *pos += 8;
             ValueRef::Float(f64::from_le_bytes(raw))
         }
         TAG_STRING => {
-            let len = get_varint(bytes, pos) as usize;
+            let len = varint::read(bytes, pos) as usize;
             let raw = &bytes[*pos..*pos + len];
             *pos += len;
             // SAFETY: written by `write_value` from a `String`'s bytes.
             ValueRef::String(unsafe { std::str::from_utf8_unchecked(raw) })
         }
         _ => {
-            let len = get_varint(bytes, pos) as usize;
+            let len = varint::read(bytes, pos) as usize;
             let raw = &bytes[*pos..*pos + len];
             *pos += len;
             ValueRef::Other(OtherValue::encoded(EncodedOther { bytes: raw }))
@@ -156,7 +126,7 @@ fn write_value(out: &mut Vec<u8>, value: &PropertyValue) {
         PropertyValue::Bool(true) => out.push(TAG_TRUE),
         PropertyValue::Int(v) => {
             out.push(TAG_INT);
-            put_varint(out, zigzag(*v));
+            varint::push(out, zigzag(*v));
         }
         PropertyValue::Float(v) => {
             out.push(TAG_FLOAT);
@@ -164,7 +134,7 @@ fn write_value(out: &mut Vec<u8>, value: &PropertyValue) {
         }
         PropertyValue::String(v) => {
             out.push(TAG_STRING);
-            put_varint(out, v.len() as u64);
+            varint::push(out, v.len() as u64);
             out.extend_from_slice(v.as_bytes());
         }
         other => {
@@ -177,7 +147,7 @@ fn write_value(out: &mut Vec<u8>, value: &PropertyValue) {
                 "the codec does not round-trip {other:?}"
             );
             out.push(TAG_OTHER);
-            put_varint(out, encoded.len() as u64);
+            varint::push(out, encoded.len() as u64);
             out.extend_from_slice(&encoded);
         }
     }
@@ -200,7 +170,7 @@ impl<'a> StoredProps<'a> {
     #[inline]
     pub(crate) fn len(self) -> usize {
         let mut pos = 0;
-        get_varint(self.bytes, &mut pos) as usize
+        varint::read(self.bytes, &mut pos) as usize
     }
 
     #[inline]
@@ -209,9 +179,9 @@ impl<'a> StoredProps<'a> {
         let wanted = u64::from(self.keys.id_of(key)?);
         let bytes = self.bytes;
         let mut pos = 0;
-        let count = get_varint(bytes, &mut pos);
+        let count = varint::read(bytes, &mut pos);
         for _ in 0..count {
-            let id = get_varint(bytes, &mut pos);
+            let id = varint::read(bytes, &mut pos);
             let tag = bytes[pos];
             pos += 1;
             if id == wanted {
@@ -225,7 +195,7 @@ impl<'a> StoredProps<'a> {
     #[inline]
     pub(crate) fn iter(self) -> StoredPropsIter<'a> {
         let mut pos = 0;
-        let remaining = get_varint(self.bytes, &mut pos) as usize;
+        let remaining = varint::read(self.bytes, &mut pos) as usize;
         StoredPropsIter {
             bytes: self.bytes,
             keys: self.keys,
@@ -260,7 +230,7 @@ impl<'a> Iterator for StoredPropsIter<'a> {
             return None;
         }
         self.remaining -= 1;
-        let id = get_varint(self.bytes, &mut self.pos) as u32;
+        let id = varint::read(self.bytes, &mut self.pos) as u32;
         let tag = self.bytes[self.pos];
         self.pos += 1;
         let value = read_value(self.bytes, tag, &mut self.pos);
@@ -275,11 +245,11 @@ impl<'a> Iterator for StoredPropsIter<'a> {
 impl ExactSizeIterator for StoredPropsIter<'_> {}
 
 fn write_props(out: &mut Vec<u8>, properties: &Properties, keys: &mut NameDict) {
-    put_varint(out, properties.len() as u64);
+    varint::push(out, properties.len() as u64);
     // `Properties` iterates in key order, which is the stored order.
     for (key, value) in properties.iter() {
         let id = keys.id_or_insert_with(key, || crate::Name::from_arc(key.clone()));
-        put_varint(out, u64::from(id));
+        varint::push(out, u64::from(id));
         write_value(out, value);
     }
 }
@@ -315,7 +285,7 @@ impl<'a> StoredLabels<'a> {
     fn ids(self) -> impl Iterator<Item = u32> + Clone + 'a {
         let bytes = self.bytes;
         let mut pos = 0;
-        (0..self.count).map(move |_| get_varint(bytes, &mut pos) as u32)
+        (0..self.count).map(move |_| varint::read(bytes, &mut pos) as u32)
     }
 
     #[inline]
@@ -323,7 +293,7 @@ impl<'a> StoredLabels<'a> {
         let dict = self.labels;
         let bytes = self.bytes;
         let mut pos = 0;
-        (0..self.count).map(move |_| dict.name(get_varint(bytes, &mut pos) as u32))
+        (0..self.count).map(move |_| dict.name(varint::read(bytes, &mut pos) as u32))
     }
 
     pub(crate) fn to_owned(self) -> Labels {
@@ -353,10 +323,10 @@ impl<'a> StoredNode<'a> {
     #[inline]
     fn split(self) -> (StoredLabels<'a>, usize) {
         let mut pos = 0;
-        let count = get_varint(self.bytes, &mut pos) as usize;
+        let count = varint::read(self.bytes, &mut pos) as usize;
         let start = pos;
         for _ in 0..count {
-            get_varint(self.bytes, &mut pos);
+            varint::read(self.bytes, &mut pos);
         }
         (
             StoredLabels {
@@ -407,9 +377,9 @@ impl<'a> StoredRel<'a> {
     #[inline]
     pub(crate) fn new(id: RelationshipId, bytes: &'a [u8], dicts: &'a Dicts) -> Self {
         let mut pos = 0;
-        let src = get_varint(bytes, &mut pos);
-        let dst = get_varint(bytes, &mut pos);
-        let type_id = get_varint(bytes, &mut pos) as u32;
+        let src = varint::read(bytes, &mut pos);
+        let dst = varint::read(bytes, &mut pos);
+        let type_id = varint::read(bytes, &mut pos) as u32;
         Self {
             id,
             src,
@@ -461,12 +431,12 @@ pub(crate) enum RecordKind {
 fn props_offset(bytes: &[u8], kind: RecordKind) -> usize {
     let mut pos = 0;
     let skip = match kind {
-        RecordKind::Node => get_varint(bytes, &mut pos),
+        RecordKind::Node => varint::read(bytes, &mut pos),
         // Source, target, type.
         RecordKind::Relationship => 3,
     };
     for _ in 0..skip {
-        get_varint(bytes, &mut pos);
+        varint::read(bytes, &mut pos);
     }
     pos
 }
@@ -488,7 +458,7 @@ pub(crate) fn edit_property(
 ) -> Option<Option<PropertyValue>> {
     let props_at = props_offset(bytes, kind);
     let mut pos = props_at;
-    let count = get_varint(bytes, &mut pos);
+    let count = varint::read(bytes, &mut pos);
     let entries_at = pos;
 
     // Find the entry, or where a new one goes to keep key-name order.
@@ -497,7 +467,7 @@ pub(crate) fn edit_property(
     let mut insert_at = None;
     for _ in 0..count {
         let start = pos;
-        let id = get_varint(bytes, &mut pos) as u32;
+        let id = varint::read(bytes, &mut pos) as u32;
         let tag = bytes[pos];
         pos += 1;
         if Some(id) == wanted {
@@ -532,14 +502,14 @@ pub(crate) fn edit_property(
     out.clear();
     {
         out.extend_from_slice(&bytes[..props_at]);
-        put_varint(out, new_count);
+        varint::push(out, new_count);
         out.extend_from_slice(&bytes[entries_at..start]);
         if let PropEdit::Set(value) = edit {
             let id = match wanted {
                 Some(id) => id,
                 None => keys.id_or_insert_with(key, || crate::Name::from_arc(crate::intern(key))),
             };
-            put_varint(out, u64::from(id));
+            varint::push(out, u64::from(id));
             write_value(out, value);
         }
         out.extend_from_slice(&bytes[end..]);
@@ -551,8 +521,8 @@ pub(crate) fn edit_property(
 #[inline]
 pub(crate) fn rel_endpoints(bytes: &[u8]) -> (NodeId, NodeId) {
     let mut pos = 0;
-    let src = get_varint(bytes, &mut pos);
-    (src, get_varint(bytes, &mut pos))
+    let src = varint::read(bytes, &mut pos);
+    (src, varint::read(bytes, &mut pos))
 }
 
 thread_local! {
@@ -600,9 +570,9 @@ impl Drop for Scratch {
 /// Encode `node` into `out`, replacing what it held.
 pub(crate) fn encode_node(node: &NodeRecord, dicts: &mut Dicts, out: &mut Vec<u8>) {
     out.clear();
-    put_varint(out, node.labels.len() as u64);
+    varint::push(out, node.labels.len() as u64);
     for label in node.labels.iter() {
-        put_varint(out, u64::from(dicts.labels.id_or_insert(label)));
+        varint::push(out, u64::from(dicts.labels.id_or_insert(label)));
     }
     write_props(out, &node.properties, &mut dicts.keys);
 }
@@ -610,9 +580,9 @@ pub(crate) fn encode_node(node: &NodeRecord, dicts: &mut Dicts, out: &mut Vec<u8
 /// Encode `rel` into `out`, replacing what it held.
 pub(crate) fn encode_rel(rel: &RelationshipRecord, dicts: &mut Dicts, out: &mut Vec<u8>) {
     out.clear();
-    put_varint(out, rel.src);
-    put_varint(out, rel.dst);
-    put_varint(out, u64::from(dicts.types.id_or_insert(&rel.rel_type)));
+    varint::push(out, rel.src);
+    varint::push(out, rel.dst);
+    varint::push(out, u64::from(dicts.types.id_or_insert(&rel.rel_type)));
     write_props(out, &rel.properties, &mut dicts.keys);
 }
 
@@ -703,14 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn varints_and_zigzag_round_trip() {
-        for value in [0u64, 1, 127, 128, 16_383, 16_384, u32::MAX as u64, u64::MAX] {
-            let mut out = Vec::new();
-            put_varint(&mut out, value);
-            let mut pos = 0;
-            assert_eq!(get_varint(&out, &mut pos), value);
-            assert_eq!(pos, out.len());
-        }
+    fn zigzag_round_trips() {
         for value in [0i64, 1, -1, 63, -64, 64, i64::MAX, i64::MIN] {
             assert_eq!(unzigzag(zigzag(value)), value);
         }

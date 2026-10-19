@@ -14,6 +14,7 @@ mod mutation;
 mod snapshot;
 mod traits;
 pub mod types;
+mod varint;
 
 // ---------- Value types ----------
 //

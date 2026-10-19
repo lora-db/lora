@@ -480,24 +480,15 @@ impl GraphStorage for InMemoryGraph {
                     return false;
                 };
                 // The cursor is the next id the scan may return.
-                let mut iter = ids.iter_from(*cursor);
-                for id in iter.by_ref().take(max) {
-                    out.push(id);
-                    *cursor = id + 1;
-                }
-                iter.next().is_some()
+                fill_page(ids.iter_from(*cursor), cursor, max, out)
             }
             None => {
                 // The cursor is the next slot the scan may return.
                 let Ok(from) = usize::try_from(*cursor) else {
                     return false;
                 };
-                let mut iter = self.nodes.slots_from(from);
-                for slot in iter.by_ref().take(max) {
-                    out.push(slot as NodeId);
-                    *cursor = slot as u64 + 1;
-                }
-                iter.next().is_some()
+                let slots = self.nodes.slots_from(from).map(|slot| slot as NodeId);
+                fill_page(slots, cursor, max, out)
             }
         }
     }
@@ -1270,4 +1261,20 @@ impl GraphStorageMut for InMemoryGraph {
     ) -> Result<DropConstraintOutcome, DropConstraintError> {
         self.drop_named_constraint(name, if_exists)
     }
+}
+
+/// Move up to `max` of the ascending `ids` into `out` and leave `cursor`
+/// just past the last one moved. Returns whether any id is left.
+#[inline]
+fn fill_page(
+    mut ids: impl Iterator<Item = NodeId>,
+    cursor: &mut u64,
+    max: usize,
+    out: &mut Vec<NodeId>,
+) -> bool {
+    for id in ids.by_ref().take(max) {
+        out.push(id);
+        *cursor = id.saturating_add(1);
+    }
+    ids.next().is_some()
 }

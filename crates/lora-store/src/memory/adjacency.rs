@@ -51,6 +51,25 @@ pub(super) struct AdjEntry {
     pub rel: RelationshipId,
 }
 
+/// One of a node's two adjacency lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Side {
+    /// Relationships leaving the node, neighbour = target.
+    Out,
+    /// Relationships entering it, neighbour = source.
+    In,
+}
+
+impl Side {
+    #[cfg(test)]
+    fn opposite(self) -> Side {
+        match self {
+            Side::Out => Side::In,
+            Side::In => Side::Out,
+        }
+    }
+}
+
 #[inline]
 fn width(value: u64) -> usize {
     ((64 - value.leading_zeros() as usize).div_ceil(8)).max(1)
@@ -128,12 +147,17 @@ const HEADER: usize = std::mem::size_of::<Header>();
 const ALIGN: usize = std::mem::align_of::<Header>();
 const _: () = assert!(HEADER == 12);
 
+/// The largest data capacity: lengths are `u32`, and the allocation stays a
+/// multiple of 16.
+const MAX_CAP: usize = (u32::MAX as usize & !15) - HEADER;
+
 /// Data capacity for at least `min` bytes, so that the allocation (header
 /// included) is a multiple of 16, the allocator's size step.
 #[inline]
-fn capacity_for(min: usize) -> usize {
+const fn capacity_for(min: usize) -> usize {
     ((HEADER + min + 15) & !15) - HEADER
 }
+const _: () = assert!(capacity_for(MAX_CAP) == MAX_CAP && MAX_CAP <= u32::MAX as usize);
 
 /// Both adjacency lists of one node. Empty is a null pointer.
 #[derive(Default)]
@@ -271,24 +295,35 @@ impl Adjacency {
             .map_or(0, |h| h.out_len as usize + h.in_len as usize)
     }
 
-    /// Add `entry` to the outgoing list, or the incoming one.
-    pub(super) fn push(&mut self, outgoing: bool, entry: AdjEntry) {
+    /// One of the two lists.
+    #[inline]
+    pub(super) fn side(&self, side: Side) -> AdjSide<'_> {
+        match side {
+            Side::Out => self.outgoing(),
+            Side::In => self.incoming(),
+        }
+    }
+
+    /// Add `entry` to the list on `side`.
+    pub(super) fn push(&mut self, side: Side, entry: AdjEntry) {
         let mut buf = [0u8; 21];
-        let len = encode(entry, !outgoing, &mut buf);
+        let len = encode(entry, side == Side::In, &mut buf);
         let (used, cap) = self.header().map_or((0, 0), |h| {
             (h.out_len as usize + h.in_len as usize, h.cap as usize)
         });
         if used + len > cap {
+            assert!(used + len <= MAX_CAP, "adjacency list over 4 GiB");
             // Growing by half: a quarter saved 2 bytes per element on the
             // benchmark graph but made bulk relationship creation 7% slower.
-            self.grow(capacity_for((used + len).max(cap + cap / 2)));
+            let want = (used + len).max(cap + cap / 2).min(MAX_CAP);
+            self.grow(capacity_for(want));
         }
         let ptr = self.ptr.expect("allocated above");
         // SAFETY: `used + len <= cap`, so the entry lands in free space,
         // and `&mut self` makes the write exclusive.
         unsafe {
             let header = &mut *ptr.as_ptr();
-            let at = if outgoing {
+            let at = if side == Side::Out {
                 let at = header.out_len as usize;
                 header.out_len += len as u32;
                 at
@@ -300,15 +335,10 @@ impl Adjacency {
         }
     }
 
-    /// Remove the entry for `rel` from the outgoing list, or the incoming
-    /// one. Returns whether it was present.
-    pub(super) fn remove(&mut self, outgoing: bool, rel: RelationshipId) -> bool {
-        let side = if outgoing {
-            self.outgoing()
-        } else {
-            self.incoming()
-        };
-        let mut iter = side.iter();
+    /// Remove the entry for `rel` from the list on `side`. Returns whether
+    /// it was present.
+    pub(super) fn remove(&mut self, side: Side, rel: RelationshipId) -> bool {
+        let mut iter = self.side(side).iter();
         let (before, after) = loop {
             let before = iter.pos();
             let Some(entry) = iter.next() else {
@@ -326,7 +356,7 @@ impl Adjacency {
         unsafe {
             let header = &mut *ptr.as_ptr();
             let data = Self::data(ptr);
-            if outgoing {
+            if side == Side::Out {
                 // The entry is `before..after`: move the later ones down.
                 let len = header.out_len as usize;
                 std::ptr::copy(data.add(after), data.add(before), len - after);
@@ -580,22 +610,14 @@ mod tests {
         out
     }
 
-    fn side(adj: &Adjacency, outgoing: bool) -> AdjSide<'_> {
-        if outgoing {
-            adj.outgoing()
-        } else {
-            adj.incoming()
-        }
-    }
-
     #[test]
     fn every_width_round_trips_in_both_directions() {
         let entries = entries();
         let mut adj = Adjacency::default();
         // Interleave the directions so each push grows past the other side.
         for &e in &entries {
-            adj.push(true, e);
-            adj.push(false, AdjEntry { rel: !e.rel, ..e });
+            adj.push(Side::Out, e);
+            adj.push(Side::In, AdjEntry { rel: !e.rel, ..e });
         }
         let incoming: Vec<_> = entries
             .iter()
@@ -613,16 +635,16 @@ mod tests {
 
     #[test]
     fn a_single_short_entry_reads_without_eight_bytes_behind_it() {
-        for outgoing in [true, false] {
+        for dir in [Side::Out, Side::In] {
             let mut adj = Adjacency::default();
             let e = AdjEntry {
                 type_id: 3,
                 neighbour: 7,
                 rel: 9,
             };
-            adj.push(outgoing, e);
-            assert_eq!(side(&adj, outgoing).iter().collect::<Vec<_>>(), vec![e]);
-            assert!(side(&adj, !outgoing).is_empty());
+            adj.push(dir, e);
+            assert_eq!(adj.side(dir).iter().collect::<Vec<_>>(), vec![e]);
+            assert!(adj.side(dir.opposite()).is_empty());
             // A 12-byte header and the 4-byte entry.
             assert_eq!(adj.heap_bytes(), 16);
         }
@@ -630,36 +652,36 @@ mod tests {
 
     #[test]
     fn remove_takes_exactly_one_entry_and_keeps_order() {
-        for outgoing in [true, false] {
+        for dir in [Side::Out, Side::In] {
             let entries = entries();
             let mut adj = Adjacency::default();
             for &e in &entries {
-                adj.push(outgoing, e);
+                adj.push(dir, e);
                 adj.push(
-                    !outgoing,
+                    dir.opposite(),
                     AdjEntry {
                         rel: e.rel ^ 1,
                         ..e
                     },
                 );
             }
-            let other: Vec<_> = side(&adj, !outgoing).iter().collect();
+            let other: Vec<_> = adj.side(dir.opposite()).iter().collect();
             let mut expected = entries.clone();
             // Remove from the middle, the oldest end and the newest end.
             for index in [expected.len() / 2, 0, expected.len() - 3] {
                 let gone = expected.remove(index);
-                assert!(adj.remove(outgoing, gone.rel));
-                assert!(!adj.remove(outgoing, gone.rel));
-                assert_eq!(side(&adj, outgoing).iter().collect::<Vec<_>>(), expected);
-                assert_eq!(side(&adj, outgoing).count(), expected.len());
-                assert_eq!(side(&adj, !outgoing).iter().collect::<Vec<_>>(), other);
+                assert!(adj.remove(dir, gone.rel));
+                assert!(!adj.remove(dir, gone.rel));
+                assert_eq!(adj.side(dir).iter().collect::<Vec<_>>(), expected);
+                assert_eq!(adj.side(dir).count(), expected.len());
+                assert_eq!(adj.side(dir.opposite()).iter().collect::<Vec<_>>(), other);
             }
             for e in expected {
-                assert!(adj.remove(outgoing, e.rel));
+                assert!(adj.remove(dir, e.rel));
             }
-            assert!(side(&adj, outgoing).is_empty());
+            assert!(adj.side(dir).is_empty());
             for e in other {
-                assert!(adj.remove(!outgoing, e.rel));
+                assert!(adj.remove(dir.opposite(), e.rel));
             }
             assert_eq!(adj.heap_bytes(), 0);
         }
@@ -670,7 +692,7 @@ mod tests {
         let mut adj = Adjacency::default();
         for rel in 0..8u64 {
             adj.push(
-                rel % 2 == 0,
+                if rel % 2 == 0 { Side::Out } else { Side::In },
                 AdjEntry {
                     type_id: 200,
                     neighbour: 15_999_999,

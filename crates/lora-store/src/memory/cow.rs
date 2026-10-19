@@ -38,7 +38,7 @@ use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::sync::Arc;
 
 /// `std::sync::Arc<T>`: strong + weak refcount header before the value.
-const ARC_HEADER: usize = 2 * std::mem::size_of::<usize>();
+use super::ARC_HEADER;
 
 /// The hasher for every key here: deterministic, and cheap for the short
 /// keys indexes hold (integers, grid cells, trigrams, short strings).
