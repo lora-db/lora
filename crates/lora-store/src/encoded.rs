@@ -1,12 +1,11 @@
 //! Compact stored form of nodes and relationships.
 //!
-//! The in-memory store keeps each record as one immutable byte string
-//! behind a thin, reference-counted pointer ([`Blob`]): an 8-byte slot
-//! and an 8-byte header per record, where an `Arc<NodeRecord>` cost a
-//! 16-byte header, a 56-byte struct and 64 bytes per property before the
-//! value's own heap. Readers get views over the bytes
-//! ([`crate::NodeRef`], [`crate::RelRef`]); nothing is decoded until it
-//! is asked for.
+//! The in-memory store keeps each record as one byte string, packed with
+//! the records of neighbouring ids into a shared buffer (see
+//! `memory::record_slab`), where an `Arc<NodeRecord>` cost a 16-byte
+//! header, a 56-byte struct and 64 bytes per property before the value's
+//! own heap. Readers get views over the bytes ([`crate::NodeRef`],
+//! [`crate::RelRef`]); nothing is decoded until it is asked for.
 //!
 //! Layout (integers are LEB128 varints unless noted):
 //!
@@ -25,146 +24,11 @@
 //! Label, type and key ids come from the graph's [`Dicts`]. A record's
 //! own id is its slot index and is not stored.
 
-use std::alloc::{self, Layout};
-use std::ptr::NonNull;
-use std::sync::atomic::{self, AtomicU32, Ordering};
-
 use crate::dict::{Dicts, NameDict};
 use crate::{
     Labels, NodeId, NodeRecord, OtherValue, Properties, PropertyValue, RelationshipId,
     RelationshipRecord, ValueRef,
 };
-
-// ---------------------------------------------------------------------------
-// Blob: a thin, shared, immutable byte string
-// ---------------------------------------------------------------------------
-
-#[repr(C)]
-struct Header {
-    refs: AtomicU32,
-    /// Byte length, or [`WIDE`] when a `u64` length follows the header.
-    len: u32,
-}
-
-/// `Header::len` value marking a byte string too long for a `u32`.
-const WIDE: u32 = u32::MAX;
-const HEADER: usize = std::mem::size_of::<Header>();
-const ALIGN: usize = 8;
-const _: () = assert!(HEADER == 8 && std::mem::align_of::<Header>() <= ALIGN);
-
-/// An immutable byte string behind one pointer. Cloning bumps a count.
-pub(crate) struct Blob {
-    ptr: NonNull<Header>,
-}
-
-// SAFETY: the bytes are immutable after construction and the count is
-// atomic, as with `Arc<[u8]>`.
-unsafe impl Send for Blob {}
-unsafe impl Sync for Blob {}
-
-impl Blob {
-    pub(crate) fn new(bytes: &[u8]) -> Self {
-        Self::with_width(bytes, bytes.len() >= WIDE as usize)
-    }
-
-    fn with_width(bytes: &[u8], wide: bool) -> Self {
-        let prefix = if wide { HEADER + 8 } else { HEADER };
-        let layout = Self::layout(prefix + bytes.len());
-        // SAFETY: the layout has a non-zero size (it includes the header).
-        let raw = unsafe { alloc::alloc(layout) };
-        let Some(ptr) = NonNull::new(raw.cast::<Header>()) else {
-            alloc::handle_alloc_error(layout)
-        };
-        // SAFETY: `raw` is valid for `prefix + bytes.len()` bytes and
-        // aligned for `Header` and `u64`.
-        unsafe {
-            ptr.as_ptr().write(Header {
-                refs: AtomicU32::new(1),
-                len: if wide { WIDE } else { bytes.len() as u32 },
-            });
-            if wide {
-                raw.add(HEADER).cast::<u64>().write(bytes.len() as u64);
-            }
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), raw.add(prefix), bytes.len());
-        }
-        Self { ptr }
-    }
-
-    fn layout(size: usize) -> Layout {
-        Layout::from_size_align(size, ALIGN).expect("record size fits the address space")
-    }
-
-    /// `(offset of the bytes, their length)`.
-    #[inline]
-    fn extent(&self) -> (usize, usize) {
-        // SAFETY: `ptr` points at a live header written by `with_width`.
-        let len = unsafe { (*self.ptr.as_ptr()).len };
-        if len != WIDE {
-            (HEADER, len as usize)
-        } else {
-            // SAFETY: a wide blob stores its length right after the header.
-            let len = unsafe {
-                self.ptr
-                    .as_ptr()
-                    .cast::<u8>()
-                    .add(HEADER)
-                    .cast::<u64>()
-                    .read()
-            };
-            (HEADER + 8, len as usize)
-        }
-    }
-
-    #[inline]
-    pub(crate) fn as_slice(&self) -> &[u8] {
-        let (offset, len) = self.extent();
-        // SAFETY: the allocation holds `len` initialized bytes at `offset`
-        // and lives as long as `self`.
-        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr().cast::<u8>().add(offset), len) }
-    }
-
-    /// Bytes this blob's allocation occupies.
-    pub(crate) fn alloc_bytes(&self) -> usize {
-        let (offset, len) = self.extent();
-        offset + len
-    }
-}
-
-impl Clone for Blob {
-    #[inline]
-    fn clone(&self) -> Self {
-        // SAFETY: `ptr` points at a live header.
-        let old = unsafe { (*self.ptr.as_ptr()).refs.fetch_add(1, Ordering::Relaxed) };
-        // Far more references than slots could hold them: something is
-        // leaking clones. Stop before the count wraps.
-        if old > u32::MAX / 2 {
-            std::process::abort();
-        }
-        Self { ptr: self.ptr }
-    }
-}
-
-impl Drop for Blob {
-    #[inline]
-    fn drop(&mut self) {
-        // SAFETY: `ptr` points at a live header; after the last reference
-        // is released nothing else can reach the allocation.
-        unsafe {
-            if (*self.ptr.as_ptr()).refs.fetch_sub(1, Ordering::Release) != 1 {
-                return;
-            }
-            atomic::fence(Ordering::Acquire);
-            let (offset, len) = self.extent();
-            alloc::dealloc(self.ptr.as_ptr().cast::<u8>(), Self::layout(offset + len));
-        }
-    }
-}
-
-impl std::fmt::Debug for Blob {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Blob({} bytes)", self.as_slice().len())
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Primitive readers and writers
@@ -481,12 +345,8 @@ pub(crate) struct StoredNode<'a> {
 
 impl<'a> StoredNode<'a> {
     #[inline]
-    pub(crate) fn new(id: NodeId, blob: &'a Blob, dicts: &'a Dicts) -> Self {
-        Self {
-            id,
-            bytes: blob.as_slice(),
-            dicts,
-        }
+    pub(crate) fn new(id: NodeId, bytes: &'a [u8], dicts: &'a Dicts) -> Self {
+        Self { id, bytes, dicts }
     }
 
     /// `(labels, offset of the properties)`.
@@ -545,8 +405,7 @@ pub(crate) struct StoredRel<'a> {
 
 impl<'a> StoredRel<'a> {
     #[inline]
-    pub(crate) fn new(id: RelationshipId, blob: &'a Blob, dicts: &'a Dicts) -> Self {
-        let bytes = blob.as_slice();
+    pub(crate) fn new(id: RelationshipId, bytes: &'a [u8], dicts: &'a Dicts) -> Self {
         let mut pos = 0;
         let src = get_varint(bytes, &mut pos);
         let dst = get_varint(bytes, &mut pos);
@@ -591,7 +450,7 @@ pub(crate) enum PropEdit<'v> {
     Remove,
 }
 
-/// Which kind of record a blob holds: where its properties start.
+/// Which kind of record a byte string holds: where its properties start.
 #[derive(Clone, Copy)]
 pub(crate) enum RecordKind {
     Node,
@@ -612,21 +471,21 @@ fn props_offset(bytes: &[u8], kind: RecordKind) -> usize {
     pos
 }
 
-/// Apply `edit` to property `key` of the record in `blob` and return the
-/// new record with the property's previous value.
+/// Apply `edit` to property `key` of the record `bytes`, writing the new
+/// record to `out` and returning the property's previous value.
 ///
 /// Only the edited entry is rewritten: the rest of the record is copied
 /// as bytes, so the cost does not grow with what the other properties
 /// hold. `None` when there is nothing to do: removing a key the record
 /// does not have.
 pub(crate) fn edit_property(
-    blob: &Blob,
+    bytes: &[u8],
     kind: RecordKind,
     keys: &mut NameDict,
     key: &str,
     edit: PropEdit<'_>,
-) -> Option<(Blob, Option<PropertyValue>)> {
-    let bytes = blob.as_slice();
+    out: &mut Vec<u8>,
+) -> Option<Option<PropertyValue>> {
     let props_at = props_offset(bytes, kind);
     let mut pos = props_at;
     let count = get_varint(bytes, &mut pos);
@@ -670,7 +529,8 @@ pub(crate) fn edit_property(
         (PropEdit::Set(_), false) => count + 1,
         (PropEdit::Remove, _) => count - 1,
     };
-    let blob = with_scratch(|out| {
+    out.clear();
+    {
         out.extend_from_slice(&bytes[..props_at]);
         put_varint(out, new_count);
         out.extend_from_slice(&bytes[entries_at..start]);
@@ -683,14 +543,13 @@ pub(crate) fn edit_property(
             write_value(out, value);
         }
         out.extend_from_slice(&bytes[end..]);
-    });
-    Some((blob, old))
+    }
+    Some(old)
 }
 
 /// `(source, target)` of a stored relationship, without the rest.
 #[inline]
-pub(crate) fn rel_endpoints(blob: &Blob) -> (NodeId, NodeId) {
-    let bytes = blob.as_slice();
+pub(crate) fn rel_endpoints(bytes: &[u8]) -> (NodeId, NodeId) {
     let mut pos = 0;
     let src = get_varint(bytes, &mut pos);
     (src, get_varint(bytes, &mut pos))
@@ -698,46 +557,104 @@ pub(crate) fn rel_endpoints(blob: &Blob) -> (NodeId, NodeId) {
 
 thread_local! {
     /// Scratch buffer for encoding: one record is built here, then copied
-    /// into an exactly-sized [`Blob`].
+    /// into the record store.
     static SCRATCH: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-fn with_scratch(build: impl FnOnce(&mut Vec<u8>)) -> Blob {
-    SCRATCH.with(|scratch| {
-        let mut buf = scratch.borrow_mut();
+/// The thread's encoding buffer, empty, until dropped. Taken out of the
+/// thread-local so the caller can hold it across other borrows.
+pub(crate) struct Scratch(Vec<u8>);
+
+impl Scratch {
+    pub(crate) fn take() -> Self {
+        let mut buf = SCRATCH.with(|scratch| std::mem::take(&mut *scratch.borrow_mut()));
         buf.clear();
-        build(&mut buf);
-        let blob = Blob::new(&buf);
+        Scratch(buf)
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = Vec<u8>;
+
+    fn deref(&self) -> &Vec<u8> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Scratch {
+    fn deref_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
         // Don't let one huge record pin its size in every thread.
-        if buf.capacity() > 1 << 20 {
-            *buf = Vec::new();
+        if self.0.capacity() <= 1 << 20 {
+            let buf = std::mem::take(&mut self.0);
+            SCRATCH.with(|scratch| *scratch.borrow_mut() = buf);
         }
-        blob
-    })
+    }
 }
 
-pub(crate) fn encode_node(node: &NodeRecord, dicts: &mut Dicts) -> Blob {
-    with_scratch(|out| {
-        put_varint(out, node.labels.len() as u64);
-        for label in node.labels.iter() {
-            put_varint(out, u64::from(dicts.labels.id_or_insert(label)));
-        }
-        write_props(out, &node.properties, &mut dicts.keys);
-    })
+/// Encode `node` into `out`, replacing what it held.
+pub(crate) fn encode_node(node: &NodeRecord, dicts: &mut Dicts, out: &mut Vec<u8>) {
+    out.clear();
+    put_varint(out, node.labels.len() as u64);
+    for label in node.labels.iter() {
+        put_varint(out, u64::from(dicts.labels.id_or_insert(label)));
+    }
+    write_props(out, &node.properties, &mut dicts.keys);
 }
 
-pub(crate) fn encode_rel(rel: &RelationshipRecord, dicts: &mut Dicts) -> Blob {
-    with_scratch(|out| {
-        put_varint(out, rel.src);
-        put_varint(out, rel.dst);
-        put_varint(out, u64::from(dicts.types.id_or_insert(&rel.rel_type)));
-        write_props(out, &rel.properties, &mut dicts.keys);
-    })
+/// Encode `rel` into `out`, replacing what it held.
+pub(crate) fn encode_rel(rel: &RelationshipRecord, dicts: &mut Dicts, out: &mut Vec<u8>) {
+    out.clear();
+    put_varint(out, rel.src);
+    put_varint(out, rel.dst);
+    put_varint(out, u64::from(dicts.types.id_or_insert(&rel.rel_type)));
+    write_props(out, &rel.properties, &mut dicts.keys);
+}
+
+/// `node` encoded into a new buffer.
+#[cfg(test)]
+pub(crate) fn node_bytes(node: &NodeRecord, dicts: &mut Dicts) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_node(node, dicts, &mut out);
+    out
+}
+
+/// `rel` encoded into a new buffer.
+#[cfg(test)]
+pub(crate) fn rel_bytes(rel: &RelationshipRecord, dicts: &mut Dicts) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_rel(rel, dicts, &mut out);
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn encode_node(node: &NodeRecord, dicts: &mut Dicts) -> Vec<u8> {
+        node_bytes(node, dicts)
+    }
+
+    fn encode_rel(rel: &RelationshipRecord, dicts: &mut Dicts) -> Vec<u8> {
+        rel_bytes(rel, dicts)
+    }
+
+    fn edit_property(
+        bytes: &[u8],
+        kind: RecordKind,
+        keys: &mut NameDict,
+        key: &str,
+        edit: PropEdit<'_>,
+    ) -> Option<(Vec<u8>, Option<PropertyValue>)> {
+        let mut out = Vec::new();
+        let old = super::edit_property(bytes, kind, keys, key, edit, &mut out)?;
+        Some((out, old))
+    }
     use crate::{intern, LoraDate, LoraPoint};
 
     fn props(pairs: &[(&str, PropertyValue)]) -> Properties {
@@ -783,50 +700,6 @@ mod tests {
                 srid: crate::SRID_WGS84,
             }),
         ]
-    }
-
-    #[test]
-    fn blobs_hold_their_bytes_and_free_on_the_last_drop() {
-        for len in [0usize, 1, 7, 8, 9, 4096] {
-            let bytes: Vec<u8> = (0..len).map(|i| i as u8).collect();
-            let blob = Blob::new(&bytes);
-            let copy = blob.clone();
-            assert_eq!(blob.as_slice(), bytes);
-            drop(blob);
-            assert_eq!(copy.as_slice(), bytes);
-            assert_eq!(copy.alloc_bytes(), 8 + len);
-        }
-        assert_eq!(std::mem::size_of::<Option<Blob>>(), 8);
-    }
-
-    #[test]
-    fn blobs_are_shared_and_freed_across_threads() {
-        let bytes: Vec<u8> = (0..64u8).collect();
-        let blob = Blob::new(&bytes);
-        std::thread::scope(|scope| {
-            for _ in 0..4 {
-                let mine = blob.clone();
-                let bytes = &bytes;
-                scope.spawn(move || {
-                    for _ in 0..50 {
-                        let copy = mine.clone();
-                        assert_eq!(copy.as_slice(), bytes.as_slice());
-                    }
-                });
-            }
-        });
-        assert_eq!(blob.as_slice(), bytes);
-    }
-
-    #[test]
-    fn a_wide_blob_reads_like_a_narrow_one() {
-        let bytes: Vec<u8> = (0..100u8).collect();
-        let blob = Blob::with_width(&bytes, true);
-        let copy = blob.clone();
-        assert_eq!(blob.as_slice(), bytes);
-        assert_eq!(blob.alloc_bytes(), 16 + 100);
-        drop(blob);
-        assert_eq!(copy.as_slice(), bytes);
     }
 
     #[test]

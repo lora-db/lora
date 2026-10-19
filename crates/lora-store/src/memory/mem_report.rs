@@ -73,10 +73,10 @@ pub struct MemoryReport {
     pub node_tombstone_count: usize,
     pub relationship_tombstone_count: usize,
 
-    /// `nodes`: the slot tree plus each live node's encoded record (an
-    /// 8-byte header and its bytes), and the graph's name dictionaries.
+    /// `nodes`: the slot tree, its leaves of encoded records (offsets and
+    /// buffers, garbage included), and the graph's name dictionaries.
     pub nodes_bytes: usize,
-    /// `relationships`: the slot tree plus each encoded record.
+    /// `relationships`: the slot tree and its leaves of encoded records.
     pub relationships_bytes: usize,
 
     /// Outgoing adjacency: its entries, plus half of the shared slot tree
@@ -302,15 +302,9 @@ fn chunked_outer_bytes<T>(v: &ChunkedVec<T>) -> usize {
         + v.tree_overhead_bytes()
 }
 
-/// A slab of encoded records: the chunk tree plus each record's
-/// allocation (an 8-byte header and its bytes).
-fn record_slab_bytes(slab: &ChunkedVec<Option<crate::encoded::Blob>>) -> usize {
-    chunked_outer_bytes(slab)
-        + slab
-            .iter()
-            .flatten()
-            .map(|blob| blob.alloc_bytes())
-            .sum::<usize>()
+/// A slab of encoded records: its tree, leaves and record buffers.
+fn record_slab_bytes(slab: &super::record_slab::RecordSlab) -> usize {
+    slab.heap_bytes()
 }
 
 /// Both directions share one slot tree and one allocation per node: the

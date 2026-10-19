@@ -488,29 +488,16 @@ impl GraphStorage for InMemoryGraph {
                 iter.next().is_some()
             }
             None => {
-                let Ok(mut pos) = usize::try_from(*cursor) else {
+                // The cursor is the next slot the scan may return.
+                let Ok(from) = usize::try_from(*cursor) else {
                     return false;
                 };
-                let mut taken = 0;
-                // The cursor is a slot index; tombstoned slots are skipped.
-                while taken < max {
-                    let chunk = self.nodes.chunk_from(pos);
-                    if chunk.is_empty() {
-                        break;
-                    }
-                    for slot in chunk {
-                        if slot.is_some() {
-                            out.push(pos as NodeId);
-                            taken += 1;
-                        }
-                        pos += 1;
-                        if taken == max {
-                            break;
-                        }
-                    }
+                let mut iter = self.nodes.iter_from(from);
+                for (slot, _) in iter.by_ref().take(max) {
+                    out.push(slot as NodeId);
+                    *cursor = slot as u64 + 1;
                 }
-                *cursor = pos as u64;
-                pos < self.nodes.len()
+                iter.next().is_some()
             }
         }
     }

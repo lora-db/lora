@@ -34,13 +34,14 @@ use super::point_index::PointRegistry;
 #[cfg(test)]
 use super::property_index::PropertyIndexState;
 use super::property_index::{PropertyIndexRegistry, UNLABELLED};
+use super::record_slab::RecordSlab;
 use super::secondary_index_maintenance::SecondaryIndexMutation;
 use super::sorted_property_index::SortedPropertyIndex;
 use super::stats::GraphStats;
 use super::text_index::TrigramRegistry;
 use super::vector_index::{VectorIndexProvider, VectorIndexRegistry, VectorSimilarity};
 use crate::dict::Dicts;
-use crate::encoded::{self, Blob, StoredNode, StoredRel};
+use crate::encoded::{self, Scratch, StoredNode, StoredRel};
 use crate::{NodeRef, RelRef};
 
 #[derive(Default)]
@@ -48,20 +49,20 @@ pub struct InMemoryGraph {
     pub(super) next_node_id: NodeId,
     pub(super) next_rel_id: RelationshipId,
 
-    /// Slot-indexed node storage: `nodes[id as usize]` is the node `id`,
-    /// encoded (see [`crate::encoded`]). `None` slots are tombstones from
-    /// deletes (we don't compact). Because `next_node_id` is monotonic the
-    /// slot at `id` is initialized exactly when `id < next_node_id`.
+    /// Slot-indexed node storage: slot `id` holds the node `id`, encoded
+    /// (see [`crate::encoded`]). Empty slots are tombstones from deletes
+    /// (we don't compact). Because `next_node_id` is monotonic the slot at
+    /// `id` exists exactly when `id < next_node_id`.
     ///
     /// [`Self::clone`] (called on every staged write to build a working
     /// copy, and for every reader snapshot) shares this storage: a
-    /// [`ChunkedVec`] clone is one refcount bump, so the whole-graph
+    /// [`RecordSlab`] clone is one refcount bump, so the whole-graph
     /// clone is O(#labels + #relationship types), not O(N). A write
-    /// copies only the chunk path it touches, and copying a chunk bumps
-    /// one count per record. A record is immutable: changing it stores a
-    /// new encoding in its slot (see [`Self::update_node`]).
-    pub(super) nodes: ChunkedVec<Option<Blob>>,
-    pub(super) relationships: ChunkedVec<Option<Blob>>,
+    /// copies only the leaf path it touches, and copying a leaf copies its
+    /// records' bytes. A record is immutable: changing it stores a new
+    /// encoding in its slot (see [`Self::update_node`]).
+    pub(super) nodes: RecordSlab,
+    pub(super) relationships: RecordSlab,
     /// Numbers the labels, relationship types and property keys the
     /// records and adjacency entries refer to. Shared with clones until
     /// one of them sees a new name.
@@ -283,36 +284,32 @@ impl InMemoryGraph {
 
     #[inline]
     pub(super) fn node_at(&self, id: NodeId) -> Option<NodeRef<'_>> {
-        let blob = self.nodes.get(Self::slot_index(id)?)?.as_ref()?;
-        Some(NodeRef::stored(StoredNode::new(id, blob, &self.dicts)))
+        let bytes = self.nodes.get(Self::slot_index(id)?)?;
+        Some(NodeRef::stored(StoredNode::new(id, bytes, &self.dicts)))
     }
 
     #[inline]
     pub(super) fn has_node_at(&self, id: NodeId) -> bool {
-        Self::slot_index(id)
-            .and_then(|idx| self.nodes.get(idx))
-            .is_some_and(|slot| slot.is_some())
+        Self::slot_index(id).is_some_and(|idx| self.nodes.contains(idx))
     }
 
     #[inline]
     pub(super) fn rel_at(&self, id: RelationshipId) -> Option<RelRef<'_>> {
-        let blob = self.relationships.get(Self::slot_index(id)?)?.as_ref()?;
-        Some(RelRef::stored(StoredRel::new(id, blob, &self.dicts)))
+        let bytes = self.relationships.get(Self::slot_index(id)?)?;
+        Some(RelRef::stored(StoredRel::new(id, bytes, &self.dicts)))
     }
 
     #[inline]
     pub(super) fn has_rel_at(&self, id: RelationshipId) -> bool {
-        Self::slot_index(id)
-            .and_then(|idx| self.relationships.get(idx))
-            .is_some_and(|slot| slot.is_some())
+        Self::slot_index(id).is_some_and(|idx| self.relationships.contains(idx))
     }
 
     /// `(source, target)` of a relationship, reading only the start of
     /// its record.
     #[inline]
     pub(super) fn rel_endpoints_at(&self, id: RelationshipId) -> Option<(NodeId, NodeId)> {
-        let blob = self.relationships.get(Self::slot_index(id)?)?.as_ref()?;
-        Some(encoded::rel_endpoints(blob))
+        let bytes = self.relationships.get(Self::slot_index(id)?)?;
+        Some(encoded::rel_endpoints(bytes))
     }
 
     /// Change a node: decode it, let `change` edit the record, and store
@@ -326,8 +323,9 @@ impl InMemoryGraph {
         let idx = Self::slot_index(id)?;
         let mut record = self.node_at(id)?.to_record();
         let result = change(&mut record);
-        let blob = encoded::encode_node(&record, &mut self.dicts);
-        self.nodes[idx] = Some(blob);
+        let mut out = Scratch::take();
+        encoded::encode_node(&record, &mut self.dicts, &mut out);
+        self.nodes.set(idx, &out);
         Some(result)
     }
 
@@ -341,15 +339,17 @@ impl InMemoryGraph {
         edit: encoded::PropEdit<'_>,
     ) -> Option<Option<PropertyValue>> {
         let idx = Self::slot_index(id)?;
-        let blob = self.nodes.get(idx)?.as_ref()?;
-        let (blob, old) = encoded::edit_property(
-            blob,
+        let bytes = self.nodes.get(idx)?;
+        let mut out = Scratch::take();
+        let old = encoded::edit_property(
+            bytes,
             encoded::RecordKind::Node,
             &mut self.dicts.keys,
             key,
             edit,
+            &mut out,
         )?;
-        self.nodes[idx] = Some(blob);
+        self.nodes.set(idx, &out);
         Some(old)
     }
 
@@ -360,15 +360,17 @@ impl InMemoryGraph {
         edit: encoded::PropEdit<'_>,
     ) -> Option<Option<PropertyValue>> {
         let idx = Self::slot_index(id)?;
-        let blob = self.relationships.get(idx)?.as_ref()?;
-        let (blob, old) = encoded::edit_property(
-            blob,
+        let bytes = self.relationships.get(idx)?;
+        let mut out = Scratch::take();
+        let old = encoded::edit_property(
+            bytes,
             encoded::RecordKind::Relationship,
             &mut self.dicts.keys,
             key,
             edit,
+            &mut out,
         )?;
-        self.relationships[idx] = Some(blob);
+        self.relationships.set(idx, &out);
         Some(old)
     }
 
@@ -391,7 +393,7 @@ impl InMemoryGraph {
         let target = Self::slot_len_for_id(id, "node")?;
         if self.nodes.len() < target {
             let additional = target - self.nodes.len();
-            self.nodes.try_reserve_exact(additional).map_err(|e| {
+            self.nodes.try_reserve(additional).map_err(|e| {
                 format!("node id {id} requires {target} slots, but allocation failed: {e}")
             })?;
             self.adjacency.try_reserve_exact(additional).map_err(|e| {
@@ -399,7 +401,7 @@ impl InMemoryGraph {
                     "node id {id} requires {target} adjacency slots, but allocation failed: {e}"
                 )
             })?;
-            self.nodes.resize_with(target, || None);
+            self.nodes.grow_to(target);
             self.adjacency.resize_with(target, Adjacency::default);
         }
         Ok(target - 1)
@@ -409,13 +411,13 @@ impl InMemoryGraph {
         let target = Self::slot_len_for_id(id, "relationship")?;
         if self.relationships.len() < target {
             self.relationships
-                .try_reserve_exact(target - self.relationships.len())
+                .try_reserve(target - self.relationships.len())
                 .map_err(|e| {
                     format!(
                         "relationship id {id} requires {target} slots, but allocation failed: {e}"
                     )
                 })?;
-            self.relationships.resize_with(target, || None);
+            self.relationships.grow_to(target);
         }
         Ok(target - 1)
     }
@@ -437,45 +439,43 @@ impl InMemoryGraph {
     }
 
     pub(super) fn put_node_at_slot(&mut self, idx: usize, node: &NodeRecord) {
-        let was_present = self.nodes[idx].is_some();
-        self.nodes[idx] = Some(encoded::encode_node(node, &mut self.dicts));
-        if !was_present {
+        let mut out = Scratch::take();
+        encoded::encode_node(node, &mut self.dicts, &mut out);
+        if self.nodes.set(idx, &out) {
             self.live_node_count += 1;
         }
     }
 
     pub(super) fn put_rel_at_slot(&mut self, idx: usize, rel: &RelationshipRecord) {
-        let was_present = self.relationships[idx].is_some();
-        self.relationships[idx] = Some(encoded::encode_rel(rel, &mut self.dicts));
-        if !was_present {
+        let mut out = Scratch::take();
+        encoded::encode_rel(rel, &mut self.dicts, &mut out);
+        if self.relationships.set(idx, &out) {
             self.live_rel_count += 1;
         }
     }
 
     pub(super) fn take_node(&mut self, id: NodeId) -> Option<NodeRecord> {
         let idx = Self::slot_index(id)?;
-        let removed = self.nodes.get_mut(idx).and_then(|s| s.take());
-        if removed.is_some() {
-            self.live_node_count -= 1;
-            // Also clear the per-id adjacency entries so the memory is reclaimed
-            // on the typical "delete every node" pattern. We deliberately do not
-            // shrink the outer Vec — leaving the slot lets new ids reuse the
-            // same index without growth churn (and `next_node_id` is monotonic
-            // anyway, so no immediate reuse).
-            if let Some(adj) = self.adjacency.get_mut(idx) {
-                adj.clear();
-            }
+        let removed = StoredNode::new(id, self.nodes.get(idx)?, &self.dicts).to_record();
+        self.nodes.remove(idx);
+        self.live_node_count -= 1;
+        // Also clear the per-id adjacency entries so the memory is reclaimed
+        // on the typical "delete every node" pattern. We deliberately do not
+        // shrink the slots — leaving the slot lets new ids reuse the same
+        // index without growth churn (and `next_node_id` is monotonic
+        // anyway, so no immediate reuse).
+        if let Some(adj) = self.adjacency.get_mut(idx) {
+            adj.clear();
         }
-        removed.map(|blob| StoredNode::new(id, &blob, &self.dicts).to_record())
+        Some(removed)
     }
 
     pub(super) fn take_rel(&mut self, id: RelationshipId) -> Option<RelationshipRecord> {
         let idx = Self::slot_index(id)?;
-        let removed = self.relationships.get_mut(idx).and_then(|s| s.take());
-        if removed.is_some() {
-            self.live_rel_count -= 1;
-        }
-        removed.map(|blob| StoredRel::new(id, &blob, &self.dicts).to_record())
+        let removed = StoredRel::new(id, self.relationships.get(idx)?, &self.dicts).to_record();
+        self.relationships.remove(idx);
+        self.live_rel_count -= 1;
+        Some(removed)
     }
 
     #[inline]
@@ -568,10 +568,7 @@ impl InMemoryGraph {
     }
 
     pub(super) fn iter_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
-        self.nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(i, slot)| slot.as_ref().map(|_| i as NodeId))
+        self.nodes.iter().map(|(i, _)| i as NodeId)
     }
 
     pub(super) fn iter_node_refs(&self) -> impl Iterator<Item = NodeRef<'_>> + '_ {
@@ -579,10 +576,7 @@ impl InMemoryGraph {
     }
 
     pub(super) fn iter_rel_ids(&self) -> impl Iterator<Item = RelationshipId> + '_ {
-        self.relationships
-            .iter()
-            .enumerate()
-            .filter_map(|(i, slot)| slot.as_ref().map(|_| i as RelationshipId))
+        self.relationships.iter().map(|(i, _)| i as RelationshipId)
     }
 
     pub(super) fn iter_rel_refs(&self) -> impl Iterator<Item = RelRef<'_>> + '_ {
@@ -591,23 +585,18 @@ impl InMemoryGraph {
 
     pub(super) fn iter_nodes(&self) -> impl Iterator<Item = (NodeId, NodeRef<'_>)> + '_ {
         let dicts = &self.dicts;
-        self.nodes.iter().enumerate().filter_map(move |(i, slot)| {
-            let blob = slot.as_ref()?;
+        self.nodes.iter().map(move |(i, bytes)| {
             let id = i as NodeId;
-            Some((id, NodeRef::stored(StoredNode::new(id, blob, dicts))))
+            (id, NodeRef::stored(StoredNode::new(id, bytes, dicts)))
         })
     }
 
     pub(super) fn iter_rels(&self) -> impl Iterator<Item = (RelationshipId, RelRef<'_>)> + '_ {
         let dicts = &self.dicts;
-        self.relationships
-            .iter()
-            .enumerate()
-            .filter_map(move |(i, slot)| {
-                let blob = slot.as_ref()?;
-                let id = i as RelationshipId;
-                Some((id, RelRef::stored(StoredRel::new(id, blob, dicts))))
-            })
+        self.relationships.iter().map(move |(i, bytes)| {
+            let id = i as RelationshipId;
+            (id, RelRef::stored(StoredRel::new(id, bytes, dicts)))
+        })
     }
 
     /// Add an entry to `node_id`'s outgoing (or incoming) list. Relies on

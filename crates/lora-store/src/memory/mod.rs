@@ -34,6 +34,7 @@ mod index_catalog;
 mod mem_report;
 mod point_index;
 mod property_index;
+mod record_slab;
 mod secondary_index_maintenance;
 mod snapshot;
 mod sorted_property_index;

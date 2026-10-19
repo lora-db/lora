@@ -635,7 +635,7 @@ impl std::fmt::Debug for RelRef<'_> {
 mod tests {
     use super::*;
     use crate::dict::Dicts;
-    use crate::encoded::{encode_node, encode_rel, StoredNode, StoredRel};
+    use crate::encoded::{node_bytes, rel_bytes, StoredNode, StoredRel};
 
     fn sample() -> NodeRecord {
         let mut properties = Properties::new();
@@ -692,7 +692,7 @@ mod tests {
         check_node(NodeRef::from(&record), &record);
 
         let mut dicts = Dicts::default();
-        let blob = encode_node(&record, &mut dicts);
+        let blob = node_bytes(&record, &mut dicts);
         check_node(NodeRef::stored(StoredNode::new(7, &blob, &dicts)), &record);
     }
 
@@ -708,7 +708,7 @@ mod tests {
             properties,
         };
         let mut dicts = Dicts::default();
-        let blob = encode_rel(&record, &mut dicts);
+        let blob = rel_bytes(&record, &mut dicts);
         let stored = RelRef::stored(StoredRel::new(3, &blob, &dicts));
         for rel in [RelRef::from(&record), stored] {
             assert_eq!((rel.id(), rel.src(), rel.dst()), (3, 10, 20));
