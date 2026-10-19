@@ -1451,30 +1451,30 @@ impl InMemoryGraph {
             return;
         }
 
-        let backfill: Vec<(u64, PropertyValue)> = match entity {
-            StoredIndexEntity::Node => self
-                .iter_nodes()
-                .filter(|(_, node)| node.labels().strs().any(|l| l == label))
-                .filter_map(|(id, node)| {
-                    node.properties()
-                        .get(property)
-                        .map(|value| (id, value.to_owned()))
-                })
-                .collect(),
-            StoredIndexEntity::Relationship => self
-                .iter_rels()
-                .filter(|(_, rel)| rel.rel_type() == label)
-                .filter_map(|(id, rel)| {
-                    rel.properties()
-                        .get(property)
-                        .map(|value| (id, value.to_owned()))
-                })
-                .collect(),
-        };
-
+        // Inserted while scanning: collecting every value first held a
+        // second copy of the whole column until the index was built.
         let mut registry = self.sorted_indexes_write(entity);
-        for (id, value) in backfill {
-            registry.insert(label, property, id, &value);
+        match entity {
+            StoredIndexEntity::Node => {
+                for (id, node) in self.iter_nodes() {
+                    if !node.labels().strs().any(|l| l == label) {
+                        continue;
+                    }
+                    if let Some(value) = node.properties().get(property) {
+                        registry.insert(label, property, id, &value.to_owned());
+                    }
+                }
+            }
+            StoredIndexEntity::Relationship => {
+                for (id, rel) in self.iter_rels() {
+                    if rel.rel_type() != label {
+                        continue;
+                    }
+                    if let Some(value) = rel.properties().get(property) {
+                        registry.insert(label, property, id, &value.to_owned());
+                    }
+                }
+            }
         }
     }
 

@@ -37,12 +37,20 @@ use lora_store::{intern, GraphStorage, GraphStorageMut, Properties, PropertyValu
 
 struct Counting;
 static LIVE: AtomicIsize = AtomicIsize::new(0);
+/// High-water mark of `LIVE` since the last [`reset_peak`].
+static PEAK: AtomicIsize = AtomicIsize::new(0);
+
+#[inline]
+fn grew(delta: isize) {
+    let now = LIVE.fetch_add(delta, Ordering::Relaxed) + delta;
+    PEAK.fetch_max(now, Ordering::Relaxed);
+}
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let p = System.alloc(layout);
         if !p.is_null() {
-            LIVE.fetch_add(layout.size() as isize, Ordering::Relaxed);
+            grew(layout.size() as isize);
         }
         p
     }
@@ -53,10 +61,7 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let p = System.realloc(ptr, layout, new_size);
         if !p.is_null() {
-            LIVE.fetch_add(
-                new_size as isize - layout.size() as isize,
-                Ordering::Relaxed,
-            );
+            grew(new_size as isize - layout.size() as isize);
         }
         p
     }
@@ -67,6 +72,15 @@ static GLOBAL: Counting = Counting;
 
 fn live() -> isize {
     LIVE.load(Ordering::Relaxed)
+}
+
+/// Start a new high-water mark at the current live heap.
+fn reset_peak() {
+    PEAK.store(live(), Ordering::Relaxed);
+}
+
+fn peak() -> isize {
+    PEAK.load(Ordering::Relaxed)
 }
 
 fn rss_bytes() -> u64 {
@@ -211,6 +225,9 @@ fn mem_mode(variant: &str, n: u64) {
     let rss0 = rss_bytes();
     let live0 = live();
     let t = Instant::now();
+    // Index variants: the index statement's heap high-water mark above
+    // what the graph holds once it returns (its temporaries).
+    let mut index_transient = None;
     let (nodes, rels, props_per_node, keep): (u64, u64, u64, Box<dyn std::any::Any>) = match variant
     {
         "bare" => (n, 0, 0, Box::new(build(n, Props::None, false, false))),
@@ -229,6 +246,7 @@ fn mem_mode(variant: &str, n: u64) {
         "range_idx" | "unique" | "hash_idx" | "range_idx_name" => {
             let g = build(n, Props::All, true, true);
             let db = Database::from_graph(g);
+            reset_peak();
             match variant {
                 "range_idx" => run(&db, "CREATE INDEX person_id FOR (p:Person) ON (p.id)"),
                 "range_idx_name" => run(&db, "CREATE INDEX person_name FOR (p:Person) ON (p.name)"),
@@ -245,6 +263,7 @@ fn mem_mode(variant: &str, n: u64) {
                 }
                 _ => unreachable!(),
             }
+            index_transient = Some(peak() - live());
             (n, n * DEGREE, 4, Box::new(db))
         }
         other => panic!("unknown variant {other}"),
@@ -267,9 +286,10 @@ fn mem_mode(variant: &str, n: u64) {
     println!(
         "mem variant={variant} nodes={nodes} rels={rels} props_per_node={props_per_node} \
          live_bytes={bytes:.0} rss_delta={rss:.0} estimate={estimate:.0} \
-         live_per_element={:.1} rss_per_element={:.1} build_s={build_s:.2}",
+         live_per_element={:.1} rss_per_element={:.1} build_s={build_s:.2}{}",
         bytes / (nodes + rels) as f64,
-        rss / (nodes + rels) as f64
+        rss / (nodes + rels) as f64,
+        index_transient.map_or(String::new(), |b| format!(" index_transient_bytes={b}")),
     );
     drop(keep);
 }

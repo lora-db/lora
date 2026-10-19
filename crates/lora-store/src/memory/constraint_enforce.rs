@@ -23,8 +23,8 @@
 // dead-code while that wiring is still pending.
 #![allow(dead_code)]
 
-use std::collections::HashSet;
 use std::fmt::Write as _;
+use std::hash::{BuildHasher, BuildHasherDefault};
 
 use thiserror::Error;
 
@@ -32,6 +32,7 @@ use super::constraint_catalog::{
     ConstraintCatalog, ConstraintDefinition, StoredConstraintKind, StoredPropertyType,
     StoredPropertyTypeTerm, StoredScalarType, StoredVectorCoordType,
 };
+use super::cow::{FastHashMap, KeyHasher};
 use super::index_catalog::StoredIndexEntity;
 use super::InMemoryGraph;
 use crate::types::{NodeId, Properties, PropertyValue, RelationshipId};
@@ -134,17 +135,16 @@ impl InMemoryGraph {
         def: &ConstraintDefinition,
     ) -> Result<(), ConstraintViolation> {
         let label = def.label.as_str();
-        let mut seen: HashSet<String> = HashSet::new();
-        for (_, node) in self.iter_nodes() {
+        let mut seen = SeenTuples::default();
+        for (id, node) in self.iter_nodes() {
             if !node.labels().strs().any(|l| l == label) {
                 continue;
             }
-            validate_record_against_constraint(
-                def,
-                &node.properties().to_owned(),
-                &mut seen,
-                true,
-            )?;
+            let properties = node.properties().to_owned();
+            validate_record_against_constraint(def, &properties, true)?;
+            seen.insert(def, id, &properties, |other| {
+                self.node_at(other).map(|n| n.properties().to_owned())
+            })?;
         }
         Ok(())
     }
@@ -154,13 +154,93 @@ impl InMemoryGraph {
         def: &ConstraintDefinition,
     ) -> Result<(), ConstraintViolation> {
         let rel_type = def.label.as_str();
-        let mut seen: HashSet<String> = HashSet::new();
-        for (_, rel) in self.iter_rels() {
+        let mut seen = SeenTuples::default();
+        for (id, rel) in self.iter_rels() {
             if rel.rel_type() != rel_type {
                 continue;
             }
-            validate_record_against_constraint(def, &rel.properties().to_owned(), &mut seen, true)?;
+            let properties = rel.properties().to_owned();
+            validate_record_against_constraint(def, &properties, true)?;
+            seen.insert(def, id, &properties, |other| {
+                self.rel_at(other).map(|r| r.properties().to_owned())
+            })?;
         }
+        Ok(())
+    }
+}
+
+/// Property tuples a pre-create scan has met, for a uniqueness check.
+/// Holds a hash of each tuple's key and the record it came from, not
+/// the key itself: a 1M-node scan kept a million key strings alive at
+/// once, about three times the backing index it is about to build. A
+/// matching hash is confirmed by rebuilding the earlier record's key,
+/// so a hash collision never reads as a duplicate.
+#[derive(Default)]
+struct SeenTuples {
+    /// Key hash -> the first record with that hash.
+    first: FastHashMap<u64, u64>,
+    /// Later records whose key hashed like an earlier, different key.
+    collided: Vec<(u64, u64)>,
+    /// Reused for every key the scan builds.
+    key: String,
+}
+
+impl SeenTuples {
+    /// Record `id`'s tuple, or fail if an earlier record had the same one.
+    /// Records without the whole tuple are skipped: plain uniqueness only
+    /// applies when every constrained property is present, and a key
+    /// constraint's existence check has already failed them.
+    /// `properties_of` reads an earlier record's properties back.
+    fn insert(
+        &mut self,
+        def: &ConstraintDefinition,
+        id: u64,
+        properties: &Properties,
+        properties_of: impl Fn(u64) -> Option<Properties>,
+    ) -> Result<(), ConstraintViolation> {
+        if !def.kind.requires_uniqueness()
+            || !def
+                .properties
+                .iter()
+                .all(|p| properties.contains_key(p.as_str()))
+        {
+            return Ok(());
+        }
+        self.key.clear();
+        write_property_tuple_key(&mut self.key, def, properties);
+        let hash = BuildHasherDefault::<KeyHasher>::default().hash_one(self.key.as_str());
+        self.insert_hashed(def, hash, id, properties_of)
+    }
+
+    /// [`Self::insert`] once `self.key` holds `id`'s key and `hash` its hash.
+    fn insert_hashed(
+        &mut self,
+        def: &ConstraintDefinition,
+        hash: u64,
+        id: u64,
+        properties_of: impl Fn(u64) -> Option<Properties>,
+    ) -> Result<(), ConstraintViolation> {
+        let Some(&first) = self.first.get(&hash) else {
+            self.first.insert(hash, id);
+            return Ok(());
+        };
+        let earlier = std::iter::once(first).chain(
+            self.collided
+                .iter()
+                .filter(|(h, _)| *h == hash)
+                .map(|&(_, other)| other),
+        );
+        let mut other_key = String::new();
+        for other in earlier {
+            other_key.clear();
+            if let Some(other_properties) = properties_of(other) {
+                write_property_tuple_key(&mut other_key, def, &other_properties);
+            }
+            if other_key == self.key {
+                return Err(uniqueness_violation(def));
+            }
+        }
+        self.collided.push((hash, id));
         Ok(())
     }
 }
@@ -168,7 +248,6 @@ impl InMemoryGraph {
 fn validate_record_against_constraint(
     def: &ConstraintDefinition,
     properties: &Properties,
-    seen: &mut HashSet<String>,
     check_existence: bool,
 ) -> Result<(), ConstraintViolation> {
     // 1) Existence checks.
@@ -214,52 +293,21 @@ fn validate_record_against_constraint(
         }
     }
 
-    // 3) Uniqueness checks. Only constraints that require uniqueness
-    // run this; we still skip records that don't carry the full
-    // property tuple (matches the "uniqueness only applies when
-    // all constrained properties are present" rule for plain
-    // uniqueness; key constraints always require existence so the
-    // tuple is guaranteed present by step 1).
-    if def.kind.requires_uniqueness() {
-        let tuple_present = def
-            .properties
-            .iter()
-            .all(|p| properties.contains_key(p.as_str()));
-        if tuple_present {
-            let key = property_tuple_key(def, properties);
-            if !seen.insert(key) {
-                let property_label = if def.properties.len() == 1 {
-                    def.properties[0].clone()
-                } else {
-                    def.properties.join(", ")
-                };
-                return Err(ConstraintViolation::UniquenessViolated {
-                    constraint: def.name.clone(),
-                    entity: def.entity,
-                    label: def.label.clone(),
-                    property: property_label,
-                });
-            }
-        }
-    }
-
     Ok(())
 }
 
-/// Cheap stable string-encoding for a property tuple — sufficient as a
-/// `HashSet` key in the per-constraint pre-create scan. Not exposed to
-/// callers because the shape isn't durable.
-fn property_tuple_key(def: &ConstraintDefinition, properties: &Properties) -> String {
-    let mut out = String::with_capacity(64);
+/// Cheap stable string-encoding for a property tuple, appended to `out`:
+/// two tuples are equal for the pre-create uniqueness scan exactly when
+/// their keys are. Not exposed to callers because the shape isn't durable.
+fn write_property_tuple_key(out: &mut String, def: &ConstraintDefinition, properties: &Properties) {
     for (i, key) in def.properties.iter().enumerate() {
         if i > 0 {
             out.push('\u{1f}');
         }
         if let Some(value) = properties.get(key.as_str()) {
-            append_property_value_key(&mut out, value);
+            append_property_value_key(out, value);
         }
     }
-    out
 }
 
 fn append_property_value_key(out: &mut String, value: &PropertyValue) {
@@ -507,8 +555,7 @@ fn check_record_constraints_with(
         }
 
         let properties = record.properties();
-        let mut probe: HashSet<String> = HashSet::new();
-        validate_record_against_constraint(def, properties, &mut probe, check_existence)?;
+        validate_record_against_constraint(def, properties, check_existence)?;
 
         if def.kind.requires_uniqueness() {
             if let Some(tuple) = constrained_tuple(def, properties) {
@@ -1083,4 +1130,79 @@ pub(crate) fn check_node_add_label_deferred(
         },
         false,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intern;
+
+    fn unique_on(property: &str) -> ConstraintDefinition {
+        ConstraintDefinition {
+            name: "u".into(),
+            kind: StoredConstraintKind::Unique,
+            entity: StoredIndexEntity::Node,
+            label: "L".into(),
+            properties: vec![property.into()],
+            owned_index: Some("u".into()),
+        }
+    }
+
+    fn with(property: &str, value: PropertyValue) -> Properties {
+        let mut properties = Properties::new();
+        properties.insert(intern(property), value);
+        properties
+    }
+
+    /// Records 0..n carry `values[id]` under `k`; `SeenTuples` sees them
+    /// all under one forced hash, so every insert after the first takes
+    /// the collision path.
+    fn insert_colliding(values: &[PropertyValue]) -> Result<(), ConstraintViolation> {
+        let def = unique_on("k");
+        let records: Vec<Properties> = values.iter().map(|v| with("k", v.clone())).collect();
+        let mut seen = SeenTuples::default();
+        for (id, properties) in records.iter().enumerate() {
+            seen.key.clear();
+            write_property_tuple_key(&mut seen.key, &def, properties);
+            seen.insert_hashed(&def, 7, id as u64, |other| {
+                records.get(other as usize).cloned()
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_shared_hash_is_not_a_duplicate() {
+        // Int 1 and Float 1.0 stay distinct, as they did as key strings.
+        let values = [
+            PropertyValue::Int(1),
+            PropertyValue::Float(1.0),
+            PropertyValue::String("1".into()),
+            PropertyValue::Int(2),
+        ];
+        assert!(insert_colliding(&values).is_ok());
+    }
+
+    #[test]
+    fn an_equal_tuple_behind_a_collision_is_found() {
+        let values = [
+            PropertyValue::Int(1),
+            PropertyValue::Int(2),
+            PropertyValue::Int(3),
+            PropertyValue::Int(2),
+        ];
+        let err = insert_colliding(&values).unwrap_err();
+        assert_eq!(err.gql_status(), "22N79");
+    }
+
+    #[test]
+    fn records_without_the_tuple_are_skipped() {
+        let def = unique_on("k");
+        let mut seen = SeenTuples::default();
+        for id in 0..3 {
+            seen.insert(&def, id, &with("other", PropertyValue::Int(1)), |_| None)
+                .unwrap();
+        }
+        assert!(seen.first.is_empty());
+    }
 }
