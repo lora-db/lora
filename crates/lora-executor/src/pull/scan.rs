@@ -45,6 +45,8 @@ pub struct NodeScanSource<'a, S: GraphStorage> {
     cur_idx: usize,
     /// Where the store's id scan resumes for the next page.
     scan_cursor: u64,
+    /// Ids to fetch for the next page.
+    scan_page: usize,
     /// The store has no more ids for the current input row.
     scan_done: bool,
     /// Fetch ids a page at a time (see [`StableStoreScope`]); otherwise
@@ -54,9 +56,17 @@ pub struct NodeScanSource<'a, S: GraphStorage> {
     cur_emitted: bool,
 }
 
-/// Node ids fetched per page of a streaming scan: a scan holds this many
-/// ids at a time instead of the whole label.
+/// Node ids fetched per page of a streaming scan: a scan holds at most
+/// this many ids at a time instead of the whole label.
 const SCAN_PAGE: usize = 1024;
+/// The first page of a scan. Pages double from here to [`SCAN_PAGE`], so a
+/// `LIMIT 10` does not fetch a thousand ids.
+const FIRST_SCAN_PAGE: usize = 32;
+
+/// The page size after `page`.
+fn next_scan_page(page: usize) -> usize {
+    (page * 2).min(SCAN_PAGE)
+}
 
 thread_local! {
     /// Set while a read-only pipeline is being built: nothing writes to
@@ -109,6 +119,7 @@ impl<'a, S: GraphStorage> NodeScanSource<'a, S> {
             cur_ids: Vec::new(),
             cur_idx: 0,
             scan_cursor: 0,
+            scan_page: FIRST_SCAN_PAGE,
             scan_done: false,
             paged: store_is_stable(),
             cur_emitted: false,
@@ -119,6 +130,7 @@ impl<'a, S: GraphStorage> NodeScanSource<'a, S> {
         self.cur_ids.clear();
         self.cur_idx = 0;
         self.scan_cursor = 0;
+        self.scan_page = FIRST_SCAN_PAGE;
         self.scan_done = false;
     }
 }
@@ -176,9 +188,10 @@ impl<'a, S: GraphStorage> RowSource for NodeScanSource<'a, S> {
                     self.scan_done = !self.storage.scan_node_ids(
                         None,
                         &mut self.scan_cursor,
-                        SCAN_PAGE,
+                        self.scan_page,
                         &mut self.cur_ids,
                     );
+                    self.scan_page = next_scan_page(self.scan_page);
                 } else {
                     self.cur_ids = self.storage.all_node_ids();
                     self.scan_done = true;
@@ -213,6 +226,7 @@ pub struct NodeByLabelScanSource<'a, S: GraphStorage> {
     cur_ids: Vec<NodeId>,
     cur_idx: usize,
     scan_cursor: u64,
+    scan_page: usize,
     scan_done: bool,
     cur_emitted: bool,
 }
@@ -241,6 +255,7 @@ impl<'a, S: GraphStorage> NodeByLabelScanSource<'a, S> {
             cur_ids: Vec::new(),
             cur_idx: 0,
             scan_cursor: 0,
+            scan_page: FIRST_SCAN_PAGE,
             scan_done: false,
             cur_emitted: false,
         }
@@ -250,6 +265,7 @@ impl<'a, S: GraphStorage> NodeByLabelScanSource<'a, S> {
         self.cur_ids.clear();
         self.cur_idx = 0;
         self.scan_cursor = 0;
+        self.scan_page = FIRST_SCAN_PAGE;
         self.scan_done = false;
     }
 
@@ -262,9 +278,10 @@ impl<'a, S: GraphStorage> NodeByLabelScanSource<'a, S> {
                 self.scan_done = !self.storage.scan_node_ids(
                     Some(label),
                     &mut self.scan_cursor,
-                    SCAN_PAGE,
+                    self.scan_page,
                     &mut self.cur_ids,
                 );
+                self.scan_page = next_scan_page(self.scan_page);
             }
             None => {
                 self.cur_ids = scan_node_ids_for_label_groups(self.storage, self.labels);
