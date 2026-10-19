@@ -452,18 +452,13 @@ fn property_index_key_bytes(key: &PropertyIndexKey) -> usize {
             | PropertyIndexKey::Temporal { .. } => 0,
             PropertyIndexKey::String(s) => 16 + s.len(),
             PropertyIndexKey::Binary(b) => binary_heap_bytes(b),
+            // Each item's own size is counted by `property_index_key_bytes`.
             PropertyIndexKey::List(items) => {
-                items.capacity() * size_of::<PropertyIndexKey>()
-                    + items.iter().map(property_index_key_bytes).sum::<usize>()
+                items.iter().map(property_index_key_bytes).sum::<usize>()
             }
-            PropertyIndexKey::Map(map) => map
+            PropertyIndexKey::Map(entries) => entries
                 .iter()
-                .map(|(k, v)| {
-                    BTREE_PER_ENTRY
-                        + size_of::<String>()
-                        + k.capacity()
-                        + property_index_key_bytes(v)
-                })
+                .map(|(k, v)| size_of::<String>() + k.capacity() + property_index_key_bytes(v))
                 .sum::<usize>(),
         }
 }

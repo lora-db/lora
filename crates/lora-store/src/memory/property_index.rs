@@ -21,7 +21,7 @@
 //! writer are activated again by the next such lookup. `MemoryReport`
 //! lists the active keys and marks the implicit ones.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use super::cow::{route, CowMap, FastHashMap};
@@ -415,10 +415,14 @@ pub(super) enum PropertyIndexKey {
     /// graph copy) bumps a refcount per key instead of reallocating it.
     String(std::sync::Arc<str>),
     /// Boxed: a `LoraBinary` is four words, and the key should stay at
-    /// four with its tag.
+    /// three with its tag.
     Binary(Box<LoraBinary>),
-    List(Vec<PropertyIndexKey>),
-    Map(BTreeMap<String, PropertyIndexKey>),
+    /// Boxed slices, not a `Vec` and a `BTreeMap`: those are three words
+    /// and made every key four, in every entry of every index.
+    List(Box<[PropertyIndexKey]>),
+    /// Entries in key order, so ordering, equality and hashing match
+    /// the `BTreeMap` they were collected from.
+    Map(Box<[(String, PropertyIndexKey)]>),
     Temporal {
         kind: TemporalKind,
         nanos: Nanos,
@@ -432,7 +436,7 @@ pub(super) enum PropertyIndexKey {
 
 /// A temporal's position on its kind's timeline, in nanoseconds: an `i128`
 /// kept as two words. An `i128` field would align the whole key to 16
-/// bytes and pad it from 32 to 48.
+/// bytes and pad it from 24 to 32.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct Nanos {
     high: i64,
@@ -450,7 +454,7 @@ impl From<i128> for Nanos {
 
 // On 64-bit targets; a 32-bit one (wasm32) has smaller pointers.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(std::mem::size_of::<PropertyIndexKey>() == 32);
+const _: () = assert!(std::mem::size_of::<PropertyIndexKey>() == 24);
 
 /// Temporal key families. Values of different kinds never compare in
 /// Cypher, so each kind occupies its own contiguous run of the index.
@@ -558,12 +562,13 @@ impl PropertyIndexKey {
             PropertyValue::List(values) => values
                 .iter()
                 .map(Self::from_value)
-                .collect::<Option<Vec<_>>>()
+                .collect::<Option<Box<[_]>>>()
                 .map(Self::List),
+            // A `BTreeMap` iterates in key order.
             PropertyValue::Map(values) => values
                 .iter()
                 .map(|(k, v)| Self::from_value(v).map(|indexed| (k.clone(), indexed)))
-                .collect::<Option<BTreeMap<_, _>>>()
+                .collect::<Option<Box<[_]>>>()
                 .map(Self::Map),
             PropertyValue::Date(v) => Some(Self::temporal(TemporalKind::Date, v.order_nanos(), 0)),
             PropertyValue::LocalTime(v) => {
@@ -658,5 +663,60 @@ fn sortable_f64_bits(value: f64) -> u64 {
         bits | (1 << 63)
     } else {
         !bits
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::hash::{BuildHasher, BuildHasherDefault};
+
+    use super::super::cow::KeyHasher;
+
+    fn key(value: PropertyValue) -> PropertyIndexKey {
+        PropertyIndexKey::from_value(&value).expect("indexable")
+    }
+
+    /// List and map keys order, compare and hash as the `Vec` and
+    /// `BTreeMap` they were stored as before.
+    #[test]
+    fn list_and_map_keys_order_like_their_values() {
+        let lists: Vec<Vec<i64>> = vec![vec![], vec![0], vec![1, 2], vec![1, 3], vec![2]];
+        let maps: Vec<BTreeMap<String, i64>> = [
+            &[][..],
+            &[("a", 1)],
+            &[("a", 1), ("b", 0)],
+            &[("a", 1), ("b", 3)],
+            &[("a", 2)],
+            &[("b", 1)],
+        ]
+        .iter()
+        .map(|entries| entries.iter().map(|&(k, v)| (k.to_string(), v)).collect())
+        .collect();
+        let list_value =
+            |l: &Vec<i64>| PropertyValue::List(l.iter().map(|&v| PropertyValue::Int(v)).collect());
+        let map_value = |m: &BTreeMap<String, i64>| {
+            PropertyValue::Map(
+                m.iter()
+                    .map(|(k, &v)| (k.clone(), PropertyValue::Int(v)))
+                    .collect(),
+            )
+        };
+        let hash = |k: &PropertyIndexKey| BuildHasherDefault::<KeyHasher>::default().hash_one(k);
+        for a in &lists {
+            for b in &lists {
+                let (ka, kb) = (key(list_value(a)), key(list_value(b)));
+                assert_eq!(ka.cmp(&kb), a.cmp(b), "{a:?} vs {b:?}");
+                assert_eq!(ka == kb, hash(&ka) == hash(&kb));
+            }
+        }
+        for a in &maps {
+            for b in &maps {
+                let (ka, kb) = (key(map_value(a)), key(map_value(b)));
+                assert_eq!(ka.cmp(&kb), a.cmp(b), "{a:?} vs {b:?}");
+                assert_eq!(ka == kb, hash(&ka) == hash(&kb));
+            }
+        }
     }
 }
