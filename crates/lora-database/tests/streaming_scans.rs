@@ -32,6 +32,25 @@ fn paged_scans_return_every_node_once() {
     db.assert_count("MATCH (n:Missing) RETURN n", 0);
 }
 
+/// Pages start at 32 ids and double up to 1024: counts on and around
+/// each boundary (32, 32 + 64, ..., and past the first 1024-id page).
+#[test]
+fn paged_scans_end_on_and_around_page_boundaries() {
+    for n in [1, 31, 32, 33, 96, 97, 2016, 2017, 3040, 3041] {
+        let db = TestDb::new();
+        db.run(&format!("UNWIND range(1, {n}) AS i CREATE (:L {{i: i}})"));
+        db.assert_count("MATCH (n:L) RETURN n", n);
+        db.assert_count("MATCH (n) RETURN n", n);
+        db.assert_count("MATCH (n:L) RETURN n LIMIT 33", n.min(33));
+        let expected: Vec<i64> = (1..=n as i64).collect();
+        assert_eq!(
+            db.sorted_ints("MATCH (n:L) RETURN n.i AS i", "i"),
+            expected,
+            "n = {n}"
+        );
+    }
+}
+
 #[test]
 fn a_scan_feeding_a_write_does_not_see_that_write() {
     let db = seeded();

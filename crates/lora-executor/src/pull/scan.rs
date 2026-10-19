@@ -39,16 +39,8 @@ pub struct NodeScanSource<'a, S: GraphStorage> {
     /// The currently-active input row. `None` means the next call
     /// must pull a fresh row from upstream.
     cur_row: Option<Row>,
-    /// One page of node ids for the current input row.
-    cur_ids: Vec<NodeId>,
-    /// Position into `cur_ids`.
-    cur_idx: usize,
-    /// Where the store's id scan resumes for the next page.
-    scan_cursor: u64,
-    /// Ids to fetch for the next page.
-    scan_page: usize,
-    /// The store has no more ids for the current input row.
-    scan_done: bool,
+    /// The node ids of the current input row.
+    ids: ScanIds,
     /// Fetch ids a page at a time (see [`StableStoreScope`]); otherwise
     /// all of them before the first row.
     paged: bool,
@@ -63,9 +55,65 @@ const SCAN_PAGE: usize = 1024;
 /// `LIMIT 10` does not fetch a thousand ids.
 const FIRST_SCAN_PAGE: usize = 32;
 
-/// The page size after `page`.
-fn next_scan_page(page: usize) -> usize {
-    (page * 2).min(SCAN_PAGE)
+/// The node ids one input row scans: fetched from the store a page at a
+/// time, pages doubling from [`FIRST_SCAN_PAGE`] to [`SCAN_PAGE`], or all
+/// at once.
+struct ScanIds {
+    /// The current page.
+    page: Vec<NodeId>,
+    /// Position into `page`.
+    idx: usize,
+    /// Where the store's id scan resumes for the next page.
+    cursor: u64,
+    /// Ids to fetch for the next page.
+    page_size: usize,
+    /// No page is left to fetch; the current one may still hold ids.
+    done: bool,
+}
+
+impl ScanIds {
+    fn new() -> Self {
+        Self {
+            page: Vec::new(),
+            idx: 0,
+            cursor: 0,
+            page_size: FIRST_SCAN_PAGE,
+            done: false,
+        }
+    }
+
+    /// Start over, for a new input row.
+    fn reset(&mut self) {
+        self.page.clear();
+        self.idx = 0;
+        self.cursor = 0;
+        self.page_size = FIRST_SCAN_PAGE;
+        self.done = false;
+    }
+
+    /// The next id of the current page.
+    #[inline]
+    fn next(&mut self) -> Option<NodeId> {
+        let id = *self.page.get(self.idx)?;
+        self.idx += 1;
+        Some(id)
+    }
+
+    /// Replace the page with the next ids carrying `label`, or of all
+    /// nodes.
+    fn fetch_page<S: GraphStorage>(&mut self, storage: &S, label: Option<&str>) {
+        self.page.clear();
+        self.idx = 0;
+        self.done = !storage.scan_node_ids(label, &mut self.cursor, self.page_size, &mut self.page);
+        self.page_size = (self.page_size * 2).min(SCAN_PAGE);
+    }
+
+    /// Replace the page with all of `ids`, the last page.
+    fn fetch_all(&mut self, ids: Vec<NodeId>) {
+        self.page = ids;
+        self.idx = 0;
+        self.done = true;
+    }
 }
 
 thread_local! {
@@ -116,22 +164,10 @@ impl<'a, S: GraphStorage> NodeScanSource<'a, S> {
             storage,
             var,
             cur_row: None,
-            cur_ids: Vec::new(),
-            cur_idx: 0,
-            scan_cursor: 0,
-            scan_page: FIRST_SCAN_PAGE,
-            scan_done: false,
+            ids: ScanIds::new(),
             paged: store_is_stable(),
             cur_emitted: false,
         }
-    }
-
-    fn reset_scan(&mut self) {
-        self.cur_ids.clear();
-        self.cur_idx = 0;
-        self.scan_cursor = 0;
-        self.scan_page = FIRST_SCAN_PAGE;
-        self.scan_done = false;
     }
 }
 
@@ -142,7 +178,7 @@ impl<'a, S: GraphStorage> RowSource for NodeScanSource<'a, S> {
                 match self.upstream.next_row()? {
                     Some(row) => {
                         self.cur_row = Some(row);
-                        self.reset_scan();
+                        self.ids.reset();
                         self.cur_emitted = false;
                     }
                     None => return Ok(None),
@@ -150,7 +186,7 @@ impl<'a, S: GraphStorage> RowSource for NodeScanSource<'a, S> {
             }
 
             let Some(row_ref) = self.cur_row.as_ref() else {
-                self.reset_scan();
+                self.ids.reset();
                 self.cur_emitted = false;
                 continue;
             };
@@ -177,32 +213,18 @@ impl<'a, S: GraphStorage> RowSource for NodeScanSource<'a, S> {
 
             // Unbound case: yield one row per node id, fetching the ids
             // a page at a time.
-            if self.cur_idx >= self.cur_ids.len() {
-                if self.scan_done {
-                    self.cur_row = None;
-                    continue;
-                }
-                self.cur_ids.clear();
-                self.cur_idx = 0;
-                if self.paged {
-                    self.scan_done = !self.storage.scan_node_ids(
-                        None,
-                        &mut self.scan_cursor,
-                        self.scan_page,
-                        &mut self.cur_ids,
-                    );
-                    self.scan_page = next_scan_page(self.scan_page);
-                } else {
-                    self.cur_ids = self.storage.all_node_ids();
-                    self.scan_done = true;
-                }
-                continue;
+            if let Some(id) = self.ids.next() {
+                let mut new_row = row_ref.clone();
+                new_row.insert(self.var, LoraValue::Node(id));
+                return Ok(Some(new_row));
             }
-            let id = self.cur_ids[self.cur_idx];
-            self.cur_idx += 1;
-            let mut new_row = row_ref.clone();
-            new_row.insert(self.var, LoraValue::Node(id));
-            return Ok(Some(new_row));
+            if self.ids.done {
+                self.cur_row = None;
+            } else if self.paged {
+                self.ids.fetch_page(self.storage, None);
+            } else {
+                self.ids.fetch_all(self.storage.all_node_ids());
+            }
         }
     }
 }
@@ -223,11 +245,8 @@ pub struct NodeByLabelScanSource<'a, S: GraphStorage> {
     /// before the first row.
     single_label: Option<&'a str>,
     cur_row: Option<Row>,
-    cur_ids: Vec<NodeId>,
-    cur_idx: usize,
-    scan_cursor: u64,
-    scan_page: usize,
-    scan_done: bool,
+    /// Candidate ids of the current input row.
+    ids: ScanIds,
     cur_emitted: bool,
 }
 
@@ -252,41 +271,18 @@ impl<'a, S: GraphStorage> NodeByLabelScanSource<'a, S> {
                 _ => None,
             },
             cur_row: None,
-            cur_ids: Vec::new(),
-            cur_idx: 0,
-            scan_cursor: 0,
-            scan_page: FIRST_SCAN_PAGE,
-            scan_done: false,
+            ids: ScanIds::new(),
             cur_emitted: false,
         }
     }
 
-    fn reset_scan(&mut self) {
-        self.cur_ids.clear();
-        self.cur_idx = 0;
-        self.scan_cursor = 0;
-        self.scan_page = FIRST_SCAN_PAGE;
-        self.scan_done = false;
-    }
-
     /// Fetch the next candidates for the current input row.
     fn fill_candidates(&mut self) {
-        self.cur_ids.clear();
-        self.cur_idx = 0;
         match self.single_label {
-            Some(label) => {
-                self.scan_done = !self.storage.scan_node_ids(
-                    Some(label),
-                    &mut self.scan_cursor,
-                    self.scan_page,
-                    &mut self.cur_ids,
-                );
-                self.scan_page = next_scan_page(self.scan_page);
-            }
-            None => {
-                self.cur_ids = scan_node_ids_for_label_groups(self.storage, self.labels);
-                self.scan_done = true;
-            }
+            Some(label) => self.ids.fetch_page(self.storage, Some(label)),
+            None => self
+                .ids
+                .fetch_all(scan_node_ids_for_label_groups(self.storage, self.labels)),
         }
     }
 }
@@ -298,7 +294,7 @@ impl<'a, S: GraphStorage> RowSource for NodeByLabelScanSource<'a, S> {
                 match self.upstream.next_row()? {
                     Some(row) => {
                         self.cur_row = Some(row);
-                        self.reset_scan();
+                        self.ids.reset();
                         self.cur_emitted = false;
                     }
                     None => return Ok(None),
@@ -306,7 +302,7 @@ impl<'a, S: GraphStorage> RowSource for NodeByLabelScanSource<'a, S> {
             }
 
             let Some(row_ref) = self.cur_row.as_ref() else {
-                self.reset_scan();
+                self.ids.reset();
                 self.cur_emitted = false;
                 continue;
             };
@@ -333,13 +329,7 @@ impl<'a, S: GraphStorage> RowSource for NodeByLabelScanSource<'a, S> {
                 continue;
             }
 
-            while self.cur_idx < self.cur_ids.len() {
-                let Some(&id) = self.cur_ids.get(self.cur_idx) else {
-                    return Err(ExecutorError::RuntimeError(
-                        "label scan cursor index moved past candidate ids".into(),
-                    ));
-                };
-                self.cur_idx += 1;
+            while let Some(id) = self.ids.next() {
                 if !self.candidates_prefiltered {
                     let labels_ok = self
                         .storage
@@ -354,9 +344,8 @@ impl<'a, S: GraphStorage> RowSource for NodeByLabelScanSource<'a, S> {
                 return Ok(Some(new_row));
             }
 
-            if self.scan_done {
+            if self.ids.done {
                 self.cur_row = None;
-                self.cur_ids.clear();
             } else {
                 self.fill_candidates();
             }
