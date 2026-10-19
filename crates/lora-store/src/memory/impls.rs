@@ -492,8 +492,8 @@ impl GraphStorage for InMemoryGraph {
                 let Ok(from) = usize::try_from(*cursor) else {
                     return false;
                 };
-                let mut iter = self.nodes.iter_from(from);
-                for (slot, _) in iter.by_ref().take(max) {
+                let mut iter = self.nodes.slots_from(from);
+                for slot in iter.by_ref().take(max) {
                     out.push(slot as NodeId);
                     *cursor = slot as u64 + 1;
                 }

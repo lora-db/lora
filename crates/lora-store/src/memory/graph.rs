@@ -212,11 +212,11 @@ impl InMemoryGraph {
     }
 
     pub fn contains_node(&self, node_id: NodeId) -> bool {
-        self.node_at(node_id).is_some()
+        self.has_node_at(node_id)
     }
 
     pub fn contains_relationship(&self, rel_id: RelationshipId) -> bool {
-        self.rel_at(rel_id).is_some()
+        self.has_rel_at(rel_id)
     }
 
     /// Install (or clear) the mutation recorder. Passing `None` detaches any
@@ -561,14 +561,14 @@ impl InMemoryGraph {
     where
         F: FnMut(RelationshipId, NodeId) -> Result<(), E>,
     {
-        if self.node_at(node_id).is_none() {
+        if !self.has_node_at(node_id) {
             return Ok(());
         }
         self.try_for_each_adjacent_id_unchecked(node_id, direction, types, visit)
     }
 
     pub(super) fn iter_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
-        self.nodes.iter().map(|(i, _)| i as NodeId)
+        self.nodes.slots_from(0).map(|i| i as NodeId)
     }
 
     pub(super) fn iter_node_refs(&self) -> impl Iterator<Item = NodeRef<'_>> + '_ {
@@ -576,7 +576,9 @@ impl InMemoryGraph {
     }
 
     pub(super) fn iter_rel_ids(&self) -> impl Iterator<Item = RelationshipId> + '_ {
-        self.relationships.iter().map(|(i, _)| i as RelationshipId)
+        self.relationships
+            .slots_from(0)
+            .map(|i| i as RelationshipId)
     }
 
     pub(super) fn iter_rel_refs(&self) -> impl Iterator<Item = RelRef<'_>> + '_ {
@@ -2395,7 +2397,7 @@ impl InMemoryGraph {
                 "cannot replay node creation while a mutation recorder is installed".into(),
             );
         }
-        if self.node_at(id).is_some() {
+        if self.has_node_at(id) {
             return Err(format!("node id {id} already exists"));
         }
         let idx = self.ensure_node_slot_checked(id)?;
@@ -2436,15 +2438,15 @@ impl InMemoryGraph {
                 "cannot replay relationship creation while a mutation recorder is installed".into(),
             );
         }
-        if self.rel_at(id).is_some() {
+        if self.has_rel_at(id) {
             return Err(format!("relationship id {id} already exists"));
         }
-        if self.node_at(src).is_none() {
+        if !self.has_node_at(src) {
             return Err(format!(
                 "relationship {id} references missing source node {src}"
             ));
         }
-        if self.node_at(dst).is_none() {
+        if !self.has_node_at(dst) {
             return Err(format!(
                 "relationship {id} references missing target node {dst}"
             ));

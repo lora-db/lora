@@ -78,7 +78,7 @@ impl InMemoryGraph {
             for label in &labels {
                 node_distinct.add_all(label, &node.properties);
             }
-            if rebuilt.node_at(id).is_some() {
+            if rebuilt.has_node_at(id) {
                 return Err(SnapshotError::Decode(format!(
                     "duplicate node id {id} in snapshot payload"
                 )));
@@ -92,19 +92,19 @@ impl InMemoryGraph {
         }
 
         for rel in payload.relationships {
-            if rebuilt.rel_at(rel.id).is_some() {
+            if rebuilt.has_rel_at(rel.id) {
                 return Err(SnapshotError::Decode(format!(
                     "duplicate relationship id {} in snapshot payload",
                     rel.id
                 )));
             }
-            if rebuilt.node_at(rel.src).is_none() {
+            if !rebuilt.has_node_at(rel.src) {
                 return Err(SnapshotError::Decode(format!(
                     "relationship {} references missing source node {}",
                     rel.id, rel.src
                 )));
             }
-            if rebuilt.node_at(rel.dst).is_none() {
+            if !rebuilt.has_node_at(rel.dst) {
                 return Err(SnapshotError::Decode(format!(
                     "relationship {} references missing target node {}",
                     rel.id, rel.dst

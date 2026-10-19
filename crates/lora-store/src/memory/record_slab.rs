@@ -7,25 +7,32 @@
 //! allocator's rounding to its 16-byte size step, which on a
 //! relationship of 11 bytes is two thirds overhead. Here the records of
 //! [`CHUNK`] consecutive ids share one leaf: a table of `u32` offsets and
-//! one byte buffer holding each record behind a varint length.
+//! [`SEGMENTS`] buffers, one per [`SEG_SLOTS`] slots, each holding its
+//! records behind a varint length.
 //!
 //! ```text
 //! root: Arc<[node]>  →  node: Arc<[leaf]>  →  leaf: Arc<Leaf>
-//!                                              offsets: [u32; CHUNK]
-//!                                              data:    len, bytes, len, bytes, ...
+//!                                              offsets:  [u32; CHUNK]
+//!                                              segments: [Arc<[u8]>; 8]
+//!                                                        len, bytes, len, bytes, ...
 //! ```
 //!
 //! The tree above the leaves is [`super::chunked_vec`]'s: cloning bumps
 //! the root's refcount, and the first write after a clone copies the
 //! root table, one interior node and the one leaf it touches. Copying a
-//! leaf copies its buffer, where a leaf of separate records bumped one
-//! count per record.
+//! leaf copies its offsets and shares its segments; the write then copies
+//! the one segment it lands in. With one buffer per leaf, that write
+//! copied all 512 records, which on wide nodes made a staged property
+//! write several times slower.
 //!
 //! A record is never changed in place. Storing a new version appends it
-//! to the buffer and leaves the old bytes as garbage until the leaf is
-//! compacted, which happens once garbage is half the buffer, and on every
-//! copy. Records of [`LARGE_MIN`] bytes or more are kept in their own
-//! allocations, so a leaf's buffer stays small enough for `u32` offsets.
+//! to its segment and leaves the old bytes as garbage until the segment
+//! is rebuilt: when it is full, shared with a clone, or (on a remove)
+//! mostly garbage. An update that does not fit its segment is kept loose,
+//! in an allocation of its own, rather than copying the segment's
+//! records (up to [`LOOSE_MAX`] per leaf); the segment's next rebuild
+//! folds it back in. Records of [`LARGE_MIN`] bytes or more are always
+//! loose, so a segment stays small enough for `u32` offsets.
 
 use std::sync::Arc;
 
@@ -40,13 +47,16 @@ const SPAN_MASK: usize = (CHUNK * FANOUT) - 1;
 
 /// Offset of an empty slot.
 const EMPTY: u32 = u32::MAX;
-/// Set on the offset of a record held outside the buffer; the other bits
-/// index [`Leaf::large`].
-const LARGE: u32 = 1 << 31;
-/// Records at least this long are held outside the buffer. With them out,
-/// a buffer holds at most `CHUNK * LARGE_MIN` bytes of live records (32
-/// MiB) and as much garbage, well within the 31 bits of an offset.
+/// Set on the offset of a record held outside the segments; the other
+/// bits index [`Leaf::loose`].
+const LOOSE: u32 = 1 << 31;
+/// Records at least this long are always loose. With them out, a segment
+/// holds at most `SEG_SLOTS * LARGE_MIN` bytes of live records (4 MiB)
+/// and its spare room, well within the 31 bits of an offset.
 const LARGE_MIN: usize = 1 << 16;
+/// Updates a leaf keeps loose, at most, before an update that does not
+/// fit its segment rebuilds the segment instead.
+const LOOSE_MAX: u32 = 32;
 
 #[inline]
 fn varint_len(value: usize) -> usize {
@@ -54,12 +64,14 @@ fn varint_len(value: usize) -> usize {
 }
 
 #[inline]
-fn put_varint(out: &mut Vec<u8>, mut value: usize) {
+fn put_varint(out: &mut [u8], pos: &mut usize, mut value: usize) {
     while value >= 0x80 {
-        out.push(value as u8 | 0x80);
+        out[*pos] = value as u8 | 0x80;
+        *pos += 1;
         value >>= 7;
     }
-    out.push(value as u8);
+    out[*pos] = value as u8;
+    *pos += 1;
 }
 
 #[inline]
@@ -77,27 +89,56 @@ fn get_varint(bytes: &[u8], pos: &mut usize) -> usize {
     }
 }
 
+/// Slots per segment of a leaf's buffer.
+const SEG_SLOTS: usize = 64;
+const SEG_SHIFT: u32 = SEG_SLOTS.trailing_zeros();
+const SEGMENTS: usize = CHUNK / SEG_SLOTS;
+
+/// The records of [`SEG_SLOTS`] consecutive slots: a fixed-size buffer,
+/// filled from the front and shared between leaf copies until one of
+/// them writes to it.
+#[derive(Clone, Default)]
+struct Segment {
+    buf: Option<Arc<[u8]>>,
+    /// Bytes of `buf` in use.
+    len: u32,
+    /// Bytes in use that no slot refers to.
+    garbage: u32,
+}
+
+impl Segment {
+    #[inline]
+    fn bytes(&self) -> &[u8] {
+        self.buf.as_deref().unwrap_or(&[])
+    }
+}
+
+#[derive(Clone)]
 struct Leaf {
+    /// Each slot's offset into its segment, or `LOOSE | index`.
     offsets: [u32; CHUNK],
-    data: Vec<u8>,
-    large: Vec<Box<[u8]>>,
+    segments: [Segment; SEGMENTS],
+    /// Records held in allocations of their own: those of [`LARGE_MIN`]
+    /// bytes or more, and updates that did not fit their segment. `None`
+    /// once released.
+    loose: Vec<Option<Arc<[u8]>>>,
+    /// Entries of `loose` that no slot refers to.
+    loose_garbage: u32,
+    /// Live loose records shorter than [`LARGE_MIN`]: the updates.
+    loose_small: u32,
     /// Records stored.
     live: u32,
-    /// Bytes of `data` that no slot refers to.
-    garbage: usize,
-    /// Entries of `large` that no slot refers to (emptied).
-    large_garbage: usize,
 }
 
 impl Leaf {
     fn new() -> Self {
         Leaf {
             offsets: [EMPTY; CHUNK],
-            data: Vec::new(),
-            large: Vec::new(),
+            segments: Default::default(),
+            loose: Vec::new(),
+            loose_garbage: 0,
+            loose_small: 0,
             live: 0,
-            garbage: 0,
-            large_garbage: 0,
         }
     }
 
@@ -107,12 +148,13 @@ impl Leaf {
         if offset == EMPTY {
             return None;
         }
-        if offset & LARGE != 0 {
-            return Some(&self.large[(offset & !LARGE) as usize]);
+        if offset & LOOSE != 0 {
+            return self.loose[(offset & !LOOSE) as usize].as_deref();
         }
+        let buf = self.segments[slot >> SEG_SHIFT].bytes();
         let mut pos = offset as usize;
-        let len = get_varint(&self.data, &mut pos);
-        Some(&self.data[pos..pos + len])
+        let len = get_varint(buf, &mut pos);
+        Some(&buf[pos..pos + len])
     }
 
     /// Account for the record in `slot` becoming unreachable.
@@ -121,152 +163,224 @@ impl Leaf {
         if offset == EMPTY {
             return;
         }
-        if offset & LARGE != 0 {
-            self.large[(offset & !LARGE) as usize] = Box::default();
-            self.large_garbage += 1;
+        if offset & LOOSE != 0 {
+            let record = self.loose[(offset & !LOOSE) as usize].take();
+            if record.is_some_and(|record| record.len() < LARGE_MIN) {
+                self.loose_small -= 1;
+            }
+            self.loose_garbage += 1;
         } else {
+            let segment = &mut self.segments[slot >> SEG_SHIFT];
             let mut pos = offset as usize;
-            let len = get_varint(&self.data, &mut pos);
-            self.garbage += pos - offset as usize + len;
+            let len = get_varint(segment.bytes(), &mut pos);
+            segment.garbage += (pos - offset as usize + len) as u32;
         }
         self.offsets[slot] = EMPTY;
         self.live -= 1;
     }
 
     fn set(&mut self, slot: usize, bytes: &[u8]) {
+        let update = self.offsets[slot] != EMPTY;
         self.release(slot);
         self.live += 1;
         if bytes.len() >= LARGE_MIN {
-            if self.large_garbage > self.large.len() / 2 {
-                self.compact(0);
-            }
-            self.offsets[slot] = LARGE | self.large.len() as u32;
-            self.large.push(bytes.into());
+            self.push_loose(slot, bytes);
             return;
         }
+        let seg = slot >> SEG_SHIFT;
         let need = varint_len(bytes.len()) + bytes.len();
-        if self.data.capacity() - self.data.len() < need {
-            self.make_room(need);
+        // `Arc::get_mut` is an atomic read-modify-write: one per record.
+        if self.append(slot, bytes, need) {
+            return;
         }
-        self.offsets[slot] = self.data.len() as u32;
-        put_varint(&mut self.data, bytes.len());
-        self.data.extend_from_slice(bytes);
+        // An update that does not fit its segment (a full one, or one a
+        // clone shares) is kept loose instead of copying the segment's 64
+        // records: one allocation, as when every record was its own. The
+        // segment's next rebuild folds it back in.
+        if update && self.loose_small < LOOSE_MAX {
+            self.loose_small += 1;
+            self.push_loose(slot, bytes);
+            return;
+        }
+        self.rebuild(seg, need);
+        let appended = self.append(slot, bytes, need);
+        assert!(appended, "rebuild leaves the segment unshared, with room");
+    }
+
+    /// Append `bytes` (`need` bytes with their length) to `slot`'s
+    /// segment, if the segment is unshared and has room.
+    #[inline]
+    fn append(&mut self, slot: usize, bytes: &[u8], need: usize) -> bool {
+        let segment = &mut self.segments[slot >> SEG_SHIFT];
+        let start = segment.len as usize;
+        let Some(buf) = segment
+            .buf
+            .as_mut()
+            .and_then(Arc::get_mut)
+            .filter(|buf| buf.len() - start >= need)
+        else {
+            return false;
+        };
+        let mut pos = start;
+        put_varint(buf, &mut pos, bytes.len());
+        buf[pos..pos + bytes.len()].copy_from_slice(bytes);
+        segment.len = (pos + bytes.len()) as u32;
+        self.offsets[slot] = start as u32;
+        true
+    }
+
+    fn push_loose(&mut self, slot: usize, bytes: &[u8]) {
+        if self.loose_garbage as usize > self.loose.len() / 2 {
+            self.compact_loose();
+        }
+        self.offsets[slot] = LOOSE | self.loose.len() as u32;
+        self.loose.push(Some(bytes.into()));
+    }
+
+    /// The loose record at `offset`, if it is an update that a rebuild
+    /// folds back into its segment.
+    #[inline]
+    fn foldable(&self, offset: u32) -> Option<&[u8]> {
+        self.loose[(offset & !LOOSE) as usize]
+            .as_deref()
+            .filter(|record| record.len() < LARGE_MIN)
     }
 
     fn remove(&mut self, slot: usize) -> bool {
-        if self.offsets[slot] == EMPTY {
+        let offset = self.offsets[slot];
+        if offset == EMPTY {
             return false;
         }
         self.release(slot);
         if self.live == 0 {
             *self = Leaf::new();
-        } else if self.garbage > 4096 && self.garbage > self.data.len() / 2 {
-            self.compact(0);
+        } else if offset & LOOSE == 0 {
+            let seg = slot >> SEG_SHIFT;
+            let segment = &self.segments[seg];
+            if segment.garbage == segment.len {
+                self.segments[seg] = Segment::default();
+            } else if segment.garbage > 4096 && segment.garbage > segment.len / 2 {
+                self.rebuild(seg, 0);
+            }
         }
         true
     }
 
-    /// Grow the buffer for `need` more bytes, or compact it if it is
-    /// mostly garbage.
-    fn make_room(&mut self, need: usize) {
-        if self.garbage > self.data.len() / 2 {
-            self.compact(need);
-            if self.data.capacity() - self.data.len() >= need {
-                return;
+    /// Copy segment `seg`'s reachable records, and its slots' loose
+    /// updates, into a buffer of its own in slot order, with room for
+    /// `need` more bytes. Run when the segment is full, shared with a
+    /// clone, or mostly garbage.
+    fn rebuild(&mut self, seg: usize, need: usize) {
+        let slots = seg * SEG_SLOTS..(seg + 1) * SEG_SLOTS;
+        let segment = &self.segments[seg];
+        let mut live_bytes = (segment.len - segment.garbage) as usize;
+        let mut live = 0;
+        for &offset in &self.offsets[slots.clone()] {
+            if offset == EMPTY {
+                continue;
+            }
+            if offset & LOOSE == 0 {
+                live += 1;
+            } else if let Some(record) = self.foldable(offset) {
+                live += 1;
+                live_bytes += varint_len(record.len()) + record.len();
             }
         }
-        // Expect the empty slots to fill with records like the present
-        // ones (ids are handed out in order, so a leaf fills front to
-        // back), but reserve for at most as many again as are stored, so
-        // a mostly empty leaf grows geometrically. A full leaf that is
-        // being rewritten grows by an eighth.
-        let live = self.live.saturating_sub(1) as usize;
-        let avg = (self.data.len() - self.garbage)
-            .checked_div(live)
-            .unwrap_or(need);
-        let empty = CHUNK - live - 1;
-        let expected = empty.min(live.max(1)) * avg;
-        let extra = need + expected.max(self.data.len() / 8);
-        self.data.reserve_exact(extra);
-    }
-
-    /// Rewrite the buffer with only the reachable records, in slot order,
-    /// leaving room for `extra` more bytes.
-    fn compact(&mut self, extra: usize) {
-        let live_bytes = self.data.len() - self.garbage;
-        let mut data = Vec::with_capacity(live_bytes + extra);
-        let mut large = Vec::with_capacity(self.large.len() - self.large_garbage);
-        for slot in 0..CHUNK {
+        let spare = if need == 0 {
+            0
+        } else {
+            // Expect the empty slots to fill with records like the present
+            // ones (ids are handed out in order, so a segment fills front
+            // to back), but reserve for at most as many again as are
+            // stored, so a mostly empty segment grows geometrically. A
+            // full segment that is being rewritten grows by an eighth.
+            let empty = SEG_SLOTS.saturating_sub(live + 1);
+            if live == 0 && self.live > 1 {
+                // A fresh segment of a leaf that already holds records: the
+                // segments before it filled the same way, so size it for
+                // all its slots at once from their average.
+                let leaf_bytes: usize = self
+                    .segments
+                    .iter()
+                    .map(|segment| (segment.len - segment.garbage) as usize)
+                    .sum();
+                let leaf_live = (self.live - 1) as usize;
+                empty * (leaf_bytes / leaf_live).max(1)
+            } else {
+                let avg = live_bytes.checked_div(live).unwrap_or(need);
+                (empty.min(live.max(1)) * avg).max(live_bytes / 8)
+            }
+        };
+        let mut buf: Arc<[u8]> = std::iter::repeat_n(0, live_bytes + need + spare).collect();
+        let out = Arc::get_mut(&mut buf).expect("a new buffer is unshared");
+        let old = self.segments[seg].bytes();
+        let mut end = 0;
+        for slot in slots {
             let offset = self.offsets[slot];
             if offset == EMPTY {
                 continue;
             }
-            if offset & LARGE != 0 {
-                let record = std::mem::take(&mut self.large[(offset & !LARGE) as usize]);
-                self.offsets[slot] = LARGE | large.len() as u32;
-                large.push(record);
-            } else {
-                let start = offset as usize;
-                let mut pos = start;
-                let len = get_varint(&self.data, &mut pos);
-                self.offsets[slot] = data.len() as u32;
-                data.extend_from_slice(&self.data[start..pos + len]);
+            if offset & LOOSE != 0 {
+                let index = (offset & !LOOSE) as usize;
+                let Some(record) = self.loose[index]
+                    .as_deref()
+                    .filter(|record| record.len() < LARGE_MIN)
+                else {
+                    continue;
+                };
+                let mut pos = end;
+                put_varint(out, &mut pos, record.len());
+                out[pos..pos + record.len()].copy_from_slice(record);
+                self.offsets[slot] = end as u32;
+                end = pos + record.len();
+                self.loose[index] = None;
+                self.loose_garbage += 1;
+                self.loose_small -= 1;
+                continue;
+            }
+            let start = offset as usize;
+            let mut pos = start;
+            let len = get_varint(old, &mut pos);
+            let n = pos + len - start;
+            out[end..end + n].copy_from_slice(&old[start..start + n]);
+            self.offsets[slot] = end as u32;
+            end += n;
+        }
+        self.segments[seg] = Segment {
+            buf: Some(buf),
+            len: end as u32,
+            garbage: 0,
+        };
+    }
+
+    /// Drop the released entries of `loose`.
+    fn compact_loose(&mut self) {
+        let mut loose = Vec::with_capacity(self.loose.len() - self.loose_garbage as usize);
+        for offset in &mut self.offsets {
+            if *offset != EMPTY && *offset & LOOSE != 0 {
+                let record = self.loose[(*offset & !LOOSE) as usize].take();
+                *offset = LOOSE | loose.len() as u32;
+                loose.push(record);
             }
         }
-        self.data = data;
-        self.large = large;
-        self.garbage = 0;
-        self.large_garbage = 0;
+        self.loose = loose;
+        self.loose_garbage = 0;
     }
 
     fn heap_bytes(&self) -> usize {
-        self.data.capacity()
-            + self.large.capacity() * size_of::<Box<[u8]>>()
-            + self.large.iter().map(|r| r.len()).sum::<usize>()
-    }
-}
-
-impl Clone for Leaf {
-    /// A compacted copy, sized to its records.
-    fn clone(&self) -> Self {
-        let mut copy = Leaf {
-            offsets: self.offsets,
-            data: Vec::new(),
-            large: Vec::new(),
-            live: self.live,
-            garbage: self.garbage,
-            large_garbage: self.large_garbage,
-        };
-        if self.garbage == 0 && self.large_garbage == 0 {
-            copy.data = self.data.clone();
-            copy.large = self.large.clone();
-        } else {
-            // Compact while copying: walk the slots of `self`, writing into
-            // `copy`'s offsets and buffers.
-            copy.data.reserve_exact(self.data.len() - self.garbage);
-            copy.large
-                .reserve_exact(self.large.len() - self.large_garbage);
-            for slot in 0..CHUNK {
-                let offset = self.offsets[slot];
-                if offset == EMPTY {
-                    continue;
-                }
-                if offset & LARGE != 0 {
-                    copy.offsets[slot] = LARGE | copy.large.len() as u32;
-                    copy.large
-                        .push(self.large[(offset & !LARGE) as usize].clone());
-                } else {
-                    let start = offset as usize;
-                    let mut pos = start;
-                    let len = get_varint(&self.data, &mut pos);
-                    copy.offsets[slot] = copy.data.len() as u32;
-                    copy.data.extend_from_slice(&self.data[start..pos + len]);
-                }
-            }
-            copy.garbage = 0;
-            copy.large_garbage = 0;
-        }
-        copy
+        const ARC_HEADER: usize = 2 * size_of::<usize>();
+        self.segments
+            .iter()
+            .filter_map(|segment| segment.buf.as_ref())
+            .map(|buf| ARC_HEADER + buf.len())
+            .sum::<usize>()
+            + self.loose.capacity() * size_of::<Option<Arc<[u8]>>>()
+            + self
+                .loose
+                .iter()
+                .flatten()
+                .map(|record| ARC_HEADER + record.len())
+                .sum::<usize>()
     }
 }
 
@@ -422,6 +536,21 @@ impl RecordSlab {
         self.iter_from(0)
     }
 
+    /// The slots from `from` on that hold a record, in order. Cheaper than
+    /// [`Self::iter_from`] when the bytes are not needed.
+    pub(super) fn slots_from(&self, from: usize) -> impl Iterator<Item = usize> + '_ {
+        let leaves = self.len.div_ceil(CHUNK);
+        let first = from / CHUNK;
+        (first..leaves).flat_map(move |l| {
+            let leaf = self.leaf(l * CHUNK);
+            let start = if l == first { from & MASK } else { 0 };
+            let end = (self.len - l * CHUNK).min(CHUNK);
+            (start..end)
+                .filter(move |&s| leaf.offsets[s] != EMPTY)
+                .map(move |s| l * CHUNK + s)
+        })
+    }
+
     /// Heap bytes: the tree, every leaf and its buffers.
     pub(super) fn heap_bytes(&self) -> usize {
         const ARC_HEADER: usize = 2 * size_of::<usize>();
@@ -477,6 +606,9 @@ mod tests {
             assert!(slab
                 .iter_from(from)
                 .map(|(i, _)| i)
+                .eq(model.range(from..).map(|(&i, _)| i)));
+            assert!(slab
+                .slots_from(from)
                 .eq(model.range(from..).map(|(&i, _)| i)));
         }
     }
@@ -534,6 +666,81 @@ mod tests {
         assert_eq!(slab.iter().count(), 2);
         slab.grow_to(3);
         assert_eq!(slab.len(), span + 5);
+    }
+
+    /// Whether segment `seg` of leaf 0 is the same buffer in both slabs.
+    fn shares_segment(a: &RecordSlab, b: &RecordSlab, seg: usize) -> bool {
+        match (
+            &a.root[0][0].segments[seg].buf,
+            &b.root[0][0].segments[seg].buf,
+        ) {
+            (Some(x), Some(y)) => Arc::ptr_eq(x, y),
+            _ => false,
+        }
+    }
+
+    fn full_leaf() -> RecordSlab {
+        let mut slab = RecordSlab::default();
+        slab.grow_to(CHUNK);
+        for i in 0..CHUNK {
+            slab.set(i, &[i as u8; 40]);
+        }
+        slab
+    }
+
+    #[test]
+    fn a_write_after_a_clone_copies_one_segment_at_most() {
+        let mut slab = full_leaf();
+        let snapshot = slab.clone();
+        // An update is kept loose: no segment is copied.
+        slab.set(SEG_SLOTS + 3, b"new");
+        assert!(!Arc::ptr_eq(&slab.root[0][0], &snapshot.root[0][0]));
+        assert!((0..SEGMENTS).all(|seg| shares_segment(&slab, &snapshot, seg)));
+        assert_eq!(slab.get(SEG_SLOTS + 3), Some(&b"new"[..]));
+        assert_eq!(
+            snapshot.get(SEG_SLOTS + 3),
+            Some(&[(SEG_SLOTS + 3) as u8; 40][..])
+        );
+        // Emptying a slot and filling it again rebuilds its segment, which
+        // takes the loose update back in; the other segments stay shared.
+        slab.remove(SEG_SLOTS + 5);
+        slab.set(SEG_SLOTS + 5, b"again");
+        for seg in 0..SEGMENTS {
+            assert_eq!(
+                shares_segment(&slab, &snapshot, seg),
+                seg != 1,
+                "segment {seg}"
+            );
+        }
+        assert_eq!(slab.root[0][0].loose_small, 0);
+        assert_eq!(slab.get(SEG_SLOTS + 3), Some(&b"new"[..]));
+        assert_eq!(slab.get(SEG_SLOTS + 5), Some(&b"again"[..]));
+    }
+
+    #[test]
+    fn updates_past_the_loose_cap_rebuild_their_segment() {
+        let mut slab = full_leaf();
+        // The leaf is full and sized to fit: every update overflows.
+        for i in 0..LOOSE_MAX as usize {
+            slab.set(i * 7, &[0xAB; 41]);
+        }
+        assert_eq!(slab.root[0][0].loose_small, LOOSE_MAX);
+        // One more rebuilds segment 0, folding back its loose records.
+        let folded = (0..LOOSE_MAX as usize)
+            .filter(|i| i * 7 < SEG_SLOTS)
+            .count() as u32;
+        slab.set(1, &[0xCD; 41]);
+        assert_eq!(slab.root[0][0].loose_small, LOOSE_MAX - folded);
+        for i in 0..CHUNK {
+            let expected = if i == 1 {
+                vec![0xCD; 41]
+            } else if i % 7 == 0 && i / 7 < LOOSE_MAX as usize {
+                vec![0xAB; 41]
+            } else {
+                vec![i as u8; 40]
+            };
+            assert_eq!(slab.get(i), Some(expected.as_slice()), "slot {i}");
+        }
     }
 
     #[test]
