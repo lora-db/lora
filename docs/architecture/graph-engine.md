@@ -22,15 +22,14 @@ lock. Explicit read-write transactions also serialize through the writer mutex.
 InMemoryGraph
 ├── next_node_id:           u64
 ├── next_rel_id:            u64
-├── nodes:                  ChunkedVec<Option<Blob>>   // encoded records
-├── relationships:          ChunkedVec<Option<Blob>>
+├── nodes:                  RecordSlab                 // encoded records
+├── relationships:          RecordSlab
 ├── dicts:                  Dicts                      // label, type and key numbers
 ├── live_node_count:        usize
 ├── live_rel_count:         usize
-├── outgoing:               ChunkedVec<AdjList>      // (type, neighbour, relationship id) entries
-├── incoming:               ChunkedVec<AdjList>
-├── nodes_by_label:         BTreeMap<String, ChunkedVec<NodeId>>
-├── relationships_by_type:  BTreeMap<String, ChunkedVec<RelationshipId>>
+├── adjacency:              ChunkedVec<Adjacency>      // both directions, one allocation per node
+├── nodes_by_label:         BTreeMap<String, IdBitmap>
+├── relationships_by_type:  BTreeMap<String, IdBitmap>
 ├── indexes:                IndexBundle
 │   ├── catalog:            RwLock<IndexCatalog>
 │   ├── properties:         RwLock<PropertyIndexRegistry>
@@ -51,9 +50,12 @@ persistent radix tree: 512-entry leaf chunks shared by `Arc`, 128 leaves per
 interior node, one shared root. Cloning it bumps one refcount, so cloning the
 graph is O(#labels + #relationship types), and a write copies only the root
 table, interior node and chunk on its path. The index and constraint catalogs
-are shared the same way. Each record is an immutable, reference-counted byte
-string, so a staged writer shares unchanged records with the current published
-snapshot; a property or label change stores a new encoding of that one record.
+are shared the same way. Records live in `RecordSlab`s (`memory/record_slab.rs`),
+the same tree with leaves that hold the encoded records of 512 consecutive ids
+in eight buffers of 64. A staged writer shares every untouched leaf with the
+current published snapshot. Its first write to a leaf copies the leaf's offset
+table and at most one buffer, and a property or label change appends a new
+encoding of that one record.
 Secondary indexes are copy-on-write too (`memory/cow.rs`),
 so write cost stays flat as the graph grows.
 
@@ -63,8 +65,8 @@ it, so change feeds can report deleted entities without copying the graph.
 
 ### Stored records
 
-A node or relationship is stored as one compact byte string (`encoded.rs`),
-behind an 8-byte slot and an 8-byte header:
+A node or relationship is stored as one compact byte string (`encoded.rs`)
+in one of its leaf's buffers, behind a 4-byte offset and a varint length:
 
 ```text
 node:         label count, label numbers...,  properties
@@ -78,6 +80,13 @@ payload:      null / false / true   nothing
               other                 length, `codec` bytes (lists, maps,
                                     temporals, points, vectors, binary)
 ```
+
+A record is never changed in place: a new version is appended to its buffer
+and the old bytes stay as garbage until the buffer is rebuilt, when it is
+full, shared with a clone, or mostly garbage. An update that does not fit its
+buffer gets an allocation of its own (up to 32 per leaf) until that rebuild
+folds it back in. Records of 64 KiB or more always get an allocation of their
+own.
 
 Integers are varints. Labels, relationship types and property keys are stored
 as numbers from the graph's dictionaries (`dict.rs`), assigned in first-use
@@ -154,7 +163,7 @@ Definitions live under `crates/lora-store/src/types/`.
 
 ### Label and relationship-type indexes
 
-Labels and relationship types map to vectors of IDs:
+Labels and relationship types map to sets of IDs (`memory/id_bitmap.rs`):
 
 ```text
 "User"    -> [0, 1, 3, 5]
@@ -164,9 +173,15 @@ Labels and relationship types map to vectors of IDs:
 
 The indexes are maintained on create, label add/remove, relationship create,
 relationship delete, node delete, snapshot load, and WAL replay. They preserve
-deterministic key ordering through `BTreeMap`; the ID lists may contain gaps only
-when the corresponding records have been deleted and filtered out by the read
-helpers.
+deterministic key ordering through `BTreeMap`, and a label or type scan returns
+IDs in ascending order.
+
+A set is stored like a Roaring bitmap: IDs are grouped by their high 48 bits
+into blocks of 65,536, and each block is a sorted array of the low 16 bits
+(2 bytes per ID) or, past 4,096 IDs, an 8 KB bitmap. A label that most nodes
+carry costs about 0.13 bytes per node. Adding or removing an ID is a binary
+search. Cloning bumps one refcount; the first write after a clone copies the
+block table and the one block it touches.
 
 ### Property and catalog-backed indexes
 
@@ -219,22 +234,31 @@ ordinary exact-match lookups.
 
 ### Adjacency indexes
 
-Each node has two adjacency lists (`memory/adjacency.rs`):
+Each node has an outgoing and an incoming adjacency list (`memory/adjacency.rs`):
 
-- `outgoing[node_id]`: relationships leaving the node
-- `incoming[node_id]`: relationships arriving at the node
+- outgoing: relationships leaving the node
+- incoming: relationships arriving at the node
 
 An entry is `(relationship type, neighbour, relationship id)`, so a hop
 filters by type and finds the far endpoint from the list alone, without
 reading a relationship record. A list is a byte string of variable-width
 entries: one header byte, then the type number and the two ids in as many
 bytes as each needs. That is 8 bytes per entry while ids fit in three bytes
-(16M nodes and relationships) and 10 bytes up to 4 billion. Two such entries
-fit inline; longer lists spill to the heap. Relationship types are numbered
+(16M nodes and relationships) and 10 bytes up to 4 billion. Relationship types are numbered
 per graph by the type dictionary, the same numbers relationship records use.
 
+Both lists share one allocation behind an 8-byte pointer: a 12-byte header,
+then outgoing entries growing up from the front and incoming entries growing
+down from the end. Either list grows without moving the other. Incoming
+entries are stored mirrored so both read oldest first. A node without
+relationships has no allocation.
+
+```text
+[out_len, in_len, cap | out entries →   …free…   ← in entries ]
+```
+
 Deleting a relationship removes its entry from both endpoint lists. Deleting a
-node clears the node's lists; the outer adjacency vectors are not shrunk. A
+node clears the node's lists; the outer adjacency vector is not shrunk. A
 list stores no length, so `degree` counts entries.
 
 ## ID allocation
@@ -259,7 +283,7 @@ relationship type filter:
 
 1. Resolve the requested relationship types to their numbers. A type no
    relationship ever had matches nothing.
-2. Walk the entries of `outgoing`, `incoming`, or both, keeping those of a
+2. Walk the node's outgoing entries, incoming entries, or both, keeping those of a
    requested type. An undirected walk reports a self-loop once.
 3. Yield `(relationship id, neighbour id)` straight from the entries.
 4. The compatibility API then reads both records and returns
@@ -278,17 +302,17 @@ Direction::Undirected -> outgoing + incoming
 1. Allocate `NodeId`.
 2. Normalize labels: trim, drop empty strings, deduplicate while preserving first
    occurrence.
-3. Insert `NodeRecord` at the ID slot.
+3. Encode the `NodeRecord` into the ID's leaf.
 4. Update active label and property indexes.
-5. Initialize empty adjacency vectors for that slot.
+5. Leave the slot's adjacency empty; it allocates on the first relationship.
 
 ### Relationship creation
 
 1. Validate both endpoints exist.
 2. Validate type is non-empty after trimming.
 3. Allocate `RelationshipId`.
-4. Insert `RelationshipRecord` at the ID slot.
-5. Update outgoing, incoming, type, and active property indexes.
+4. Encode the `RelationshipRecord` into the ID's leaf.
+5. Update both endpoints' adjacency, the type index, and active property indexes.
 
 ### Node deletion
 

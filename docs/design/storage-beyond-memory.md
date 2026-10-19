@@ -2,7 +2,8 @@
 
 Status: written 2026-10-05 against LoraDB v0.22.3 (`93dc8ff`) as a research
 proposal. **Stages 0 and 1 are implemented** (Stage 0 in v0.23.0, Stage 1 in
-v0.24.0); see [Implementation status](#implementation-status).
+v0.24.0), and a memory-layout follow-up after v0.26.0; see
+[Implementation status](#implementation-status).
 The disk stages (2 and later) are deferred: the decision on 2026-10-06 was to
 stay in memory until a graph outgrows it. Sections 1 to 3 describe the engine
 as it was before this work.
@@ -343,7 +344,8 @@ string instead of an `Arc<NodeRecord>` / `Arc<RelationshipRecord>`.
 This is the per-record form of §5.1's chunk encoding, not the chunk arena:
 each record is its own allocation. It keeps copy-on-write exactly as it was
 (copying a chunk bumps one count per record) and needs no arena compaction.
-An arena would save the header and slot, about 16 B per record.
+An arena would save the header and slot, about 16 B per record. (Done after
+v0.26.0; see [Follow-up: memory layout](#follow-up-memory-layout).)
 
 Medians against the previous commit, same machine and shape (2M nodes / 8M
 relationships): three interleaved pairs of `hop` and `scan`, two of `lat`,
@@ -466,6 +468,113 @@ including clones and drops of one record from four threads; the
 `BorrowedGraphStorage` trait, left with no implementor or caller, is
 removed; and the encoding yields `ValueRef`s directly instead of through a
 second, identical enum.
+
+### Follow-up: memory layout
+
+After v0.26.0, three changes to how the in-memory store lays out what it
+already holds. Nothing changes in Cypher, the bindings, the WAL, the snapshot
+format or the `MemoryReport` field names. Label and type scans now return ids
+in ascending order.
+
+- **Label and type indexes as compressed id sets** (`memory/id_bitmap.rs`).
+  They held every id in a flat list at 8 bytes per id. They are now
+  Roaring-style sets: ids grouped by their high bits into blocks of 65,536,
+  each block a sorted array of 2-byte low halves or, past 4,096 ids, an
+  8 KB bitmap. A label most nodes carry costs about 0.13 bytes per node, and
+  removing a label or a relationship is a binary search instead of a scan.
+- **One adjacency allocation per node** (`memory/adjacency.rs`). Each node
+  kept two 24-byte `SmallVec`s, each spilling to its own allocation past two
+  entries. A node now holds one 8-byte pointer to one allocation: a 12-byte
+  header, outgoing entries growing up from the front and incoming entries
+  growing down from the end, so either list grows without moving the other.
+  A node without relationships costs 8 bytes instead of 48. Growing by a
+  quarter instead of a half saved 2 more bytes per element but made bulk
+  relationship creation 7% slower, so growth stays at a half.
+- **Records of neighbouring ids share buffers** (`memory/record_slab.rs`).
+  Each record was its own allocation behind an 8-byte slot, with an 8-byte
+  header and the allocator's rounding: two thirds overhead on an 11-byte
+  relationship. A leaf of 512 consecutive ids now holds a table of `u32`
+  offsets and eight segment buffers of 64 slots each, records stored behind
+  a varint length. A new version is appended to its segment and the old
+  bytes left as garbage until the segment is rebuilt. Copying a leaf copies
+  the offsets and shares the segments, so the first write after a clone
+  copies at most one segment of 64 records. An update that does not fit
+  its segment (full, or shared with a clone) is stored in an allocation of
+  its own, as every record used to be, up to 32 per leaf; the segment's
+  next rebuild folds it back in. Records of 64 KiB or more always keep
+  their own allocation.
+
+  A first version used one buffer per leaf. It measured the same on memory
+  and bulk loads, but a staged write copied all 512 records of its leaf
+  (`graph_set_node_property` on a 128-property node: 4.4 → 16.1 µs), and on
+  a large graph nearly every update landed in a full buffer and copied it
+  (fast-path `SET` +20 to +50%). Segments fixed the first and loose updates
+  the second.
+- **Scans fetch a small first page.** A streaming label or all-nodes scan
+  asked the store for 1,024 ids at a time, so `LIMIT 10` paid for a
+  thousand. The first page is now 32 ids, doubling to 1,024
+  (`lora-executor`, `pull/scan.rs`). Existence checks in snapshot load, WAL
+  replay and `contains_node` read the offset table only, not the record.
+
+`storage_baseline` on the §2 shape (2M nodes, 8M relationships), v0.26.0
+against the branch. Memory from one `mem` run per variant; build timings are
+the minimum of six rounds at 1M nodes (`build` mode, added for this work).
+
+| Measure | v0.26.0 | After |
+|---|---|---|
+| Live bytes per element, whole graph (`mem relprops`) | 71.9 | **51.5** |
+| …after the id sets / the adjacency change | | 64.0 / 61.5 |
+| Node, one label, no properties (`mem bare`) | 75.4 B | **17.0 B** |
+| Node with 4 properties, no relationships (`mem props`) | 147.9 B | 89.4 B |
+| Label and type indexes | 81 MB | 1.3 MB |
+| Relationship records | 220 MB | 141 MB |
+| Bulk build, nodes / relationships | 0.63 / 2.09 s | 0.60 / 2.03 s |
+| Dropping the graph | 0.10 s | 0.04 s |
+
+The adjacency change on its own made bulk relationship creation about 5%
+slower (2.04 → 2.15 s); the record buffers, which replace one allocation per
+record with appends, more than recover it. Writing a record takes one
+`Arc::get_mut`, an atomic read-modify-write: a version that took two gave
+the 5% back. RSS is not reported: the machine
+ran at load averages of 9 to 12 throughout, and macOS memory compression put
+RSS below live heap in some runs.
+
+Latency, v0.26.0 against the branch, same shape. Medians of interleaved
+runs: two to three pairs per mode, more where runs disagreed. The machine
+ran at load averages of 6 to 12, and at times far higher; a pair taken
+during a spike was rerun.
+
+| Measure | v0.26.0 | After |
+|---|---|---|
+| Cypher index seek / 1-hop / 2-hop (`hop`) | 1.71 / 3.92 / 11.1 µs | 1.67 / 3.71 / 10.8 µs |
+| Raw `with_node` / 1-hop ids | 40 / 323 ns | 42 / 306 ns |
+| Label scan / all-nodes scan, `LIMIT 10` (`scan`) | 2.4–2.7 / 3.4–3.7 µs | 2.6 / 2.5 µs |
+| Label scan with a filter, 2M nodes | 0.21–0.23 s | 0.19–0.24 s |
+| Fast-path `CREATE` / `SET` (`lat`) | 7.00 / 6.19 µs | 6.89 / 5.56 µs |
+| Staged `SET` with a constraint / with a reader held | 11.3 / 10.2 µs | 8.8 / 8.4 µs |
+| `graph_create_node` / staged `CREATE` on a constrained label | 11.9 / 13.2 µs | 9.9 / 11.4 µs |
+| `graph_set_node_property`, 4 / 128 properties (`wide`) | 3.00 / 4.42 µs | 1.54 / 3.35 µs |
+| Snapshot load / WAL replay, 1M nodes (`restart`) | 5.7–5.8 / 7.7–7.9 s | 5.9–6.4 / 7.8 s |
+
+Not resolved, all in `lat` mode and consistent across runs:
+- Snapshot load of its 2M-node graph: 8.4–8.7 s against 9.9–11.8 s. The
+  same load in `restart` mode at 2M measured equal or faster (13.8 against
+  12.9 s), and at 1M within noise; what differs in `lat` is not known.
+- `cy_index_seek_uncached`, which parses and plans a new query text per
+  call: +7 to +21%. The store work in it is one index seek; the rest is
+  parse, plan and plan-cache inserts, which allocate heavily and may be
+  meeting a different allocator state.
+- A raw label scan reading one property per node: 37 against 40–44 ms. The
+  Cypher label scans over the same nodes are as fast or faster.
+- Staged relationship `CREATE`: 59–66 µs against 62–76 µs, with pairs that
+  disagree in direction.
+
+**How it was checked.** The workspace suite on the last commit, including the randomized store-against-model test, which reaches
+all three through the store's own operations and clones. `IdBitmap` and
+`RecordSlab` each have a unit test against a plain model (a `BTreeSet`, a
+map) through inserts, removes and clones, and the slab has tests for what a
+write after a clone copies and for the loose-update cap. Miri over the adjacency
+allocation and the record leaves, the two modules with `unsafe` code.
 
 **Not done yet from Stage 0.**
 - Removing the lazy implicit indexes (D3 options b and c).
