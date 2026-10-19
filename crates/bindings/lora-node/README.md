@@ -339,6 +339,7 @@ await db.loadSnapshot(new URL("https://example.com/graph.lorasnap"));
 | `LoraPath`            | `{ kind: "path", nodes: number[], rels: number[] }`                             |
 | `LoraDate`…`LoraDuration` | `{ kind: "date", iso: "YYYY-MM-DD" }` etc.                              |
 | `LoraPoint`           | Discriminated union on `srid`, see below                                       |
+| `LoraBinary`          | `{ kind: "binary", length, segments: number[][] }`; concatenate the segments    |
 
 `LoraPoint` is a discriminated union over the four supported CRSes:
 
@@ -356,6 +357,19 @@ latitude, longitude[, height] }` (WGS-84 unless `srid` says otherwise) or
 Integer parameters outside the safe range must be passed as `bigint`; an
 integer-valued `number` past 2^53 is rejected with `LORA_INVALID_PARAMS`
 because JavaScript has already rounded it.
+
+Bytes go in as a `Buffer`, a `Uint8Array` or an `ArrayBuffer` and are stored
+as a binary value; they come back as a `LoraBinary`:
+
+```ts
+const body = await readFile("./record.json.gz");
+await db.execute("CREATE (:Record {key: $key, body: $body})", { key: "r1", body });
+const { rows } = await db.execute("MATCH (r:Record {key: 'r1'}) RETURN r.body AS body");
+const bytes = Buffer.from((rows[0].body as LoraBinary).segments.flat());
+```
+
+Other typed arrays (`Float32Array`, `DataView`, …) are refused with
+`LORA_INVALID_PARAMS`; pass numbers as `vector(...)`.
 
 Helper constructors (`date("2025-01-15")`, `cartesian(1, 2)`, `cartesian3d(1, 2, 3)`,
 `wgs84(lon, lat)`, `wgs84_3d(lon, lat, height)`, `duration("P1M")`, …) and

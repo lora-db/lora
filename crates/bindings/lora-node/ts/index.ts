@@ -1505,16 +1505,17 @@ export async function openWalDatabase(
 
 /**
  * Prepare params for the native boundary. Params cross as JSON-shaped
- * values, which cannot carry a `bigint`, so every bigint is rewritten to
- * `{ kind: "integer", value: "<decimal>" }` and decoded exactly on the
- * Rust side. Returns the input unchanged (no copy) when it holds no
- * bigint, which is the common case.
+ * values, which cannot carry a `bigint` or bytes, so every bigint is
+ * rewritten to `{ kind: "integer", value: "<decimal>" }` and every
+ * `Buffer`, `Uint8Array` or `ArrayBuffer` to `{ kind: "binary", base64 }`,
+ * both decoded exactly on the Rust side. Returns the input unchanged (no
+ * copy) when it holds neither, which is the common case.
  */
 function encodeParams(
   params: LoraParams | null | undefined,
 ): LoraParams | null {
   if (params == null) return null;
-  return needsEncoding(params) ? (encodeBigInts(params) as LoraParams) : params;
+  return needsEncoding(params) ? (encodeValue(params) as LoraParams) : params;
 }
 
 /**
@@ -1536,6 +1537,24 @@ function checkNumber(value: number): void {
   }
 }
 
+/**
+ * The bytes of a binary param, or `null` for any other value. Other
+ * typed arrays and `DataView` are refused: their bytes depend on the
+ * platform's endianness, and a `Float32Array` is more likely meant as a
+ * `vector()`.
+ */
+function paramBytes(value: object): Uint8Array | null {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    throw new LoraError(
+      `${value.constructor.name} is not a supported parameter; pass bytes as a Buffer, Uint8Array or ArrayBuffer, or numbers as vector()`,
+      "LORA_INVALID_PARAMS",
+    );
+  }
+  return null;
+}
+
 function needsEncoding(value: unknown): boolean {
   if (typeof value === "bigint") return true;
   if (typeof value === "number") {
@@ -1543,7 +1562,7 @@ function needsEncoding(value: unknown): boolean {
     return false;
   }
   if (value === null || typeof value !== "object") return false;
-  if (ArrayBuffer.isView(value)) return false;
+  if (paramBytes(value) !== null) return true;
   if (Array.isArray(value)) {
     let found = false;
     for (const item of value) found = needsEncoding(item) || found;
@@ -1556,15 +1575,23 @@ function needsEncoding(value: unknown): boolean {
   return found;
 }
 
-function encodeBigInts(value: unknown): unknown {
+function encodeValue(value: unknown): unknown {
   if (typeof value === "bigint")
     return { kind: "integer", value: value.toString() };
-  if (value === null || typeof value !== "object" || ArrayBuffer.isView(value))
-    return value;
-  if (Array.isArray(value)) return value.map(encodeBigInts);
+  if (value === null || typeof value !== "object") return value;
+  const bytes = paramBytes(value);
+  if (bytes !== null) {
+    const base64 = Buffer.from(
+      bytes.buffer,
+      bytes.byteOffset,
+      bytes.byteLength,
+    ).toString("base64");
+    return { kind: "binary", base64 };
+  }
+  if (Array.isArray(value)) return value.map(encodeValue);
   const out: Record<string, unknown> = {};
   for (const key in value)
-    out[key] = encodeBigInts((value as Record<string, unknown>)[key]);
+    out[key] = encodeValue((value as Record<string, unknown>)[key]);
   return out;
 }
 

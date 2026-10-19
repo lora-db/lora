@@ -178,6 +178,17 @@ pub(crate) fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue
 }
 
 fn binary_from_json_map(obj: &serde_json::Map<String, serde_json::Value>) -> Result<LoraBinary> {
+    // The TS wrapper sends a `Buffer`, `Uint8Array` or `ArrayBuffer` as
+    // `{ kind: "binary", base64 }`: Node encodes it natively, which is far
+    // cheaper than one JSON number per byte.
+    if let Some(encoded) = obj.get("base64") {
+        let encoded = encoded
+            .as_str()
+            .ok_or_else(|| invalid_param("binary.base64 must be a string"))?;
+        let bytes = decode_base64(encoded.as_bytes())
+            .ok_or_else(|| invalid_param("binary.base64 is not valid base64"))?;
+        return Ok(LoraBinary::from_bytes(bytes));
+    }
     let segments = obj
         .get("segments")
         .and_then(|v| v.as_array())
@@ -199,6 +210,48 @@ fn binary_from_json_map(obj: &serde_json::Map<String, serde_json::Value>) -> Res
         out.push(chunk);
     }
     Ok(LoraBinary::from_segments(out))
+}
+
+/// Decode standard padded base64, as `Buffer#toString("base64")` writes it.
+fn decode_base64(input: &[u8]) -> Option<Vec<u8>> {
+    fn sextet(b: u8) -> Option<u32> {
+        match b {
+            b'A'..=b'Z' => Some((b - b'A') as u32),
+            b'a'..=b'z' => Some((b - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((b - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    if !input.len().is_multiple_of(4) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(input.len() / 4 * 3);
+    // Only the last quad may carry `=` padding.
+    let Some((body, last)) = input.split_last_chunk::<4>() else {
+        return Some(out);
+    };
+    for chunk in body.chunks_exact(4) {
+        let n = (sextet(chunk[0])? << 18)
+            | (sextet(chunk[1])? << 12)
+            | (sextet(chunk[2])? << 6)
+            | sextet(chunk[3])?;
+        out.extend_from_slice(&[(n >> 16) as u8, (n >> 8) as u8, n as u8]);
+    }
+    let n = (sextet(last[0])? << 18) | (sextet(last[1])? << 12);
+    match (last[2], last[3]) {
+        (b'=', b'=') => out.push((n >> 16) as u8),
+        (c, b'=') => {
+            let n = n | (sextet(c)? << 6);
+            out.extend_from_slice(&[(n >> 16) as u8, (n >> 8) as u8]);
+        }
+        (c, d) => {
+            let n = n | (sextet(c)? << 6) | sextet(d)?;
+            out.extend_from_slice(&[(n >> 16) as u8, (n >> 8) as u8, n as u8]);
+        }
+    }
+    Some(out)
 }
 
 fn require_iso<'a>(

@@ -41,7 +41,11 @@ export type LoraParam =
   | LoraDuration
   | LoraPoint
   | LoraVector
-  | LoraBinary;
+  | LoraBinary
+  // Bytes, stored as a binary value. lora-node only for now: lora-wasm
+  // refuses them, pass `binary(segments)` there.
+  | Uint8Array
+  | ArrayBuffer;
 
 export type LoraParams = Record<string, LoraParam>;
 
