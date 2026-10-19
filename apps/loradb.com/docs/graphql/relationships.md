@@ -267,9 +267,12 @@ and a field named `publisherExists`.
 | `aggregate: { count, node, edge }` | an aggregate over the related nodes or the relationship properties compares |
 
 `count` and `single` count each related node once, however many
-relationships lead to it. A quantifier with an empty filter (`some: {}`)
-is left out like any other empty filter: to ask "has any", use
-`count: { gt: 0 }`.
+relationships lead to it. A quantifier whose filter is emptied by unset
+variables is left out like any other empty filter. Written as a literal
+`some: {}`, `none: {}` or `single: {}`, it is refused with an error that
+names the filter to use: `count: { gt: 0 }` for "has any",
+`count: { eq: 0 }` for "has none", `count: { eq: 1 }` for "exactly one".
+An empty `all: {}` holds on every row and is allowed.
 
 **Conditions on the link** use `<field>Connection` in the `where`, which
 exists for list relationships that have `properties:`. It quantifies over

@@ -119,6 +119,7 @@ import {
   validationRules,
   type DocumentGuards,
 } from "./guards.js";
+import { emptyQuantifierRule } from "./quantifier-rule.js";
 import { buildModel } from "./model/build.js";
 import { Observer, type StatementMeta } from "./observe.js";
 import type {
@@ -385,9 +386,16 @@ export class LoraGraphQL {
     this.#timing = options.timing;
   }
 
-  /** The configured document guards as validation rules. */
+  /**
+   * The validation rules to add to the standard ones: the configured
+   * document guards, and the refusal of a literal empty relationship
+   * quantifier (`some: {}`), which would match every row.
+   */
   validationRules(): ValidationRule[] {
-    return this.#guards === false ? [] : validationRules(this.#guards);
+    return [
+      emptyQuantifierRule,
+      ...(this.#guards === false ? [] : validationRules(this.#guards)),
+    ];
   }
 
   /**
@@ -422,6 +430,10 @@ export class LoraGraphQL {
     );
     return {
       ...guards,
+      onValidate(payload) {
+        guards.onValidate(payload);
+        payload.addValidationRule(emptyQuantifierRule);
+      },
       onExecute: ({ args, executeFn, setExecuteFn }) => {
         const operation = getOperationAST(
           args.document,

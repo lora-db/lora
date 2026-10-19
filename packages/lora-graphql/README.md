@@ -266,7 +266,9 @@ lists stored values that no longer pass. See the
   out of the `OR`, and an `OR` or `NOT` with nothing left is left out
   entirely, so an unset variable never widens a filter to every row; a
   literal `OR: []` matches nothing. A relationship quantifier whose filter
-  is empty is left out too: ask `count: { gt: 0 }` for "has any". A single
+  is emptied that way is left out too; written as a literal `some: {}`,
+  `none: {}` or `single: {}` it is a validation error that names the
+  `count` filter to ask instead (`count: { gt: 0 }` for "has any"). A single
   relationship takes `<field>Exists: Boolean` for "is set" (`venueExists:
 false`: festivals without a venue); as in every relationship filter, a
   related node the reader may not see counts as none.

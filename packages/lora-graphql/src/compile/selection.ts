@@ -14,6 +14,7 @@ import {
   type SelectionSetNode,
   versionInfo,
 } from "graphql";
+import { emptyQuantifier } from "../quantifier-rule.js";
 
 export interface SelectionContext {
   schema: GraphQLSchema;
@@ -121,6 +122,14 @@ export function fieldArgs(
   def: GraphQLField<unknown, unknown>,
   node: FieldNode,
 ): Record<string, unknown> {
+  // Validated documents never hold one; a server that validates with the
+  // standard rules only still gets the refusal here.
+  for (const arg of node.arguments ?? []) {
+    const argDef = def.args.find((a) => a.name === arg.name.value);
+    if (!argDef) continue;
+    const found = emptyQuantifier(arg.value, argDef.type, arg.name.value);
+    if (found) throw found;
+  }
   return getArgumentValues(def, node, ctx.variables) as Record<string, unknown>;
 }
 

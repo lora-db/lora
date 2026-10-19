@@ -101,8 +101,10 @@ update gets no update mutations, and the model warns.
 - `count` takes `eq`, `lt`, `lte`, `gt` and `gte`. `count` and `single`
   count related nodes once each, however many relationships lead to them.
   `all` holds on an empty set, and a missing property fails it.
-- A quantifier with an empty filter (`some: {}`) is left out like any
-  other empty filter. To ask "has any", use `count: { gt: 0 }`.
+- A quantifier whose filter is emptied by unset variables is left out
+  like any other empty filter. A literal `some: {}`, `none: {}` or
+  `single: {}` is a validation error: ask `count: { gt: 0 }`,
+  `count: { eq: 0 }` or `count: { eq: 1 }`.
 - `sort` takes one field per item. Nulls sort last ascending and first
   descending, as in Cypher. A list sorts by the fields you ask for; without
   a `sort` it comes in `@key` order.

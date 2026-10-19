@@ -2,6 +2,7 @@
 // left out adds nothing; a literal `OR: []` still matches nothing.
 
 import { describe, expect, test } from "vitest";
+import { emptyQuantifierRule } from "../src/quantifier-rule.js";
 import { createTestLoraGraphQL } from "../src/testing.js";
 
 type Result = {
@@ -64,5 +65,75 @@ describe("an OR branch or NOT emptied by absent variables is left out", () => {
     // An emptied quantifier filter is left out (documented): every row.
     expect(keysOf(await t.run(relNot), "fs")).toEqual(["a", "b", "c"]);
     expect(keysOf(await t.run(relNot, { c: ["jp"] }), "fs")).toEqual(["b"]);
+  });
+});
+
+describe("a literal empty quantifier is refused", () => {
+  const typeDefs = `type C @node { key: String! @key
+      vs: [V!]! @relationship(type: "IN", direction: IN, properties: "At") @filterable }
+    type V @node { key: String! @key }
+    type At @relationshipProperties { since: Int @filterable }`;
+  const seed =
+    "CREATE (a:C {key: 'a'}), (:C {key: 'b'}), (v:V {key: 'v'}), (v)-[:IN]->(a)";
+
+  test.each([
+    ["some", "count: { gt: 0 }"],
+    ["none", "count: { eq: 0 }"],
+    ["single", "count: { eq: 1 }"],
+  ])("`%s: {}` names %s", async (quantifier, instead) => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const r = await t.run(
+      `{ cs(where: { vs: { ${quantifier}: {} } }) { key } }`,
+    );
+    expect(r.errors?.[0]?.message).toContain(`vs: { ${quantifier}: {} }`);
+    expect(r.errors?.[0]?.message).toContain(instead);
+  });
+
+  test("an object holding only empty objects is empty too", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const r = await t.run(
+      `{ cs(where: { vsConnection: { some: { node: {}, edge: {} } } }) { key } }`,
+    );
+    expect(r.errors?.[0]?.message).toContain("vsConnection: { some: {} }");
+  });
+
+  test("check() reports it", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const r = await t.lora.check({
+      operations: [
+        { document: "query Q { cs(where: { vs: { some: {} } }) { key } }" },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors[0]?.message).toContain("vs: { some: {} }");
+  });
+
+  test("an empty `all`, and a filter emptied by variables, stay left out", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const all = await t.run(
+      `{ cs(where: { vs: { all: {} } }, sort: [{ key: ASC }]) { key } }`,
+    );
+    expect(keysOf(all, "cs")).toEqual(["a", "b"]);
+    const emptied = `query($k: String) { cs(where: { vs: { some: { key: { eq: $k } } } }, sort: [{ key: ASC }]) { key } }`;
+    expect(keysOf(await t.run(emptied), "cs")).toEqual(["a", "b"]);
+    expect(keysOf(await t.run(emptied, { k: "v" }), "cs")).toEqual(["a"]);
+  });
+
+  test("a manifest refuses it, as generate does", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    expect(() =>
+      t.lora.buildManifest({
+        Q: "query Q { cs(where: { vs: { none: {} } }) { key } }",
+      }),
+    ).toThrow(/vs: \{ none: \{\} \}.*count: \{ eq: 0 \}/);
+  });
+
+  test("the Envelop plugin adds the rule", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    const rules: unknown[] = [];
+    t.lora
+      .envelopPlugin()
+      .onValidate({ addValidationRule: (r) => rules.push(r) });
+    expect(rules).toContain(emptyQuantifierRule);
   });
 });
