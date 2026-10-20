@@ -365,6 +365,7 @@ fn lower_logical_op(op: LogicalOp) -> PhysicalOp {
                 lo_inclusive: scan.lo_inclusive,
                 hi: scan.hi,
                 hi_inclusive: scan.hi_inclusive,
+                extra_bounds: scan.extra_bounds,
                 order: scan.order,
             })
         }
@@ -399,6 +400,7 @@ fn lower_logical_op(op: LogicalOp) -> PhysicalOp {
                 lo_inclusive: scan.lo_inclusive,
                 hi: scan.hi,
                 hi_inclusive: scan.hi_inclusive,
+                extra_bounds: scan.extra_bounds,
             })
         }
 
@@ -597,7 +599,36 @@ fn collect_index_candidates(
         }
     }
 
-    if let Some(bounds) = collect_range_bounds(predicate, scan.var) {
+    let text = text_predicate_for_var(predicate, scan.var);
+    // `x STARTS WITH s` is the range `s <= x < string.prefix_end(s)`,
+    // which a RANGE index answers when there is no TEXT index. It
+    // intersects with the comparisons on the same property, so a keyset
+    // page within a prefix seeks from its cursor.
+    let prefix = text.as_ref().filter(|candidate| {
+        matches!(candidate.predicate, TextPredicate::StartsWith) && !is_tautological_text(candidate)
+    });
+    let mut range = collect_range_bounds(predicate, scan.var);
+    match (&mut range, prefix) {
+        (Some(bounds), Some(prefix)) if bounds.key == prefix.key => {
+            add_prefix_bounds(bounds, &prefix.query);
+        }
+        (None, Some(prefix)) => {
+            let mut bounds = RangeBounds::new(prefix.key.clone());
+            add_prefix_bounds(&mut bounds, &prefix.query);
+            range = Some(bounds);
+        }
+        _ => {}
+    }
+    // A prefix on another property than the comparisons: its own scan.
+    let prefix_range = prefix
+        .filter(|prefix| range.as_ref().is_some_and(|b| b.key != prefix.key))
+        .map(|prefix| {
+            let mut bounds = RangeBounds::new(prefix.key.clone());
+            add_prefix_bounds(&mut bounds, &prefix.query);
+            bounds
+        });
+
+    for bounds in range.into_iter().chain(prefix_range) {
         if !is_tautological_range(&bounds)
             && first_simple_label(&scan.labels)
                 .is_some_and(|label| stats.has_node_range_index(label, &bounds.key))
@@ -612,39 +643,14 @@ fn collect_index_candidates(
                     lo_inclusive: bounds.lo_inclusive,
                     hi: bounds.hi,
                     hi_inclusive: bounds.hi_inclusive,
+                    extra_bounds: bounds.extra,
                     order: None,
                 },
             ));
         }
     }
 
-    if let Some(candidate) = text_predicate_for_var(predicate, scan.var) {
-        // `x STARTS WITH s` is the range `s <= x < string.prefix_end(s)`,
-        // which a RANGE index answers when there is no TEXT index.
-        if matches!(candidate.predicate, TextPredicate::StartsWith)
-            && !is_tautological_text(&candidate)
-            && first_simple_label(&scan.labels)
-                .is_some_and(|label| stats.has_node_range_index(label, &candidate.key))
-        {
-            out.push(LogicalOp::NodeByPropertyRangeScan(
-                NodeByPropertyRangeScan {
-                    input: scan.input,
-                    var: scan.var,
-                    labels: scan.labels.clone(),
-                    key: candidate.key.clone(),
-                    lo: Some(candidate.query.clone()),
-                    lo_inclusive: true,
-                    hi: Some(ResolvedExpr::Function {
-                        function: lora_analyzer::FunctionId::builtin("string.prefix_end")
-                            .expect("string.prefix_end is a builtin"),
-                        distinct: false,
-                        args: vec![candidate.query.clone()],
-                    }),
-                    hi_inclusive: false,
-                    order: None,
-                },
-            ));
-        }
+    if let Some(candidate) = text {
         if !is_tautological_text(&candidate)
             && first_simple_label(&scan.labels)
                 .is_some_and(|label| stats.has_node_text_index(label, &candidate.key))
@@ -729,6 +735,7 @@ fn collect_rel_index_candidates(
                 lo_inclusive: bounds.lo_inclusive,
                 hi: bounds.hi,
                 hi_inclusive: bounds.hi_inclusive,
+                extra_bounds: bounds.extra,
             }));
         }
     }
@@ -977,7 +984,7 @@ fn is_tautological_range(bounds: &RangeBounds) -> bool {
         ),
         (Some(_), true) => false,
     };
-    lo_open && hi_open
+    lo_open && hi_open && bounds.extra.is_empty()
 }
 
 fn is_tautological_text(candidate: &TextCandidate) -> bool {
@@ -1075,66 +1082,75 @@ struct RangeBounds {
     lo_inclusive: bool,
     hi: Option<ResolvedExpr>,
     hi_inclusive: bool,
+    /// Bounds that could not be ordered against `lo`/`hi` at plan time.
+    extra: Vec<ExtraRangeBound>,
 }
 
-/// Walk an AND-tree and collect any `var.prop CMP literal` bounds.
-/// Returns `None` if no comparison touches `var.prop` for a single
-/// property key — we don't try to combine multi-property bounds in v1.
-fn collect_range_bounds(predicate: &ResolvedExpr, var: VarId) -> Option<RangeBounds> {
-    let mut key: Option<String> = None;
-    let mut lo: Option<ResolvedExpr> = None;
-    let mut lo_inclusive = false;
-    let mut hi: Option<ResolvedExpr> = None;
-    let mut hi_inclusive = false;
-    let mut any = false;
-
-    walk_and_for_range(
-        predicate,
-        var,
-        &mut |found_key, side, value, inclusive| match side {
-            RangeSide::Lower => {
-                if key.as_deref().map(|k| k != found_key).unwrap_or(false) {
-                    return;
-                }
-                key = Some(found_key.to_string());
-                if lo
-                    .as_ref()
-                    .map(|current| lower_bound_is_tighter(&value, inclusive, current, lo_inclusive))
-                    .unwrap_or(true)
-                {
-                    lo = Some(value);
-                    lo_inclusive = inclusive;
-                }
-                any = true;
-            }
-            RangeSide::Upper => {
-                if key.as_deref().map(|k| k != found_key).unwrap_or(false) {
-                    return;
-                }
-                key = Some(found_key.to_string());
-                if hi
-                    .as_ref()
-                    .map(|current| upper_bound_is_tighter(&value, inclusive, current, hi_inclusive))
-                    .unwrap_or(true)
-                {
-                    hi = Some(value);
-                    hi_inclusive = inclusive;
-                }
-                any = true;
-            }
-        },
-    );
-
-    if !any {
-        return None;
+impl RangeBounds {
+    fn new(key: String) -> Self {
+        Self {
+            key,
+            lo: None,
+            lo_inclusive: false,
+            hi: None,
+            hi_inclusive: false,
+            extra: Vec::new(),
+        }
     }
-    Some(RangeBounds {
-        key: key?,
-        lo,
-        lo_inclusive,
-        hi,
-        hi_inclusive,
-    })
+
+    /// Intersect one more bound: keep the tighter of it and the current
+    /// one when both are literals, else keep it for the executor to order.
+    fn add(&mut self, side: RangeSide, value: ResolvedExpr, inclusive: bool) {
+        let (current, current_inclusive, tighter): (_, _, fn(_, _, _, _) -> _) = match side {
+            RangeSide::Lower => (&mut self.lo, &mut self.lo_inclusive, lower_bound_is_tighter),
+            RangeSide::Upper => (&mut self.hi, &mut self.hi_inclusive, upper_bound_is_tighter),
+        };
+        let Some(existing) = current.as_ref() else {
+            *current = Some(value);
+            *current_inclusive = inclusive;
+            return;
+        };
+        if compare_literal_bounds(&value, existing).is_none() {
+            self.extra.push(ExtraRangeBound {
+                lower: matches!(side, RangeSide::Lower),
+                value,
+                inclusive,
+            });
+        } else if tighter(&value, inclusive, existing, *current_inclusive) {
+            *current = Some(value);
+            *current_inclusive = inclusive;
+        }
+    }
+}
+
+/// Walk an AND-tree and collect any `var.prop CMP value` bounds on the
+/// first property compared. Returns `None` if no comparison touches
+/// `var`; bounds on other properties are left to the filter.
+fn collect_range_bounds(predicate: &ResolvedExpr, var: VarId) -> Option<RangeBounds> {
+    let mut bounds: Option<RangeBounds> = None;
+    walk_and_for_range(predicate, var, &mut |found_key, side, value, inclusive| {
+        let bounds = bounds.get_or_insert_with(|| RangeBounds::new(found_key.to_string()));
+        if bounds.key == found_key {
+            bounds.add(side, value, inclusive);
+        }
+    });
+    bounds
+}
+
+/// The range `prefix <= x < string.prefix_end(prefix)` of `x STARTS WITH
+/// prefix`, added to `bounds`.
+fn add_prefix_bounds(bounds: &mut RangeBounds, prefix: &ResolvedExpr) {
+    bounds.add(RangeSide::Lower, prefix.clone(), true);
+    bounds.add(
+        RangeSide::Upper,
+        ResolvedExpr::Function {
+            function: lora_analyzer::FunctionId::builtin("string.prefix_end")
+                .expect("string.prefix_end is a builtin"),
+            distinct: false,
+            args: vec![prefix.clone()],
+        },
+        false,
+    );
 }
 
 #[derive(Clone, Copy)]
@@ -1703,6 +1719,7 @@ mod tests {
                 lo_inclusive: false,
                 hi: None,
                 hi_inclusive: false,
+                extra_bounds: Vec::new(),
                 order: None,
             }),
             LogicalOp::NodeByPropertyScan(NodeByPropertyScan {
@@ -1759,6 +1776,7 @@ mod tests {
             lo_inclusive: false,
             hi: None,
             hi_inclusive: false,
+            extra: Vec::new(),
         };
         assert!(is_tautological_range(&bounds));
     }
@@ -1771,6 +1789,7 @@ mod tests {
             lo_inclusive: false,
             hi: Some(lit_int(i64::MAX)),
             hi_inclusive: false,
+            extra: Vec::new(),
         };
         assert!(is_tautological_range(&bounds));
     }
@@ -1783,6 +1802,7 @@ mod tests {
             lo_inclusive: false,
             hi: Some(lit_int(i64::MAX)),
             hi_inclusive: false,
+            extra: Vec::new(),
         };
         assert!(is_tautological_range(&bounds));
     }
@@ -1795,6 +1815,7 @@ mod tests {
             lo_inclusive: false,
             hi: Some(lit_int(100)),
             hi_inclusive: false,
+            extra: Vec::new(),
         };
         assert!(!is_tautological_range(&bounds));
     }

@@ -71,7 +71,7 @@ pub(crate) use helpers::{
     rel_by_property_range_scan_rows, rel_by_text_scan_rows, resolve_range,
     scan_node_ids_for_label_groups, GroupValueKey, NodePropertyCandidates,
 };
-pub(crate) use helpers::{other_kind_node_ids, OrderedRangeCursor, OtherKindScan};
+pub(crate) use helpers::{other_kind_node_ids, OrderedRangeCursor, OtherKindScan, RangeValues};
 pub(crate) use helpers::{project_item, project_item_in_place};
 pub(crate) use helpers::{RowKeyBuilder, RowKeyPart};
 pub(crate) use optional::{

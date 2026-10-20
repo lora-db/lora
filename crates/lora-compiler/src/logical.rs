@@ -150,6 +150,8 @@ pub struct NodeByPropertyRangeScan {
     pub lo_inclusive: bool,
     pub hi: Option<ResolvedExpr>,
     pub hi_inclusive: bool,
+    /// More bounds on `key`, intersected with `lo`/`hi` per row.
+    pub extra_bounds: Vec<ExtraRangeBound>,
     /// Set when the optimizer replaced an `ORDER BY var.key` above this
     /// scan: rows must come out in that order (from the index when it can
     /// supply it, otherwise sorted by the operator itself).
@@ -223,6 +225,20 @@ pub struct RelByPropertyRangeScan {
     pub lo_inclusive: bool,
     pub hi: Option<ResolvedExpr>,
     pub hi_inclusive: bool,
+    /// More bounds on `key`, intersected with `lo`/`hi` per row.
+    pub extra_bounds: Vec<ExtraRangeBound>,
+}
+
+/// A range-scan bound the planner cannot order against the scan's `lo` or
+/// `hi` (a parameter, say, where `lo` is a STARTS WITH prefix). The
+/// executor evaluates it per row and seeks from the tighter of the two, so
+/// `x STARTS WITH $p AND x > $after` reads from `max($p, $after)`.
+#[derive(Debug, Clone)]
+pub struct ExtraRangeBound {
+    /// `true` for a lower bound (`>`, `>=`), `false` for an upper one.
+    pub lower: bool,
+    pub value: ResolvedExpr,
+    pub inclusive: bool,
 }
 
 /// Trigram-backed relationship scan. Mirror of [`NodeByTextScan`].

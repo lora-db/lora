@@ -195,26 +195,12 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
                 d.insert("labels".to_string(), label_groups_str(&n.labels));
             }
             d.insert("key".to_string(), n.key.clone());
-            if let Some(lo) = &n.lo {
-                d.insert(
-                    "lo".to_string(),
-                    format!(
-                        "{} {}",
-                        if n.lo_inclusive { ">=" } else { ">" },
-                        expr_str(lo)
-                    ),
-                );
-            }
-            if let Some(hi) = &n.hi {
-                d.insert(
-                    "hi".to_string(),
-                    format!(
-                        "{} {}",
-                        if n.hi_inclusive { "<=" } else { "<" },
-                        expr_str(hi)
-                    ),
-                );
-            }
+            insert_range_bounds(
+                &mut d,
+                (&n.lo, n.lo_inclusive),
+                (&n.hi, n.hi_inclusive),
+                &n.extra_bounds,
+            );
             PlanDescription::with_children("NodeByPropertyRangeScan", d, opt_input(n.input))
         }
         PhysicalOp::NodeByPointScan(n) => {
@@ -282,26 +268,12 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
                 direction_str(n.direction).to_string(),
             );
             d.insert("key".to_string(), n.key.clone());
-            if let Some(lo) = &n.lo {
-                d.insert(
-                    "lo".to_string(),
-                    format!(
-                        "{} {}",
-                        if n.lo_inclusive { ">=" } else { ">" },
-                        expr_str(lo)
-                    ),
-                );
-            }
-            if let Some(hi) = &n.hi {
-                d.insert(
-                    "hi".to_string(),
-                    format!(
-                        "{} {}",
-                        if n.hi_inclusive { "<=" } else { "<" },
-                        expr_str(hi)
-                    ),
-                );
-            }
+            insert_range_bounds(
+                &mut d,
+                (&n.lo, n.lo_inclusive),
+                (&n.hi, n.hi_inclusive),
+                &n.extra_bounds,
+            );
             PlanDescription::with_children("RelByPropertyRangeScan", d, opt_input(n.input))
         }
         PhysicalOp::RelByTextScan(n) => {
@@ -640,4 +612,38 @@ fn expr_str(e: &ResolvedExpr) -> String {
 
 fn pattern_summary(part_count: usize) -> String {
     format!("{} pattern part(s)", part_count)
+}
+
+/// The `lo` and `hi` details of a range scan: each side's bounds joined
+/// with `AND`, the scan seeking from the tightest at run time.
+fn insert_range_bounds(
+    d: &mut BTreeMap<String, String>,
+    lo: (&Option<ResolvedExpr>, bool),
+    hi: (&Option<ResolvedExpr>, bool),
+    extra: &[crate::logical::ExtraRangeBound],
+) {
+    for (name, lower, (first, first_inclusive)) in [("lo", true, lo), ("hi", false, hi)] {
+        let parts: Vec<String> = first
+            .iter()
+            .map(|value| (value, first_inclusive))
+            .chain(
+                extra
+                    .iter()
+                    .filter(|b| b.lower == lower)
+                    .map(|b| (&b.value, b.inclusive)),
+            )
+            .map(|(value, inclusive)| {
+                let op = match (lower, inclusive) {
+                    (true, true) => ">=",
+                    (true, false) => ">",
+                    (false, true) => "<=",
+                    (false, false) => "<",
+                };
+                format!("{op} {}", expr_str(value))
+            })
+            .collect();
+        if !parts.is_empty() {
+            d.insert(name.to_string(), parts.join(" AND "));
+        }
+    }
 }

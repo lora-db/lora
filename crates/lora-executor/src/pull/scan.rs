@@ -705,23 +705,20 @@ impl<'a, S: GraphStorage> RowSource for OrderedRangeScanSource<'a, S> {
             let Some(row) = self.upstream.next_row()? else {
                 return Ok(None);
             };
-            let eval_ctx = self.ctx.eval_ctx();
-            let lo = self.op.lo.as_ref().map(|e| eval_expr(e, &row, &eval_ctx));
-            // A null upper bound reads as none (see the buffered scan).
-            let hi = self
-                .op
-                .hi
-                .as_ref()
-                .map(|e| eval_expr(e, &row, &eval_ctx))
-                .filter(|v| !matches!(v, LoraValue::Null));
+            let range = crate::executor::RangeValues::eval(
+                (&self.op.lo, self.op.lo_inclusive),
+                (&self.op.hi, self.op.hi_inclusive),
+                &self.op.extra_bounds,
+                &row,
+                &self.ctx.eval_ctx(),
+            );
             let others = crate::executor::other_kind_node_ids(
                 self.ctx.storage,
                 self.op,
-                [lo.as_ref(), hi.as_ref()],
+                [range.lo.as_ref(), range.hi.as_ref()],
                 &mut crate::executor::OtherKindScan::default(),
             );
-            let cursor =
-                crate::executor::OrderedRangeCursor::new(self.ctx.storage, self.op, lo, hi);
+            let cursor = crate::executor::OrderedRangeCursor::new(self.ctx.storage, self.op, range);
             self.current = Some((row, others.into_iter(), cursor));
         }
     }

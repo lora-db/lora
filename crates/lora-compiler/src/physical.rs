@@ -130,6 +130,8 @@ pub struct NodeByPropertyRangeScanExec {
     pub lo_inclusive: bool,
     pub hi: Option<ResolvedExpr>,
     pub hi_inclusive: bool,
+    /// See [`crate::logical::ExtraRangeBound`].
+    pub extra_bounds: Vec<crate::logical::ExtraRangeBound>,
     /// Set when the optimizer replaced an `ORDER BY var.key` above this
     /// scan: rows must come out in that order (from the index when it can
     /// supply it, otherwise sorted by the operator itself).
@@ -168,6 +170,8 @@ pub struct RelByPropertyRangeScanExec {
     pub lo_inclusive: bool,
     pub hi: Option<ResolvedExpr>,
     pub hi_inclusive: bool,
+    /// See [`crate::logical::ExtraRangeBound`].
+    pub extra_bounds: Vec<crate::logical::ExtraRangeBound>,
 }
 
 #[derive(Debug, Clone)]

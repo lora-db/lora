@@ -1395,30 +1395,30 @@ pub(crate) fn node_by_property_range_scan_rows<S: GraphStorage>(
 
     for row in base_rows {
         check_optional_deadline(deadline)?;
-        let lo_value = op.lo.as_ref().map(|expr| eval_expr(expr, &row, &eval_ctx));
-        // A null upper bound reads as none: the Filter kept above every
-        // index scan still judges each row (a STARTS WITH prefix with no
-        // successor, `string.prefix_end` null, scans to the end).
-        let hi_value = op
-            .hi
-            .as_ref()
-            .map(|expr| eval_expr(expr, &row, &eval_ctx))
-            .filter(|v| !matches!(v, LoraValue::Null));
-        let lo_prop = lo_value
+        let range = RangeValues::eval(
+            (&op.lo, op.lo_inclusive),
+            (&op.hi, op.hi_inclusive),
+            &op.extra_bounds,
+            &row,
+            &eval_ctx,
+        );
+        let lo_prop = range
+            .lo
             .clone()
             .and_then(|v| lora_value_to_property(v).ok());
-        let hi_prop = hi_value
+        let hi_prop = range
+            .hi
             .clone()
             .and_then(|v| lora_value_to_property(v).ok());
         let filter = NodeRangeFilter {
             labels: &op.labels,
             key: &op.key,
-            lo: lo_value.as_ref(),
-            lo_inclusive: op.lo_inclusive,
-            hi: hi_value.as_ref(),
-            hi_inclusive: op.hi_inclusive,
+            lo: range.lo.as_ref(),
+            lo_inclusive: range.lo_inclusive,
+            hi: range.hi.as_ref(),
+            hi_inclusive: range.hi_inclusive,
         };
-        let bounds = [lo_value.as_ref(), hi_value.as_ref()];
+        let bounds = [range.lo.as_ref(), range.hi.as_ref()];
         let bound_id = bound_node_id_for_expand(&row, op.var)?;
 
         if let Some(existing_id) = bound_id {
@@ -1438,8 +1438,7 @@ pub(crate) fn node_by_property_range_scan_rows<S: GraphStorage>(
         }
 
         if op.order.is_some() {
-            let mut cursor =
-                OrderedRangeCursor::new(storage, op, lo_value.clone(), hi_value.clone());
+            let mut cursor = OrderedRangeCursor::new(storage, op, range.clone());
             while let Some(id) = cursor.next_id(storage) {
                 check_optional_deadline(deadline)?;
                 let mut new_row = row.clone();
@@ -1716,6 +1715,65 @@ fn temporal_kind_name(value: &LoraValue) -> Option<&'static str> {
         LoraValue::LocalTime(_) => "LOCAL_TIME",
         _ => return None,
     })
+}
+
+/// A range scan's bounds evaluated for one row: of `lo` and the extra
+/// lower bounds the greatest, of `hi` and the extra upper bounds the
+/// least. A bound that does not compare with the current one (another
+/// type, null) leaves it, which only widens the scan; the Filter kept
+/// above every index scan still judges each row.
+#[derive(Clone)]
+pub(crate) struct RangeValues {
+    pub(crate) lo: Option<LoraValue>,
+    pub(crate) lo_inclusive: bool,
+    pub(crate) hi: Option<LoraValue>,
+    pub(crate) hi_inclusive: bool,
+}
+
+impl RangeValues {
+    pub(crate) fn eval<S: GraphStorage>(
+        lo: (&Option<ResolvedExpr>, bool),
+        hi: (&Option<ResolvedExpr>, bool),
+        extra: &[lora_compiler::ExtraRangeBound],
+        row: &Row,
+        ctx: &EvalContext<'_, S>,
+    ) -> Self {
+        let mut out = Self {
+            lo: lo.0.as_ref().map(|expr| eval_expr(expr, row, ctx)),
+            lo_inclusive: lo.1,
+            // A null upper bound reads as none (a STARTS WITH prefix with
+            // no successor, `string.prefix_end` null, scans to the end).
+            hi: hi
+                .0
+                .as_ref()
+                .map(|expr| eval_expr(expr, row, ctx))
+                .filter(|v| !matches!(v, LoraValue::Null)),
+            hi_inclusive: hi.1,
+        };
+        for bound in extra {
+            let value = eval_expr(&bound.value, row, ctx);
+            let (current, current_inclusive, tighter) = if bound.lower {
+                (&mut out.lo, &mut out.lo_inclusive, Ordering::Greater)
+            } else if matches!(value, LoraValue::Null) {
+                continue;
+            } else {
+                (&mut out.hi, &mut out.hi_inclusive, Ordering::Less)
+            };
+            let take = match current.as_ref() {
+                None => true,
+                Some(existing) => match range_comparison(&value, existing) {
+                    Some(Ordering::Equal) => *current_inclusive && !bound.inclusive,
+                    Some(order) => order == tighter,
+                    None => false,
+                },
+            };
+            if take {
+                *current = Some(value);
+                *current_inclusive = bound.inclusive;
+            }
+        }
+        out
+    }
 }
 
 pub(crate) struct NodeRangeFilter<'a> {
@@ -2781,15 +2839,18 @@ pub(crate) fn rel_by_property_range_scan_rows<S: GraphStorage>(
 
     for row in base_rows {
         check_optional_deadline(deadline)?;
-        let lo_value = op.lo.as_ref().map(|expr| eval_expr(expr, &row, &eval_ctx));
-        // A null upper bound reads as none: the Filter kept above every
-        // index scan still judges each row (a STARTS WITH prefix with no
-        // successor, `string.prefix_end` null, scans to the end).
-        let hi_value = op
-            .hi
-            .as_ref()
-            .map(|expr| eval_expr(expr, &row, &eval_ctx))
-            .filter(|v| !matches!(v, LoraValue::Null));
+        let RangeValues {
+            lo: lo_value,
+            lo_inclusive,
+            hi: hi_value,
+            hi_inclusive,
+        } = RangeValues::eval(
+            (&op.lo, op.lo_inclusive),
+            (&op.hi, op.hi_inclusive),
+            &op.extra_bounds,
+            &row,
+            &eval_ctx,
+        );
         let lo_prop = lo_value
             .clone()
             .and_then(|v| lora_value_to_property(v).ok());
@@ -2827,9 +2888,9 @@ pub(crate) fn rel_by_property_range_scan_rows<S: GraphStorage>(
                 if !range_predicate_holds(
                     &actual_lv,
                     lo_value.as_ref(),
-                    op.lo_inclusive,
+                    lo_inclusive,
                     hi_value.as_ref(),
-                    op.hi_inclusive,
+                    hi_inclusive,
                 ) {
                     return Ok(());
                 }
@@ -3027,9 +3088,14 @@ impl OrderedRangeCursor {
     pub(crate) fn new<S: GraphStorage>(
         storage: &S,
         op: &lora_compiler::NodeByPropertyRangeScanExec,
-        lo: Option<LoraValue>,
-        hi: Option<LoraValue>,
+        range: RangeValues,
     ) -> Self {
+        let RangeValues {
+            lo,
+            lo_inclusive,
+            hi,
+            hi_inclusive,
+        } = range;
         let descending = matches!(op.order, Some(SortDirection::Desc));
         // Strings and temporals of one kind have a single contiguous,
         // correctly ordered run in the index, so the walk can stream from
@@ -3060,8 +3126,8 @@ impl OrderedRangeCursor {
             pending: Vec::new().into_iter(),
             labels: op.labels.clone(),
             key: op.key.clone(),
-            lo_inclusive: op.lo_inclusive,
-            hi_inclusive: op.hi_inclusive,
+            lo_inclusive,
+            hi_inclusive,
         };
         match index_label {
             Some(label) => {
