@@ -292,6 +292,17 @@ fn unique(args: &[LoraValue]) -> LoraValue {
     let Some(xs) = as_list(args.first()) else {
         return LoraValue::Null;
     };
+    // A list of integers (node ids, say) dedupes through a set: linear,
+    // where comparing every pair is quadratic.
+    if xs.iter().all(|v| matches!(v, LoraValue::Int(_))) {
+        let mut seen = std::collections::HashSet::with_capacity(xs.len());
+        return LoraValue::List(
+            xs.iter()
+                .filter(|v| matches!(v, LoraValue::Int(i) if seen.insert(*i)))
+                .cloned()
+                .collect(),
+        );
+    }
     let mut out: Vec<LoraValue> = Vec::with_capacity(xs.len());
     for v in xs {
         if !out.iter().any(|existing| value_eq(existing, v)) {

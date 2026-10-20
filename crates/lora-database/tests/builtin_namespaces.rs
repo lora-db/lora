@@ -56,6 +56,20 @@ fn list_unique_and_predicates() {
         db().scalar("RETURN list.unique([1, 2, 2, 3, 3, 3])"),
         json!([1, 2, 3])
     );
+    // Integers keep their first-seen order; an integer still equals the
+    // float of the same value.
+    assert_eq!(
+        db().scalar("RETURN list.unique([3, 1, 3, 2, 1])"),
+        json!([3, 1, 2])
+    );
+    assert_eq!(
+        db().scalar("RETURN list.unique([1, 1.0, 2])"),
+        json!([1, 2])
+    );
+    assert_eq!(
+        db().scalar("RETURN size(list.unique([x IN range(1, 50000) | x % 1000]))"),
+        json!(1000)
+    );
     assert_eq!(
         db().scalar("RETURN list.has_duplicates([1, 2, 3])"),
         json!(false)

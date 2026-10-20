@@ -199,6 +199,7 @@ integral results, where Neo4j returns a float.
 | `list.first` / `head` / `first`, `list.rest` / `tail`, `list.last` / `last` | **Supported** |
 | `value.reverse(list)` / `reverse(list)` | **Supported** |
 | `list.range(start, end[, step])` | **Supported** |
+| `list.unique(list)` | **Supported**. Keeps each value's first occurrence. A list of integers (node ids, say) dedupes in linear time; other values are compared pair by pair |
 | `reduce(acc = init, x IN list \| expr)` | **Supported** |
 | List comprehension `[x IN list WHERE p \| e]` | **Supported** |
 

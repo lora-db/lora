@@ -318,7 +318,8 @@ See [Paths](../queries/paths#path-functions).
 ### Deduplicate And Set Operations
 
 Use `list.unique(list)` to keep the first occurrence of each value
-inside one row. Use set-style helpers when comparing two lists.
+inside one row. A list of integers, such as node ids from `id(n)`,
+dedupes in linear time; other values are compared pair by pair. Use set-style helpers when comparing two lists.
 
 <QueryCodeBlock code={String.raw`RETURN list.unique([1, 2, 2, 3, 3, 3]);          // [1, 2, 3]
 RETURN list.union([1, 2], [2, 3]);               // [1, 2, 3]
