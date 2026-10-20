@@ -509,18 +509,12 @@ function relationshipPredicate(
           variable,
           field,
           (x) => memberWhere(node, x, where) || undefined,
-          (x) => ({
-            kind: "list",
-            items: [lit(node.name), prop(v(x), node.key.property)],
-          }),
+          (x) => fn("id", v(x)),
         ),
       ];
     });
     if (lists.length === 0) return lit(0);
-    return distinctCount(
-      ctx,
-      lists.reduce((a, b) => bin("+", a, b)),
-    );
+    return distinctCount(lists.reduce((a, b) => bin("+", a, b)));
   };
   // A quantifier over an empty (or all-null) filter is left out, like any
   // absent filter; `count: { gt: 0 }` asks for "has any".
@@ -580,7 +574,15 @@ function relationshipPredicate(
         break;
       }
       case "count":
-        parts.push(compareCount(ctx, rel, distinct(undefined), w));
+        parts.push(
+          compareCount(
+            ctx,
+            rel,
+            () => distinct(undefined),
+            () => count(undefined),
+            w,
+          ),
+        );
         break;
       case "aggregate":
         if (!abstract) parts.push(aggregatePredicate(ctx, variable, rel, w));
@@ -618,10 +620,17 @@ function relationshipExists(
   return bin(exists ? ">" : "=", total, lit(0));
 }
 
+/**
+ * `count: { gt: 2 }`, over the distinct related nodes. A bound that only
+ * asks whether there are any (`gt: 0`, `eq: 0`, `lt: 1`, ...) compares
+ * the relationships instead: there are related nodes exactly when there
+ * are relationships, and counting those needs no dedupe.
+ */
 function compareCount(
   ctx: CompileContext,
   rel: RelationshipField,
-  total: Expr,
+  nodes: () => Expr,
+  edges: () => Expr,
   ops: Where,
 ): Expr | undefined {
   const parts: Expr[] = [];
@@ -635,7 +644,9 @@ function compareCount(
         `${rel.name}.count.${op} must be a non-negative integer`,
       );
     }
-    parts.push(bin(cypherOp, total, bind(ctx, n)));
+    const anyOrNone =
+      op === "lt" || op === "gte" ? (n as number) <= 1 : n === 0;
+    parts.push(bin(cypherOp, anyOrNone ? edges() : nodes(), bind(ctx, n)));
   }
   return and(...parts);
 }
@@ -795,17 +806,21 @@ function aggregatePredicate(
     side(value["edge"] as Where | undefined, (n) => props.fields.get(n), true);
   }
   if (value["count"]) {
-    const total = distinctCount(
-      ctx,
-      related(
+    const all = (projection: (x: string) => Expr) =>
+      related(ctx, variable, rel, () => undefined, projection);
+    parts.push(
+      compareCount(
         ctx,
-        variable,
         rel,
-        () => undefined,
-        (x) => prop(v(x), target.key.property),
+        () => distinctCount(all((x) => fn("id", v(x)))),
+        () =>
+          fn(
+            "size",
+            all(() => lit(1)),
+          ),
+        value["count"] as Where,
       ),
     );
-    parts.push(compareCount(ctx, rel, total, value["count"] as Where));
   }
   return and(...parts);
 }

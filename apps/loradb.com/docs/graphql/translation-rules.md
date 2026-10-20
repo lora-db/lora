@@ -158,4 +158,4 @@ temporal values (inferred again for temporal fields), `x IN $list` seeks,
 | An aggregate nested in a call (`head(collect(x))`) is not aggregated | `WITH collect(x) AS c RETURN head(c)`; `reduce` for per-parent aggregates |
 | `max`, `sum` and `avg` over durations are wrong | Duration aggregates are folded with `reduce` |
 | Integer division returns a float; negative list slices return `[]` | `toInteger(a / b)` for `Int` fields; `l[..size(l) - n]` |
-| `COUNT { ... RETURN DISTINCT x }` and `UNION` inside `CALL` do not parse | `reduce` for distinct counts; per-member subqueries |
+| `COUNT { ... RETURN DISTINCT x }` and `UNION` inside `CALL` do not parse | `list.unique` for distinct counts; per-member subqueries |

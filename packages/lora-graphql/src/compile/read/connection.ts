@@ -221,10 +221,7 @@ export function projectRelationshipConnection(
               entries: [
                 {
                   key: "nodes",
-                  value: distinctCount(
-                    ctx,
-                    matching((nv) => prop(v(nv), target.key.property)),
-                  ),
+                  value: distinctCount(matching((nv) => fn("id", v(nv)))),
                 },
                 {
                   key: "edges",

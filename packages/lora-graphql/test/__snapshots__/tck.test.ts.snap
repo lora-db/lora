@@ -326,7 +326,7 @@ exports[`TCK > relationship filters 1`] = `
         "text": "MATCH (this_followers_anchor:User)
 WHERE this_followers_anchor.key = $p5
 MATCH (this_followers_anchor)-[:FOLLOWS]->(this:Festival)
-WHERE size([(this)-[this_genre_rel:IN_GENRE]->(this_genre:Genre) WHERE this_genre.name STARTS WITH $p1 | 1]) > 0 AND size([(this)<-[this_followers_rel:FOLLOWS]-(this_followers:User) WHERE this_followers.key = $p3 | 1]) > 0 AND size(reduce(seen = [], seen_key IN [(this)<-[this_followers1_rel:FOLLOWS]-(this_followers1:User) | ["User", this_followers1.key]] | CASE WHEN seen_key IN seen THEN seen ELSE seen + [seen_key] END)) > $p4
+WHERE size([(this)-[this_genre_rel:IN_GENRE]->(this_genre:Genre) WHERE this_genre.name STARTS WITH $p1 | 1]) > 0 AND size([(this)<-[this_followers_rel:FOLLOWS]-(this_followers:User) WHERE this_followers.key = $p3 | 1]) > 0 AND size(list.unique([(this)<-[this_followers1_rel:FOLLOWS]-(this_followers1:User) | id(this_followers1)])) > $p4
 WITH DISTINCT this
 WITH this ORDER BY this.key ASC LIMIT $p6
 RETURN this { .key } AS this",

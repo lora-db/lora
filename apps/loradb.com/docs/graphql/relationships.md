@@ -267,7 +267,11 @@ and a field named `publisherExists`.
 | `aggregate: { count, node, edge }` | an aggregate over the related nodes or the relationship properties compares |
 
 `count` and `single` count each related node once, however many
-relationships lead to it. A quantifier whose filter is emptied by unset
+relationships lead to it. A `count` bound that only asks whether there
+are any (`gt: 0`, `gte: 1`, `eq: 0`, `lt: 1`, `lte: 0`) costs what
+`totalCount` does: it counts the relationships, since there are related
+nodes exactly when there are relationships. Other bounds dedupe the
+related nodes by id, in time linear in their number. A quantifier whose filter is emptied by unset
 variables is left out like any other empty filter. Written as a literal
 `some: {}`, `none: {}` or `single: {}`, it is refused with an error that
 names the filter to use: `count: { gt: 0 }` for "has any",

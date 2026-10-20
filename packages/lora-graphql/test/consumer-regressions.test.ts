@@ -2242,3 +2242,83 @@ describe("G-57: an upsert of an unchanged row writes nothing", () => {
     t.close();
   });
 });
+
+describe("G-59: a count filter costs about what totalCount does", () => {
+  const typeDefs =
+    J +
+    `type C @node @limit(max: 100) { key: String! @key
+       ws: [W!]! @relationship(type: "IN", direction: IN) @filterable }
+     type W @node { key: String! @key }`;
+  // c1 has three W, one of them twice; c2 has one; c3 none.
+  const seed = [
+    "CREATE (c1:C {key: 'c1'}), (c2:C {key: 'c2'}), (:C {key: 'c3'})",
+    `WITH 1 AS one MATCH (c1:C {key: 'c1'}), (c2:C {key: 'c2'})
+     CREATE (a:W {key: 'a'})-[:IN]->(c1), (a)-[:IN]->(c1),
+       (:W {key: 'b'})-[:IN]->(c1), (:W {key: 'c'})-[:IN]->(c1),
+       (:W {key: 'd'})-[:IN]->(c2)`,
+  ];
+  const keys = async (t: Test, where: string) =>
+    (
+      await t.data<{ cs: Array<{ key: string }> }>(
+        `{ cs(where: { ws: ${where} }) { key } }`,
+      )
+    ).cs.map((c) => c.key);
+  const text = (t: Test) => t.statements.map((s) => s.statement.text).join();
+
+  test("a bound that asks any or none counts relationships", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    for (const [bound, expected] of [
+      ["gt: 0", ["c1", "c2"]],
+      ["gte: 1", ["c1", "c2"]],
+      ["eq: 0", ["c3"]],
+      ["lt: 1", ["c3"]],
+      ["lte: 0", ["c3"]],
+    ] as const) {
+      t.statements.length = 0;
+      expect(await keys(t, `{ count: { ${bound} } }`)).toEqual(expected);
+      expect(text(t)).not.toContain("list.unique");
+      expect(text(t)).not.toContain("reduce");
+    }
+    t.close();
+  });
+
+  test("other bounds count related nodes once, in linear time", async () => {
+    const t = await createTestLoraGraphQL({ typeDefs, seed });
+    // c1 has four relationships but three related nodes.
+    expect(await keys(t, "{ count: { eq: 3 } }")).toEqual(["c1"]);
+    expect(await keys(t, "{ count: { gte: 4 } }")).toEqual([]);
+    expect(await keys(t, "{ count: { gt: 0, lt: 2 } }")).toEqual(["c2"]);
+    expect(await keys(t, "{ aggregate: { count: { eq: 3 } } }")).toEqual([
+      "c1",
+    ]);
+    expect(text(t)).toContain("list.unique");
+    expect(text(t)).not.toContain("reduce");
+    t.close();
+  });
+
+  test("the issue's repro: the filter and the count are close", async () => {
+    const t = await createTestLoraGraphQL({
+      typeDefs,
+      seed: `UNWIND range(1, 100) AS i CREATE (c:C {key: 'c' + toString(i)})
+        WITH c, i UNWIND range(1, 200) AS j
+        CREATE (:W {key: 'w' + toString(i) + '-' + toString(j)})-[:IN]->(c)`,
+    });
+    const time = async (q: string) => {
+      await t.data(q);
+      const s = performance.now();
+      await t.data(q);
+      return performance.now() - s;
+    };
+    const total = await time(
+      "{ cs(limit: 100) { key wsConnection { totalCount } } }",
+    );
+    for (const bound of ["gt: 0", "gt: 150"]) {
+      const filter = await time(
+        `{ cs(where: { ws: { count: { ${bound} } } }, limit: 100) { key } }`,
+      );
+      // Was 47x; generous against runner noise.
+      expect(filter).toBeLessThan(total * 4 + 20);
+    }
+    t.close();
+  });
+});

@@ -137,22 +137,9 @@ export function listAggregate(
 
 /**
  * The number of distinct values in a list: related nodes counted once
- * even when several relationships lead to the same node.
+ * even when several relationships lead to the same node. Node ids dedupe
+ * in linear time.
  */
-export function distinctCount(ctx: CompileContext, keys: Expr): Expr {
-  const acc = freshVar(ctx, "seen");
-  const k = freshVar(ctx, "seen_key");
-  return fn("size", {
-    kind: "reduce",
-    accumulator: acc,
-    init: { kind: "list", items: [] },
-    variable: k,
-    list: keys,
-    step: {
-      kind: "case",
-      when: bin("IN", v(k), v(acc)),
-      then: v(acc),
-      else: bin("+", v(acc), { kind: "list", items: [v(k)] }),
-    },
-  });
+export function distinctCount(keys: Expr): Expr {
+  return fn("size", fn("list.unique", keys));
 }
