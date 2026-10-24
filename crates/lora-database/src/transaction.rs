@@ -387,7 +387,7 @@ impl<'db> Transaction<'db> {
                 return self.execute_schema_in_tx(command, &params);
             }
         }
-        let compiled = self.compile_in_tx(query)?;
+        let compiled = self.compile_in_tx(query, &params)?;
         crate::database::ensure_parameters(&compiled, &params)?;
         self.execute_rows_compiled_deadline(&compiled, params, deadline)
     }
@@ -528,7 +528,11 @@ impl<'db> Transaction<'db> {
     /// straight against `live`. The two are equivalent before the
     /// first mutating statement, so the resulting plan is valid
     /// either way.
-    fn compile_in_tx(&self, query: &str) -> Result<CompiledQuery> {
+    fn compile_in_tx(
+        &self,
+        query: &str,
+        params: &BTreeMap<String, LoraValue>,
+    ) -> Result<CompiledQuery> {
         let document = parse_query(query)?;
         let (resolved, stats) = {
             let inner = self.lock_inner()?;
@@ -547,7 +551,9 @@ impl<'db> Transaction<'db> {
                 (resolved, stats)
             }
         };
-        Ok(Compiler::compile(&resolved, &stats))
+        Ok(Compiler::compile_for(&resolved, &stats, &|name| {
+            crate::database::param_nullness(params, name)
+        }))
     }
 
     /// Materialize `inner.staged` if it doesn't exist yet —
@@ -654,9 +660,11 @@ impl<'db> Transaction<'db> {
     pub fn explain(
         &self,
         query: &str,
-        _params: Option<BTreeMap<String, LoraValue>>,
+        params: Option<BTreeMap<String, LoraValue>>,
     ) -> Result<QueryPlan, LoraError> {
-        let compiled = self.compile_in_tx(query).map_err(LoraError::from_anyhow)?;
+        let compiled = self
+            .compile_in_tx(query, &params.unwrap_or_default())
+            .map_err(LoraError::from_anyhow)?;
         Ok(query_plan_for(query, &compiled))
     }
 
@@ -673,7 +681,9 @@ impl<'db> Transaction<'db> {
         params: Option<BTreeMap<String, LoraValue>>,
     ) -> Result<QueryProfile, LoraError> {
         let params = params.unwrap_or_default();
-        let compiled = self.compile_in_tx(query).map_err(LoraError::from_anyhow)?;
+        let compiled = self
+            .compile_in_tx(query, &params)
+            .map_err(LoraError::from_anyhow)?;
         crate::database::ensure_parameters(&compiled, &params).map_err(LoraError::from_anyhow)?;
         let plan = query_plan_for(query, &compiled);
         let shape = plan.shape;
@@ -726,7 +736,7 @@ impl<'db> Transaction<'db> {
         query: &str,
         params: BTreeMap<String, LoraValue>,
     ) -> Result<QueryStream<'static>, LoraError> {
-        let compiled = Arc::new(self.compile_in_tx(query)?);
+        let compiled = Arc::new(self.compile_in_tx(query, &params)?);
         crate::database::ensure_parameters(&compiled, &params)?;
         let columns = compiled_result_columns(&compiled);
         Ok(self.stream_compiled(compiled, columns, params)?)

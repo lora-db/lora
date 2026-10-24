@@ -12,7 +12,7 @@ use lora_wal::WalRecorder;
 mod builder;
 mod changes;
 mod compile;
-pub(crate) use compile::ensure_parameters;
+pub(crate) use compile::{ensure_parameters, param_nullness};
 mod execute;
 mod explain;
 mod graph_api;

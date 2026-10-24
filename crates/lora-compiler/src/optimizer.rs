@@ -874,9 +874,7 @@ fn score_logical_op(op: &LogicalOp, stats: &GraphStats) -> Option<u64> {
         }
         LogicalOp::NodeByPointScan(scan) => {
             let base = label_estimate(&scan.labels, stats)?;
-            // Spatial probes: bbox/distance usually returns a small
-            // fraction of the labelled set.
-            Some(base.div_ceil(5))
+            Some(point_scan_estimate(&scan.predicate, base))
         }
         LogicalOp::NodeByIdSeek(seek) => Some(id_seek_rows(&seek.ids, seek.in_list)),
         LogicalOp::RelByIdSeek(seek) => {
@@ -1008,48 +1006,88 @@ fn is_tautological_point(candidate: &PointCandidate) -> bool {
 /// `{longitude: 180, latitude: 90}::POINT` covers every WGS-84 point.
 /// Detecting the literal form avoids a trigram lookup that would yield
 /// every indexed row only to be re-filtered to the same set.
-fn is_world_bbox(lower_left: &ResolvedExpr, upper_right: &ResolvedExpr) -> bool {
-    /// Cypher parses `-180` as `Unary{Neg, Literal(180)}`, not as a
-    /// negative integer literal — peel one such layer so the
-    /// world-bbox detection works on natural query forms.
-    fn const_number(expr: &ResolvedExpr) -> Option<f64> {
-        match expr {
-            ResolvedExpr::Literal(LiteralValue::Float(v)) => Some(*v),
-            ResolvedExpr::Literal(LiteralValue::Integer(v)) => Some(*v as f64),
-            ResolvedExpr::Unary {
-                op: lora_ast::UnaryOp::Neg,
-                expr,
-            } => const_number(expr).map(|v| -v),
-            ResolvedExpr::Unary {
-                op: lora_ast::UnaryOp::Pos,
-                expr,
-            } => const_number(expr),
-            _ => None,
-        }
+/// Cypher parses `-180` as `Unary{Neg, Literal(180)}`, not as a negative
+/// integer literal: peel one such layer so the box checks below work on
+/// natural query forms.
+fn const_number(expr: &ResolvedExpr) -> Option<f64> {
+    match expr {
+        ResolvedExpr::Literal(LiteralValue::Float(v)) => Some(*v),
+        ResolvedExpr::Literal(LiteralValue::Integer(v)) => Some(*v as f64),
+        ResolvedExpr::Unary {
+            op: lora_ast::UnaryOp::Neg,
+            expr,
+        } => const_number(expr).map(|v| -v),
+        ResolvedExpr::Unary {
+            op: lora_ast::UnaryOp::Pos,
+            expr,
+        } => const_number(expr),
+        _ => None,
     }
+}
 
-    fn point_lon_lat(expr: &ResolvedExpr) -> Option<(f64, f64)> {
-        let items = point_literal_map(expr)?;
-        let mut lon: Option<f64> = None;
-        let mut lat: Option<f64> = None;
-        for (key, value) in items {
-            let n = const_number(value)?;
-            match key.as_str() {
-                "longitude" | "x" => lon = Some(n),
-                "latitude" | "y" => lat = Some(n),
-                _ => {}
+/// `(x, y)` of a literal `point({...})`, and whether it names longitude
+/// and latitude (rather than cartesian `x` / `y`).
+fn literal_point(expr: &ResolvedExpr) -> Option<(f64, f64, bool)> {
+    let items = point_literal_map(expr)?;
+    let mut lon: Option<f64> = None;
+    let mut lat: Option<f64> = None;
+    let mut geographic = false;
+    for (key, value) in items {
+        let n = const_number(value)?;
+        match key.as_str() {
+            "longitude" => {
+                lon = Some(n);
+                geographic = true;
             }
+            "latitude" => lat = Some(n),
+            "x" => lon = Some(n),
+            "y" => lat = Some(n),
+            _ => {}
         }
-        Some((lon?, lat?))
     }
+    Some((lon?, lat?, geographic))
+}
 
-    let Some((ll_lon, ll_lat)) = point_lon_lat(lower_left) else {
+fn is_world_bbox(lower_left: &ResolvedExpr, upper_right: &ResolvedExpr) -> bool {
+    let Some((ll_lon, ll_lat, _)) = literal_point(lower_left) else {
         return false;
     };
-    let Some((ur_lon, ur_lat)) = point_lon_lat(upper_right) else {
+    let Some((ur_lon, ur_lat, _)) = literal_point(upper_right) else {
         return false;
     };
     ll_lon <= -180.0 && ll_lat <= -90.0 && ur_lon >= 180.0 && ur_lat >= 90.0
+}
+
+/// Rows a point-index probe is estimated to return out of `base`.
+///
+/// A literal geographic box covers its share of the globe. A box built
+/// from parameters or from the row (one per venue of a page, say) cannot
+/// be measured, and is taken as narrow: such a box is drawn around a
+/// place, so it beats an equality on a country or a kind, though not a
+/// unique key. Other probes keep the fifth they always had.
+fn point_scan_estimate(predicate: &PointPredicate, base: u64) -> u64 {
+    match predicate {
+        PointPredicate::WithinBBox {
+            lower_left,
+            upper_right,
+        } => match (literal_point(lower_left), literal_point(upper_right)) {
+            (Some((ll_lon, ll_lat, true)), Some((ur_lon, ur_lat, _))) => {
+                // A box with its lower-left east of its upper-right
+                // crosses the antimeridian.
+                let width = if ur_lon >= ll_lon {
+                    ur_lon - ll_lon
+                } else {
+                    360.0 - (ll_lon - ur_lon)
+                };
+                let height = (ur_lat - ll_lat).max(0.0);
+                let share = (width.clamp(0.0, 360.0) * height.min(180.0)) / (360.0 * 180.0);
+                ((base as f64 * share).ceil() as u64).clamp(1, base.max(1))
+            }
+            (Some(_), Some(_)) => base.div_ceil(5),
+            _ => 2.min(base.max(1)),
+        },
+        PointPredicate::WithinDistance { .. } => base.div_ceil(5),
+    }
 }
 
 fn point_literal_map(expr: &ResolvedExpr) -> Option<&Vec<(String, ResolvedExpr)>> {

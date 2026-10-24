@@ -3,6 +3,7 @@ pub mod optimizer;
 pub mod physical;
 pub mod plan_tree;
 
+mod param_fold;
 mod pattern;
 mod planner;
 
@@ -16,6 +17,7 @@ pub use logical::{
     Remove, Set, Sort, SortLimit, TextPredicate, Unwind,
 };
 pub use optimizer::Optimizer;
+pub use param_fold::NullnessOf;
 pub use physical::{
     ArgumentExec, CreateExec, DeleteExec, ExpandExec, FilterExec, ForeachExec, HashAggregationExec,
     LimitExec, MergeExec, NodeByIdSeekExec, NodeByLabelScanExec, NodeByPointScanExec,
@@ -36,6 +38,21 @@ pub struct CompiledQuery {
     pub parameters: std::collections::BTreeSet<String>,
     /// Additional UNION branches, each compiled independently.
     pub unions: Vec<CompiledUnionBranch>,
+    /// Parameters a filter tests with `IS NULL` / `IS NOT NULL`, with the
+    /// nullness the plan folded the test for (`Some(true)`: null; `None`:
+    /// unknown, not folded). The plan is valid only for parameters with
+    /// the same nullness; see [`CompiledQuery::fits`].
+    pub null_params: std::collections::BTreeMap<String, Option<bool>>,
+}
+
+impl CompiledQuery {
+    /// Whether this plan was built for parameters with the nullness
+    /// `nullness` reports.
+    pub fn fits(&self, nullness: NullnessOf<'_>) -> bool {
+        self.null_params
+            .iter()
+            .all(|(name, assumed)| nullness(name) == *assumed)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -54,7 +71,21 @@ impl Compiler {
     /// then falls back to the conservative "commit any matching
     /// rewrite" behaviour that the runtime executor handles safely.
     pub fn compile(query: &ResolvedQuery, stats: &GraphStats) -> CompiledQuery {
-        let physical = compile_physical(query, stats);
+        Self::compile_for(query, stats, &|_| None)
+    }
+
+    /// [`Self::compile`] for parameters whose nullness `nullness` knows:
+    /// `$p IS NULL` and `$p IS NOT NULL` in a filter fold to constants, so
+    /// `$p IS NULL OR n.k IN $p` plans as the `IN` alone (or as no filter).
+    /// The result records what it assumed in
+    /// [`CompiledQuery::null_params`].
+    pub fn compile_for(
+        query: &ResolvedQuery,
+        stats: &GraphStats,
+        nullness: NullnessOf<'_>,
+    ) -> CompiledQuery {
+        let mut null_params = std::collections::BTreeMap::new();
+        let physical = compile_physical(query, stats, nullness, &mut null_params);
         let unions = query
             .unions
             .iter()
@@ -66,7 +97,7 @@ impl Compiler {
                 };
                 CompiledUnionBranch {
                     all: union_part.all,
-                    physical: compile_physical(&branch_query, stats),
+                    physical: compile_physical(&branch_query, stats, nullness, &mut null_params),
                 }
             })
             .collect();
@@ -75,13 +106,20 @@ impl Compiler {
             physical,
             unions,
             parameters: query.parameters.clone(),
+            null_params,
         }
     }
 }
 
-fn compile_physical(query: &ResolvedQuery, stats: &GraphStats) -> PhysicalPlan {
+fn compile_physical(
+    query: &ResolvedQuery,
+    stats: &GraphStats,
+    nullness: NullnessOf<'_>,
+    null_params: &mut std::collections::BTreeMap<String, Option<bool>>,
+) -> PhysicalPlan {
     let mut planner = Planner::with_stats(stats);
-    let logical = planner.plan(query);
+    let mut logical = planner.plan(query);
+    param_fold::fold_parameter_null_tests(&mut logical, nullness, null_params);
 
     let mut optimizer = Optimizer::new();
     let optimized = optimizer.optimize(logical, stats);

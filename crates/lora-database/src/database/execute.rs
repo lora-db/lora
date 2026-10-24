@@ -183,7 +183,7 @@ where
         // can reuse it without a release/reacquire when the plan turns out
         // to be a pure read.
         let (store, store_epoch) = self.read_store_with_epoch_deadline(deadline)?;
-        let compiled = self.compile_query_cached(query, &*store, store_epoch)?;
+        let compiled = self.compile_query_cached(query, &*store, store_epoch, &params)?;
         super::compile::ensure_parameters(&compiled, &params)?;
         let shape = classify_stream(&compiled);
 

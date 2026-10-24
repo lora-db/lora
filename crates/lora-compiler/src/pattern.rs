@@ -268,13 +268,40 @@ impl<'a> PatternPlanner<'a> {
         let (Some(first), Some(last)) = (chain.first(), chain.last()) else {
             return false;
         };
+        // Rows after the first expansion: a single row at an end whose
+        // relationship fans out to thousands costs thousands.
         let head_cost = self
             .start_cost(head)
+            .saturating_mul(self.fanout(head, &first.rel))
             .min(self.rel_seek_cost(head, &first.rel));
         let tail_cost = self
             .start_cost(&last.node)
+            .saturating_mul(self.fanout(&last.node, &last.rel))
             .min(self.rel_seek_cost(&last.node, &last.rel));
         tail_cost < head_cost
+    }
+
+    /// Average number of `rel` relationships at a node like `end`: the
+    /// relationships of its types over the nodes of `end`'s label. 1 when
+    /// the stats cannot say, so the start costs alone decide.
+    fn fanout(&self, end: &ResolvedNode, rel: &ResolvedRel) -> u64 {
+        let stats = self.planner.stats();
+        let rels = if rel.types.is_empty() {
+            Some(stats.relationship_count as u64)
+        } else {
+            rel.types
+                .iter()
+                .map(|t| stats.relationship_type_count(t))
+                .sum::<Option<u64>>()
+        };
+        let nodes = match end.labels.as_slice() {
+            [group, ..] if group.len() == 1 => stats.label_count(&group[0]),
+            _ => Some(stats.node_count as u64),
+        };
+        match (rels, nodes) {
+            (Some(rels), Some(nodes)) if nodes > 0 => rels.div_ceil(nodes).max(1),
+            _ => 1,
+        }
     }
 
     /// Cost of starting at `end` when the chain's relationship next to it,

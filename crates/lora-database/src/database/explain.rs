@@ -38,11 +38,13 @@ where
     pub fn explain(
         &self,
         query: &str,
-        _params: Option<BTreeMap<String, LoraValue>>,
+        params: Option<BTreeMap<String, LoraValue>>,
     ) -> Result<QueryPlan, LoraError> {
         let (store, store_epoch) = self.read_store_with_epoch_deadline(None)?;
+        // The plan the query would run with these parameters: a
+        // `$p IS NULL` test folds when `params` names `p`.
         let compiled = self
-            .compile_query_cached(query, &*store, store_epoch)
+            .compile_query_cached(query, &*store, store_epoch, &params.unwrap_or_default())
             .map_err(LoraError::from_anyhow)?;
         let mut tree = plan_tree_from_compiled(&compiled);
         let stats = store.graph_stats();

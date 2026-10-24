@@ -153,7 +153,6 @@ impl PlanCache {
 
     /// Insert a freshly-compiled plan. If the cache is at capacity, evict
     /// the least recently used query.
-    #[cfg(test)]
     pub(crate) fn insert(&self, query: &str, store_epoch: u64, plan: Arc<CompiledQuery>) {
         self.insert_with_document(query, store_epoch, None, plan);
     }
@@ -265,6 +264,7 @@ mod tests {
             },
             unions: Vec::new(),
             parameters: Default::default(),
+            null_params: Default::default(),
         })
     }
 

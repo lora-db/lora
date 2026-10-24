@@ -51,7 +51,7 @@ where
         // `execute()`, so the caller sees consistent error codes.)
         let (store, store_epoch) = self.read_store_with_epoch_deadline(None)?;
         let compiled = self
-            .compile_query_cached(query, &*store, store_epoch)
+            .compile_query_cached(query, &*store, store_epoch, &params)
             .map_err(LoraError::from_anyhow)?;
         super::compile::ensure_parameters(&compiled, &params).map_err(LoraError::from_anyhow)?;
         let tree = plan_tree_from_compiled(&compiled);
