@@ -427,8 +427,9 @@ A rule's `where` is `{ node, jwt, viewer, rule, AND, OR, NOT }`:
 - `jwt` tests claims with `eq`, `in`, `includes`, `contains`, `startsWith`,
   `endsWith`, `lt`, `lte`, `gt`, `gte` and `exists`.
 - `node` accepts the operators `eq`, `in`, `lt`, `lte`, `gt`, `gte`,
-  `contains`, `startsWith`, `endsWith`, `withinBBox` and `distance` on
-  fields, whether or not they are `@filterable`, and `some`, `all`,
+  `contains`, `startsWith`, `endsWith`, `withinBBox`, `distance` and
+  `isNull` (`true` or `false`) on fields, whether or not they are
+  `@filterable`, and `some`, `all`,
   `none`, `single` and `count` on list relationships (a single
   relationship takes the target's filter directly). `@cypher` and
   `@customResolver` fields cannot be used in rules.

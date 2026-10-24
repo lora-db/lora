@@ -1434,6 +1434,103 @@ mutation {
 { "data": { "publishListing": null } }
 ```
 
+## Removed content {#removed-content}
+
+Moderation removes a post by stamping `removedAt`, and restores it by
+clearing the stamp. A removed post is hidden from everyone but an admin.
+`isNull` tests the timestamp itself, so no second flag has to be kept in
+step with it.
+
+```graphql title="schema.graphql"
+type Claims @jwt {
+  sub: String! @viewer(type: "Person", field: "key")
+  roles: [String!]
+  tenant: String
+}
+
+type Person @node {
+  key: String! @key
+}
+
+type Post
+  @node
+  @query(aggregate: true)
+  @authorization(
+    filter: [
+      {
+        operations: [READ]
+        where: {
+          OR: [
+            { node: { removedAt: { isNull: true } } }
+            { jwt: { roles: { includes: "admin" } } }
+          ]
+        }
+      }
+    ]
+  ) {
+  key: String! @key
+  text: String!
+  removedAt: DateTime
+}
+```
+
+```cypher title="seed"
+CREATE (:Post {key: 'p1', text: 'Line-up announced'}),
+       (:Post {key: 'p2', text: 'Spam', removedAt: datetime('2026-10-01T09:00:00Z')})
+```
+
+Ada sees the post that was not removed, in lists, lookups and counts:
+
+```graphql title="As ada"
+{
+  posts {
+    key
+  }
+  post(key: "p2") {
+    key
+  }
+  postsAggregate {
+    count
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "posts": [{ "key": "p1" }],
+    "post": null,
+    "postsAggregate": { "count": 1 }
+  }
+}
+```
+
+An admin sees both, and when the post was removed:
+
+```graphql title="As root"
+{
+  posts {
+    key
+    removedAt
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "posts": [
+      { "key": "p1", "removedAt": null },
+      { "key": "p2", "removedAt": "2026-10-01T09:00:00Z" }
+    ]
+  }
+}
+```
+
+`isNull: true` compiles to `removedAt IS NULL`, and `isNull: false` to
+`IS NOT NULL`. Neither can use an index; next to the rest of a query's
+filters that costs little, but on its own it scans the label.
+
 ## Prove it
 
 Rules are easy to get subtly wrong, so check them the way you check

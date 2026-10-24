@@ -31,6 +31,7 @@ const SCALAR_WHERE_OPS = new Set([
   "contains",
   "startsWith",
   "endsWith",
+  "isNull",
 ]);
 
 const JWT_OPS = new Set([...SCALAR_WHERE_OPS, "includes", "exists"]);
@@ -294,6 +295,8 @@ export function checkNodeWhere(
         for (const [op, operand] of Object.entries(value)) {
           if (!SCALAR_WHERE_OPS.has(op)) at(`${here}: unknown operator ${op}`);
           else if (operand === null) at(`${here}.${op} is null`);
+          else if (op === "isNull" && typeof operand !== "boolean")
+            at(`${here}.isNull must be true or false`);
         }
       }
     } else {
@@ -394,6 +397,8 @@ function checkAbstractWhere(
       for (const [op, operand] of Object.entries(value)) {
         if (!SCALAR_WHERE_OPS.has(op)) at(`${here}: unknown operator ${op}`);
         else if (operand === null) at(`${here}.${op} is null`);
+        else if (op === "isNull" && typeof operand !== "boolean")
+          at(`${here}.isNull must be true or false`);
       }
     }
   }
@@ -465,6 +470,8 @@ function checkEdgeWhere(
       for (const [op, operand] of Object.entries(value)) {
         if (!SCALAR_WHERE_OPS.has(op)) at(`${here}: unknown operator ${op}`);
         else if (operand === null) at(`${here}.${op} is null`);
+        else if (op === "isNull" && typeof operand !== "boolean")
+          at(`${here}.isNull must be true or false`);
       }
     }
   }
