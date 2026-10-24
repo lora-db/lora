@@ -3,13 +3,31 @@
 // the commit, so listeners never see a write that was rolled back.
 
 import type { DriverTransaction, QueryResult } from "../driver.js";
-import type { WriteChange } from "./changes.js";
+import type { EntityRef, WriteChange } from "./changes.js";
+
+/** What the application's own Cypher in a transaction wrote. */
+export interface Touched {
+  /** Node types (GraphQL type names) whose nodes were written. */
+  types?: readonly string[];
+  /** Relationship types written, e.g. `FOLLOWS`. */
+  relationshipTypes?: readonly string[];
+  /** Nodes written, by type and key. Their types count as written too. */
+  entities?: readonly EntityRef[];
+  /**
+   * The write-set is unknown: everything counts as changed. The default
+   * when nothing else is named.
+   */
+  broad?: boolean;
+  /** The name listeners see as the change's `field` (default `transaction`). */
+  field?: string;
+}
 
 export class LoraTransaction {
   readonly #tx: DriverTransaction;
   readonly #emit: (change: WriteChange) => void;
   readonly #pending: WriteChange[] = [];
   readonly #inTrigger: boolean;
+  readonly #isType: ((type: string) => boolean) | undefined;
 
   /**
    * @internal Created by `LoraGraphQL.begin()`, and for a JavaScript
@@ -20,10 +38,12 @@ export class LoraTransaction {
     tx: DriverTransaction,
     emit: (change: WriteChange) => void,
     inTrigger = false,
+    isType?: (type: string) => boolean,
   ) {
     this.#tx = tx;
     this.#emit = emit;
     this.#inTrigger = inTrigger;
+    this.#isType = isType;
   }
 
   /**
@@ -55,6 +75,46 @@ export class LoraTransaction {
     params: Record<string, unknown> = {},
   ): Promise<QueryResult> {
     return this.#tx.execute({ text: query, params });
+  }
+
+  /**
+   * State what the application's own Cypher in this transaction wrote:
+   * it is reported at the commit like a mutation's write-set, to
+   * `onWrite` listeners (a response cache), `changes()` and
+   * subscriptions, and dropped on a rollback. Without an argument, or
+   * with `broad: true`, everything counts as changed.
+   */
+  touched(written: Touched = {}): void {
+    const entities = [...(written.entities ?? [])];
+    const types = [
+      ...new Set([...(written.types ?? []), ...entities.map((e) => e.type)]),
+    ].sort();
+    const relationshipTypes = [
+      ...new Set(written.relationshipTypes ?? []),
+    ].sort();
+    if (this.#isType) {
+      for (const type of types) {
+        if (!this.#isType(type)) {
+          throw new Error(
+            `touched(): ${type} is not a node type of the schema`,
+          );
+        }
+      }
+    }
+    this.#pending.push({
+      operation: "CYPHER",
+      field: written.field ?? "transaction",
+      created: [],
+      updated: entities,
+      deleted: [],
+      connected: [],
+      disconnected: [],
+      entities,
+      types,
+      relationshipTypes,
+      broad:
+        written.broad ?? (types.length === 0 && relationshipTypes.length === 0),
+    });
   }
 
   /** @internal A mutation's write-set, reported when the transaction commits. */

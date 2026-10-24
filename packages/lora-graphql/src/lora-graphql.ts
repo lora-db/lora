@@ -1703,7 +1703,12 @@ export class LoraGraphQL {
       mode: "write",
       timeoutMs: this.#timeoutMs,
     });
-    return new LoraTransaction(tx, (change) => this.#changes.emit(change));
+    return new LoraTransaction(
+      tx,
+      (change) => this.#changes.emit(change),
+      false,
+      (type) => this.model.nodes.has(type),
+    );
   }
 
   /**

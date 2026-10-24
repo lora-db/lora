@@ -528,14 +528,28 @@ visible to others, and no change event fires, until you commit.
 class LoraTransaction {
   readonly isOpen: boolean;
   execute(query: string, params?: Record<string, unknown>): Promise<{ columns: string[]; rows: Record<string, unknown>[] }>;
+  touched(written?: Touched): void; // report what your own Cypher wrote
   commit(): Promise<void>; // then change events fire
   rollback(): Promise<void>; // pending change events are dropped
 }
 ```
 
+```ts
+interface Touched {
+  types?: string[]; // node types (GraphQL names) written
+  relationshipTypes?: string[]; // relationship types written
+  entities?: Array<{ type: string; key: unknown }>; // nodes written
+  broad?: boolean; // everything changed: the default when nothing is named
+  field?: string; // the change's `field` (default "transaction")
+}
+```
+
 A failed mutation in the transaction rolls the whole transaction back.
-Writes made with `tx.execute()` are not part of any write-set. The
-transaction holds LoraDB's writer lock until it ends: keep it short.
+Writes made with `tx.execute()` are not part of any write-set until you
+say what they wrote with `tx.touched()`: at the commit that is reported
+like a mutation's write-set (`operation: "CYPHER"`), to `onWrite`,
+`changes()` and subscriptions; a rollback drops it. A type the schema
+does not have throws. The transaction holds LoraDB's writer lock until it ends: keep it short.
 Needs a driver with `begin()`.
 
 ## Change tracking

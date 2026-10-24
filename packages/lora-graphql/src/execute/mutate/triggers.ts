@@ -286,7 +286,12 @@ async function call(
   runner.triggerFunctionRan = true;
   // Everything issued so far is in the database before user code reads it.
   await runner.settle();
-  const transaction = new LoraTransaction(runner.tx, () => undefined, true);
+  const transaction = new LoraTransaction(
+    runner.tx,
+    () => undefined,
+    true,
+    (type) => runner.env.model.nodes.has(type),
+  );
   const limit = runner.env.triggerTimeoutMs ?? 1000;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -382,6 +387,19 @@ function merge(runner: Runner, nested: WriteChange): void {
   into.disconnected.push(...nested.disconnected);
   if (nested.before) (into.before ??= []).push(...nested.before);
   into.broad ||= nested.broad;
+  // Types or relationship types named by `touched()` without a node or a
+  // relationship to carry them: the mutation's write-set lists only
+  // those, so it counts as broad.
+  const carried = new Set(nested.entities.map((e) => e.type));
+  const written = new Set(
+    [...nested.connected, ...nested.disconnected].map((r) => r.type),
+  );
+  if (
+    nested.types.some((t) => !carried.has(t)) ||
+    nested.relationshipTypes.some((t) => !written.has(t))
+  ) {
+    into.broad = true;
+  }
 }
 
 /** A trigger that fires, and its statement for what it fires for. */

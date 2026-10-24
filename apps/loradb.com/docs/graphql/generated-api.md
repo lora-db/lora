@@ -587,6 +587,7 @@ const tx = await lora.begin();
 try {
   await lora.execute({ source: createOrder, context: { jwt, transaction: tx } });
   await tx.execute("MATCH (s:Stock {sku: $sku}) SET s.count = s.count - 1", { sku });
+  tx.touched({ entities: [{ type: "Stock", key: sku }] });
   await tx.commit(); // change events fire now
 } catch (err) {
   await tx.rollback();
@@ -595,7 +596,10 @@ try {
 ```
 
 Reads see the transaction's writes, and change events wait for the commit.
-Your own Cypher through `tx.execute()` is not part of any write-set.
+Your own Cypher through `tx.execute()` is not part of any write-set: say
+what it wrote with `tx.touched()` (node types, relationship types, nodes
+by key, or nothing for "everything changed") and the commit reports it
+like a mutation's, so a response cache drops the reads it changed.
 `@cypher` mutations run in the transaction too, and their event waits
 for the commit.
 

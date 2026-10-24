@@ -68,7 +68,7 @@ export type {
 } from "./execute/mutate/env.js";
 export type { MutationKind } from "./schema/mutations.js";
 export type { ChangeEvent } from "./schema/hooks.js";
-export { LoraTransaction } from "./execute/transaction.js";
+export { LoraTransaction, type Touched } from "./execute/transaction.js";
 export type { Worker, WorkerOptions } from "./events/worker.js";
 export {
   ModelError,
