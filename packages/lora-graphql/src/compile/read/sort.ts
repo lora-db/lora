@@ -188,7 +188,7 @@ export function resolvePage(
   return { first, sort, signature, cursor, backward };
 }
 
-function sortSignature(sort: SortKey[]): string {
+export function sortSignature(sort: SortKey[]): string {
   return sort
     .map((k) => `${k.edge ? "edge." : ""}${k.field.name}:${k.direction}`)
     .join(",");

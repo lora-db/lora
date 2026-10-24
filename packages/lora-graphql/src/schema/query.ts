@@ -135,7 +135,7 @@ export function buildQuery(
     });
     const searchConnection = new GraphQLObjectType({
       name: names.searchConnection(node.name),
-      description: `${node.name} search results, highest score first, paged with cursors.`,
+      description: `${node.name} search results, highest score first (or in \`sort\` order), paged with cursors.`,
       fields: {
         edges: {
           type: nonNull(listOf(nonNull(searchEdge))),
@@ -153,9 +153,14 @@ export function buildQuery(
         },
       },
     });
+    // `sort` orders the matches by the type's @sortable fields instead
+    // of by score.
+    const sortArg = listArgs(node.name)["sort"];
+    const sort = sortArg ? { sort: sortArg } : {};
     for (const index of node.search) {
       const common = {
         where: { type: whereOf(node.name) },
+        ...sort,
         limit: { type: GraphQLInt },
       };
       const inputs =
@@ -174,6 +179,7 @@ export function buildQuery(
         args: {
           ...inputs,
           where: { type: whereOf(node.name) },
+          ...sort,
           first: { type: GraphQLInt },
           after: { type: GraphQLString },
         },

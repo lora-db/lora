@@ -33,7 +33,15 @@ import {
   coalesceFalse,
   countCap,
 } from "./common.js";
-import { resolveLimit } from "./sort.js";
+import {
+  cursorValues,
+  keysetPredicate,
+  resolveLimit,
+  resolveSort,
+  sortItems,
+  sortSignature,
+  type SortKey,
+} from "./sort.js";
 import { projectNode } from "./project.js";
 import { connectionSelections } from "./connection.js";
 
@@ -49,6 +57,9 @@ export interface SearchResult {
  *   CALL db.index.fulltext.queryNodes($index, $query) YIELD node AS this, score
  *   WHERE <where> AND <read filter>
  *   WITH this, score ORDER BY score DESC, this.key ASC LIMIT $limit
+ *
+ * With `sort`, the matches are ordered by its fields, then the key, and a
+ * connection pages by keyset on them; `score` is still returned.
  *
  * Vector search asks the index for more candidates than the page when a
  * filter may drop some, because the index returns the top k before WHERE.
@@ -79,19 +90,33 @@ export function compileSearch(
   const after = connection
     ? (args["after"] as string | null | undefined)
     : null;
+  // A `sort` replaces score order: by its fields, then the key.
+  const sorted = args["sort"] as unknown[] | null | undefined;
+  const keys: SortKey[] | undefined =
+    sorted && sorted.length > 0
+      ? resolveSort(ctx, node, sorted, true)
+      : undefined;
+  const signature = keys ? sortSignature(keys) : SEARCH_SORT;
   const cursor =
     after != null
-      ? decodeCursor(after, SEARCH_SORT, 2, ctx.model.cursorSecret)
+      ? decodeCursor(
+          after,
+          signature,
+          keys ? keys.length : 2,
+          ctx.model.cursorSecret,
+        )
       : undefined;
-  const keyset = cursor
-    ? or(
-        bin("<", v("score"), bind(ctx, cursor[0])),
-        and(
-          bin("=", v("score"), bind(ctx, cursor[0])),
-          bin(">", prop(v("this"), node.key.property), bind(ctx, cursor[1])),
-        ),
-      )
-    : undefined;
+  const keyset = !cursor
+    ? undefined
+    : keys
+      ? keysetPredicate(ctx, "this", keys, cursor)
+      : or(
+          bin("<", v("score"), bind(ctx, cursor[0])),
+          and(
+            bin("=", v("score"), bind(ctx, cursor[0])),
+            bin(">", prop(v("this"), node.key.property), bind(ctx, cursor[1])),
+          ),
+        );
   // The index call and its filters, for the page (with the keyset) and
   // for `totalCount` (every match, in its own parameter scope).
   const matches = (c: CompileContext, keyset: Expr | undefined): Clause[] => {
@@ -183,7 +208,7 @@ export function compileSearch(
       __first: limit,
       __after: cursor !== undefined,
       __backward: false,
-      __sort: SEARCH_SORT,
+      __sort: signature,
       __totalCount: rows,
     }));
   }
@@ -196,10 +221,12 @@ export function compileSearch(
     {
       kind: "with",
       items: [{ expr: v("this") }, { expr: v("score") }],
-      orderBy: [
-        { expr: v("score"), direction: "DESC" },
-        { expr: prop(v("this"), node.key.property), direction: "ASC" },
-      ],
+      orderBy: keys
+        ? sortItems("this", keys)
+        : [
+            { expr: v("score"), direction: "DESC" },
+            { expr: prop(v("this"), node.key.property), direction: "ASC" },
+          ],
       // One more than the page, to tell whether another follows.
       limit: bind(ctx, connection ? limit + 1 : limit),
     },
@@ -212,10 +239,12 @@ export function compileSearch(
         ...(connection
           ? [
               {
-                expr: {
-                  kind: "list" as const,
-                  items: [v("score"), prop(v("this"), node.key.property)],
-                },
+                expr: keys
+                  ? cursorValues("this", keys)
+                  : {
+                      kind: "list" as const,
+                      items: [v("score"), prop(v("this"), node.key.property)],
+                    },
                 alias: "__cursor",
               },
             ]
@@ -243,7 +272,7 @@ export function compileSearch(
           __first: limit,
           __after: cursor !== undefined,
           __backward: false,
-          __sort: SEARCH_SORT,
+          __sort: signature,
           ...(c ? { __totalCount: Number(row?.["totalCount"] ?? 0) } : {}),
         };
       },

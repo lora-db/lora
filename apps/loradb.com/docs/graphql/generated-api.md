@@ -227,6 +227,7 @@ type Event @node @fulltext(indexes: [{ fields: ["title", "summary"] }]) {
   title: String!
   summary: String
   city: String @filterable
+  startsOn: Date @sortable
   embedding: [Float!] @vector(dimensions: 384, similarity: COSINE)
 }
 ```
@@ -283,6 +284,27 @@ type Event @node @fulltext(indexes: [{ fields: ["title", "summary"] }]) {
 - Search connections take `totalCount`: every match after `where` and the
   read rules, whatever the page (a vector search counts within its
   candidate window). A selection of only `totalCount` reads no page.
+- A type with `@sortable` fields gives its search roots `sort`, the same
+  `<Type>Sort` as its lists. A sort replaces score order: the matches come
+  by its fields, then the key, a connection pages by keyset on them, and
+  `score` is still selectable. `totalCount` does not change. A cursor
+  carries its order, so one from a page in score order is
+  `INVALID_CURSOR` for a page in `sort` order and the other way round.
+
+```graphql
+{
+  searchEventsConnection(query: "techno", sort: [{ startsOn: ASC }], first: 10) {
+    edges {
+      cursor
+      score
+      node {
+        key
+        startsOn
+      }
+    }
+  }
+}
+```
 - Read rules apply to every result. Both index kinds are created by
   `assertSchema({ create: true })`.
 

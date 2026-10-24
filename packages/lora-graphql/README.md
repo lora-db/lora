@@ -84,8 +84,8 @@ them off):
 | `festivalsConnection(where, sort, first, after, last, before)` | Relay connection with keyset cursors in both directions, `totalCount` and `aggregate`; never `SKIP`       |
 | `festival(key:)`                                               | Lookup by `@key`                                                                                          |
 | `festivalsAggregate(where)`                                    | `count`, and `min` / `max` (`avg` / `sum` for numbers) of sortable fields, with `@query(aggregate: true)` |
-| `searchFestivals(query, where, limit)`                         | Full-text search, with `@fulltext`                                                                        |
-| `similarFestivals(vector or to, where, limit)`                 | Vector similarity, with a `@vector` field                                                                 |
+| `searchFestivals(query, where, sort, limit)`                   | Full-text search, with `@fulltext`; by score, or in `sort` order                                          |
+| `similarFestivals(vector or to, where, sort, limit)`           | Vector similarity, with a `@vector` field                                                                 |
 | `node(id:)`                                                    | Any `@relayId` type by global id                                                                          |
 | `nodes(ids:)`                                                  | Many global ids at once, in order; null where unknown or hidden (at most `maxLimit`)                      |
 | `events(where, sort, limit)`                                   | An interface's or union's members together                                                                |
@@ -616,7 +616,9 @@ trailing `*` as a prefix. A `[String!]` field in `@fulltext` indexes each
 of its strings. Search connections (`searchEventsConnection`) page with
 cursors and take `totalCount`: every match after `where` and the read
 rules (a vector search counts within its candidate window); a selection of
-only `totalCount` reads no page. Vector search takes a query `vector` or the key of
+only `totalCount` reads no page. A `sort` (the type's `<Type>Sort`)
+replaces score order, and a connection then pages by keyset on its fields
+and the key; `score` is still selectable. Vector search takes a query `vector` or the key of
 a node whose embedding to start from (`to`, which is left out of the
 results). The index returns its top candidates before `where` applies, so
 the library asks it for four times the page when a filter is present.
