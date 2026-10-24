@@ -94,9 +94,13 @@ export function anySignal(
   b: AbortSignal,
 ): AbortSignal {
   if (!a) return b;
+  // A signal that is not the platform's own (whatwg-node's passes
+  // `instanceof AbortSignal`) is followed by a native one first: Node
+  // 24.22's `AbortSignal.any` refuses it, and earlier Nodes accept it but
+  // never see it abort.
+  a = nativeSignal(a)!;
+  b = nativeSignal(b)!;
   if (typeof AbortSignal.any === "function") {
-    // Throws for a signal that is not the platform's own (whatwg-node's
-    // passes `instanceof AbortSignal` but fails Node 24.22's brand check).
     try {
       return AbortSignal.any([a, b]);
     } catch {
