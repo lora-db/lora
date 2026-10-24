@@ -837,7 +837,7 @@ class DatabaseImpl {
         );
         return new NativeRowStream<T>(this.#inner, streamId);
       }
-      signal.throwIfAborted();
+      if (signal.aborted) throw signal.reason;
       const token = this.#inner.createCancelToken(timeoutMs);
       const onAbort = () => this.#inner.cancelQuery(token);
       signal.addEventListener("abort", onAbort, { once: true });
@@ -1342,7 +1342,7 @@ async function runLimited<R>(
   const timeoutMs = normalizeTimeout(options?.timeoutMs);
   const signal = options?.signal;
   if (signal == null) return start(timeoutMs, null);
-  signal.throwIfAborted();
+  if (signal.aborted) throw signal.reason;
   const token = inner.createCancelToken(timeoutMs);
   const onAbort = () => inner.cancelQuery(token);
   signal.addEventListener("abort", onAbort, { once: true });

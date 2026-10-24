@@ -94,8 +94,15 @@ export function anySignal(
   b: AbortSignal,
 ): AbortSignal {
   if (!a) return b;
-  if (typeof AbortSignal.any === "function") return AbortSignal.any([a, b]);
-  // Node before 20.3.
+  if (typeof AbortSignal.any === "function") {
+    // Throws for a signal that is not the platform's own (whatwg-node's
+    // passes `instanceof AbortSignal` but fails Node 24.22's brand check).
+    try {
+      return AbortSignal.any([a, b]);
+    } catch {
+      // Combined below.
+    }
+  }
   const both = new AbortController();
   const abort = (s: AbortSignal) => () => both.abort(s.reason);
   if (a.aborted) both.abort(a.reason);
@@ -105,4 +112,40 @@ export function anySignal(
     b.addEventListener("abort", abort(b), { once: true });
   }
   return both.signal;
+}
+
+const abortedGetter = Object.getOwnPropertyDescriptor(
+  AbortSignal.prototype,
+  "aborted",
+)?.get;
+const followers = new WeakMap<AbortSignal, AbortSignal>();
+
+/**
+ * The caller's signal as one of the platform's own: `signal` itself when it
+ * is, otherwise a native signal that aborts when it does (one per signal).
+ * Any object with `aborted`, `reason` and `abort` events is accepted.
+ */
+export function nativeSignal(
+  signal: AbortSignal | undefined,
+): AbortSignal | undefined {
+  if (signal === undefined || signal === null) return undefined;
+  if (abortedGetter) {
+    try {
+      abortedGetter.call(signal);
+      return signal;
+    } catch {
+      // Not native: followed below.
+    }
+  }
+  let follower = followers.get(signal);
+  if (follower) return follower;
+  const controller = new AbortController();
+  if (signal.aborted) controller.abort(signal.reason);
+  else
+    signal.addEventListener("abort", () => controller.abort(signal.reason), {
+      once: true,
+    });
+  follower = controller.signal;
+  followers.set(signal, follower);
+  return follower;
 }

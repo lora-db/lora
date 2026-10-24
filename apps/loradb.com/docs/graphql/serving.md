@@ -104,7 +104,10 @@ statements instead of letting them run to the timeout:
 - Node `http` servers: create an `AbortController` and abort it on the
   response's `close` event, as in the examples below.
 
-The signal also ends the request's subscription streams.
+The signal also ends the request's subscription streams. It need not be
+Node's own `AbortSignal`: any object with `aborted`, `reason` and `abort`
+events works, such as whatwg-node's request signal that GraphQL Yoga
+passes when it is served over `node:http`.
 
 Two more limits keep one request from holding the database:
 

@@ -88,6 +88,7 @@ import type { Reported } from "./execute/mutate/reported.js";
 import { LoraTransaction } from "./execute/transaction.js";
 import {
   anySignal,
+  nativeSignal,
   MAX_CONCURRENT_STATEMENTS,
   OPERATION_TIMEOUT_FACTOR,
 } from "./execute/budget.js";
@@ -1208,7 +1209,9 @@ export class LoraGraphQL {
     for (const statement of compiled.statements) {
       this.#onStatement?.({ field, statement });
     }
-    const signal = (context as LoraGraphQLContext | undefined)?.signal;
+    const signal = nativeSignal(
+      (context as LoraGraphQLContext | undefined)?.signal,
+    );
     const owned = (context as LoraGraphQLContext | undefined)?.transaction;
     const budget = this.#limits.operationBudget(context, info);
     let results;
@@ -1472,7 +1475,9 @@ export class LoraGraphQL {
         : await this.#driver.run([guard], {
             mode: "read",
             timeoutMs: this.#timeoutMs,
-            signal: (context as LoraGraphQLContext | undefined)?.signal,
+            signal: nativeSignal(
+              (context as LoraGraphQLContext | undefined)?.signal,
+            ),
           });
     } catch (err) {
       throw this.#databaseError(field.name, err);
@@ -1564,7 +1569,7 @@ export class LoraGraphQL {
       selection: infoContext(info),
       jwt,
       timeoutMs: this.#timeoutMs,
-      signal: (context as LoraGraphQLContext | undefined)?.signal,
+      signal: nativeSignal((context as LoraGraphQLContext | undefined)?.signal),
       degrees: this.#degrees,
       maxBatch: this.#maxBatch,
       maxListArgument: this.#maxListArgument,

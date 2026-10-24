@@ -108,6 +108,34 @@ describe("query timeouts and cancellation", () => {
     expect((err as Error).name).toBe("AbortError");
   });
 
+  it("accepts a signal that is not the platform's own", async () => {
+    // An EventTarget with `aborted`, `reason` and `abort` events, like
+    // whatwg-node's request signal: no throwIfAborted, no brand.
+    class Foreign extends EventTarget {
+      aborted = false;
+      reason: unknown = undefined;
+      abort(reason: unknown) {
+        this.aborted = true;
+        this.reason = reason;
+        this.dispatchEvent(new Event("abort"));
+      }
+    }
+    const fine = new Foreign();
+    const { rows } = await db.execute(
+      "RETURN 1 AS x",
+      {},
+      { signal: fine as unknown as AbortSignal },
+    );
+    expect(rows[0].x).toBe(1);
+    const late = new Foreign();
+    setTimeout(() => late.abort(new Error("gone")), 50);
+    const { ms, err } = await elapsed(
+      db.execute(CARTESIAN, {}, { signal: late as unknown as AbortSignal }),
+    );
+    expect((err as Error).message).toBe("gone");
+    expect(ms).toBeLessThan(1_000);
+  });
+
   it("does not affect queries that finish in time", async () => {
     const controller = new AbortController();
     const { rows } = await db.execute(
