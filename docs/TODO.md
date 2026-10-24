@@ -37,6 +37,7 @@ next, **P2** planned, **P3** when convenient.
 
 ## Engine — performance
 
+- [ ] P2 A list-membership filter uses no index: `$v IN n.list` is a label scan plus filter even with `CREATE INDEX … ON (n.list)`; a RANGE (or list) index should seek by element, and lora-graphql should infer it for `@filterable(byValue: [INCLUDES])` (Festimap G-63).
 - [ ] P2 Composite multi-property seeks (`optimizer.rs:1085-1088`); composite RANGE indexes are catalog-only.
 - [ ] P2 Index-ordered scan for an order-only or unbounded range (`ORDER BY key LIMIT k` over a bounded range already streams, `optimizer.rs:70-124`); count a range from the index.
 - [ ] P2 Join ordering and global cardinality estimation (`estimatedRows` exist for scans and seeks, not for Expand, Filter, joins or aggregates, `database/explain.rs:61-110`).
@@ -45,10 +46,16 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P3 CSE and redundant-scan elimination (no pass exists).
 - [ ] P3 Snapshot save/load benchmark (no `benches/snapshot.rs`).
 
+## Engine — memory
+
+- [ ] P1 A small node costs ~1 KB resident and the property map's capacity doubles at 4, 8 and 16 properties (a fifth integer costs ~270 B, not ~16 B). Target: a node with a key, a 16-char hash and two integers under ~300 B including its unique-index entry; maps sized to their properties; short repeated strings interned or inline (Festimap G-64, `apps/ingest/tools/probe-record-layouts.ts` in Festimap). Measure reads and writes before and after.
+
 ## Writer lock and durability
 
 - [ ] P2 An auto-commit `execute()` write still waits for the writer lock on a libuv worker (`lora-node/src/tasks.rs`); it has to know it mutates before it is dispatched. `db.transaction()` write batches run on their own thread since 2026-10-12.
 - [ ] P2 A transaction's lifetime is unbounded: one that is opened and never committed holds the writer lock until it is disposed. `begin()` bounds only the wait for the lock (`timeoutMs`, `signal`).
+- [ ] P1 No online snapshot of a directory-backed graph: a copy taken while the owner writes is not a database, and the cross-process lock keeps a second process out. Wanted: `db.snapshot(targetDir)` (checkpoint plus a copy of the immutable files, or hard-linked segments plus the WAL tail) consistent with one committed transaction, readers and writers kept running, `lora snapshot <dir> <target>` for a closed directory, exposed through lora-graphql; `kill -9` during it must leave both valid (Festimap G-62; today a backup stops the container).
+- [ ] P1 `db.sync()` builds the archive in memory (+6.5 GB peak on a 2.1 GB graph, 4.3 GB kept per call under glibc) while `dispose()` streams it, and opening peaks at about three times the graph. Both should stream in bounded memory (Festimap G-70).
 - [ ] P2 Managed checkpoints run inline on commit, under the writer mutex (`write_guard.rs:173-186`, `snapshot/store.rs:135-151`); move to a worker.
 - [ ] P3 Time-based checkpoint scheduler (only `checkpoint_every_commits`).
 - [ ] P3 Consolidate torn-tail detection (`lora-wal/src/segment.rs:335-343`, ADR 0004).
