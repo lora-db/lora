@@ -11,8 +11,9 @@ use std::thread::JoinHandle;
 
 use lora_wal::{WalError, WalMirror};
 
-use self::format::{write_archive_atomic, ContainerSnapshot};
+use self::format::{write_archive_atomic, SNAPSHOT_FILE_NAME, STAGED_SNAPSHOT_FILE_NAME};
 use self::lock::ArchiveLock;
+use self::platform::replace_file_atomic;
 use self::platform::sync_dir;
 use self::worker::spawn_archive_worker;
 use self::workspace::{cleanup_stale_temp_paths, make_work_dir, prepare_work_dir};
@@ -23,12 +24,19 @@ use self::workspace::{cleanup_stale_temp_paths, make_work_dir, prepare_work_dir}
 /// directory to a temp file, fsyncs it, and atomically renames it over the
 /// `.loradb` target. The container uses Lora-owned framing and keeps
 /// codec/encryption choices under our control.
+///
+/// The base snapshot lives beside the segments as `snapshot.lsnap` in the
+/// work directory, so it is on disk, not in memory, between persists; each
+/// persist streams it into the container.
 pub(crate) struct WalArchive {
     archive_path: PathBuf,
     work_dir: PathBuf,
     max_archive_bytes: u64,
     state: Arc<(Mutex<ArchiveState>, Condvar)>,
     write_lock: Arc<Mutex<()>>,
+    /// Serializes checkpoints, so a slower one cannot install an older
+    /// snapshot over a newer one.
+    checkpoint_lock: Mutex<()>,
     worker: Option<JoinHandle<()>>,
     _archive_lock: ArchiveLock,
 }
@@ -39,7 +47,6 @@ pub(super) struct ArchiveState {
     force: bool,
     shutdown: bool,
     failure: Option<String>,
-    snapshot: Option<ContainerSnapshot>,
 }
 
 fn lock_archive_state(
@@ -68,12 +75,9 @@ impl WalArchive {
         let archive_lock = ArchiveLock::acquire(&archive_path)?;
         cleanup_stale_temp_paths(&archive_path)?;
         let work_dir = make_work_dir(&archive_path);
-        let snapshot = prepare_work_dir(&archive_path, &work_dir, max_archive_bytes)?;
+        prepare_work_dir(&archive_path, &work_dir, max_archive_bytes)?;
 
         let state = Arc::new((Mutex::new(ArchiveState::default()), Condvar::new()));
-        {
-            lock_archive_state(&state)?.snapshot = snapshot;
-        }
         let write_lock = Arc::new(Mutex::new(()));
         let worker = Some(spawn_archive_worker(
             state.clone(),
@@ -89,6 +93,7 @@ impl WalArchive {
             max_archive_bytes,
             state,
             write_lock,
+            checkpoint_lock: Mutex::new(()),
             worker,
             _archive_lock: archive_lock,
         })
@@ -98,24 +103,60 @@ impl WalArchive {
         &self.work_dir
     }
 
-    pub fn snapshot_bytes(&self) -> Result<Option<Vec<u8>>, WalError> {
-        Ok(lock_archive_state(&self.state)?
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.bytes.clone()))
+    /// The base snapshot's file, when the database has one.
+    pub fn snapshot_path(&self) -> Option<PathBuf> {
+        let path = self.work_dir.join(SNAPSHOT_FILE_NAME);
+        path.is_file().then_some(path)
     }
 
-    pub fn persist_snapshot_bytes(&self, bytes: Vec<u8>) -> Result<(), WalError> {
-        {
-            let mut state = lock_archive_state(&self.state)?;
-            if let Some(failure) = &state.failure {
-                return Err(archive_writer_failure(failure));
-            }
-            state.snapshot = Some(ContainerSnapshot { bytes });
-            state.dirty = true;
-            state.force = true;
+    /// Where a checkpoint writes its snapshot before
+    /// [`Self::install_snapshot`] puts it in place.
+    pub fn staged_snapshot_path(&self) -> PathBuf {
+        self.work_dir.join(STAGED_SNAPSHOT_FILE_NAME)
+    }
+
+    /// Held for the whole of a checkpoint.
+    pub fn checkpoint_lock(&self) -> Result<MutexGuard<'_, ()>, WalError> {
+        self.checkpoint_lock.lock().map_err(|_| WalError::Poisoned)
+    }
+
+    /// Make the durable file at [`Self::staged_snapshot_path`] the base
+    /// snapshot and rewrite the container with it.
+    pub fn install_snapshot(&self) -> Result<(), WalError> {
+        self.check_failure()?;
+        let _write_guard = self.write_lock.lock().map_err(|_| WalError::Poisoned)?;
+        self.check_failure()?;
+        replace_file_atomic(
+            &self.staged_snapshot_path(),
+            &self.work_dir.join(SNAPSHOT_FILE_NAME),
+        )?;
+        sync_dir(&self.work_dir)?;
+        self.write_locked()
+    }
+
+    fn check_failure(&self) -> Result<(), WalError> {
+        match &lock_archive_state(&self.state)?.failure {
+            Some(failure) => Err(archive_writer_failure(failure)),
+            None => Ok(()),
         }
-        self.persist_force(&self.work_dir)
+    }
+
+    /// Rewrite the container. Caller holds `write_lock`.
+    fn write_locked(&self) -> Result<(), WalError> {
+        let result =
+            write_archive_atomic(&self.work_dir, &self.archive_path, self.max_archive_bytes);
+        let mut state = lock_archive_state(&self.state)?;
+        match result {
+            Ok(()) => {
+                state.dirty = false;
+                state.force = false;
+                Ok(())
+            }
+            Err(err) => {
+                state.failure = Some(err.to_string());
+                Err(err)
+            }
+        }
     }
 }
 
@@ -144,39 +185,10 @@ impl WalMirror for WalArchive {
                 wal_dir.display()
             )));
         }
-        {
-            let state = lock_archive_state(&self.state)?;
-            if let Some(failure) = &state.failure {
-                return Err(archive_writer_failure(failure));
-            }
-        }
-
+        self.check_failure()?;
         let _write_guard = self.write_lock.lock().map_err(|_| WalError::Poisoned)?;
-        {
-            let state = lock_archive_state(&self.state)?;
-            if let Some(failure) = &state.failure {
-                return Err(archive_writer_failure(failure));
-            }
-        }
-        let snapshot = lock_archive_state(&self.state)?.snapshot.clone();
-        let result = write_archive_atomic(
-            &self.work_dir,
-            &self.archive_path,
-            self.max_archive_bytes,
-            snapshot.as_ref(),
-        );
-        let mut state = lock_archive_state(&self.state)?;
-        match result {
-            Ok(()) => {
-                state.dirty = false;
-                state.force = false;
-                Ok(())
-            }
-            Err(err) => {
-                state.failure = Some(err.to_string());
-                Err(err)
-            }
-        }
+        self.check_failure()?;
+        self.write_locked()
     }
 }
 

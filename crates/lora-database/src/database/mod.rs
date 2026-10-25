@@ -174,6 +174,12 @@ impl Database<InMemoryGraph> {
     /// Force any pending WAL bytes to durable storage and, for container-backed
     /// named databases, refresh the portable `.loradb` file before returning.
     ///
+    /// For a named database this is a checkpoint: the graph as of the WAL's
+    /// durable end is written as the container's base snapshot. It streams
+    /// to a file beside the WAL and from there into the container, so it
+    /// holds no copy of the graph, and writers wait only while the graph
+    /// and its LSN are taken, not while the snapshot is written.
+    ///
     /// Managed snapshot checkpoints are explicit via
     /// [`Self::checkpoint_managed`] or threshold-driven via
     /// [`SnapshotConfig::checkpoint_every_commits`]; `sync()` remains a
@@ -181,23 +187,26 @@ impl Database<InMemoryGraph> {
     pub fn sync(&self) -> Result<(), LoraError> {
         if let Some(wal) = &self.wal {
             if let Some(archive) = &self.named_archive {
-                let _commit_lock = self
-                    .writer
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                wal.force_fsync_wal_only()?;
-                let snapshot_lsn = wal.wal().durable_lsn();
-                let graph = self.store.load_full();
-                let payload = graph.snapshot_payload();
-                let mut bytes = Vec::new();
-                let options = lora_snapshot::SnapshotOptions::default();
-                crate::snapshot::encode_snapshot_to(
-                    &mut bytes,
-                    &payload,
+                let _checkpoint = archive.checkpoint_lock()?;
+                let (graph, snapshot_lsn) = {
+                    let _commit_lock = self
+                        .writer
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    wal.force_fsync_wal_only()?;
+                    (self.store.load_full(), wal.wal().durable_lsn())
+                };
+                let staged = archive.staged_snapshot_path();
+                let staged_guard = crate::snapshot::TempFileGuard::new(staged.clone());
+                crate::snapshot::write_graph_snapshot_file(
+                    &staged,
+                    &graph,
                     Some(snapshot_lsn.raw()),
-                    &options,
+                    &lora_snapshot::SnapshotOptions::default(),
                 )?;
-                archive.persist_snapshot_bytes(bytes)?;
+                drop(graph);
+                archive.install_snapshot()?;
+                staged_guard.commit();
             } else {
                 wal.force_fsync()?;
             }

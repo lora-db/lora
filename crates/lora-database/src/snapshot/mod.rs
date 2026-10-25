@@ -20,13 +20,13 @@ pub(crate) use store::ManagedSnapshotStore;
 pub use store::SnapshotConfig;
 
 use std::fs::OpenOptions;
-use std::io::{BufWriter, Read, Write};
+use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use lora_snapshot::{
-    decode_snapshot as decode_database_snapshot, read_snapshot as read_database_snapshot,
+    decode_snapshot as decode_database_snapshot, read_graph_snapshot, write_graph_snapshot,
     write_snapshot as write_database_snapshot, Compression, SnapshotCodecError,
     SnapshotCredentials, SnapshotInfo, SnapshotOptions, DATABASE_SNAPSHOT_MAGIC,
 };
@@ -127,13 +127,32 @@ pub(crate) fn decode_snapshot_bytes(
     decode_database_snapshot(bytes, credentials)
 }
 
-/// Decode columnar snapshot bytes streamed from a reader. Used by
-/// `Database::recover` at startup.
-pub(crate) fn read_snapshot_from<R: Read>(
-    reader: R,
+/// Write a snapshot of `graph` to `path` (created or truncated) as a
+/// stream, then fsync it. The caller renames it into place.
+pub(crate) fn write_graph_snapshot_file(
+    path: &Path,
+    graph: &InMemoryGraph,
+    wal_lsn: Option<u64>,
+    options: &SnapshotOptions,
+) -> Result<SnapshotInfo, LoraError> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    let info = write_graph_snapshot(&mut file, graph, wal_lsn, options)?;
+    sync_file(&file)?;
+    Ok(info)
+}
+
+/// Decode the snapshot file at `path` straight into a graph.
+pub(crate) fn read_graph_snapshot_file(
+    path: &Path,
     credentials: Option<&SnapshotCredentials>,
-) -> Result<(SnapshotPayload, SnapshotInfo), SnapshotCodecError> {
-    read_database_snapshot(reader, credentials)
+) -> Result<(InMemoryGraph, SnapshotInfo), LoraError> {
+    let file = std::fs::File::open(path)?;
+    Ok(read_graph_snapshot(BufReader::new(file), credentials)?)
 }
 
 /// Encode a payload through the columnar codec.
@@ -224,21 +243,9 @@ impl Database<InMemoryGraph> {
         let tmp = snapshot_tmp_path(path);
         let guard = self.read_store();
 
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp)?;
         let tmp_guard = TempFileGuard::new(tmp.clone());
-        let mut writer = BufWriter::new(file);
-
-        let payload = guard.snapshot_payload();
-        let info = encode_snapshot_to(&mut writer, &payload, None, options)?;
-
-        writer.flush()?;
-        let file = writer.into_inner().map_err(|e| e.into_error())?;
-        sync_file(&file)?;
-        drop(file);
+        let info = write_graph_snapshot_file(&tmp, &guard, None, options)?;
+        drop(guard);
 
         std::fs::rename(&tmp, path)?;
         tmp_guard.commit();
@@ -322,25 +329,18 @@ impl Database<InMemoryGraph> {
         recorder.force_fsync()?;
         let snapshot_lsn = recorder.wal().durable_lsn();
 
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp)?;
         let tmp_guard = TempFileGuard::new(tmp.clone());
-        let mut writer = BufWriter::new(file);
-        let payload = guard.staged_or_error()?.snapshot_payload();
         let options = SnapshotOptions {
             compression: Compression::None,
             encryption: None,
         };
-        let info = encode_snapshot_to(&mut writer, &payload, Some(snapshot_lsn.raw()), &options)?;
+        let info = write_graph_snapshot_file(
+            &tmp,
+            guard.staged_or_error()?,
+            Some(snapshot_lsn.raw()),
+            &options,
+        )?;
         let meta = snapshot_info_to_meta(info);
-
-        writer.flush()?;
-        let file = writer.into_inner().map_err(|e| e.into_error())?;
-        sync_file(&file)?;
-        drop(file);
 
         std::fs::rename(&tmp, path)?;
         tmp_guard.commit();

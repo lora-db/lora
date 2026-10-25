@@ -4,9 +4,16 @@
 //! Named databases can carry a base snapshot frame plus WAL delta frames. The
 //! runtime store remains in-memory; this container shape is the bridge toward a
 //! future paged/containerized store.
+//!
+//! The snapshot frame is copied from and to `snapshot.lsnap` in the work
+//! directory as a stream: it is the size of the graph's encoding, and
+//! neither writing nor opening a container holds it in memory. Its frame is
+//! gzip-compressed again on the way: the snapshot's own fast deflate leaves
+//! long repeats in its columns that a second pass halves, and the second
+//! pass reads only the compressed snapshot.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -29,6 +36,11 @@ const FRAME_HEADER_LEN: usize = 48;
 const FRAME_KIND_WAL_FILE: u8 = 1;
 const FRAME_KIND_SNAPSHOT: u8 = 2;
 const SNAPSHOT_FRAME_NAME: &str = "snapshot.lsnap";
+/// The snapshot's file in the work directory, named as its frame.
+pub(super) const SNAPSHOT_FILE_NAME: &str = SNAPSHOT_FRAME_NAME;
+/// Where a snapshot is written before it replaces [`SNAPSHOT_FILE_NAME`].
+/// The WAL ignores both: it lists only `*.wal`.
+pub(super) const STAGED_SNAPSHOT_FILE_NAME: &str = "snapshot.lsnap.tmp";
 const FLAG_COMPRESSED: u8 = 1 << 0;
 const FLAG_ENCRYPTED: u8 = 1 << 1;
 
@@ -152,17 +164,6 @@ struct EncodedBody {
     nonce: [u8; 12],
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct ContainerSnapshot {
-    pub(super) bytes: Vec<u8>,
-}
-
-#[derive(Debug)]
-pub(super) struct ExtractedArchive {
-    pub(super) snapshot: Option<ContainerSnapshot>,
-    pub(super) saw_wal: bool,
-}
-
 #[derive(Debug)]
 struct FrameHeader {
     kind: u8,
@@ -180,27 +181,25 @@ pub(super) fn write_archive_atomic(
     wal_dir: &Path,
     archive_path: &Path,
     max_archive_bytes: u64,
-    snapshot: Option<&ContainerSnapshot>,
 ) -> Result<(), WalError> {
     let tmp_path = make_archive_tmp_path(archive_path);
-    let result = write_archive_tmp(wal_dir, &tmp_path, &ArchiveCodec::default(), snapshot)
-        .and_then(|_| {
-            let len = fs::metadata(&tmp_path)?.len();
-            if len > max_archive_bytes {
-                let _ = fs::remove_file(&tmp_path);
-                return Err(WalError::Malformed(format!(
-                    "database container {} would be {} bytes, above configured limit {}",
-                    archive_path.display(),
-                    len,
-                    max_archive_bytes
-                )));
-            }
-            replace_file_atomic(&tmp_path, archive_path)?;
-            if let Some(parent) = archive_path.parent() {
-                sync_dir(parent)?;
-            }
-            Ok(())
-        });
+    let result = write_archive_tmp(wal_dir, &tmp_path, &ArchiveCodec::default()).and_then(|_| {
+        let len = fs::metadata(&tmp_path)?.len();
+        if len > max_archive_bytes {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(WalError::Malformed(format!(
+                "database container {} would be {} bytes, above configured limit {}",
+                archive_path.display(),
+                len,
+                max_archive_bytes
+            )));
+        }
+        replace_file_atomic(&tmp_path, archive_path)?;
+        if let Some(parent) = archive_path.parent() {
+            sync_dir(parent)?;
+        }
+        Ok(())
+    });
     if result.is_err() {
         let _ = fs::remove_file(&tmp_path);
     }
@@ -211,7 +210,6 @@ fn write_archive_tmp(
     wal_dir: &Path,
     tmp_path: &Path,
     codec: &ArchiveCodec,
-    snapshot: Option<&ContainerSnapshot>,
 ) -> Result<(), WalError> {
     {
         let file = OpenOptions::new()
@@ -221,14 +219,15 @@ fn write_archive_tmp(
         let mut writer = BufWriter::new(file);
         write_container_header(&mut writer)?;
 
-        if let Some(snapshot) = snapshot {
-            write_frame(
+        match File::open(wal_dir.join(SNAPSHOT_FILE_NAME)) {
+            Ok(snapshot) => write_compressed_file_frame(
                 &mut writer,
-                codec,
                 FRAME_KIND_SNAPSHOT,
                 SNAPSHOT_FRAME_NAME,
-                snapshot.bytes.clone(),
-            )?;
+                snapshot,
+            )?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
 
         for entry in sorted_wal_files(wal_dir)? {
@@ -254,38 +253,28 @@ fn write_archive_tmp(
     Ok(())
 }
 
-pub(super) fn read_archive_snapshot(
-    archive_path: &Path,
-) -> Result<Option<ContainerSnapshot>, WalError> {
-    Ok(read_archive_frames(archive_path, None)?.snapshot)
-}
-
+/// Extract the frames of `archive_path` into `dest_dir`: the snapshot to
+/// [`SNAPSHOT_FILE_NAME`] and, when `wal` is set, each WAL segment under its
+/// own name. Every frame streams through, so memory stays bounded by the
+/// copy buffers whatever the frame's size. Returns whether the container
+/// held a snapshot.
 pub(super) fn extract_archive(
     archive_path: &Path,
-    work_dir: &Path,
-) -> Result<ExtractedArchive, WalError> {
-    read_archive_frames(archive_path, Some(work_dir))
-}
-
-fn read_archive_frames(
-    archive_path: &Path,
-    work_dir: Option<&Path>,
-) -> Result<ExtractedArchive, WalError> {
+    dest_dir: &Path,
+    wal: bool,
+) -> Result<bool, WalError> {
     let codec = ArchiveCodec::default();
     let file = File::open(archive_path)?;
     let mut reader = BufReader::new(file);
     read_container_header(&mut reader)?;
 
     let mut saw_wal = false;
-    let mut snapshot = None;
+    let mut saw_snapshot = false;
     while let Some(header) = read_frame_header(&mut reader)? {
         let name = read_exact_vec(&mut reader, u64::from(header.name_len), "frame name")?;
         let name = String::from_utf8(name).map_err(|_| {
             WalError::Malformed("database container frame name is not UTF-8".into())
         })?;
-        let body = read_exact_vec(&mut reader, header.body_len, "frame body")?;
-        validate_frame_crc(&header, name.as_bytes(), &body)?;
-        let raw = codec.decode_body(&name, &header, body)?;
 
         match header.kind {
             FRAME_KIND_WAL_FILE => {
@@ -294,11 +283,13 @@ fn read_archive_frames(
                         "unsafe WAL container entry name: {name}"
                     )));
                 }
-                if let Some(work_dir) = work_dir {
-                    let path = work_dir.join(&name);
+                if wal {
+                    let path = dest_dir.join(&name);
                     let mut out = OpenOptions::new().write(true).create_new(true).open(path)?;
-                    out.write_all(&raw)?;
+                    extract_frame_body(&mut reader, &codec, &header, &name, &mut out)?;
                     sync_file(&out)?;
+                } else {
+                    extract_frame_body(&mut reader, &codec, &header, &name, &mut io::sink())?;
                 }
                 saw_wal = true;
             }
@@ -308,7 +299,18 @@ fn read_archive_frames(
                         "unexpected snapshot frame name: {name}"
                     )));
                 }
-                snapshot = Some(ContainerSnapshot { bytes: raw });
+                let path = dest_dir.join(SNAPSHOT_FILE_NAME);
+                let mut out = BufWriter::new(
+                    OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(path)?,
+                );
+                extract_frame_body(&mut reader, &codec, &header, &name, &mut out)?;
+                let out = out.into_inner().map_err(|e| WalError::Io(e.into_error()))?;
+                sync_file(&out)?;
+                saw_snapshot = true;
             }
             other => {
                 return Err(WalError::Malformed(format!(
@@ -318,12 +320,159 @@ fn read_archive_frames(
         }
     }
 
-    if !saw_wal && snapshot.is_none() {
+    if !saw_wal && !saw_snapshot {
         return Err(WalError::Malformed(
             "database container does not contain snapshot or WAL frames".into(),
         ));
     }
-    Ok(ExtractedArchive { snapshot, saw_wal })
+    Ok(saw_snapshot)
+}
+
+/// Decode one frame body from `reader` into `out`, checking its checksum
+/// and decoded length. A plain or compressed body streams; an encrypted
+/// one is sealed whole, so it is read into memory to open.
+fn extract_frame_body(
+    reader: &mut impl Read,
+    codec: &ArchiveCodec,
+    header: &FrameHeader,
+    name: &str,
+    out: &mut impl Write,
+) -> Result<(), WalError> {
+    if header.flags & FLAG_ENCRYPTED != 0 {
+        let body = read_exact_vec(reader, header.body_len, "frame body")?;
+        validate_frame_crc(header, name.as_bytes(), &body)?;
+        let raw = codec.decode_body(name, header, body)?;
+        out.write_all(&raw)?;
+        return Ok(());
+    }
+    if header.encryption != ENCRYPTION_NONE {
+        return Err(WalError::Malformed(
+            "database container frame declares encryption without encrypted flag".into(),
+        ));
+    }
+    let compressed = header.flags & FLAG_COMPRESSED != 0;
+    if compressed && header.codec != CODEC_GZIP {
+        return Err(WalError::Malformed(format!(
+            "unsupported database container compression codec {}",
+            header.codec
+        )));
+    }
+    if !compressed && header.codec != CODEC_PLAIN {
+        return Err(WalError::Malformed(
+            "database container frame declares compression codec without compressed flag".into(),
+        ));
+    }
+
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(name.as_bytes());
+    let mut body = CrcReader {
+        inner: reader.take(header.body_len),
+        hasher: &mut hasher,
+        read: 0,
+    };
+    let raw_len = if compressed {
+        let mut decoder = GzDecoder::new(&mut body);
+        let raw_len = io::copy(&mut decoder, out)?;
+        // The checksum covers any bytes the decoder left unread.
+        io::copy(decoder.into_inner(), &mut io::sink())?;
+        raw_len
+    } else {
+        io::copy(&mut body, out)?
+    };
+    if body.read != header.body_len {
+        return Err(WalError::Malformed(
+            "database container frame body is truncated".into(),
+        ));
+    }
+    if hasher.finalize() != header.crc32 {
+        return Err(WalError::Malformed(
+            "database container frame checksum mismatch".into(),
+        ));
+    }
+    if raw_len != header.raw_len {
+        return Err(WalError::Malformed(format!(
+            "database container frame {name} decoded to {raw_len} bytes, expected {}",
+            header.raw_len
+        )));
+    }
+    Ok(())
+}
+
+struct CrcReader<'h, R> {
+    inner: R,
+    hasher: &'h mut crc32fast::Hasher,
+    read: u64,
+}
+
+impl<R: Read> Read for CrcReader<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.hasher.update(&buf[..n]);
+        self.read += n as u64;
+        Ok(n)
+    }
+}
+
+/// Write `file` as one gzip-compressed frame without holding it. The
+/// header carries the compressed length and checksum, so it is written
+/// last, over a placeholder.
+fn write_compressed_file_frame<W: Write + Seek>(
+    out: &mut W,
+    kind: u8,
+    name: &str,
+    file: File,
+) -> Result<(), WalError> {
+    let name_bytes = name.as_bytes();
+    let header_at = out.stream_position()?;
+    out.write_all(&[0u8; FRAME_HEADER_LEN])?;
+    out.write_all(name_bytes)?;
+
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(name_bytes);
+    let (raw_len, body_len) = {
+        let mut body = CrcWriter {
+            inner: &mut *out,
+            hasher: &mut hasher,
+            written: 0,
+        };
+        let mut encoder = GzEncoder::new(&mut body, GzipCompression::new(1));
+        let raw_len = io::copy(&mut BufReader::new(file), &mut encoder)?;
+        encoder.finish()?;
+        (raw_len, body.written)
+    };
+    let crc32 = hasher.finalize();
+    let end = out.stream_position()?;
+
+    out.seek(SeekFrom::Start(header_at))?;
+    out.write_all(FRAME_MAGIC)?;
+    out.write_all(&[kind, FLAG_COMPRESSED, CODEC_GZIP, ENCRYPTION_NONE])?;
+    out.write_all(&(name_bytes.len() as u16).to_le_bytes())?;
+    out.write_all(&0u16.to_le_bytes())?; // reserved
+    out.write_all(&body_len.to_le_bytes())?;
+    out.write_all(&raw_len.to_le_bytes())?;
+    out.write_all(&crc32.to_le_bytes())?;
+    out.write_all(&[0u8; 12])?;
+    out.seek(SeekFrom::Start(end))?;
+    Ok(())
+}
+
+struct CrcWriter<'h, W> {
+    inner: W,
+    hasher: &'h mut crc32fast::Hasher,
+    written: u64,
+}
+
+impl<W: Write> Write for CrcWriter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.hasher.update(&buf[..n]);
+        self.written += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 fn read_exact_vec(input: &mut impl Read, len: u64, field: &str) -> Result<Vec<u8>, WalError> {
@@ -540,6 +689,73 @@ fn is_safe_wal_file_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "lora-archive-format-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn container(frames: &[(u8, &str, Vec<u8>)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_container_header(&mut out).unwrap();
+        for (kind, name, raw) in frames {
+            write_frame(&mut out, &ArchiveCodec::default(), *kind, name, raw.clone()).unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn extract_streams_a_compressed_snapshot_frame_written_by_earlier_versions() {
+        let dir = scratch("compressed");
+        let snapshot = b"snapshot bytes ".repeat(10_000);
+        let wal = b"wal".repeat(100);
+        let bytes = container(&[
+            (FRAME_KIND_SNAPSHOT, SNAPSHOT_FRAME_NAME, snapshot.clone()),
+            (FRAME_KIND_WAL_FILE, "0000000001.wal", wal.clone()),
+        ]);
+        let archive = dir.join("app.loradb");
+        fs::write(&archive, &bytes).unwrap();
+        let out = dir.join("out");
+        fs::create_dir(&out).unwrap();
+
+        assert!(extract_archive(&archive, &out, true).unwrap());
+        assert_eq!(fs::read(out.join(SNAPSHOT_FILE_NAME)).unwrap(), snapshot);
+        assert_eq!(fs::read(out.join("0000000001.wal")).unwrap(), wal);
+
+        // Rewritten as a stream, the snapshot frame round-trips.
+        write_archive_atomic(&out, &archive, u64::MAX).unwrap();
+        let again = dir.join("again");
+        fs::create_dir(&again).unwrap();
+        assert!(extract_archive(&archive, &again, false).unwrap());
+        assert_eq!(fs::read(again.join(SNAPSHOT_FILE_NAME)).unwrap(), snapshot);
+        assert!(!again.join("0000000001.wal").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extract_rejects_a_corrupt_snapshot_frame() {
+        let dir = scratch("corrupt");
+        let archive = dir.join("app.loradb");
+        let mut bytes = container(&[(FRAME_KIND_SNAPSHOT, SNAPSHOT_FRAME_NAME, vec![7; 4096])]);
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        fs::write(&archive, &bytes).unwrap();
+        let err = extract_archive(&archive, &dir, false).unwrap_err();
+        assert!(err.to_string().contains("checksum"), "{err}");
+
+        bytes.truncate(bytes.len() - 10);
+        fs::write(&archive, &bytes).unwrap();
+        assert!(extract_archive(&archive, &dir, false).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn codec_encrypts_and_decrypts_body() {

@@ -1,16 +1,23 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{anyhow, Context, Result};
-use lora_snapshot::{read_snapshot, write_snapshot, SnapshotOptions};
+use lora_snapshot::{read_graph_snapshot, write_graph_snapshot, SnapshotOptions};
 use lora_store::{InMemoryGraph, SnapshotMeta};
 use lora_wal::{Lsn, WalRecorder};
 
 use crate::durable_io::{sync_dir, sync_file};
 
 const CURRENT_FILE: &str = "CURRENT";
+
+/// Put a loaded graph in `graph`'s place, keeping its recorder.
+fn replace_graph(graph: &mut InMemoryGraph, loaded: InMemoryGraph) {
+    let recorder = graph.mutation_recorder().cloned();
+    *graph = loaded;
+    graph.set_mutation_recorder(recorder);
+}
 const SNAPSHOT_PREFIX: &str = "snapshot-";
 const SNAPSHOT_SUFFIX: &str = ".lsnap";
 
@@ -75,10 +82,10 @@ impl ManagedSnapshotStore {
         };
         let file =
             File::open(&path).with_context(|| format!("open snapshot {}", path.display()))?;
-        let (payload, info) =
-            read_snapshot(BufReader::new(file), self.config.codec.encryption.as_ref())
+        let (loaded, info) =
+            read_graph_snapshot(BufReader::new(file), self.config.codec.encryption.as_ref())
                 .with_context(|| format!("load snapshot {}", path.display()))?;
-        graph.load_snapshot_payload(payload)?;
+        replace_graph(graph, loaded);
         Ok(info.wal_lsn.map(Lsn::new).unwrap_or(Lsn::ZERO))
     }
 
@@ -95,10 +102,10 @@ impl ManagedSnapshotStore {
     /// fence.
     pub(crate) fn load_file_into(&self, path: &Path, graph: &mut InMemoryGraph) -> Result<Lsn> {
         let file = File::open(path).with_context(|| format!("open snapshot {}", path.display()))?;
-        let (payload, info) =
-            read_snapshot(BufReader::new(file), self.config.codec.encryption.as_ref())
+        let (loaded, info) =
+            read_graph_snapshot(BufReader::new(file), self.config.codec.encryption.as_ref())
                 .with_context(|| format!("load snapshot {}", path.display()))?;
-        graph.load_snapshot_payload(payload)?;
+        replace_graph(graph, loaded);
         Ok(info.wal_lsn.map(Lsn::new).unwrap_or(Lsn::ZERO))
     }
 
@@ -153,17 +160,16 @@ impl ManagedSnapshotStore {
     fn write_snapshot(&self, graph: &InMemoryGraph, snapshot_lsn: Lsn) -> Result<SnapshotMeta> {
         let target = snapshot_path(&self.config.dir, snapshot_lsn);
         let tmp = tmp_path(&target);
-        let file = OpenOptions::new()
+        let mut file = OpenOptions::new()
+            .read(true)
             .write(true)
             .create(true)
             .truncate(true)
             .open(&tmp)
             .with_context(|| format!("open temp snapshot {}", tmp.display()))?;
-        let mut writer = BufWriter::new(file);
-        let payload = graph.snapshot_payload();
-        let info = write_snapshot(
-            &mut writer,
-            &payload,
+        let info = write_graph_snapshot(
+            &mut file,
+            graph,
             Some(snapshot_lsn.raw()),
             &self.config.codec,
         )
@@ -174,8 +180,6 @@ impl ManagedSnapshotStore {
             relationship_count: info.relationship_count,
             wal_lsn: info.wal_lsn,
         };
-        writer.flush()?;
-        let file = writer.into_inner().map_err(|e| e.into_error())?;
         sync_file(&file)?;
         drop(file);
 

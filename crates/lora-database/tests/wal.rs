@@ -464,6 +464,135 @@ fn named_database_sync_embeds_snapshot_frame() {
 }
 
 #[test]
+fn named_database_sync_keeps_the_snapshot_beside_the_wal() {
+    let dir = TmpDir::new("named-sync-snapshot-file");
+    let sidecar = dir.path().join("app.loradb.wal");
+
+    {
+        let db = Database::open_named(
+            "app",
+            DatabaseOpenOptions::default().with_database_dir(dir.path()),
+        )
+        .unwrap();
+        db.execute(
+            "CREATE CONSTRAINT item_key FOR (n:Item) REQUIRE n.key IS UNIQUE",
+            rows(),
+        )
+        .unwrap();
+        db.execute(
+            "UNWIND list.range(1, 200) AS i \
+             CREATE (:Item {key: i, name: 'item-' + toString(i), tags: ['a', i]})",
+            rows(),
+        )
+        .unwrap();
+        db.execute(
+            "MATCH (a:Item {key: 1}), (b:Item {key: 2}) CREATE (a)-[:NEXT {w: 1.5}]->(b)",
+            rows(),
+        )
+        .unwrap();
+        for _ in 0..3 {
+            db.sync().unwrap();
+            assert!(sidecar.join("snapshot.lsnap").is_file());
+            assert!(!sidecar.join("snapshot.lsnap.tmp").exists());
+        }
+        db.execute("CREATE (:Item {key: 201})", rows()).unwrap();
+    }
+
+    let db = Database::open_named(
+        "app",
+        DatabaseOpenOptions::default().with_database_dir(dir.path()),
+    )
+    .unwrap();
+    assert_eq!(db.node_count(), 201);
+    assert_eq!(db.relationship_count(), 1);
+    let result = db
+        .execute(
+            "MATCH (a:Item {key: 1})-[r:NEXT]->(b) RETURN a.name AS name, a.tags AS tags, r.w AS w, b.key AS key",
+            rows(),
+        )
+        .unwrap();
+    let json = serde_json::to_value(&result).unwrap();
+    assert_eq!(
+        json["rows"][0],
+        serde_json::json!({"name": "item-1", "tags": ["a", 1], "w": 1.5, "key": 2})
+    );
+    // The constraint came back with the snapshot.
+    assert!(db.execute("CREATE (:Item {key: 5})", rows()).is_err());
+}
+
+#[test]
+fn named_database_sync_runs_beside_writers() {
+    let dir = TmpDir::new("named-sync-writers");
+
+    {
+        let db = std::sync::Arc::new(
+            Database::open_named(
+                "app",
+                DatabaseOpenOptions::default().with_database_dir(dir.path()),
+            )
+            .unwrap(),
+        );
+        let writer = {
+            let db = db.clone();
+            std::thread::spawn(move || {
+                for i in 0..300 {
+                    db.execute(&format!("CREATE (:W {{id: {i}}})"), rows())
+                        .unwrap();
+                }
+            })
+        };
+        for _ in 0..5 {
+            db.sync().unwrap();
+        }
+        writer.join().unwrap();
+        db.sync().unwrap();
+    }
+
+    let db = Database::open_named(
+        "app",
+        DatabaseOpenOptions::default().with_database_dir(dir.path()),
+    )
+    .unwrap();
+    assert_eq!(db.node_count(), 300);
+}
+
+#[test]
+fn named_database_sidecar_without_a_snapshot_file_takes_the_archive_snapshot() {
+    // A sidecar left by a version that held the snapshot in memory has
+    // segments but no `snapshot.lsnap`.
+    let dir = TmpDir::new("named-legacy-sidecar");
+    let sidecar = dir.path().join("app.loradb.wal");
+    let saved_sidecar = dir.path().join("saved-sidecar");
+    let saved_archive = dir.path().join("saved.loradb");
+
+    {
+        let db = Database::open_named(
+            "app",
+            DatabaseOpenOptions::default().with_database_dir(dir.path()),
+        )
+        .unwrap();
+        db.execute("UNWIND list.range(1, 20) AS i CREATE (:N {id: i})", rows())
+            .unwrap();
+        db.sync().unwrap();
+        db.execute("CREATE (:N {id: 21})", rows()).unwrap();
+        copy_dir_all(&sidecar, &saved_sidecar);
+        std::fs::copy(dir.path().join("app.loradb"), &saved_archive).unwrap();
+    }
+
+    std::fs::remove_file(saved_sidecar.join("snapshot.lsnap")).unwrap();
+    std::fs::copy(&saved_archive, dir.path().join("app.loradb")).unwrap();
+    copy_dir_all(&saved_sidecar, &sidecar);
+
+    let db = Database::open_named(
+        "app",
+        DatabaseOpenOptions::default().with_database_dir(dir.path()),
+    )
+    .unwrap();
+    assert!(sidecar.join("snapshot.lsnap").is_file());
+    assert_eq!(db.node_count(), 21);
+}
+
+#[test]
 fn named_database_final_archive_flush_captures_group_buffer() {
     let dir = TmpDir::new("named-group-final-flush");
 

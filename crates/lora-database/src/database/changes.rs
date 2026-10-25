@@ -71,10 +71,10 @@ impl Database<InMemoryGraph> {
                         ),
                     ));
                 };
-                let container = match &self.named_archive {
-                    Some(archive) => archive.snapshot_bytes()?,
-                    None => None,
-                };
+                let container = self
+                    .named_archive
+                    .as_ref()
+                    .and_then(|archive| archive.snapshot_path());
                 let sources = HistorySources {
                     wal_dir: rec.wal().dir().to_path_buf(),
                     snapshots: self.snapshots.clone(),

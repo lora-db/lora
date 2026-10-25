@@ -17,6 +17,8 @@
 //!   `write_snapshot` / `read_snapshot` and `SnapshotInfo`.
 //! - `envelope`, `body`, `columnar`, `transform`, `view` — the layered
 //!   on-disk format implementation.
+//! - `graph` — the same format written from and read into an
+//!   `InMemoryGraph` as a stream, without a payload copy of the records.
 //! - `errors`, `options` — public vocabulary.
 
 mod body;
@@ -25,10 +27,13 @@ mod columnar;
 mod envelope;
 mod errors;
 mod format;
+mod graph;
 mod options;
 mod transform;
 mod view;
 
+#[cfg(test)]
+mod graph_tests;
 #[cfg(test)]
 mod tests;
 
@@ -38,6 +43,9 @@ pub use codec::{
 };
 pub use errors::{Result, SnapshotCodecError};
 pub use format::DATABASE_SNAPSHOT_MAGIC;
+pub use graph::{
+    encode_graph_snapshot, read_graph_snapshot, read_snapshot_info, write_graph_snapshot,
+};
 pub use options::{
     Compression, EncryptionKey, PasswordKdfParams, SnapshotCredentials, SnapshotEncryption,
     SnapshotOptions, SnapshotPassword,

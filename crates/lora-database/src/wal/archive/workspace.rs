@@ -6,9 +6,8 @@ use web_time::{SystemTime, UNIX_EPOCH};
 
 use lora_wal::WalError;
 
-use super::format::{extract_archive, ExtractedArchive};
-use super::format::{read_archive_snapshot, ContainerSnapshot};
-use super::platform::sync_dir;
+use super::format::{extract_archive, SNAPSHOT_FILE_NAME, STAGED_SNAPSHOT_FILE_NAME};
+use super::platform::{replace_file_atomic, sync_dir};
 
 static ARCHIVE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -16,20 +15,25 @@ pub(super) fn make_work_dir(archive_path: &Path) -> PathBuf {
     archive_path.with_extension("loradb.wal")
 }
 
+/// Make `work_dir` hold the database's WAL segments and, when it has one,
+/// its snapshot as [`SNAPSHOT_FILE_NAME`].
 pub(super) fn prepare_work_dir(
     archive_path: &Path,
     work_dir: &Path,
     max_archive_bytes: u64,
-) -> Result<Option<ContainerSnapshot>, WalError> {
+) -> Result<(), WalError> {
     if has_wal_files(work_dir)? {
         // A durable sidecar means the previous process stopped before the
         // final archive flush/cleanup completed. Trust it over the archive,
         // which may intentionally lag behind the live WAL for throughput.
-        return if archive_path.exists() {
-            Ok(read_archive_snapshot(archive_path).ok().flatten())
-        } else {
-            Ok(None)
-        };
+        let _ = fs::remove_file(work_dir.join(STAGED_SNAPSHOT_FILE_NAME));
+        if !work_dir.join(SNAPSHOT_FILE_NAME).exists() && archive_path.exists() {
+            // Left by a version that held the snapshot in memory: take it
+            // from the archive. The WAL in the sidecar is complete, so a
+            // missing or unreadable snapshot only means a longer replay.
+            let _ = extract_snapshot_into_work_dir(archive_path, work_dir);
+        }
+        return Ok(());
     }
 
     if work_dir.exists() {
@@ -49,34 +53,43 @@ pub(super) fn prepare_work_dir(
         extract_archive_into_work_dir(archive_path, work_dir)
     } else {
         fs::create_dir_all(work_dir)?;
-        Ok(None)
+        Ok(())
     }
 }
 
-fn extract_archive_into_work_dir(
-    archive_path: &Path,
-    work_dir: &Path,
-) -> Result<Option<ContainerSnapshot>, WalError> {
+fn extract_archive_into_work_dir(archive_path: &Path, work_dir: &Path) -> Result<(), WalError> {
     let tmp_dir = make_extract_tmp_path(work_dir);
     let result = (|| {
         fs::create_dir_all(&tmp_dir)?;
-        let ExtractedArchive { snapshot, saw_wal } = extract_archive(archive_path, &tmp_dir)?;
+        extract_archive(archive_path, &tmp_dir, true)?;
         sync_dir(&tmp_dir)?;
-        if saw_wal {
-            fs::rename(&tmp_dir, work_dir)?;
-        } else {
-            fs::remove_dir_all(&tmp_dir)?;
-            fs::create_dir_all(work_dir)?;
-        }
+        fs::rename(&tmp_dir, work_dir)?;
         if let Some(parent) = work_dir.parent() {
             sync_dir(parent)?;
         }
-        Ok(snapshot)
+        Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_dir_all(&tmp_dir);
         let _ = fs::remove_dir_all(work_dir);
     }
+    result
+}
+
+fn extract_snapshot_into_work_dir(archive_path: &Path, work_dir: &Path) -> Result<(), WalError> {
+    let tmp_dir = make_extract_tmp_path(work_dir);
+    let result = (|| {
+        fs::create_dir_all(&tmp_dir)?;
+        if extract_archive(archive_path, &tmp_dir, false)? {
+            replace_file_atomic(
+                &tmp_dir.join(SNAPSHOT_FILE_NAME),
+                &work_dir.join(SNAPSHOT_FILE_NAME),
+            )?;
+            sync_dir(work_dir)?;
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&tmp_dir);
     result
 }
 

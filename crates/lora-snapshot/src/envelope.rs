@@ -137,7 +137,7 @@ const ENCRYPTION_NONE: u8 = 0;
 const ENCRYPTION_CHACHA20_POLY1305: u8 = 1;
 const ENCRYPTION_PASSWORD_CHACHA20_POLY1305: u8 = 2;
 
-fn encode_manifest(manifest: &Manifest) -> Result<Vec<u8>> {
+pub(crate) fn encode_manifest(manifest: &Manifest) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     write_u32(&mut out, manifest.format_version);
     match manifest.wal_lsn {
@@ -155,7 +155,7 @@ fn encode_manifest(manifest: &Manifest) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn decode_manifest(bytes: &[u8]) -> Result<Manifest> {
+pub(crate) fn decode_manifest(bytes: &[u8]) -> Result<Manifest> {
     let mut reader = BodyReader::new(bytes);
     let format_version = reader.read_u32()?;
     let wal_lsn = match reader.read_u8()? {

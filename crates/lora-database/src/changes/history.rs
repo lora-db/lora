@@ -10,6 +10,8 @@
 //! It applies every committed transaction up to the resume point silently,
 //! then turns each later transaction into a [`ChangeBatch`].
 
+use std::fs::File;
+use std::io::{BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -33,8 +35,10 @@ pub(crate) enum HistoryBase {
         path: PathBuf,
         lsn: Lsn,
     },
-    /// The snapshot frame of a `.loradb` container (decoded lazily).
-    Container { bytes: Vec<u8>, lsn: Lsn },
+    /// The snapshot of a `.loradb` container, opened when the replay was
+    /// planned (a checkpoint may replace the file since) and decoded when
+    /// it starts.
+    Container { file: File, lsn: Lsn },
 }
 
 impl HistoryBase {
@@ -50,9 +54,9 @@ impl HistoryBase {
 pub(crate) struct HistorySources {
     pub wal_dir: PathBuf,
     pub snapshots: Option<Arc<ManagedSnapshotStore>>,
-    /// Container snapshot bytes, when the database is a `.loradb`
+    /// The container's snapshot file, when the database is a `.loradb`
     /// container that holds one.
-    pub container: Option<Vec<u8>>,
+    pub container: Option<PathBuf>,
 }
 
 /// A planned replay of `(after, upto]` from the WAL.
@@ -111,12 +115,13 @@ impl HistoryReplay {
                 });
             }
         }
-        if let Some(bytes) = sources.container {
-            // Only the manifest is read here; the payload decodes when the
+        if let Some(path) = sources.container {
+            // Only the manifest is read here; the graph decodes when the
             // replay starts.
-            let info = lora_snapshot::snapshot_info(&bytes)?;
+            let mut file = File::open(path)?;
+            let info = lora_snapshot::read_snapshot_info(BufReader::new(&mut file))?;
             consider(HistoryBase::Container {
-                bytes,
+                file,
                 lsn: Lsn::new(info.wal_lsn.unwrap_or(0)),
             });
         }
@@ -143,9 +148,9 @@ impl HistoryReplay {
             HistoryBase::ManagedSnapshot { store, path, .. } => {
                 store.load_file_into(&path, &mut graph)?;
             }
-            HistoryBase::Container { bytes, .. } => {
-                let (payload, _) = crate::snapshot::decode_snapshot_bytes(&bytes, None)?;
-                graph.load_snapshot_payload(payload)?;
+            HistoryBase::Container { mut file, .. } => {
+                file.seek(SeekFrom::Start(0))?;
+                (graph, _) = lora_snapshot::read_graph_snapshot(BufReader::new(file), None)?;
             }
         }
         let reader = CommittedTxReader::open(&self.wal_dir, base_lsn, self.upto)?;

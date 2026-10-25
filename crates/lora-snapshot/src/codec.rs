@@ -152,7 +152,7 @@ fn snapshot_payload_from_body(body: &[u8]) -> Result<SnapshotPayload> {
     ColumnarSnapshot::decode_binary(body)?.into_payload()
 }
 
-fn encrypt_snapshot_body(
+pub(crate) fn encrypt_snapshot_body(
     mut body: Vec<u8>,
     encryption: Option<&SnapshotEncryption>,
 ) -> Result<(Vec<u8>, EncryptionManifest)> {
@@ -193,7 +193,7 @@ fn random_bytes<const N: usize>(label: &str) -> Result<[u8; N]> {
     Ok(bytes)
 }
 
-fn decrypt_snapshot_body(
+pub(crate) fn decrypt_snapshot_body(
     body: &[u8],
     encryption: &EncryptionManifest,
     credentials: Option<&SnapshotCredentials>,

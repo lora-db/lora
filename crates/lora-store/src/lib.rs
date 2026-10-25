@@ -43,7 +43,7 @@ pub use types::{LabelsRef, NodeRef, OtherValue, PropsIter, PropsRef, RelRef, Val
 pub use traits::{GraphCatalog, GraphStorage, GraphStorageMut};
 
 // ---------- In-memory backend ----------
-pub use memory::InMemoryGraph;
+pub use memory::{InMemoryGraph, SnapshotCatalogs, SnapshotGraphBuilder};
 
 // ---------- Memory-footprint diagnostics ----------
 //

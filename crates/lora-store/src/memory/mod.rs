@@ -71,5 +71,6 @@ pub use index_catalog::{
     StoredIndexState,
 };
 pub use mem_report::{property_value_heap_bytes, MemoryReport, PropertyIndexKeyUsage};
+pub use snapshot::{SnapshotCatalogs, SnapshotGraphBuilder};
 pub use stats::{DistinctValues, GraphStats};
 pub use vector_index::{VectorBackendSnapshot, VectorIndexSnapshot};

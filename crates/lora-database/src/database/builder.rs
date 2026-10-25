@@ -122,13 +122,12 @@ impl Database<InMemoryGraph> {
             options.database_path_for(&name),
             options.max_database_bytes,
         )?);
-        let mut graph = InMemoryGraph::new();
-        let snapshot_lsn = if let Some(bytes) = archive.snapshot_bytes()? {
-            let (payload, info) = crate::snapshot::decode_snapshot_bytes(&bytes, None)?;
-            graph.load_snapshot_payload(payload)?;
-            info.wal_lsn.map(Lsn::new).unwrap_or(Lsn::ZERO)
-        } else {
-            Lsn::ZERO
+        let (mut graph, snapshot_lsn) = match archive.snapshot_path() {
+            Some(path) => {
+                let (graph, info) = crate::snapshot::read_graph_snapshot_file(&path, None)?;
+                (graph, info.wal_lsn.map(Lsn::new).unwrap_or(Lsn::ZERO))
+            }
+            None => (InMemoryGraph::new(), Lsn::ZERO),
         };
         let (wal, events) = Wal::open(
             archive.work_dir(),
@@ -174,15 +173,12 @@ impl Database<InMemoryGraph> {
         wal_config: WalConfig,
     ) -> Result<Self, LoraError> {
         let snapshot_path = snapshot_path.as_ref();
-        let mut graph = InMemoryGraph::new();
-        let snapshot_lsn = match File::open(snapshot_path) {
+        let (mut graph, snapshot_lsn) = match File::open(snapshot_path) {
             Ok(f) => {
-                let reader = BufReader::new(f);
-                let (payload, info) = crate::snapshot::read_snapshot_from(reader, None)?;
-                graph.load_snapshot_payload(payload)?;
-                info.wal_lsn.map(Lsn::new).unwrap_or(Lsn::ZERO)
+                let (graph, info) = lora_snapshot::read_graph_snapshot(BufReader::new(f), None)?;
+                (graph, info.wal_lsn.map(Lsn::new).unwrap_or(Lsn::ZERO))
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Lsn::ZERO,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (InMemoryGraph::new(), Lsn::ZERO),
             Err(e) => return Err(e.into()),
         };
 
