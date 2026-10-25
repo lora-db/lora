@@ -494,6 +494,47 @@ fn wal_history_uses_managed_snapshots_and_reports_truncation() {
 }
 
 #[test]
+fn named_database_history_resumes_from_the_container_snapshot() {
+    let dir = TmpDir::new("named-history");
+    let options = || lora_database::DatabaseOpenOptions {
+        segment_target_bytes: 256,
+        ..lora_database::DatabaseOpenOptions::default().with_database_dir(dir.path())
+    };
+
+    let db = Database::open_named("app", options()).unwrap();
+    let mut feed = open(&db);
+    exec(&db, "CREATE (:Early {n: 0})");
+    let first_lsn = next(&mut feed).lsn;
+    for i in 1..20 {
+        exec(&db, &format!("CREATE (:Early {{n: {i}}})"));
+    }
+    drop(feed);
+    db.sync().unwrap();
+    db.set_change_retention(0);
+    let head = db.changes_head().unwrap();
+    exec(&db, "MATCH (e:Early {n: 3}) SET e.late = true");
+
+    // The sync dropped the early segments.
+    let err = db
+        .changes(ChangeFeedOptions {
+            from_lsn: Some(first_lsn),
+            ..ChangeFeedOptions::default()
+        })
+        .err()
+        .unwrap();
+    assert_eq!(err.code(), LoraErrorCode::ChangesTruncated);
+
+    // After the sync, history replays over the container's snapshot.
+    let mut feed = open_from(&db, head);
+    let batch = next(&mut feed);
+    assert!(matches!(
+        &batch.changes[..],
+        [Change::NodeUpdated { labels, properties, .. }]
+            if labels == &vec!["Early".to_string()] && properties.get("n") == Some(&PropertyValue::Int(3))
+    ));
+}
+
+#[test]
 fn concurrent_writers_arrive_in_commit_order_without_gaps() {
     let db = Arc::new(Database::in_memory());
     let mut feed = db

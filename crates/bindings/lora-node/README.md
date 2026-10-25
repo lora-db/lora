@@ -187,8 +187,10 @@ Resuming:
 - WAL-backed databases (`databaseName`, `openWalDatabase`) use the WAL's
   commit LSN. `fromLsn` resumes across restarts for as far back as the WAL
   holds history: the feed rebuilds older batches by replaying the WAL from
-  an empty graph or a managed checkpoint snapshot, so an old resume point
-  costs a replay.
+  an empty graph, a managed checkpoint snapshot or the snapshot the last
+  `db.sync()` wrote, so an old resume point costs a replay. For a named
+  database `db.sync()` is a checkpoint: it drops the WAL its snapshot
+  covers, so history starts at the last `sync()`.
 - An LSN the database no longer retains fails with
   `LORA_CHANGES_TRUNCATED`: start a new feed and re-read current state.
 
@@ -255,7 +257,10 @@ directory other than the current working directory.
 The default `syncMode: "groupSync"` writes WAL bytes before `execute()` resolves
 and batches fsyncs for write-heavy workloads. Call `await db.sync()` when you
 need an immediate durability boundary before copying the portable `.loradb`
-archive while the database is still open.
+archive while the database is still open. `sync()` also checkpoints: it
+writes the graph as the archive's base snapshot and drops the WAL that
+snapshot covers, so the archive holds the graph and the writes since the last
+`sync()`, not every write ever made.
 
 Node also has a container-backed convenience overload:
 

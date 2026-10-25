@@ -178,7 +178,12 @@ impl Database<InMemoryGraph> {
     /// durable end is written as the container's base snapshot. It streams
     /// to a file beside the WAL and from there into the container, so it
     /// holds no copy of the graph, and writers wait only while the graph
-    /// and its LSN are taken, not while the snapshot is written.
+    /// and its LSN are taken, not while the snapshot is written. The WAL
+    /// segments the snapshot covers are then dropped (the active segment
+    /// and the one before it stay), so the container carries the snapshot
+    /// and the writes since, not the whole history. A change feed resuming
+    /// from before the snapshot gets `LORA_CHANGES_TRUNCATED`, as after a
+    /// managed checkpoint.
     ///
     /// Managed snapshot checkpoints are explicit via
     /// [`Self::checkpoint_managed`] or threshold-driven via
@@ -205,7 +210,7 @@ impl Database<InMemoryGraph> {
                     &lora_snapshot::SnapshotOptions::default(),
                 )?;
                 drop(graph);
-                archive.install_snapshot()?;
+                archive.install_snapshot(|| wal.truncate_covered_by_mirror(snapshot_lsn))?;
                 staged_guard.commit();
             } else {
                 wal.force_fsync()?;

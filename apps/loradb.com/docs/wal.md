@@ -244,7 +244,10 @@ acknowledged work. A process crash alone loses nothing that was already
 written to the OS.
 
 For checkpointed deployments, call `sync()` when you need an immediate
-durability point. A checkpoint snapshot is stamped with the WAL's current
+durability point. On a named `.loradb` database `sync()` is also the
+checkpoint: it writes the graph as the archive's base snapshot, streamed so it
+holds no second copy of the graph, and drops the WAL segments that snapshot
+covers. A change feed can then resume only from the last `sync()` on. A checkpoint snapshot is stamped with the WAL's current
 `durableLsn`; in `group-sync` mode that fence
 can trail the newest writes until the background fsync catches up.
 

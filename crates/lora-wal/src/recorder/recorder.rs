@@ -342,6 +342,15 @@ impl WalRecorder {
         Ok(())
     }
 
+    /// Drop sealed segments at or below `fence_lsn` even with a mirror
+    /// installed. [`Self::truncate_up_to`] keeps every segment for a
+    /// mirror, which cannot recover from a snapshot it does not hold; the
+    /// caller of this one guarantees the mirror's work directory already
+    /// holds a durable snapshot at `fence_lsn` that the mirror carries.
+    pub fn truncate_covered_by_mirror(&self, fence_lsn: Lsn) -> Result<(), WalError> {
+        self.wal.truncate_up_to(fence_lsn)
+    }
+
     /// True iff the recorder has already failed an append, **or** the WAL has
     /// latched a durability failure. Cheap to poll under the store lock.
     pub fn is_poisoned(&self) -> bool {

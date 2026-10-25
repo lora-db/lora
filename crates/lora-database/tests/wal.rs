@@ -593,6 +593,50 @@ fn named_database_sidecar_without_a_snapshot_file_takes_the_archive_snapshot() {
 }
 
 #[test]
+fn named_database_sync_drops_the_wal_its_snapshot_covers() {
+    let dir = TmpDir::new("named-sync-truncate");
+    let sidecar = dir.path().join("app.loradb.wal");
+    let options = || DatabaseOpenOptions {
+        segment_target_bytes: 4 * 1024,
+        ..DatabaseOpenOptions::default().with_database_dir(dir.path())
+    };
+    let segments = || {
+        std::fs::read_dir(&sidecar)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().extension() == Some("wal".as_ref()))
+            .count()
+    };
+
+    {
+        let db = Database::open_named("app", options()).unwrap();
+        for i in 0..400 {
+            db.execute(
+                &format!("CREATE (:N {{id: {i}, pad: 'xxxxxxxxxxxxxxxx'}})"),
+                rows(),
+            )
+            .unwrap();
+        }
+        let before = segments();
+        assert!(before > 10, "{before} segments");
+        db.sync().unwrap();
+        assert!(segments() <= 2, "{} segments after sync", segments());
+
+        // Writes after the checkpoint replay over its snapshot.
+        db.execute("MATCH (n:N {id: 7}) SET n.late = true", rows())
+            .unwrap();
+        db.execute("CREATE (:N {id: 400})", rows()).unwrap();
+    }
+
+    let db = Database::open_named("app", options()).unwrap();
+    assert_eq!(db.node_count(), 401);
+    let result = db
+        .execute("MATCH (n:N {late: true}) RETURN n.id AS id", rows())
+        .unwrap();
+    let json = serde_json::to_value(&result).unwrap();
+    assert_eq!(json["rows"], serde_json::json!([{"id": 7}]));
+}
+
+#[test]
 fn named_database_final_archive_flush_captures_group_buffer() {
     let dir = TmpDir::new("named-group-final-flush");
 

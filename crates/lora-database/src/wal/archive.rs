@@ -121,8 +121,17 @@ impl WalArchive {
     }
 
     /// Make the durable file at [`Self::staged_snapshot_path`] the base
-    /// snapshot and rewrite the container with it.
-    pub fn install_snapshot(&self) -> Result<(), WalError> {
+    /// snapshot, run `drop_covered_wal` to remove the segments it covers,
+    /// and rewrite the container with it.
+    ///
+    /// Crash safety rests on the order: the work directory holds the new
+    /// snapshot before any segment it covers goes, so the work directory
+    /// recovers by itself at every step, and the old container, replaced
+    /// atomically last, stays a whole database until then.
+    pub fn install_snapshot(
+        &self,
+        drop_covered_wal: impl FnOnce() -> Result<(), WalError>,
+    ) -> Result<(), WalError> {
         self.check_failure()?;
         let _write_guard = self.write_lock.lock().map_err(|_| WalError::Poisoned)?;
         self.check_failure()?;
@@ -131,6 +140,7 @@ impl WalArchive {
             &self.work_dir.join(SNAPSHOT_FILE_NAME),
         )?;
         sync_dir(&self.work_dir)?;
+        drop_covered_wal()?;
         self.write_locked()
     }
 
