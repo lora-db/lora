@@ -51,7 +51,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # ubuntu-24.04, not ubuntu-latest: setup-python has no Python 3.8
+        # for ubuntu-26.04, which ubuntu-latest became in October 2026.
+        os: [ubuntu-24.04, macos-latest]
         python-version: ["3.8", "3.11", "3.12"]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
