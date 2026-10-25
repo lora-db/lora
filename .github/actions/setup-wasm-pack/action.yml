@@ -1,0 +1,38 @@
+name: Setup wasm-pack
+description: >-
+  Install a pinned wasm-pack release on a Linux x86_64 runner. Replaces
+  jetli/wasm-pack-action, which moves the binary out of /tmp with a rename
+  and fails with EXDEV once /tmp and the home directory are on different
+  filesystems (ubuntu-latest, October 2026).
+
+inputs:
+  version:
+    description: wasm-pack release tag.
+    required: false
+    default: "v0.14.0"
+  sha256:
+    description: SHA-256 of the x86_64-unknown-linux-musl archive for that release.
+    required: false
+    default: "278a8d668085821f4d1a637bd864f1713f872b0ae3a118c77562a308c0abfe8d"
+
+runs:
+  using: composite
+  steps:
+    - name: Install wasm-pack
+      shell: bash
+      env:
+        WASM_PACK_VERSION: ${{ inputs.version }}
+        WASM_PACK_SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        name="wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl"
+        dir="${RUNNER_TEMP}/setup-wasm-pack"
+        mkdir -p "$dir"
+        curl -sSfL --retry 3 -o "$dir/$name.tar.gz" \
+          "https://github.com/wasm-bindgen/wasm-pack/releases/download/${WASM_PACK_VERSION}/${name}.tar.gz"
+        echo "${WASM_PACK_SHA256}  $dir/$name.tar.gz" | sha256sum --check --strict
+        tar -xzf "$dir/$name.tar.gz" -C "$dir"
+        mkdir -p "$dir/bin"
+        install -m 0755 "$dir/$name/wasm-pack" "$dir/bin/wasm-pack"
+        echo "$dir/bin" >> "$GITHUB_PATH"
+        "$dir/bin/wasm-pack" --version
