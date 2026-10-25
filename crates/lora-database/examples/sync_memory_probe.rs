@@ -9,6 +9,7 @@
 //!
 //! `build` writes a `.loradb` with `<nodes>` nodes (a unique key, a short
 //! hash, two integers, a float and a list each) and as many relationships.
+//! `writes <dir> <count>` times single-statement creates against it.
 //! `measure` opens it, calls `sync()` three times and drops it, reporting
 //! for each step the live heap after it and the peak during it. The
 //! allocator is wrapped with a live-byte counter, so the figures are the
@@ -160,6 +161,30 @@ fn main() {
             }
             measure("dispose", || drop(db));
         }
-        _ => eprintln!("usage: sync_memory_probe build <dir> <nodes> | measure <dir>"),
+        Some("writes") => {
+            // Single-statement creates against the built database: commit
+            // throughput while the archive worker rewrites the container
+            // behind them.
+            let dir = PathBuf::from(&args[2]);
+            let count: usize = args[3].parse().expect("write count");
+            let db = Database::open_named("probe", options(&dir)).unwrap();
+            let started = Instant::now();
+            for i in 0..count {
+                db.execute(&format!("CREATE (:Extra {{i: {i}}})"), rows())
+                    .unwrap();
+            }
+            let writes = started.elapsed();
+            let started = Instant::now();
+            drop(db);
+            println!(
+                "{count} writes in {:.2} s ({:.0}/s), dispose {:.2} s",
+                writes.as_secs_f64(),
+                count as f64 / writes.as_secs_f64(),
+                started.elapsed().as_secs_f64()
+            );
+        }
+        _ => eprintln!(
+            "usage: sync_memory_probe build <dir> <nodes> | measure <dir> | writes <dir> <count>"
+        ),
     }
 }
