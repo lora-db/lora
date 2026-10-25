@@ -52,7 +52,9 @@ defaults:
 jobs:
   verify:
     name: build, typecheck, test, npm pack
-    runs-on: ubuntu-latest
+    # ubuntu-24.04, not ubuntu-latest: Playwright has no Chromium for
+    # ubuntu-26.04, which ubuntu-latest became in October 2026.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
