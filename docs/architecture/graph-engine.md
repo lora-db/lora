@@ -200,10 +200,20 @@ rebuilt after a restart until the next such lookup. A
 sorted (RANGE) index keeps the same value-to-ids entries in sorted arrays of at
 most 256 entries under two levels of tables.
 
-An entry is a 32-byte key and a 16-byte id set, which holds a single id
+An entry is a 24-byte key and an 8-byte id set, which holds a single id
 inline. At 2M unique integer keys that comes to about 89 bytes per entry in the
 hash index and 49 in the sorted one, so a RANGE index or uniqueness constraint
 costs about 138 bytes per entry.
+
+A string, byte string, list or map that one entity holds is not kept in the
+hash index at all: its entry is a 64-bit digest of the value and the entity's
+id, 16 bytes, and a lookup confirms the entity against its record. A unique
+58-byte string key costs about 20 bytes there instead of about 130 (the key,
+its copy of the string and the table around them). A value a second entity
+takes moves to an ordinary entry, so a lookup of a shared value reads no
+record, and a value whose digest another value's entry already uses (a
+collision) keeps an ordinary entry of its own. The sorted index still keeps
+the value, which its order needs.
 
 Indexed values:
 
