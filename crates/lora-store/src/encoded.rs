@@ -86,7 +86,7 @@ pub(crate) struct EncodedOther<'a> {
 
 impl EncodedOther<'_> {
     pub(crate) fn decode(self) -> PropertyValue {
-        crate::codec::decode_property_value(self.bytes)
+        crate::codec::decode_stored_property_value(self.bytes)
             .expect("a stored property value decodes: it was encoded by this process")
     }
 }
@@ -138,12 +138,12 @@ fn write_value(out: &mut Vec<u8>, value: &PropertyValue) {
             out.extend_from_slice(v.as_bytes());
         }
         other => {
-            let encoded = crate::codec::encode_property_value(other)
+            let encoded = crate::codec::encode_stored_property_value(other)
                 .expect("a property value encodes: lengths fit in u64");
             // Reads decode these bytes and treat a failure as a bug, so
             // every debug build checks each value on its way in.
             debug_assert!(
-                crate::codec::decode_property_value(&encoded).as_ref() == Ok(other),
+                crate::codec::decode_stored_property_value(&encoded).as_ref() == Ok(other),
                 "the codec does not round-trip {other:?}"
             );
             out.push(TAG_OTHER);
