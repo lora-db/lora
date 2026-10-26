@@ -9,6 +9,7 @@ use lora_store::{
 };
 
 use super::format::*;
+use super::MAX_VALUE_DEPTH;
 use crate::errors::WalError;
 
 pub(crate) fn decode_event(bytes: &[u8]) -> Result<MutationEvent, WalError> {
@@ -42,11 +43,19 @@ pub(crate) fn decode_events(bytes: &[u8]) -> Result<Vec<MutationEvent>, WalError
 struct PayloadReader<'a> {
     bytes: &'a [u8],
     offset: usize,
+    /// Lists and maps enclosing the value being read. Bounded by
+    /// [`MAX_VALUE_DEPTH`] so a hostile or corrupt payload cannot recurse
+    /// the decoder off the end of the stack.
+    depth: usize,
 }
 
 impl<'a> PayloadReader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+        Self {
+            bytes,
+            offset: 0,
+            depth: 0,
+        }
     }
 
     fn finish(&self) -> Result<(), WalError> {
@@ -174,23 +183,33 @@ impl<'a> PayloadReader<'a> {
         Ok(properties)
     }
 
+    fn enter_container(&mut self) -> Result<(), WalError> {
+        if self.depth >= MAX_VALUE_DEPTH {
+            return Err(WalError::Decode(format!(
+                "property value is nested more than {MAX_VALUE_DEPTH} lists or maps deep"
+            )));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    /// Recursive for lists and maps only; scalars are read by
+    /// [`Self::read_scalar`] so each nesting level costs a small stack
+    /// frame even in unoptimised builds.
     fn read_value(&mut self) -> Result<PropertyValue, WalError> {
         Ok(match self.read_u8()? {
-            VALUE_NULL => PropertyValue::Null,
-            VALUE_BOOL => PropertyValue::Bool(self.read_u8()? != 0),
-            VALUE_INT => PropertyValue::Int(self.read_i64()?),
-            VALUE_FLOAT => PropertyValue::Float(f64::from_bits(self.read_u64()?)),
-            VALUE_STRING => PropertyValue::String(self.read_string()?),
-            VALUE_BINARY => PropertyValue::Binary(self.read_binary()?),
             VALUE_LIST => {
+                self.enter_container()?;
                 let len = self.read_len_bounded("property list value")?;
                 let mut values = self.vec_with_capacity(len, "property list value")?;
                 for _ in 0..len {
                     values.push(self.read_value()?);
                 }
+                self.depth -= 1;
                 PropertyValue::List(values)
             }
             VALUE_MAP => {
+                self.enter_container()?;
                 let len = self.read_len_bounded("property map entry")?;
                 let mut values = BTreeMap::new();
                 for _ in 0..len {
@@ -198,8 +217,21 @@ impl<'a> PayloadReader<'a> {
                     let value = self.read_value()?;
                     values.insert(key, value);
                 }
+                self.depth -= 1;
                 PropertyValue::Map(values)
             }
+            tag => self.read_scalar(tag)?,
+        })
+    }
+
+    fn read_scalar(&mut self, tag: u8) -> Result<PropertyValue, WalError> {
+        Ok(match tag {
+            VALUE_NULL => PropertyValue::Null,
+            VALUE_BOOL => PropertyValue::Bool(self.read_u8()? != 0),
+            VALUE_INT => PropertyValue::Int(self.read_i64()?),
+            VALUE_FLOAT => PropertyValue::Float(f64::from_bits(self.read_u64()?)),
+            VALUE_STRING => PropertyValue::String(self.read_string()?),
+            VALUE_BINARY => PropertyValue::Binary(self.read_binary()?),
             VALUE_DATE => PropertyValue::Date(LoraDate {
                 year: self.read_i32()?,
                 month: self.read_u32()?,

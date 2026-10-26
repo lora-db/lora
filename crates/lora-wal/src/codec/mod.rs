@@ -20,7 +20,14 @@ mod format;
 #[cfg(test)]
 mod tests;
 
+/// Deepest nesting of lists and maps a property value may have in a WAL
+/// record. Both halves enforce it: the encoder refuses to write a deeper
+/// value and the decoder refuses to read one, because both recurse per
+/// level and an unbounded value would overflow the stack during replay.
+pub(crate) const MAX_VALUE_DEPTH: usize = 128;
+
 pub(crate) use decode::{decode_event, decode_events};
 pub(crate) use encode::{
-    encode_event_into, encode_events_into, encoded_event_len, encoded_events_len,
+    batch_payload_len, encode_event_into, encode_events_into, encoded_batch_event_len,
+    encoded_event_len, encoded_events_len,
 };

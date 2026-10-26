@@ -214,3 +214,69 @@ fn all_extension_values_round_trip() {
     assert_eq!(encoded_event_len(&event).unwrap(), encoded.len());
     assert_eq!(decode_event(&encoded).unwrap(), event);
 }
+
+/// A CRC-valid payload holding a list nested `depth` deep, built by hand
+/// so it does not depend on the encoder accepting it.
+fn deeply_nested_create_node(depth: usize) -> Vec<u8> {
+    use super::format::{TAG_CREATE_NODE, VALUE_LIST, VALUE_NULL};
+    let mut out = PAYLOAD_MAGIC.to_vec();
+    out.push(TAG_CREATE_NODE);
+    out.extend_from_slice(&1u64.to_le_bytes()); // id
+    out.extend_from_slice(&0u64.to_le_bytes()); // no labels
+    out.extend_from_slice(&1u64.to_le_bytes()); // one property
+    out.extend_from_slice(&1u64.to_le_bytes());
+    out.push(b'k');
+    for _ in 0..depth {
+        out.push(VALUE_LIST);
+        out.extend_from_slice(&1u64.to_le_bytes());
+    }
+    out.push(VALUE_NULL);
+    out
+}
+
+#[test]
+fn decode_rejects_values_nested_past_the_limit() {
+    // Run on a small stack: the decoder must stop at its depth cap long
+    // before the stack runs out.
+    let result = std::thread::Builder::new()
+        .stack_size(1024 * 1024)
+        .spawn(|| decode_event(&deeply_nested_create_node(100_000)).map(|_| ()))
+        .unwrap()
+        .join()
+        .unwrap();
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("nested"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn decode_accepts_values_at_the_limit() {
+    let bytes = deeply_nested_create_node(super::MAX_VALUE_DEPTH);
+    decode_event(&bytes).unwrap();
+    let err = decode_event(&deeply_nested_create_node(super::MAX_VALUE_DEPTH + 1)).unwrap_err();
+    assert!(
+        err.to_string().contains("nested"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn encode_rejects_values_nested_past_the_limit() {
+    let mut value = PropertyValue::Null;
+    for _ in 0..=super::MAX_VALUE_DEPTH {
+        value = PropertyValue::List(vec![value]);
+    }
+    let event = MutationEvent::SetNodeProperty {
+        node_id: 1,
+        key: "deep".into(),
+        value,
+    };
+    let err = encoded_event_len(&event).unwrap_err();
+    assert!(
+        matches!(err, WalError::Encode(_)),
+        "unexpected error: {err:?}"
+    );
+    assert!(encode_event(&event).is_err());
+}

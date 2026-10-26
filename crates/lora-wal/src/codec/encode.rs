@@ -6,6 +6,7 @@ use lora_store::{
 };
 
 use super::format::*;
+use super::MAX_VALUE_DEPTH;
 use crate::errors::WalError;
 
 #[cfg(test)]
@@ -52,6 +53,23 @@ pub(crate) fn encoded_events_len(events: &[MutationEvent]) -> Result<usize, WalE
     for event in events {
         size_event(&mut size, event)?;
     }
+    Ok(size)
+}
+
+/// Bytes `event` adds to a [`encode_events_into`] payload, beyond the
+/// fixed batch prefix ([`batch_payload_len`]).
+pub(crate) fn encoded_batch_event_len(event: &MutationEvent) -> Result<usize, WalError> {
+    let mut size = 0;
+    size_event(&mut size, event)?;
+    Ok(size)
+}
+
+/// Payload length of a batch whose events add `events_len` bytes in
+/// total. Equals [`encoded_events_len`] for the same events.
+pub(crate) fn batch_payload_len(count: usize, events_len: usize) -> Result<usize, WalError> {
+    let mut size = PAYLOAD_MAGIC.len();
+    size_len(&mut size, count)?;
+    add_size(&mut size, events_len)?;
     Ok(size)
 }
 
@@ -174,7 +192,40 @@ fn write_properties(out: &mut Vec<u8>, properties: &Properties) -> Result<(), Wa
 }
 
 fn write_value(out: &mut Vec<u8>, value: &PropertyValue) -> Result<(), WalError> {
+    write_value_at(out, value, 0)
+}
+
+/// `depth` counts the lists and maps enclosing `value`; see
+/// [`MAX_VALUE_DEPTH`].
+fn write_value_at(out: &mut Vec<u8>, value: &PropertyValue, depth: usize) -> Result<(), WalError> {
     match value {
+        PropertyValue::List(values) => {
+            let depth = enter_container(depth)?;
+            out.push(VALUE_LIST);
+            write_len(out, values.len())?;
+            for value in values {
+                write_value_at(out, value, depth)?;
+            }
+        }
+        PropertyValue::Map(values) => {
+            let depth = enter_container(depth)?;
+            out.push(VALUE_MAP);
+            write_len(out, values.len())?;
+            for (key, value) in values {
+                write_string(out, key)?;
+                write_value_at(out, value, depth)?;
+            }
+        }
+        scalar => write_scalar(out, scalar)?,
+    }
+    Ok(())
+}
+
+/// Every value but lists and maps. Kept out of [`write_value_at`] so
+/// each nesting level costs a small stack frame.
+fn write_scalar(out: &mut Vec<u8>, value: &PropertyValue) -> Result<(), WalError> {
+    match value {
+        PropertyValue::List(_) | PropertyValue::Map(_) => return Err(scalar_expected()),
         PropertyValue::Null => out.push(VALUE_NULL),
         PropertyValue::Bool(value) => {
             out.push(VALUE_BOOL);
@@ -195,21 +246,6 @@ fn write_value(out: &mut Vec<u8>, value: &PropertyValue) -> Result<(), WalError>
         PropertyValue::Binary(value) => {
             out.push(VALUE_BINARY);
             write_binary_segments(out, value.segments())?;
-        }
-        PropertyValue::List(values) => {
-            out.push(VALUE_LIST);
-            write_len(out, values.len())?;
-            for value in values {
-                write_value(out, value)?;
-            }
-        }
-        PropertyValue::Map(values) => {
-            out.push(VALUE_MAP);
-            write_len(out, values.len())?;
-            for (key, value) in values {
-                write_string(out, key)?;
-                write_value(out, value)?;
-            }
         }
         PropertyValue::Date(value) => {
             out.push(VALUE_DATE);
@@ -366,6 +402,22 @@ fn write_binary_segments(out: &mut Vec<u8>, segments: &[Vec<u8>]) -> Result<(), 
     Ok(())
 }
 
+/// Depth of the children of a list or map found at `depth`. Rejects
+/// nesting the decoder would refuse, so the WAL never holds a record that
+/// cannot be replayed.
+fn enter_container(depth: usize) -> Result<usize, WalError> {
+    if depth >= MAX_VALUE_DEPTH {
+        return Err(WalError::Encode(format!(
+            "property value is nested more than {MAX_VALUE_DEPTH} lists or maps deep"
+        )));
+    }
+    Ok(depth + 1)
+}
+
+fn scalar_expected() -> WalError {
+    WalError::Encode("list or map passed to the scalar value encoder".into())
+}
+
 fn write_i8(out: &mut Vec<u8>, value: i8) {
     out.push(value as u8);
 }
@@ -505,26 +557,41 @@ fn size_properties(size: &mut usize, properties: &Properties) -> Result<(), WalE
 }
 
 fn size_value(size: &mut usize, value: &PropertyValue) -> Result<(), WalError> {
+    size_value_at(size, value, 0)
+}
+
+fn size_value_at(size: &mut usize, value: &PropertyValue, depth: usize) -> Result<(), WalError> {
     size_tag(size)?;
     match value {
+        PropertyValue::List(values) => {
+            let depth = enter_container(depth)?;
+            size_len(size, values.len())?;
+            for value in values {
+                size_value_at(size, value, depth)?;
+            }
+        }
+        PropertyValue::Map(values) => {
+            let depth = enter_container(depth)?;
+            size_len(size, values.len())?;
+            for (key, value) in values {
+                size_string(size, key)?;
+                size_value_at(size, value, depth)?;
+            }
+        }
+        scalar => size_scalar(size, scalar)?,
+    }
+    Ok(())
+}
+
+/// Payload size of every value but lists and maps, tag excluded.
+fn size_scalar(size: &mut usize, value: &PropertyValue) -> Result<(), WalError> {
+    match value {
+        PropertyValue::List(_) | PropertyValue::Map(_) => return Err(scalar_expected()),
         PropertyValue::Null => {}
         PropertyValue::Bool(_) => add_size(size, 1)?,
         PropertyValue::Int(_) | PropertyValue::Float(_) => add_size(size, 8)?,
         PropertyValue::String(value) => size_string(size, value)?,
         PropertyValue::Binary(value) => size_binary_segments(size, value.segments())?,
-        PropertyValue::List(values) => {
-            size_len(size, values.len())?;
-            for value in values {
-                size_value(size, value)?;
-            }
-        }
-        PropertyValue::Map(values) => {
-            size_len(size, values.len())?;
-            for (key, value) in values {
-                size_string(size, key)?;
-                size_value(size, value)?;
-            }
-        }
         PropertyValue::Date(_) => add_size(size, 12)?,
         PropertyValue::Time(_) => add_size(size, 20)?,
         PropertyValue::LocalTime(_) => add_size(size, 16)?,
