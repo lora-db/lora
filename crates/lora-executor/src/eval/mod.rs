@@ -38,6 +38,7 @@ mod vector;
 pub use builtins::FulltextPage;
 pub use errors::clear_eval_error;
 pub(crate) use errors::take_eval_error;
+pub(crate) use expr::eval_ref;
 pub use expr::{
     eval_expr, eval_expr_result, eval_projected_result, eval_truthy_result, passes_through,
     EvalContext, Projected, DEADLINE_EXCEEDED,

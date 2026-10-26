@@ -482,7 +482,7 @@ fn is_coalesce(function: lora_analyzer::FunctionId) -> bool {
 /// the whole value: a pattern subquery evaluates its WHERE once per
 /// candidate.
 #[inline]
-fn eval_ref<'r, S: GraphStorage>(
+pub(crate) fn eval_ref<'r, S: GraphStorage>(
     expr: &ResolvedExpr,
     row: &'r Row,
     ctx: &EvalContext<'_, S>,

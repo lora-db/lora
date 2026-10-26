@@ -439,7 +439,7 @@ impl Planner {
         }));
         node = self.push(LogicalOp::Sort(Sort {
             input: node,
-            items: order.to_vec(),
+            items: sort_keys_on_projected_reads(order, items),
             top_k: None,
             limit: None,
         }));
@@ -625,6 +625,55 @@ fn sort_keys_on_outputs(
             match projected.iter().find(|(expr, _)| *expr == shape) {
                 Some((_, output)) => ResolvedSortItem {
                     expr: ResolvedExpr::Variable(*output),
+                    direction: key.direction,
+                },
+                None => key.clone(),
+            }
+        })
+        .collect()
+}
+
+/// Sort keys for a sort over a 1:1 projection that kept its input
+/// bindings: a key that restates a projected property read (`RETURN n.name
+/// ORDER BY n.name`) reads the projected column instead of the property
+/// again. Only property reads are redirected: they evaluate to the same
+/// value on the same row, while an expression in general may not
+/// (`rand()`), and Cypher evaluates each ORDER BY key afresh.
+fn sort_keys_on_projected_reads(
+    order: &[ResolvedSortItem],
+    items: &[ResolvedProjection],
+) -> Vec<ResolvedSortItem> {
+    /// Whether `a` and `b` are the same property read: `v.k`, `v.k.j`, ...
+    fn same_property_read(a: &ResolvedExpr, b: &ResolvedExpr) -> bool {
+        match (a, b) {
+            (
+                ResolvedExpr::Property {
+                    expr: a,
+                    property: pa,
+                },
+                ResolvedExpr::Property {
+                    expr: b,
+                    property: pb,
+                },
+            ) => {
+                pa == pb
+                    && match (&**a, &**b) {
+                        (ResolvedExpr::Variable(va), ResolvedExpr::Variable(vb)) => va == vb,
+                        (a, b) => same_property_read(a, b),
+                    }
+            }
+            _ => false,
+        }
+    }
+    order
+        .iter()
+        .map(|key| {
+            let projected = items
+                .iter()
+                .find(|item| same_property_read(&item.expr, &key.expr));
+            match projected {
+                Some(item) => ResolvedSortItem {
+                    expr: ResolvedExpr::Variable(item.output),
                     direction: key.direction,
                 },
                 None => key.clone(),

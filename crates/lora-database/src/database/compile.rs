@@ -279,4 +279,34 @@ mod tests {
         assert!(!Arc::ptr_eq(&current, &old));
         assert!(Arc::ptr_eq(&current, &plan(&db, query)));
     }
+
+    fn sort_keys(plan: &CompiledQuery) -> Vec<lora_analyzer::ResolvedExpr> {
+        plan.physical
+            .nodes
+            .iter()
+            .find_map(|op| match op {
+                lora_compiler::PhysicalOp::Sort(sort) => {
+                    Some(sort.items.iter().map(|item| item.expr.clone()).collect())
+                }
+                _ => None,
+            })
+            .expect("plan sorts")
+    }
+
+    #[test]
+    fn sort_key_restating_a_projected_property_reads_the_column() {
+        use lora_analyzer::ResolvedExpr;
+        let db = Database::in_memory();
+        seed(&db);
+        let keys = sort_keys(&plan(
+            &db,
+            "MATCH (p:Person) RETURN p.name AS name ORDER BY p.name DESC, p.id LIMIT 3",
+        ));
+        assert!(matches!(keys[0], ResolvedExpr::Variable(_)), "{keys:?}");
+        // Not projected: still read from the node.
+        assert!(matches!(keys[1], ResolvedExpr::Property { .. }), "{keys:?}");
+        // An arbitrary expression is evaluated afresh, as Cypher requires.
+        let keys = sort_keys(&plan(&db, "RETURN rand() AS r ORDER BY rand()"));
+        assert!(matches!(keys[0], ResolvedExpr::Function { .. }), "{keys:?}");
+    }
 }
