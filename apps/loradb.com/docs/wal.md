@@ -75,7 +75,8 @@ loop keeps serving timers and requests while a large database loads.
 Use `openWalDatabase` when you want a raw WAL directory instead of a
 portable `.loradb` archive. Pair it with `snapshotDir` to let the
 database write managed checkpoints every `snapshotEveryCommits`
-committed transactions. Node does not expose WAL status or truncate
+committed transactions, and in any case each time the WAL has grown by
+64 MiB or by the snapshot's size, whichever is larger. Without `snapshotDir` nothing is checkpointed automatically. Node does not expose WAL status or truncate
 helpers yet; use Rust or `lora-server` for those operator controls.
 
 ### Python
@@ -330,6 +331,12 @@ every 50 ms, so a power loss or kernel crash can lose up to that much
 acknowledged work. A process crash alone loses nothing that was already
 written to the OS.
 
+A change feed on a WAL-backed database only delivers a commit once it is
+fsynced, because a commit lost in a crash would have its LSN reused by the
+next write after the restart. The feed asks for the fsync straight away, so
+an occasional write reaches the feed after one fsync; under a steady stream
+of writes batches trail the commit by up to the group interval.
+
 For checkpointed deployments, call `sync()` when you need an immediate
 durability point. On a named `.loradb` database `sync()` is also the
 checkpoint: it writes the graph as the archive's base snapshot, streamed so it
@@ -337,7 +344,12 @@ holds no second copy of the graph, and drops the WAL segments that snapshot
 covers. A change feed can then resume only from the last `sync()` on. An open
 that replays more WAL than its snapshot holds, and at least 64 MiB of it,
 takes the same checkpoint before it returns, so the next open loads the
-snapshot instead of replaying the log again. A checkpoint snapshot is stamped with the WAL's current
+snapshot instead of replaying the log again. A named database also takes
+that checkpoint on its own, on a background thread, each time its WAL has grown
+by 64 MiB since the last one, or by the size of its snapshot when that is
+larger (`DatabaseOpenOptions::checkpoint_wal_bytes`, 0 turns it off), so a
+process that never calls `sync()` does not keep every segment and a bulk load
+into a large graph does not rewrite the snapshot over and over. A checkpoint snapshot is stamped with the WAL's current
 `durableLsn`; in `group-sync` mode that fence
 can trail the newest writes until the background fsync catches up.
 
@@ -406,11 +418,17 @@ one just before it are always kept.
 
 ## Boundaries
 
-- **Checkpoint automation is commit-count based, not time/background
-  based.** Explicit WAL helpers in Node, Python, Go, and Ruby can write
-  managed snapshots after N committed transactions. Rust and
-  `lora-server` expose explicit checkpoint calls. There is no
-  wall-clock scheduler built into the engine.
+- **Checkpoint automation is by WAL size and commit count, not by time.**
+  Named databases and managed snapshots checkpoint on a background thread
+  each time the WAL has grown by 64 MiB, or by the size of the current
+  snapshot when that is larger (`checkpoint_wal_bytes` in Rust; the
+  bindings use the default). Explicit WAL helpers in Node, Python, Go, and
+  Ruby can also write managed snapshots after N committed transactions. A
+  plain WAL directory with no snapshot directory, which is what `lora-server
+  --wal-dir` opens, has nowhere to put a snapshot: it keeps every segment
+  until `POST /admin/checkpoint` or a checkpoint call, and logs one warning
+  once it passes 64 MiB. There is no wall-clock scheduler built into the
+  engine.
 - **No auth on the admin surface.** Snapshot and WAL admin routes are
   off by default but unauthenticated when enabled. Put them behind
   authenticated ingress only.

@@ -4,6 +4,7 @@
 
 pub(crate) mod admin;
 pub(crate) mod archive;
+pub(crate) mod auto_checkpoint;
 pub(crate) mod write_scope;
 
 pub use admin::{WalAdmin, WalStatus};

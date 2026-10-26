@@ -680,6 +680,128 @@ fn named_database_sync_drops_the_wal_its_snapshot_covers() {
     assert_eq!(json["rows"], serde_json::json!([{"id": 7}]));
 }
 
+/// A long-running process that never calls `sync()` must not keep every
+/// WAL segment: once the WAL has grown by `checkpoint_wal_bytes` the
+/// database checkpoints on its own.
+#[test]
+fn named_database_checkpoints_by_wal_size_without_sync() {
+    let dir = TmpDir::new("named-auto-checkpoint");
+    let sidecar = dir.path().join("app.loradb.wal");
+    let options = |checkpoint_wal_bytes| DatabaseOpenOptions {
+        segment_target_bytes: 4 * 1024,
+        checkpoint_wal_bytes,
+        ..DatabaseOpenOptions::default().with_database_dir(dir.path())
+    };
+    let segments = || {
+        std::fs::read_dir(&sidecar)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().extension() == Some("wal".as_ref()))
+            .count()
+    };
+    let write = |db: &Database<lora_database::InMemoryGraph>, ids: std::ops::Range<u32>| {
+        for i in ids {
+            db.execute(
+                &format!("CREATE (:N {{id: {i}, pad: 'xxxxxxxxxxxxxxxx'}})"),
+                rows(),
+            )
+            .unwrap();
+        }
+    };
+
+    {
+        // Off: the WAL keeps growing.
+        let db = Database::open_named("app", options(0)).unwrap();
+        write(&db, 0..400);
+        assert!(segments() > 10, "{} segments", segments());
+    }
+
+    {
+        let db = Database::open_named("app", options(32 * 1024)).unwrap();
+        write(&db, 400..800);
+        // The checkpoint runs on its own thread; wait for its snapshot.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while segments() > 12 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(segments() <= 12, "{} segments", segments());
+        assert!(sidecar.join("snapshot.lsnap").is_file());
+        write(&db, 800..810);
+    }
+
+    let db = Database::open_named("app", options(32 * 1024)).unwrap();
+    assert_eq!(db.node_count(), 810);
+}
+
+/// Each checkpoint rewrites the whole snapshot, so the trigger is never
+/// below the snapshot's size: a bulk load into a large graph must not
+/// rewrite it back to back every `checkpoint_wal_bytes`.
+#[test]
+fn named_database_wal_size_trigger_is_at_least_the_snapshot_size() {
+    let dir = TmpDir::new("named-auto-checkpoint-base");
+    let sidecar = dir.path().join("app.loradb.wal");
+    let snapshot = sidecar.join("snapshot.lsnap");
+    let options = |checkpoint_wal_bytes| DatabaseOpenOptions {
+        segment_target_bytes: 4 * 1024,
+        checkpoint_wal_bytes,
+        ..DatabaseOpenOptions::default().with_database_dir(dir.path())
+    };
+    let wal_bytes = || -> u64 {
+        std::fs::read_dir(&sidecar)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension() == Some("wal".as_ref()))
+            .map(|p| std::fs::metadata(p).unwrap().len())
+            .sum()
+    };
+    let modified = || std::fs::metadata(&snapshot).unwrap().modified().unwrap();
+    let mut next_id = 0u32;
+    let mut write = |db: &Database<lora_database::InMemoryGraph>, n: u32| {
+        for _ in 0..n {
+            db.execute(
+                &format!(
+                    "CREATE (:N {{id: {next_id}, pad: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'}})"
+                ),
+                rows(),
+            )
+            .unwrap();
+            next_id += 1;
+        }
+    };
+
+    {
+        let db = Database::open_named("app", options(0)).unwrap();
+        write(&db, 3000);
+        db.sync().unwrap();
+    }
+
+    let db = Database::open_named("app", options(4 * 1024)).unwrap();
+    let base = std::fs::metadata(&snapshot).unwrap().len();
+    assert!(base > 16 * 1024, "{base} byte snapshot");
+    let before = modified();
+    let start = wal_bytes();
+
+    // Many times 4 KiB of WAL, but less than the snapshot: no checkpoint.
+    while wal_bytes() < start + base / 2 {
+        write(&db, 20);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert_eq!(modified(), before, "checkpointed below the snapshot size");
+
+    // Past the snapshot's size it checkpoints.
+    while wal_bytes() < start + base + base / 2 {
+        write(&db, 20);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while modified() == before && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_ne!(modified(), before, "no checkpoint past the snapshot size");
+    drop(db);
+
+    let db = Database::open_named("app", options(4 * 1024)).unwrap();
+    assert_eq!(db.node_count(), next_id as usize);
+}
+
 #[test]
 fn named_database_final_archive_flush_captures_group_buffer() {
     let dir = TmpDir::new("named-group-final-flush");

@@ -236,6 +236,11 @@ Resuming:
   covers, so history starts at the last `sync()`.
 - An LSN the database no longer retains fails with
   `LORA_CHANGES_TRUNCATED`: start a new feed and re-read current state.
+- On a WAL-backed database a batch is delivered once its commit is durable
+  (fsynced), so a crash can never take back an LSN a consumer has seen. The
+  feed asks for the fsync at once; under a steady stream of writes batches
+  trail the commit by up to the WAL sync interval (50 ms by default, 1 s
+  for a named database).
 
 Writers never wait for a feed. Each feed buffers up to `bufferSize` batches
 (default 1024); a consumer that falls further behind receives the buffered

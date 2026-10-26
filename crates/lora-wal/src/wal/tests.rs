@@ -1022,3 +1022,73 @@ fn truncate_corrupt_tail_in_a_sealed_segment_moves_later_segments_aside() {
     expected.push(ev(1000));
     assert_eq!(events, expected);
 }
+
+#[test]
+fn requested_fsync_reports_the_durable_lsn_before_the_interval() {
+    let dir = TmpDir::new("request-fsync");
+    // The interval is a minute: only the request can make this durable.
+    let (wal, _) = open_default(&dir.path);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let tx = std::sync::Mutex::new(tx);
+    wal.set_durable_listener(Some(Arc::new(move |lsn: Lsn| {
+        let _ = tx.lock().unwrap().send(lsn);
+    })));
+    let commit = wal.commit_tx_lsn(vec![ev(1)]).unwrap().unwrap();
+    assert!(wal.durable_lsn() < commit);
+    wal.request_fsync();
+    let durable = rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+    assert!(durable >= commit);
+    assert_eq!(wal.durable_lsn(), durable);
+}
+
+#[test]
+fn held_fsync_keeps_the_durable_lsn() {
+    let dir = TmpDir::new("hold-fsync");
+    let (wal, _) = open_default(&dir.path);
+    wal.hold_fsync_for_tests(true);
+    let commit = wal.commit_tx_lsn(vec![ev(1)]).unwrap().unwrap();
+    wal.force_fsync().unwrap();
+    assert!(wal.durable_lsn() < commit);
+    wal.hold_fsync_for_tests(false);
+    wal.force_fsync().unwrap();
+    assert_eq!(wal.durable_lsn(), commit);
+}
+
+#[test]
+fn bytes_since_checkpoint_counts_commits_until_truncation() {
+    let dir = TmpDir::new("growth");
+    let (wal, _) = open_default(&dir.path);
+    assert_eq!(wal.bytes_since_checkpoint(), 0);
+    write_txs(&wal, 0..10);
+    let grown = wal.bytes_since_checkpoint();
+    assert!(grown > 0);
+    write_txs(&wal, 10..20);
+    assert!(wal.bytes_since_checkpoint() > grown);
+    wal.truncate_up_to(wal.durable_lsn()).unwrap();
+    assert_eq!(wal.bytes_since_checkpoint(), 0);
+}
+
+#[test]
+fn growth_listener_fires_once_the_threshold_is_reached() {
+    let dir = TmpDir::new("growth-listener");
+    let (wal, _) = open_default(&dir.path);
+    let fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = fired.clone();
+    wal.set_growth_listener(
+        4096,
+        Some(Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })),
+    );
+    let mut id = 0;
+    while wal.bytes_since_checkpoint() < 4096 {
+        assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 0);
+        write_txs(&wal, id..id + 1);
+        id += 1;
+    }
+    assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
+    wal.mark_checkpoint();
+    write_txs(&wal, id..id + 1);
+    assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
+    wal.set_growth_listener(0, None);
+}

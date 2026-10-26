@@ -31,6 +31,7 @@ use crate::named::{DatabaseName, DatabaseOpenOptions};
 use crate::plan_cache::PlanCache;
 use crate::snapshot::{ManagedSnapshotStore, SnapshotConfig};
 use crate::wal::archive::WalArchive;
+use crate::wal::auto_checkpoint::{AutoCheckpoint, CheckpointTarget};
 
 use super::replay::open_wal_into;
 
@@ -69,7 +70,7 @@ impl Database<InMemoryGraph> {
                     truncate_corrupt_tail,
                 )?;
                 let recorder = Arc::new(WalRecorder::new(wal));
-                Ok(Self::from_graph_with_wal(graph, recorder, None, None))
+                Ok(Self::from_graph_with_wal(graph, recorder, None, None, 0))
             }
         }
     }
@@ -111,11 +112,13 @@ impl Database<InMemoryGraph> {
                     truncate_corrupt_tail,
                 )?;
                 let recorder = Arc::new(WalRecorder::new(wal));
+                let checkpoint_wal_bytes = snapshot_store.checkpoint_wal_bytes();
                 Ok(Self::from_graph_with_wal(
                     graph,
                     recorder,
                     Some(snapshot_store),
                     None,
+                    checkpoint_wal_bytes,
                 ))
             }
         }
@@ -161,7 +164,13 @@ impl Database<InMemoryGraph> {
         let mirror: Arc<dyn WalMirror> = archive.clone();
         let recorder = Arc::new(WalRecorder::new_with_mirror(wal, Some(mirror)));
         let wal_bytes = archive.wal_bytes()?;
-        let db = Self::from_graph_with_wal(graph, recorder.clone(), None, Some(archive));
+        let db = Self::from_graph_with_wal(
+            graph,
+            recorder.clone(),
+            None,
+            Some(archive),
+            options.checkpoint_wal_bytes,
+        );
         if wal_bytes >= options.compact_on_open_wal_bytes && wal_bytes > snapshot_bytes {
             // The next open would replay this log again: checkpoint now,
             // which also rewrites the container as the snapshot and the
@@ -248,28 +257,47 @@ impl Database<InMemoryGraph> {
                     truncate_corrupt_tail,
                 )?;
                 let recorder = Arc::new(WalRecorder::new(wal));
-                Ok(Self::from_graph_with_wal(graph, recorder, None, None))
+                Ok(Self::from_graph_with_wal(graph, recorder, None, None, 0))
             }
         }
     }
 
     /// Install the durable recorder on `graph` and assemble the
     /// `Database` envelope. Shared by every WAL-backed constructor.
+    /// `checkpoint_wal_bytes` is the automatic checkpoint size for a
+    /// database with a snapshot location (0 turns it off); one without
+    /// only warns when its WAL grows past the default size.
     fn from_graph_with_wal(
         mut graph: InMemoryGraph,
         recorder: Arc<WalRecorder>,
         snapshots: Option<Arc<ManagedSnapshotStore>>,
         named_archive: Option<Arc<WalArchive>>,
+        checkpoint_wal_bytes: u64,
     ) -> Self {
         graph.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
+        let store = Arc::new(LiveStore::new(Arc::new(graph)));
+        let writer = Arc::new(Mutex::new(()));
+        let target = match (&snapshots, &named_archive) {
+            (Some(snapshots), _) => CheckpointTarget::Managed(snapshots.clone()),
+            (None, Some(archive)) => CheckpointTarget::Named(archive.clone()),
+            (None, None) => CheckpointTarget::None,
+        };
+        let auto_checkpoint = AutoCheckpoint::install(
+            checkpoint_wal_bytes,
+            target,
+            store.clone(),
+            writer.clone(),
+            recorder.clone(),
+        );
         Self {
-            store: Arc::new(LiveStore::new(Arc::new(graph))),
-            writer: Arc::new(Mutex::new(())),
+            store,
+            writer,
             wal: Some(recorder),
             snapshots,
             named_archive,
             plan_cache: Arc::new(PlanCache::new()),
             changes: Arc::new(crate::changes::ChangeHub::default()),
+            auto_checkpoint,
         }
     }
 }
@@ -288,6 +316,7 @@ where
             named_archive: None,
             plan_cache: Arc::new(PlanCache::new()),
             changes: Arc::new(crate::changes::ChangeHub::default()),
+            auto_checkpoint: None,
         }
     }
 

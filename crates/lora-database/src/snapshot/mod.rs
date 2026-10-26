@@ -17,7 +17,7 @@ pub(crate) mod store;
 
 pub use json::{snapshot_credentials_from_json, snapshot_options_from_json};
 pub(crate) use store::ManagedSnapshotStore;
-pub use store::SnapshotConfig;
+pub use store::{SnapshotConfig, DEFAULT_CHECKPOINT_WAL_BYTES};
 
 use std::fs::OpenOptions;
 use std::io::{BufReader, Write};
@@ -520,9 +520,12 @@ impl Database<InMemoryGraph> {
             )
         })?;
         let guard = self.write_store();
-        snapshots
-            .checkpoint(guard.staged_or_error()?, recorder)
-            .map_err(Into::into)
+        let meta = snapshots.checkpoint(guard.staged_or_error()?, recorder)?;
+        drop(guard);
+        if let Some(auto) = &self.auto_checkpoint {
+            auto.refresh_threshold();
+        }
+        Ok(meta)
     }
 }
 
