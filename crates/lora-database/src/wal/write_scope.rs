@@ -23,10 +23,16 @@ pub(crate) enum WalAbortPolicy {
 /// this scope owns database policy: whether a failed partial write poisons the
 /// live graph and when managed snapshot accounting should be triggered.
 ///
+/// If the closure panics, dropping the scope during unwinding aborts the
+/// armed recorder under the same policy as a failed write, so the next
+/// write can arm it again instead of poisoning the WAL.
+///
 /// [`finish`]: Self::finish
 pub(crate) struct WalWriteScope<'a> {
     recorder: &'a WalRecorder,
     abort_policy: WalAbortPolicy,
+    /// Cleared once the caller settled the recorder.
+    armed: bool,
 }
 
 impl<'a> WalWriteScope<'a> {
@@ -35,7 +41,14 @@ impl<'a> WalWriteScope<'a> {
         Ok(Self {
             recorder,
             abort_policy,
+            armed: true,
         })
+    }
+
+    /// Hand the armed recorder back to a caller that commits or aborts it
+    /// itself. Call it once the mutating closure returned.
+    pub(crate) fn release(mut self) {
+        self.armed = false;
     }
 
     /// Finish the armed WAL scope.
@@ -46,10 +59,11 @@ impl<'a> WalWriteScope<'a> {
     /// With `capture`, a written commit also hands back its commit LSN and
     /// events for the change feed.
     pub(crate) fn finish<R>(
-        self,
+        mut self,
         result: &Result<R>,
         capture: bool,
     ) -> Result<(bool, Option<CapturedCommit>)> {
+        self.armed = false;
         let outcome = match result {
             Ok(_) if capture => {
                 let captured = self.recorder.commit_capture()?;
@@ -63,6 +77,15 @@ impl<'a> WalWriteScope<'a> {
         };
         ensure_wal_not_poisoned(self.recorder)?;
         Ok(outcome)
+    }
+}
+
+impl Drop for WalWriteScope<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            // Only reached when the mutating closure unwound.
+            let _ = abort_armed(self.recorder, self.abort_policy);
+        }
     }
 }
 
