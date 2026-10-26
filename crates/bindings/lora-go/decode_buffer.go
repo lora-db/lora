@@ -308,3 +308,35 @@ func decodeBuffer(buf []byte) (result *Result, err error) {
 
 	return &Result{Columns: columns, Rows: rows}, nil
 }
+
+// decodeTransactionBuffer parses a lora_db_transaction_buffer payload:
+// "LRT\0", a u32 result count, then per result a u32 length and an
+// lora-binding-buffer result.
+func decodeTransactionBuffer(buf []byte) (results []*Result, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			results = nil
+			err = fmt.Errorf("lora: decode transaction buffer: %v", rec)
+		}
+	}()
+
+	if len(buf) < 8 || buf[0] != 'L' || buf[1] != 'R' || buf[2] != 'T' || buf[3] != 0x00 {
+		return nil, fmt.Errorf("lora: invalid transaction buffer")
+	}
+	r := &reader{buf: buf, off: 4}
+	count := int(r.u32())
+	results = make([]*Result, 0, count)
+	for i := 0; i < count; i++ {
+		n := int(r.u32())
+		result, err := decodeBuffer(buf[r.off : r.off+n])
+		if err != nil {
+			return nil, fmt.Errorf("lora: decode transaction result %d: %w", i, err)
+		}
+		r.off += n
+		results = append(results, result)
+	}
+	if r.off != len(buf) {
+		return nil, fmt.Errorf("lora: transaction buffer has %d trailing bytes", len(buf)-r.off)
+	}
+	return results, nil
+}

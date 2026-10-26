@@ -8,8 +8,9 @@ pub mod app;
 pub mod config;
 
 pub use app::{
-    build_app, build_app_with_admin, serve, serve_with_admin, AdminConfig, ErrorResponse,
-    HealthResponse, QueryFormat, QueryRequest, SnapshotAdminConfig, SnapshotRequest,
-    SnapshotResponse, WalStatusResponse, WalTruncateRequest,
+    build_app, build_app_with, build_app_with_admin, default_max_concurrent_queries, serve,
+    serve_with, serve_with_admin, AdminConfig, ErrorResponse, HealthResponse, QueryFormat,
+    QueryLimits, QueryRequest, SnapshotAdminConfig, SnapshotRequest, SnapshotResponse,
+    WalStatusResponse, WalTruncateRequest, DEFAULT_MAX_BODY_BYTES, DEFAULT_QUERY_TIMEOUT_MS,
 };
 pub use config::{ConfigError, ConfigOutcome, ServerConfig};

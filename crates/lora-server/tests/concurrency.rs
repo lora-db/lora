@@ -1,13 +1,11 @@
 //! Concurrent writes never stall the server.
 //!
-//! The binary serves every request on one current-thread tokio runtime
-//! (`main.rs`) and each handler runs its query synchronously, with no
-//! `.await` while the engine holds the writer lock. So a write never waits
-//! for a lock held by another request: requests run one after another, and
-//! health checks and reads are answered between them. This guard starts the
-//! server on the same runtime shape, sends many concurrent writes plus reads
-//! and health checks from client threads, and fails (instead of hanging)
-//! if they do not all finish in time.
+//! Each handler runs its engine call on tokio's blocking pool, so a write
+//! waiting for the writer lock blocks a pool thread, never an async worker.
+//! This guard runs the server on a current-thread runtime (the narrowest
+//! shape, where a blocked worker would stall everything), sends many
+//! concurrent writes plus reads and health checks from client threads, and
+//! fails (instead of hanging) if they do not all finish in time.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -19,8 +17,8 @@ use std::time::Duration;
 use lora_database::Database;
 use lora_server::serve;
 
-/// Start `serve` on its own thread with a current-thread runtime, as
-/// `main.rs` does, and return the bound address.
+/// Start `serve` on its own thread with a current-thread runtime and
+/// return the bound address.
 fn start_server(db: Arc<Database<lora_database::InMemoryGraph>>) -> SocketAddr {
     let (addr_tx, addr_rx) = mpsc::channel();
     thread::spawn(move || {

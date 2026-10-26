@@ -239,3 +239,51 @@ fn empty_host_rejected() {
     let err = resolve(args(&["--host", "   "]), EnvInputs::default()).unwrap_err();
     assert_eq!(err, ConfigError::EmptyValue("--host"));
 }
+
+#[test]
+fn query_limit_flags_parse_from_cli_and_env() {
+    let cfg = run_cfg(resolve(args(&[]), EnvInputs::default()).unwrap());
+    assert_eq!(cfg.query_timeout_ms, super::DEFAULT_QUERY_TIMEOUT_MS);
+    assert_eq!(cfg.max_body_bytes, super::DEFAULT_MAX_BODY_BYTES);
+    assert!(cfg.max_concurrent_queries > 0);
+    assert_eq!(cfg.admin_path_root, None);
+
+    let cfg = run_cfg(
+        resolve(
+            args(&[
+                "--query-timeout-ms",
+                "0",
+                "--max-concurrent-queries=3",
+                "--admin-path-root",
+                "/srv/lora",
+            ]),
+            EnvInputs {
+                query_timeout_ms: Some("5000".into()),
+                max_body_bytes: Some("1024".into()),
+                ..EnvInputs::default()
+            },
+        )
+        .unwrap(),
+    );
+    assert_eq!(cfg.query_timeout_ms, 0);
+    assert_eq!(cfg.max_concurrent_queries, 3);
+    assert_eq!(cfg.max_body_bytes, 1024);
+    assert_eq!(
+        cfg.admin_path_root,
+        Some(std::path::PathBuf::from("/srv/lora"))
+    );
+}
+
+#[test]
+fn invalid_query_limit_rejected() {
+    let err = resolve(args(&["--query-timeout-ms", "soon"]), EnvInputs::default()).unwrap_err();
+    assert!(matches!(
+        err,
+        ConfigError::InvalidNumber {
+            flag: "--query-timeout-ms",
+            ..
+        }
+    ));
+    let err = resolve(args(&["--max-body-bytes", " "]), EnvInputs::default()).unwrap_err();
+    assert_eq!(err, ConfigError::EmptyValue("--max-body-bytes"));
+}

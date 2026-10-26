@@ -5,6 +5,9 @@ use std::fmt;
 use std::mem::MaybeUninit;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+
+use lora_database::CancellableDeadline;
 
 /// Calls running with the GVL released right now, process-wide.
 static RELEASED: AtomicUsize = AtomicUsize::new(0);
@@ -86,6 +89,41 @@ where
     F: Send,
     R: Send,
 {
+    call_without_gvl(f, None)
+}
+
+/// [`without_gvl`] for a query bounded by `cancel`: when Ruby interrupts
+/// the thread (`Thread#raise`, `Thread#kill`, `Timeout.timeout`, Ctrl-C)
+/// its unblock function cancels the query, which then stops at its next
+/// check point, rolls back, and releases its locks before this returns.
+pub(crate) fn without_gvl_cancellable<F, R>(
+    f: F,
+    cancel: &Mutex<CancellableDeadline>,
+) -> Result<R, GvlPanic>
+where
+    F: FnOnce() -> R,
+    F: Send,
+    R: Send,
+{
+    call_without_gvl(f, Some(cancel))
+}
+
+/// Ruby's unblock function for [`without_gvl_cancellable`]. Runs on the
+/// interrupting thread while the query thread is GVL-free, so it only
+/// touches the (Rust) cancellation state.
+unsafe extern "C" fn cancel_query(data: *mut c_void) {
+    let cancel = &*(data as *const Mutex<CancellableDeadline>);
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        cancel.lock().unwrap_or_else(|p| p.into_inner()).cancel();
+    }));
+}
+
+fn call_without_gvl<F, R>(f: F, cancel: Option<&Mutex<CancellableDeadline>>) -> Result<R, GvlPanic>
+where
+    F: FnOnce() -> R,
+    F: Send,
+    R: Send,
+{
     struct Data<F, R> {
         func: Option<F>,
         result: MaybeUninit<std::thread::Result<R>>,
@@ -113,14 +151,21 @@ where
     let _released = Released::enter();
 
     unsafe {
+        // Without a cancellation handle there is no unblock function: the
+        // call cannot be stopped early, and a forced longjmp out of a
+        // mutex-holding section would be worse than waiting.
+        let (ubf, ubf_data) = match cancel {
+            Some(cancel) => (
+                Some(cancel_query as unsafe extern "C" fn(*mut c_void)),
+                cancel as *const Mutex<CancellableDeadline> as *mut c_void,
+            ),
+            None => (None, std::ptr::null_mut()),
+        };
         rb_sys::rb_thread_call_without_gvl(
             Some(trampoline::<F, R>),
             &mut data as *mut _ as *mut c_void,
-            // No unblock function — the engine doesn't implement
-            // cooperative cancellation, and a forced longjmp out of a
-            // mutex-holding section would be worse than waiting.
-            None,
-            std::ptr::null_mut(),
+            ubf,
+            ubf_data,
         );
         data.result.assume_init().map_err(GvlPanic::new)
     }

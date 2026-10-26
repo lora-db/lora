@@ -27,6 +27,7 @@ thread and pulls its rows from the native stream's own thread.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextvars
 import functools
 import queue
@@ -148,6 +149,37 @@ class _Openers:
 _openers = _Openers()
 
 
+# Rows a stream pull fetches at once in ``AsyncDatabase.stream``.
+_STREAM_BATCH_ROWS = 256
+
+_pullers: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_pullers_lock = threading.Lock()
+
+
+def _puller_pool() -> concurrent.futures.ThreadPoolExecutor:
+    """Threads that pull read-only stream batches off the event loop.
+
+    A pool of its own rather than the loop's default executor: a pull that
+    is still running when its coroutine is cancelled must close the stream
+    once it finishes (see ``AsyncDatabase.stream``), which needs the
+    ``concurrent.futures.Future`` of the pull.
+    """
+    global _pullers
+    with _pullers_lock:
+        if _pullers is None:
+            _pullers = concurrent.futures.ThreadPoolExecutor(
+                thread_name_prefix="lora-stream-pull"
+            )
+        return _pullers
+
+
+def _close_after(stream: Any) -> Callable[[Any], None]:
+    def close(_done: Any) -> None:
+        stream.close()
+
+    return close
+
+
 class AsyncDatabase:
     """asyncio-compatible handle to a Lora database.
 
@@ -227,7 +259,9 @@ class AsyncDatabase:
         native thread may run a chunk of rows ahead of the iteration, but
         commits only once the iteration reaches the end. A read-only
         stream reads a snapshot and never waits for a lock, so it opens
-        on the event loop. A mutating stream takes the writer lock when it
+        on the event loop; its rows are pulled in batches on a worker
+        thread (a pull can take long: the first row of a sort or an
+        aggregation does all the work), never on the loop. A mutating stream takes the writer lock when it
         opens: if the lock is busy, it waits for it on a thread of its own
         (``_open_stream``), never on the loop. It holds the lock until it
         is exhausted (commit) or closed early (rollback: ``break``, an
@@ -245,12 +279,32 @@ class AsyncDatabase:
             opened = loop.create_future()
             _openers.submit(functools.partial(_open_stream, stream, loop, opened))
             stream = await opened
+        in_flight: Optional["concurrent.futures.Future[Any]"] = None
         try:
-            for row in stream:
-                yield row
-                await asyncio.sleep(0)
+            while True:
+                if stream._mutating:
+                    # The actor already ran ahead; this only takes rows it
+                    # produced. Kept off the executor: writers queued there
+                    # wait for the lock this stream holds.
+                    batch = stream._next_batch(_STREAM_BATCH_ROWS)
+                else:
+                    in_flight = _puller_pool().submit(
+                        stream._next_batch, _STREAM_BATCH_ROWS
+                    )
+                    batch = await asyncio.wrap_future(in_flight)
+                    in_flight = None
+                if not batch:
+                    break
+                for row in batch:
+                    yield row
+                    await asyncio.sleep(0)
         finally:
-            stream.close()
+            if in_flight is not None and not in_flight.done():
+                # Cancelled mid-pull: the stream is busy on the worker
+                # thread, so close it once the pull returns.
+                in_flight.add_done_callback(_close_after(stream))
+            else:
+                stream.close()
 
     async def transaction(
         self,

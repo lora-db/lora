@@ -559,15 +559,25 @@ func (db *Database) stream(query string, paramsJSON []byte) (*RowIterator, error
 
 	it := &RowIterator{handle: outStream}
 	runtime.SetFinalizer(it, func(it *RowIterator) {
-		_ = it.Close()
+		// Freeing an unfinished mutating stream waits for its in-flight
+		// pull, which can be a whole aggregation. Do it off Go's single
+		// finalizer goroutine so other finalizers keep running.
+		go it.Close()
 	})
 	return it, nil
 }
+
+// streamBatchRows is how many rows one native pull fetches. A mutating
+// stream's batch is cut short at the rows its writer has produced, so the
+// pull that commits is still the one past the last row.
+const streamBatchRows = 256
 
 // RowIterator pulls rows from a native Lora query stream.
 type RowIterator struct {
 	mu      sync.Mutex
 	handle  *C.LoraQueryStream
+	batch   []Row
+	pos     int
 	current Row
 	err     error
 }
@@ -605,12 +615,28 @@ func (it *RowIterator) Columns() ([]string, error) {
 func (it *RowIterator) Next() bool {
 	it.mu.Lock()
 	defer it.mu.Unlock()
-	if it.handle == nil {
-		return false
+	for {
+		if it.pos < len(it.batch) {
+			it.current = it.batch[it.pos]
+			it.batch[it.pos] = nil
+			it.pos++
+			return true
+		}
+		it.batch, it.pos = nil, 0
+		if it.handle == nil || !it.pullBatch() {
+			return false
+		}
 	}
-	var outResult *C.char
+}
+
+// pullBatch fetches the next batch of rows into it.batch. It returns false
+// at the end of the stream or on an error (recorded in it.err), after
+// freeing the native stream. The caller holds it.mu.
+func (it *RowIterator) pullBatch() bool {
+	var outBytes *C.uint8_t
+	var outLen C.size_t
 	var outError *C.char
-	status := C.lora_stream_next_json(it.handle, &outResult, &outError)
+	status := C.lora_stream_next_buffer(it.handle, C.size_t(streamBatchRows), &outBytes, &outLen, &outError)
 	if status != C.LORA_STATUS_OK {
 		defer func() {
 			if outError != nil {
@@ -622,21 +648,21 @@ func (it *RowIterator) Next() bool {
 		it.handle = nil
 		return false
 	}
-	if outResult == nil {
+	if outBytes == nil {
 		C.lora_stream_free(it.handle)
 		it.handle = nil
 		runtime.SetFinalizer(it, nil)
 		return false
 	}
-	defer C.lora_string_free(outResult)
-	row, err := decodeRow(C.GoString(outResult))
+	defer C.lora_bytes_free(outBytes, outLen)
+	result, err := decodeBuffer(unsafe.Slice((*byte)(unsafe.Pointer(outBytes)), int(outLen)))
 	if err != nil {
 		it.err = err
 		C.lora_stream_free(it.handle)
 		it.handle = nil
 		return false
 	}
-	it.current = row
+	it.batch = result.Rows
 	return true
 }
 
@@ -663,6 +689,7 @@ func (it *RowIterator) Close() error {
 		C.lora_stream_free(it.handle)
 		it.handle = nil
 	}
+	it.batch, it.pos = nil, 0
 	runtime.SetFinalizer(it, nil)
 	return nil
 }
@@ -721,23 +748,27 @@ func (db *Database) transaction(statementsJSON []byte, mode TransactionMode) ([]
 		defer C.free(unsafe.Pointer(cMode))
 	}
 
-	var outResult *C.char
+	var outBytes *C.uint8_t
+	var outLen C.size_t
 	var outError *C.char
-	status := C.lora_db_transaction_json(db.handle, cStatements, cMode, &outResult, &outError)
+	status := C.lora_db_transaction_buffer(db.handle, cStatements, cMode, &outBytes, &outLen, &outError)
 	if status != C.LORA_STATUS_OK {
 		defer func() {
 			if outError != nil {
 				C.lora_string_free(outError)
 			}
-			if outResult != nil {
-				C.lora_string_free(outResult)
+			if outBytes != nil {
+				C.lora_bytes_free(outBytes, outLen)
 			}
 		}()
 		return nil, statusToError(int(status), outError)
 	}
 
-	defer C.lora_string_free(outResult)
-	return decodeTransactionResults(C.GoString(outResult))
+	defer C.lora_bytes_free(outBytes, outLen)
+	if outBytes == nil {
+		return nil, fmt.Errorf("lora: transaction returned an empty buffer")
+	}
+	return decodeTransactionBuffer(unsafe.Slice((*byte)(unsafe.Pointer(outBytes)), int(outLen)))
 }
 
 // Clear drops every node and relationship. The call is constant-time
@@ -861,103 +892,6 @@ func encodeStatements(statements []TransactionStatement) ([]byte, error) {
 	return out, nil
 }
 
-// decodeResult turns the FFI JSON payload into a Result. Uses
-// json.Number so int64 parameters round-trip through Cypher without
-// silently becoming float64.
-func decodeResult(raw string) (*Result, error) {
-	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
-	dec.UseNumber()
-	var wire struct {
-		Columns []string          `json:"columns"`
-		Rows    []json.RawMessage `json:"rows"`
-	}
-	if err := dec.Decode(&wire); err != nil {
-		return nil, fmt.Errorf("lora: decode result envelope: %w", err)
-	}
-
-	rows := make([]Row, 0, len(wire.Rows))
-	for i, rawRow := range wire.Rows {
-		rd := json.NewDecoder(bytes.NewReader(rawRow))
-		rd.UseNumber()
-		var raw map[string]any
-		if err := rd.Decode(&raw); err != nil {
-			return nil, fmt.Errorf("lora: decode row %d: %w", i, err)
-		}
-		rows = append(rows, normalizeMap(raw))
-	}
-	return &Result{Columns: wire.Columns, Rows: rows}, nil
-}
-
-func decodeTransactionResults(raw string) ([]*Result, error) {
-	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
-	dec.UseNumber()
-	var envelopes []json.RawMessage
-	if err := dec.Decode(&envelopes); err != nil {
-		return nil, fmt.Errorf("lora: decode transaction result array: %w", err)
-	}
-	results := make([]*Result, 0, len(envelopes))
-	for i, envelope := range envelopes {
-		result, err := decodeResult(string(envelope))
-		if err != nil {
-			return nil, fmt.Errorf("lora: decode transaction result %d: %w", i, err)
-		}
-		results = append(results, result)
-	}
-	return results, nil
-}
-
-func decodeRow(raw string) (Row, error) {
-	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
-	dec.UseNumber()
-	var row map[string]any
-	if err := dec.Decode(&row); err != nil {
-		return nil, fmt.Errorf("lora: decode stream row: %w", err)
-	}
-	return normalizeMap(row), nil
-}
-
-// normalizeMap / normalizeSlice / normalize walk the decoded structure
-// and convert json.Number values to int64 when possible, or float64
-// otherwise. This keeps the "primitives as Go natives" contract even
-// though UseNumber() hands back json.Number placeholders.
-func normalize(v any) any {
-	switch x := v.(type) {
-	case map[string]any:
-		return normalizeMap(x)
-	case []any:
-		return normalizeSlice(x)
-	case json.Number:
-		if i, err := x.Int64(); err == nil {
-			return i
-		}
-		if f, err := x.Float64(); err == nil {
-			return f
-		}
-		// Shouldn't happen given UseNumber() only emits numeric text.
-		return x.String()
-	default:
-		return v
-	}
-}
-
-func normalizeMap(m map[string]any) map[string]any {
-	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = normalize(v)
-	}
-	return out
-}
-
-func normalizeSlice(s []any) []any {
-	out := make([]any, len(s))
-	for i, v := range s {
-		out[i] = normalize(v)
-	}
-	return out
-}
-
-// statusToError maps a non-OK FFI status plus its error string into
-// a LoraError with the right Code.
 func statusToError(status int, outError *C.char) error {
 	payload := ""
 	if outError != nil {

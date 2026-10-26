@@ -18,8 +18,8 @@ use web_time::Instant;
 
 use lora_compiler::plan_tree_from_compiled;
 use lora_executor::{
-    classify_stream, collect_compiled, plan_result_columns, CollectorGuard, LoraValue,
-    MetricsCollector, StreamShape,
+    classify_stream, collect_compiled_with_deadline, plan_result_columns, CollectorGuard,
+    LoraValue, MetricsCollector, StreamShape,
 };
 use lora_store::{GraphStorage, GraphStorageMut};
 
@@ -42,6 +42,18 @@ where
         &self,
         query: &str,
         params: Option<BTreeMap<String, LoraValue>>,
+    ) -> Result<QueryProfile, LoraError> {
+        self.profile_with_deadline(query, params, None)
+    }
+
+    /// [`Database::profile`] that stops at `deadline` (a cancelled
+    /// [`lora_executor::CancellableDeadline`] stops it too) and fails with
+    /// a timeout error, exactly like `execute_with_params_deadline`.
+    pub fn profile_with_deadline(
+        &self,
+        query: &str,
+        params: Option<BTreeMap<String, LoraValue>>,
+        deadline: Option<Instant>,
     ) -> Result<QueryProfile, LoraError> {
         let params = params.unwrap_or_default();
 
@@ -79,13 +91,13 @@ where
         let started = Instant::now();
         let rows = if matches!(classify_stream(&compiled), StreamShape::ReadOnly) {
             let snapshot = self.read_store();
-            let res = collect_compiled(&*snapshot, params, &compiled)
+            let res = collect_compiled_with_deadline(&*snapshot, params, &compiled, deadline)
                 .map_err(|e| LoraError::from_anyhow(e.into()));
             drop(snapshot);
             res?
         } else {
-            self.execute_rows_with_params(query, params)
-                .map_err(|e| LoraError::from_anyhow(e.into()))?
+            self.execute_rows_with_params_deadline(query, params, deadline)
+                .map_err(LoraError::from_anyhow)?
         };
         let total_elapsed_ns = started.elapsed().as_nanos() as u64;
 

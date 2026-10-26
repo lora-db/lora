@@ -300,6 +300,13 @@ mod actor {
             &self.columns
         }
 
+        /// Whether [`Self::next_row`] can return a row without asking the
+        /// actor for more. Batching callers stop a batch here, so the pull
+        /// that commits (the one past the last row) is always its own call.
+        pub fn has_buffered_row(&self) -> bool {
+            self.rows.len() > 0
+        }
+
         /// Pull the next row: `None` at the end (the writes are then
         /// committed). An error rolls the writes back. Both end the
         /// stream; later pulls report the end.

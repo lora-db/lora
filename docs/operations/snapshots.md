@@ -133,11 +133,13 @@ Content-Type: application/json
 
 When the body is omitted (or `path` is missing), the server uses the path
 from `--snapshot-path`. When `path` is supplied, it overrides the default
-for that single request.
+for that single request. Overrides are rejected unless the server runs
+with `--admin-path-root <DIR>`, and must then stay inside `DIR`.
 
 > ⚠️ **Security.** The admin surface has no authentication today, and the
-> path override means any client that can reach the admin port can write
-> files anywhere the server process can write. Expose the admin routes
+> admin routes let any client that can reach the admin port overwrite the
+> snapshot, replace the live graph, and (with `--admin-path-root`) write
+> files inside that directory. Expose the admin routes
 > behind an authenticated ingress (or a Unix socket, or nothing at all on a
 > network-reachable host). Future releases may add authentication; until
 > then, the correct deployment is "admin surface disabled by default, and

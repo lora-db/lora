@@ -158,9 +158,13 @@ in the internal documentation.
   and `/admin/snapshot/load`, plus `/admin/checkpoint`,
   `/admin/wal/status`, and `/admin/wal/truncate` when WAL is enabled)
   are opt-in via `--snapshot-path` / `--wal-dir` and have **no
-  authentication**. The optional `path` body field is passed straight
-  to the OS. Do not enable them on a network-reachable host without
-  authenticated ingress in front.
+  authentication**. The optional `path` body field is rejected unless
+  the server runs with `--admin-path-root`, and must then stay inside
+  that directory. Do not enable them on a network-reachable host
+  without authenticated ingress in front.
+- HTTP results are built in memory before they are sent. Bound large
+  results with `LIMIT`; `--query-timeout-ms` (default 30 s) bounds
+  how long a query can run.
 - Multi-query transactions over HTTP — not supported. Each `/query`
   call executes independently.
 - Multi-database — not supported. One process serves exactly one

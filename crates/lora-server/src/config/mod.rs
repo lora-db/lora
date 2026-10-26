@@ -43,6 +43,12 @@ pub const PORT_ENV: &str = "LORA_SERVER_PORT";
 pub const SNAPSHOT_PATH_ENV: &str = "LORA_SERVER_SNAPSHOT_PATH";
 pub const WAL_DIR_ENV: &str = "LORA_SERVER_WAL_DIR";
 pub const WAL_SYNC_MODE_ENV: &str = "LORA_SERVER_WAL_SYNC_MODE";
+pub const QUERY_TIMEOUT_MS_ENV: &str = "LORA_SERVER_QUERY_TIMEOUT_MS";
+pub const MAX_CONCURRENT_QUERIES_ENV: &str = "LORA_SERVER_MAX_CONCURRENT_QUERIES";
+pub const MAX_BODY_BYTES_ENV: &str = "LORA_SERVER_MAX_BODY_BYTES";
+pub const ADMIN_PATH_ROOT_ENV: &str = "LORA_SERVER_ADMIN_PATH_ROOT";
+
+pub use crate::app::{DEFAULT_MAX_BODY_BYTES, DEFAULT_QUERY_TIMEOUT_MS};
 
 /// Default segment target for WAL-enabled deployments. Matches the
 /// in-tree `WalConfig::enabled` constructor.
@@ -70,6 +76,18 @@ pub struct ServerConfig {
     pub wal_dir: Option<std::path::PathBuf>,
     /// Durability cadence for the WAL. Ignored when `wal_dir` is `None`.
     pub wal_sync_mode: SyncMode,
+    /// Per-request budget for `/query` and `/profile`, including the time
+    /// spent waiting for a free query slot. `0` disables the timeout.
+    pub query_timeout_ms: u64,
+    /// How many `/query`, `/explain` and `/profile` requests run at once;
+    /// further requests wait for a slot. `0` means unlimited.
+    pub max_concurrent_queries: usize,
+    /// Largest accepted request body, in bytes.
+    pub max_body_bytes: usize,
+    /// Directory that admin request-body `path` overrides must stay
+    /// inside. `None` rejects every override, so the admin routes only
+    /// touch the configured `--snapshot-path`.
+    pub admin_path_root: Option<std::path::PathBuf>,
 }
 
 impl Default for ServerConfig {
@@ -81,6 +99,10 @@ impl Default for ServerConfig {
             restore_from: None,
             wal_dir: None,
             wal_sync_mode: SyncMode::default(),
+            query_timeout_ms: DEFAULT_QUERY_TIMEOUT_MS,
+            max_concurrent_queries: crate::app::default_max_concurrent_queries(),
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            admin_path_root: None,
         }
     }
 }

@@ -1028,6 +1028,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "web-time",
 ]
 
 [[package]]
@@ -1098,6 +1099,7 @@ dependencies = [
  "rb-sys-env",
  "serde",
  "serde_json",
+ "web-time",
 ]
 
 [[package]]

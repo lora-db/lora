@@ -14,7 +14,10 @@
 //! tagged `Hash`es (string keys) with a `"kind"` discriminator.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use magnus::{
     function, method, prelude::*, value::ReprValue, Error as MagnusError, RHash, RString, Ruby,
@@ -22,8 +25,9 @@ use magnus::{
 };
 
 use lora_database::{
-    Database as InnerDatabase, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, QueryResult,
-    ResultFormat, SnapshotConfig, SnapshotOptions, WalConfig,
+    CancellableDeadline, Database as InnerDatabase, DatabaseOpenOptions, ExecuteOptions,
+    InMemoryGraph, LoraError, LoraValue, QueryResult, ResultFormat, SnapshotConfig,
+    SnapshotOptions, WalConfig,
 };
 
 mod errors;
@@ -33,7 +37,7 @@ mod to_ruby;
 
 use errors::{invalid_params, query_error, query_error_from_anyhow};
 use from_ruby::{hash_get_any, read_nonnegative_u64, ruby_optional_to_json, ruby_value_to_params};
-use gvl::without_gvl;
+use gvl::{without_gvl, without_gvl_cancellable};
 use to_ruby::{lora_value_to_ruby, query_plan_to_ruby, query_profile_to_ruby};
 
 // ============================================================================
@@ -82,6 +86,10 @@ fn init(ruby: &Ruby) -> Result<(), MagnusError> {
     database.define_method("to_s", method!(database_inspect, 0))?;
     database.define_method("save_snapshot", method!(database_save_snapshot, -1))?;
     database.define_method("load_snapshot", method!(database_load_snapshot, -1))?;
+
+    // Wait for databases the GC handed to background droppers before the
+    // process exits, so their WALs are flushed and closed (see `Drop`).
+    unsafe { rb_sys::rb_set_end_proc(Some(finish_background_drops), 0) };
 
     // `LoraRuby::VERSION` is owned by `lib/lora_ruby/version.rb` so the
     // gem can expose a version before the native extension compiles
@@ -141,11 +149,78 @@ impl Database {
     }
 }
 
+/// Drops of persistent databases handed off by the GC, not yet finished.
+static BACKGROUND_DROPS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
+
+/// Set once the process is exiting: drops then run in place.
+static EXITING: AtomicBool = AtomicBool::new(false);
+
+/// The GC frees an unreachable handle during a sweep, with the GVL held.
+/// Dropping the last handle to a persistent database flushes and closes its
+/// WAL (`fsync`, joining its flusher), which would stall every Ruby thread
+/// for the duration, so that drop moves to a thread of its own, like
+/// `close` runs it GVL-free. An in-memory database, or any drop at exit,
+/// runs in place. Opening a database first waits for pending drops (see
+/// [`wait_background_drops`]) so a reopened WAL directory is free.
+impl Drop for Database {
+    fn drop(&mut self) {
+        let slot = self.db.get_mut().unwrap_or_else(|p| p.into_inner()).take();
+        let Some(db) = slot else { return };
+        if db.wal().is_none() || EXITING.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut pending = BACKGROUND_DROPS.lock().unwrap_or_else(|p| p.into_inner());
+        pending.retain(|handle| !handle.is_finished());
+        // Spawning moves `db` into the closure even when it fails, so a
+        // failed spawn drops it here, in place.
+        if let Ok(handle) = std::thread::Builder::new()
+            .name("lora-ruby-drop".into())
+            .spawn(move || drop(db))
+        {
+            pending.push(handle);
+        }
+    }
+}
+
+/// Join every pending background drop.
+fn join_background_drops() {
+    let pending = std::mem::take(&mut *BACKGROUND_DROPS.lock().unwrap_or_else(|p| p.into_inner()));
+    for handle in pending {
+        let _ = handle.join();
+    }
+}
+
+/// Before opening a database: let GC-dropped databases finish closing, with
+/// the GVL released, so their WAL directories are free again.
+fn wait_background_drops() {
+    let idle = BACKGROUND_DROPS
+        .lock()
+        .map(|pending| pending.iter().all(|h| h.is_finished()))
+        .unwrap_or(false);
+    if idle {
+        BACKGROUND_DROPS
+            .lock()
+            .map(|mut pending| pending.clear())
+            .ok();
+        return;
+    }
+    let _ = without_gvl(join_background_drops);
+}
+
+/// `at_exit` hook: drop in place from now on and wait for pending drops.
+unsafe extern "C" fn finish_background_drops(_data: rb_sys::VALUE) {
+    EXITING.store(true, Ordering::SeqCst);
+    let _ = without_gvl(join_background_drops);
+}
+
 // Constructors — we expose `Database.create` and `Database.new` as
 // singletons so callers can use whichever idiom they prefer; both are
 // cost-equivalent.
 fn database_new(ruby: &Ruby, args: &[Value]) -> Result<Database, MagnusError> {
     let (database_name, options) = database_open_args(ruby, args)?;
+    if database_name.is_some() {
+        wait_background_drops();
+    }
     let db = without_gvl_string_result(ruby, move || open_database(database_name, options))?;
     Ok(Database::from_db(db))
 }
@@ -179,6 +254,7 @@ fn database_open_wal(ruby: &Ruby, args: &[Value]) -> Result<Database, MagnusErro
         ));
     }
     options.wal_dir = Some(wal_dir);
+    wait_background_drops();
     let db = without_gvl_string_result(ruby, move || open_wal_database(options))?;
     Ok(Database::from_db(db))
 }
@@ -499,72 +575,164 @@ where
         .map_err(|e| query_error_from_anyhow(ruby, e))
 }
 
-/// `execute(query, params = nil)` — `-1` arity so `params` is optional and
-/// we can distinguish "not passed" from `nil`/`{}` (both map to empty
-/// params). Everything that touches Ruby values happens under the GVL;
-/// only the pure-Rust engine call is run GVL-released.
-fn database_execute(ruby: &Ruby, rb_self: &Database, args: &[Value]) -> Result<RHash, MagnusError> {
-    let (query, params_value): (String, Option<Value>) = match args.len() {
-        1 => {
-            let q = RString::try_convert(args[0])?.to_string()?;
-            (q, None)
-        }
-        2 => {
-            let q = RString::try_convert(args[0])?.to_string()?;
-            let p = if args[1].is_nil() {
-                None
-            } else {
-                Some(args[1])
-            };
-            (q, p)
-        }
-        n => {
-            return Err(MagnusError::new(
-                ruby.exception_arg_error(),
-                format!("wrong number of arguments (given {n}, expected 1..2)"),
-            ));
-        }
+/// Run `call` with the GVL released. With a `timeout` it runs under a
+/// cancellable deadline: it fails with `LORA_TIMEOUT` once the timeout
+/// passes, and a Ruby interrupt of this thread (`Thread#raise`,
+/// `Thread#kill`, `Timeout.timeout`, Ctrl-C) cancels it. A cancelled query
+/// rolls back and releases its locks; the interrupt is then delivered
+/// instead of the timeout error.
+///
+/// Without a timeout the query runs without a deadline and cannot be
+/// interrupted: the engine reads the clock at every deadline check, which
+/// costs roughly 10% on scans, so plain calls do not pay for it.
+fn run_query<T>(
+    ruby: &Ruby,
+    timeout: Option<Duration>,
+    call: impl FnOnce(Option<web_time::Instant>) -> Result<T, LoraError> + Send,
+) -> Result<T, MagnusError>
+where
+    T: Send,
+{
+    let Some(timeout) = timeout else {
+        return without_gvl_lora_result(ruby, move || call(None));
     };
+    let cancel = Mutex::new(CancellableDeadline::new(Some(timeout)));
+    let deadline = cancel.lock().unwrap_or_else(|p| p.into_inner()).deadline();
+    let outcome = without_gvl_cancellable(move || call(Some(deadline)), &cancel);
+    if cancel
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .is_cancelled()
+    {
+        ruby.thread_check_ints()?;
+    }
+    outcome
+        .map_err(|panic| query_error(ruby, panic.to_string()))?
+        .map_err(|e| query_error_from_anyhow(ruby, e))
+}
 
+/// Arguments of `execute` / `profile`: `(query, params = nil, timeout_ms: nil)`.
+struct QueryArgs {
+    query: String,
+    params: Option<BTreeMap<String, LoraValue>>,
+    timeout: Option<Duration>,
+}
+
+/// Parse `(query, params = nil, timeout_ms: nil)`. Keywords other than
+/// `timeout_ms` are query parameters when no positional `params` hash is
+/// given, so `execute(q, name: "Ada")` keeps working.
+fn parse_query_args(ruby: &Ruby, args: &[Value]) -> Result<QueryArgs, MagnusError> {
+    // SAFETY: called from a method body, while Ruby's frame for this
+    // call is current.
+    let keywords_given = unsafe { rb_sys::rb_keyword_given_p() } != 0;
+    let (positional, keywords) = match (keywords_given, args.split_last()) {
+        (true, Some((last, rest))) => (rest, Some(RHash::try_convert(*last)?)),
+        _ => (args, None),
+    };
+    let (query, params_value) = parse_query_params(ruby, positional)?;
+
+    let mut timeout = None;
+    let mut keyword_params = None;
+    if let Some(keywords) = keywords {
+        let timeout_value = keywords.delete(ruby.to_symbol("timeout_ms"))?;
+        timeout = parse_timeout_ms(ruby, timeout_value)?;
+        if !keywords.is_empty() {
+            if params_value.is_some() {
+                return Err(MagnusError::new(
+                    ruby.exception_arg_error(),
+                    "unknown keyword: only timeout_ms is accepted next to a params hash",
+                ));
+            }
+            keyword_params = Some(keywords.as_value());
+        }
+    }
+    let params = match params_value.or(keyword_params) {
+        Some(v) => Some(ruby_value_to_params(ruby, v)?),
+        None => None,
+    };
+    Ok(QueryArgs {
+        query,
+        params,
+        timeout,
+    })
+}
+
+/// `timeout_ms:` is `nil` (no timeout) or a positive integer.
+fn parse_timeout_ms(ruby: &Ruby, value: Option<Value>) -> Result<Option<Duration>, MagnusError> {
+    let Some(value) = value.filter(|v| !v.is_nil()) else {
+        return Ok(None);
+    };
+    let ms = read_nonnegative_u64(ruby, value)?;
+    if ms == 0 {
+        return Err(invalid_params(
+            ruby,
+            "timeout_ms must be a positive integer",
+        ));
+    }
+    Ok(Some(Duration::from_millis(ms)))
+}
+
+/// `execute(query, params = nil, timeout_ms: nil)` — `-1` arity so
+/// `params` is optional and we can distinguish "not passed" from `nil`/`{}`
+/// (both map to empty params). Everything that touches Ruby values happens
+/// under the GVL; only the pure-Rust engine call is run GVL-released.
+fn database_execute(ruby: &Ruby, rb_self: &Database, args: &[Value]) -> Result<RHash, MagnusError> {
     // Parse params while we still hold the GVL — touching Ruby `RHash` /
     // `RArray` from a GVL-released region is undefined behaviour.
-    let params_map = match params_value {
-        Some(v) => ruby_value_to_params(ruby, v)?,
-        None => BTreeMap::new(),
-    };
+    let QueryArgs {
+        query,
+        params,
+        timeout,
+    } = parse_query_args(ruby, args)?;
+    let params_map = params.unwrap_or_default();
 
     // Run the engine with the GVL released. Everything inside the closure
     // is pure Rust — no Ruby values cross the boundary — which keeps this
-    // sound.
+    // sound. `Rows` hands back the engine's rows without the per-cell
+    // clones of the `RowArrays` projection; the columns are the first
+    // row's names, exactly as `RowArrays` infers them.
     let db = database_inner(ruby, rb_self)?;
-    let exec_result = without_gvl_lora_result(ruby, move || {
-        let options = ExecuteOptions {
-            format: ResultFormat::RowArrays,
-        };
-        db.execute_with_params(&query, Some(options), params_map)
+    let exec_result = run_query(ruby, timeout, move |deadline| {
+        let options = Some(ExecuteOptions {
+            format: ResultFormat::Rows,
+        });
+        match deadline {
+            Some(deadline) => {
+                db.execute_with_params_deadline(&query, options, params_map, deadline)
+            }
+            None => db.execute_with_params(&query, options, params_map),
+        }
     })?;
 
-    let row_arrays = match exec_result {
-        QueryResult::RowArrays(r) => r,
-        _ => return Err(query_error(ruby, "expected RowArrays result")),
+    let rows = match exec_result {
+        QueryResult::Rows(r) => r.rows,
+        _ => return Err(query_error(ruby, "expected Rows result")),
     };
 
     let out = ruby.hash_new();
     let columns = ruby.ary_new();
-    for c in &row_arrays.columns {
-        columns.push(ruby.str_new(c))?;
+    let mut column_names = Vec::new();
+    if let Some(first) = rows.first() {
+        for (_, name, _) in first.iter_named() {
+            columns.push(ruby.str_new(&name))?;
+            // A frozen key is stored as is; an unfrozen one would be
+            // copied and frozen again for every row.
+            let key = ruby.str_new(&name);
+            key.freeze();
+            column_names.push(key);
+        }
     }
     out.aset(ruby.str_new("columns"), columns)?;
 
-    let rows = ruby.ary_new();
-    for row in &row_arrays.rows {
+    let rows_out = ruby.ary_new_capa(rows.len());
+    for row in &rows {
         let row_hash = ruby.hash_new();
-        for (col, val) in row_arrays.columns.iter().zip(row.iter()) {
-            row_hash.aset(ruby.str_new(col), lora_value_to_ruby(ruby, val)?)?;
+        for (name, (_, val)) in column_names.iter().zip(row.iter()) {
+            row_hash.aset(*name, lora_value_to_ruby(ruby, val)?)?;
         }
-        rows.push(row_hash)?;
+        rows_out.push(row_hash)?;
     }
-    out.aset(ruby.str_new("rows"), rows)?;
+    out.aset(ruby.str_new("rows"), rows_out)?;
     Ok(out)
 }
 
@@ -582,20 +750,22 @@ fn database_explain(ruby: &Ruby, rb_self: &Database, args: &[Value]) -> Result<R
     query_plan_to_ruby(ruby, &plan)
 }
 
-/// `profile(query, params = nil)` — execute a query and return the plan
+/// `profile(query, params = nil, timeout_ms: nil)` — execute a query and return the plan
 /// plus runtime metrics as a Ruby `Hash`.
 ///
 /// **PROFILE executes the query for real.** Mutating queries are
 /// persisted exactly as in `execute`. Use `explain` to inspect a
 /// mutating plan without running it.
 fn database_profile(ruby: &Ruby, rb_self: &Database, args: &[Value]) -> Result<RHash, MagnusError> {
-    let (query, params_value) = parse_query_params(ruby, args)?;
-    let params_map = match params_value {
-        Some(v) => Some(ruby_value_to_params(ruby, v)?),
-        None => None,
-    };
+    let QueryArgs {
+        query,
+        params,
+        timeout,
+    } = parse_query_args(ruby, args)?;
     let db = database_inner(ruby, rb_self)?;
-    let prof = without_gvl_lora_result(ruby, move || db.profile(&query, params_map))?;
+    let prof = run_query(ruby, timeout, move |deadline| {
+        db.profile_with_deadline(&query, params, deadline)
+    })?;
     query_profile_to_ruby(ruby, &prof)
 }
 

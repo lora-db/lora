@@ -132,11 +132,15 @@ class QueryStream(Iterator[Mapping[str, Any]]):
 
     A mutating stream holds the writer lock until it is exhausted (commit)
     or closed (rollback). Safe to pull, close or drop on any thread, and
-    after the ``Database`` is closed.
+    after the ``Database`` is closed, one call at a time. Rows are pulled
+    in batches with the GIL released.
     """
 
     def columns(self) -> list[str]: ...
     def close(self) -> None: ...
+    @property
+    def _mutating(self) -> bool: ...
+    def _next_batch(self, max_rows: int) -> list[Mapping[str, Any]]: ...
 
 class OpeningStream:
     """A mutating stream still waiting for the writer lock (internal)."""

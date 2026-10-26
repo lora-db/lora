@@ -398,7 +398,8 @@ curl -sX POST http://127.0.0.1:4747/admin/snapshot/load
 
 Both endpoints accept an optional `{ "path": "…" }` body that
 overrides the configured default for one request — useful for ad-hoc
-backups to a rotated filename:
+backups to a rotated filename. Overrides are only accepted when the
+server runs with `--admin-path-root <DIR>`, and must stay inside `DIR`:
 
 ```bash
 curl -sX POST http://127.0.0.1:4747/admin/snapshot/save \

@@ -111,7 +111,8 @@ Non-2xx responses use the same structured error body:
 `code` is the stable field to branch on; `message` is human-facing and may be
 reworded. `category` is `"client"` for caller errors and `"server"` for engine
 or durability failures. Parse/semantic/read-only/config errors return 400,
-timeouts return 408, not-found errors return 404, invalid params/vectors return
+timeouts (including `--query-timeout-ms`) return 408, bodies over
+`--max-body-bytes` return 413, not-found errors return 404, invalid params/vectors return
 422, constraint violations return 409, WAL-poisoned errors return 503, and
 server/storage failures return 500.
 
@@ -253,7 +254,7 @@ Both endpoints accept the same optional JSON body:
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `path` | string | no | Override the server's default `--snapshot-path` for this request only. Omit the body (or omit `path`) to use the configured default. |
+| `path` | string | no | Override the server's default `--snapshot-path` for this request only. Rejected with `400 LORA_CONFIG` unless the server runs with `--admin-path-root <DIR>`; then it must be a path inside `DIR` (relative paths are resolved against `DIR`, `..` is rejected). Omit the body (or omit `path`) to use the configured default. |
 
 `content-type: application/json` is required when sending a body.
 
@@ -327,7 +328,7 @@ Optional JSON body with a conditional field:
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `path` | string | conditional | Target snapshot path for the checkpoint. Required unless the server was started with `--snapshot-path`. |
+| `path` | string | conditional | Target snapshot path for the checkpoint. Required unless the server was started with `--snapshot-path`. Only accepted inside `--admin-path-root`, like the snapshot `path`. |
 
 If `--snapshot-path` is configured, omitting the body uses that path as
 the default checkpoint target. Without `--snapshot-path`, the body must
@@ -528,6 +529,17 @@ Relevant durability flags:
 - `--restore-from <PATH>`
 - `--wal-dir <DIR>` / `LORA_SERVER_WAL_DIR`
 - `--wal-sync-mode <MODE>` / `LORA_SERVER_WAL_SYNC_MODE`
+- `--admin-path-root <DIR>` / `LORA_SERVER_ADMIN_PATH_ROOT`
+
+Query limits:
+
+- `--query-timeout-ms <MS>` / `LORA_SERVER_QUERY_TIMEOUT_MS` (default
+  `30000`, `0` disables). A query that runs out of time, or whose
+  client disconnects, is cancelled and answered with `408 LORA_TIMEOUT`.
+- `--max-concurrent-queries <N>` / `LORA_SERVER_MAX_CONCURRENT_QUERIES`
+  (default twice the CPU count, `0` means unlimited).
+- `--max-body-bytes <BYTES>` / `LORA_SERVER_MAX_BODY_BYTES` (default
+  `2097152`).
 
 ## What isn't here
 

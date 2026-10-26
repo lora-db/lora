@@ -95,6 +95,34 @@ Most runtime flags also have an env-var equivalent:
 | `--restore-from <PATH>` | — | unset | Load a snapshot at boot, before accepting queries. |
 | `--wal-dir <DIR>` | `LORA_SERVER_WAL_DIR` | unset | Attach a write-ahead log at this directory and enable the WAL admin routes. |
 | `--wal-sync-mode <MODE>` | `LORA_SERVER_WAL_SYNC_MODE` | `group-sync` | WAL durability cadence: `group-sync`. |
+| `--query-timeout-ms <MS>` | `LORA_SERVER_QUERY_TIMEOUT_MS` | `30000` | Time budget for each `/query` and `/profile` request. `0` disables it. |
+| `--max-concurrent-queries <N>` | `LORA_SERVER_MAX_CONCURRENT_QUERIES` | twice the CPU count | How many `/query`, `/explain` and `/profile` requests run at once. `0` means unlimited. |
+| `--max-body-bytes <BYTES>` | `LORA_SERVER_MAX_BODY_BYTES` | `2097152` | Largest accepted request body. Larger bodies get `413`. |
+| `--admin-path-root <DIR>` | `LORA_SERVER_ADMIN_PATH_ROOT` | unset | Allow admin requests to send a `path` inside this directory. Unset = every `path` override is rejected. |
+
+### Query limits
+
+Each query runs on a worker thread outside the request loop, so a slow
+query does not hold up `/health` or other requests.
+
+- **`--query-timeout-ms <MS>`** bounds a `/query` or `/profile`
+  request, including any time spent waiting for a free query slot.
+  When the budget runs out the query is cancelled at its next check
+  point, any write it made is rolled back, and the response is `408`
+  with code `LORA_TIMEOUT`. `0` turns the timeout off.
+- **Client disconnects cancel the query.** If the HTTP client hangs up
+  before the response is ready, the server cancels the query the same
+  way, so abandoned requests do not keep running.
+- **`--max-concurrent-queries <N>`** caps how many query requests run
+  at once. Further requests wait for a slot (the wait counts toward
+  the timeout).
+- **`--max-body-bytes <BYTES>`** caps the request body. Results are
+  not capped: a query that returns a large result is built in memory
+  before it is sent, so bound result size with `LIMIT`.
+
+```bash
+lora-server --query-timeout-ms 5000 --max-concurrent-queries 16
+```
 
 ### Snapshots, WAL, and restore
 
@@ -141,9 +169,15 @@ lora-server \
 
 With only `--wal-dir`, WAL recovery works and the WAL admin routes are
 mounted. Checkpoints need an explicit path in the request body because
-there is no configured snapshot default:
+there is no configured snapshot default, and a body `path` is only
+accepted inside `--admin-path-root`:
 
 ```bash
+lora-server \
+  --host 127.0.0.1 --port 4747 \
+  --wal-dir /var/lib/lora/wal \
+  --admin-path-root /var/lib/lora
+
 curl -sX POST http://127.0.0.1:4747/admin/checkpoint \
   -H 'content-type: application/json' \
   -d '{"path":"/var/lib/lora/checkpoint.bin"}'
@@ -178,7 +212,9 @@ curl -sX POST http://127.0.0.1:4747/admin/snapshot/save
 # => {"formatVersion":1,"nodeCount":1024,"relationshipCount":4096,"walLsn":null,"path":"/var/lib/lora/db.bin"}
 ```
 
-Or save to an ad-hoc override path for a single call:
+Or save to an ad-hoc override path for a single call. This needs
+`--admin-path-root` (here `/var/backups/lora`), and the path must stay
+inside that directory:
 
 ```bash
 curl -sX POST http://127.0.0.1:4747/admin/snapshot/save \
@@ -198,11 +234,12 @@ writable path (`/var/lib/lora/runtime.bin`).
 
 :::caution Security
 
-The admin endpoints have **no authentication** and the optional `path`
-body field is passed straight to the OS — anyone who can reach the
-admin port can write files anywhere the server UID can write, or swap
-the live graph by pointing `load` at an attacker-staged file. The same
-warning applies to `/admin/checkpoint`. See
+The admin endpoints have **no authentication**. Anyone who can reach
+the admin port can overwrite the snapshot, swap the live graph with
+`load`, or truncate the WAL. A `path` body field is rejected unless
+the server runs with `--admin-path-root`, and then it must stay inside
+that directory, which narrows which files a caller can touch. It is
+not access control. The same warning applies to `/admin/checkpoint`. See
 [Limitations → HTTP server](../limitations#http-server) and the
 [HTTP API reference](../api/http#admin-endpoints-opt-in) before
 exposing them.
@@ -384,7 +421,7 @@ above, and the full reference in
 
 Mounted when the server is started with `--wal-dir <DIR>`. Uses
 `--snapshot-path` as the default target when configured; otherwise the
-request body must supply `{ "path": "..." }`.
+request body must supply `{ "path": "..." }` inside `--admin-path-root`.
 
 ### `POST /admin/wal/status` (opt-in)
 
