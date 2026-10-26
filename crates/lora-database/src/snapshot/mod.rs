@@ -22,6 +22,7 @@ pub use store::SnapshotConfig;
 use std::fs::OpenOptions;
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -70,9 +71,17 @@ pub(crate) fn snapshot_info_to_meta(info: SnapshotInfo) -> SnapshotMeta {
 // Filesystem hygiene helpers
 // ---------------------------------------------------------------------------
 
+static SNAPSHOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Scratch path beside `target`, unique per process and call so
+/// concurrent saves to one target never write the same file.
 pub(crate) fn snapshot_tmp_path(target: &Path) -> PathBuf {
     let mut tmp = target.as_os_str().to_owned();
-    tmp.push(".tmp");
+    tmp.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        SNAPSHOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
     PathBuf::from(tmp)
 }
 
@@ -174,7 +183,8 @@ pub(crate) fn encode_snapshot_to<W: Write>(
 impl Database<InMemoryGraph> {
     /// Serialize the current graph state to `path` using the default
     /// columnar codec options (uncompressed, unencrypted). Writes are
-    /// atomic via `<path>.tmp` + rename + parent-dir fsync.
+    /// atomic via a unique `<path>.<pid>.<n>.tmp` + rename + parent-dir
+    /// fsync.
     ///
     /// Callers that need compression or encryption should reach for
     /// [`Self::save_snapshot_to_with_options`] directly.
