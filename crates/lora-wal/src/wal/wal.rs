@@ -749,6 +749,19 @@ impl Wal {
         self.growth_threshold.store(threshold, Ordering::Relaxed);
     }
 
+    /// Change the threshold of the listener set with
+    /// [`Self::set_growth_listener`], keeping the listener. Ignored (and
+    /// 0 is not allowed to remove it) while no listener is set.
+    pub fn set_growth_threshold(&self, threshold: u64) {
+        let slot = self
+            .growth_listener
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if slot.is_some() && threshold != 0 {
+            self.growth_threshold.store(threshold, Ordering::Relaxed);
+        }
+    }
+
     fn notify_growth(&self) {
         let listener = self
             .growth_listener

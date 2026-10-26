@@ -36,8 +36,9 @@ pub struct SnapshotConfig {
     /// no encryption.
     pub codec: SnapshotOptions,
     /// Create a managed checkpoint once the WAL has grown by this many bytes
-    /// since the last one, so a long-running process does not keep every
-    /// WAL segment. The checkpoint runs on a background thread; writers
+    /// since the last one, or by the size of the current snapshot when that
+    /// is larger, so a long-running process does not keep every WAL segment
+    /// and checkpoint writes stay proportional to WAL growth. The checkpoint runs on a background thread; writers
     /// wait only while the graph and its LSN are taken. 0 turns it off.
     /// Defaults to [`DEFAULT_CHECKPOINT_WAL_BYTES`].
     pub checkpoint_wal_bytes: u64,
@@ -327,6 +328,14 @@ impl ManagedSnapshotStore {
             .with_context(|| format!("sync snapshot dir {}", self.config.dir.display()))?;
         write_current(&self.config.dir, &target)?;
         Ok(meta)
+    }
+
+    /// Size of the snapshot recovery would load, 0 without one.
+    pub(crate) fn current_snapshot_bytes(&self) -> u64 {
+        match self.latest_snapshot_path() {
+            Ok(Some(path)) => fs::metadata(path).map_or(0, |m| m.len()),
+            _ => 0,
+        }
     }
 
     fn latest_snapshot_path(&self) -> Result<Option<PathBuf>> {

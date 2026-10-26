@@ -15,11 +15,20 @@
 //! the WAL still holds every commit, and the next checkpoint is attempted
 //! once the WAL has grown by the threshold again.
 //!
+//! Each checkpoint rewrites the whole snapshot, so the threshold is never
+//! below the size of the current snapshot: the effective trigger is
+//! `max(checkpoint_wal_bytes, snapshot bytes)`, refreshed at open and after
+//! every automatic checkpoint. Checkpoint I/O then stays at most about the
+//! WAL bytes written, whatever the graph size; with a fixed threshold a bulk
+//! load into a large graph would rewrite the full snapshot back to back. A
+//! factor above 1 would cut checkpoint I/O further but let the WAL, and the
+//! replay after a crash, grow to a multiple of the graph.
+//!
 //! A WAL with nowhere to put a snapshot (`Database::open_with_wal`,
 //! `Database::recover`) cannot be checkpointed automatically; it logs one
 //! warning when it crosses the threshold.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::thread::JoinHandle;
 
@@ -41,7 +50,10 @@ pub(crate) enum CheckpointTarget {
 }
 
 pub(crate) struct AutoCheckpoint {
+    /// Configured size.
     threshold: u64,
+    /// `max(threshold, snapshot bytes)`, the size the WAL listens for.
+    effective: AtomicU64,
     store: Arc<LiveStore<InMemoryGraph>>,
     writer: Arc<Mutex<()>>,
     // Declared before `target`, so the WAL is dropped before a named
@@ -74,6 +86,7 @@ impl AutoCheckpoint {
         }
         let auto = Arc::new(Self {
             threshold,
+            effective: AtomicU64::new(threshold),
             store,
             writer,
             wal,
@@ -92,7 +105,24 @@ impl AutoCheckpoint {
                 }
             })),
         );
+        auto.refresh_threshold();
         Some(auto)
+    }
+
+    /// Bytes of the snapshot a checkpoint would replace.
+    fn snapshot_bytes(&self) -> u64 {
+        match &self.target {
+            CheckpointTarget::None => 0,
+            CheckpointTarget::Managed(snapshots) => snapshots.current_snapshot_bytes(),
+            CheckpointTarget::Named(archive) => archive.snapshot_bytes(),
+        }
+    }
+
+    /// Listen for `max(threshold, snapshot bytes)` of growth.
+    pub(crate) fn refresh_threshold(&self) {
+        let effective = self.threshold.max(self.snapshot_bytes());
+        self.effective.store(effective, Ordering::Relaxed);
+        self.wal.wal().set_growth_threshold(effective);
     }
 
     fn on_growth(self: &Arc<Self>) {
@@ -101,7 +131,7 @@ impl AutoCheckpoint {
             self.wal.wal().set_growth_listener(0, None);
             tracing::warn!(
                 dir = %self.wal.wal().dir().display(),
-                bytes = self.threshold,
+                bytes = self.effective.load(Ordering::Relaxed),
                 "the WAL has grown past the automatic checkpoint size, but this database has no \
                  snapshot location, so every WAL segment is kept until a checkpoint_to() or a \
                  restart from a snapshot; open it with managed snapshots or as a named database \
@@ -148,6 +178,8 @@ impl AutoCheckpoint {
                 checkpoint_named(archive, &self.writer, &self.wal, &self.store)
             }
         };
+        // The snapshot just written (or kept) sets the next trigger.
+        self.refresh_threshold();
         if let Err(err) = result {
             tracing::warn!(
                 dir = %self.wal.wal().dir().display(),

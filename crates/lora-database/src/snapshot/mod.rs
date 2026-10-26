@@ -520,9 +520,12 @@ impl Database<InMemoryGraph> {
             )
         })?;
         let guard = self.write_store();
-        snapshots
-            .checkpoint(guard.staged_or_error()?, recorder)
-            .map_err(Into::into)
+        let meta = snapshots.checkpoint(guard.staged_or_error()?, recorder)?;
+        drop(guard);
+        if let Some(auto) = &self.auto_checkpoint {
+            auto.refresh_threshold();
+        }
+        Ok(meta)
     }
 }
 

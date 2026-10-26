@@ -230,6 +230,9 @@ impl Database<InMemoryGraph> {
         if let Some(wal) = &self.wal {
             if let Some(archive) = &self.named_archive {
                 checkpoint_named(archive, &self.writer, wal, &self.store)?;
+                if let Some(auto) = &self.auto_checkpoint {
+                    auto.refresh_threshold();
+                }
             } else {
                 wal.force_fsync()?;
             }

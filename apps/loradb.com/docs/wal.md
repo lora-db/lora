@@ -76,7 +76,7 @@ Use `openWalDatabase` when you want a raw WAL directory instead of a
 portable `.loradb` archive. Pair it with `snapshotDir` to let the
 database write managed checkpoints every `snapshotEveryCommits`
 committed transactions, and in any case each time the WAL has grown by
-64 MiB. Without `snapshotDir` nothing is checkpointed automatically. Node does not expose WAL status or truncate
+64 MiB or by the snapshot's size, whichever is larger. Without `snapshotDir` nothing is checkpointed automatically. Node does not expose WAL status or truncate
 helpers yet; use Rust or `lora-server` for those operator controls.
 
 ### Python
@@ -346,9 +346,10 @@ that replays more WAL than its snapshot holds, and at least 64 MiB of it,
 takes the same checkpoint before it returns, so the next open loads the
 snapshot instead of replaying the log again. A named database also takes
 that checkpoint on its own, on a background thread, each time its WAL has grown
-by 64 MiB since the last one (`DatabaseOpenOptions::checkpoint_wal_bytes`, 0
-turns it off), so a process that never calls `sync()` does not keep every
-segment. A checkpoint snapshot is stamped with the WAL's current
+by 64 MiB since the last one, or by the size of its snapshot when that is
+larger (`DatabaseOpenOptions::checkpoint_wal_bytes`, 0 turns it off), so a
+process that never calls `sync()` does not keep every segment and a bulk load
+into a large graph does not rewrite the snapshot over and over. A checkpoint snapshot is stamped with the WAL's current
 `durableLsn`; in `group-sync` mode that fence
 can trail the newest writes until the background fsync catches up.
 
@@ -419,7 +420,8 @@ one just before it are always kept.
 
 - **Checkpoint automation is by WAL size and commit count, not by time.**
   Named databases and managed snapshots checkpoint on a background thread
-  each time the WAL has grown by 64 MiB (`checkpoint_wal_bytes` in Rust; the
+  each time the WAL has grown by 64 MiB, or by the size of the current
+  snapshot when that is larger (`checkpoint_wal_bytes` in Rust; the
   bindings use the default). Explicit WAL helpers in Node, Python, Go, and
   Ruby can also write managed snapshots after N committed transactions. A
   plain WAL directory with no snapshot directory, which is what `lora-server

@@ -245,6 +245,17 @@ The default is `DEFAULT_CHECKPOINT_WAL_BYTES`, the same size as
 `compact_on_open_wal_bytes`, at which a named database's open checkpoints.
 It is independent of `checkpoint_every_commits`, which still works as before.
 
+Every checkpoint rewrites the whole snapshot, so the trigger is never below
+the snapshot's size: the WAL listens for `max(checkpoint_wal_bytes, size of
+the current snapshot)` of growth, recomputed at open, after each automatic
+checkpoint, `sync()` and `checkpoint_managed()`. Checkpoint writes then stay
+at most about the WAL bytes written. With a fixed 64 MiB a bulk load into a
+large graph would rewrite the full snapshot back to back: a 270 MB container
+whose `sync()` takes 11 s would checkpoint every few seconds of ingest. The
+factor is 1 rather than higher because the WAL also bounds replay after a
+crash: at 1 the WAL never holds much more than one snapshot's worth of
+writes beyond the threshold.
+
 `Wal` counts the bytes of every committed transaction
 (`Wal::bytes_since_checkpoint`); `truncate_up_to`, which every checkpoint
 ends with, restarts the count. After a commit that leaves the count at or
