@@ -184,7 +184,8 @@ fn pull_row(
     if deadline.is_some_and(lora_database::deadline_reached) {
         return Err(timed_out());
     }
-    let _scope = DeadlineScope::enter(deadline);
+    // Only entered with a deadline: a pull without one pays nothing.
+    let _scope = deadline.map(|deadline| DeadlineScope::enter(Some(deadline)));
     stream
         .next_row()
         .map_err(|e| format_lora_error(&LoraError::from_anyhow(e)))
