@@ -494,10 +494,7 @@ fn is_large(value: &LoraValue) -> bool {
 
 #[derive(Debug, Clone, PartialEq)]
 struct RowEntry {
-    /// Stored alongside the value so iterators can hand back `&VarId` while
-    /// the slot's position in `entries` remains the source of truth for
-    /// lookups.
-    var: VarId,
+    // No `VarId`: an entry's position in `Row::entries` is its variable.
     /// `None` means "use the fallback `_{key}` lazily". This avoids allocating
     /// a String for every anonymous variable on the insert hot path.
     ///
@@ -534,11 +531,11 @@ impl Serialize for Row {
         S: Serializer,
     {
         let mut ser_map = serializer.serialize_map(Some(self.len()))?;
-        for entry in self.entries.iter().flatten() {
+        for (var, entry) in self.set_entries() {
             match &entry.name {
                 Some(name) => ser_map.serialize_entry(&**name, entry.value.get())?,
                 None => {
-                    let fallback = format!("_{}", entry.var);
+                    let fallback = format!("_{var}");
                     ser_map.serialize_entry(fallback.as_str(), entry.value.get())?;
                 }
             }
@@ -565,7 +562,7 @@ impl Row {
             .and_then(|slot| slot.as_ref())
             .map(|entry| match &entry.name {
                 Some(n) => n.to_string(),
-                None => format!("_{}", entry.var),
+                None => format!("_{key}"),
             })
     }
 
@@ -651,11 +648,7 @@ impl Row {
         match &mut self.entries[idx] {
             Some(existing) => existing.value = value,
             slot @ None => {
-                *slot = Some(RowEntry {
-                    var: key,
-                    name: None,
-                    value,
-                });
+                *slot = Some(RowEntry { name: None, value });
                 self.len_set += 1;
             }
         }
@@ -666,7 +659,6 @@ impl Row {
         let idx = self.ensure_slot(key);
         let was_set = self.entries[idx].is_some();
         self.entries[idx] = Some(RowEntry {
-            var: key,
             name: Some(name),
             value,
         });
@@ -678,8 +670,8 @@ impl Row {
     pub fn extend_from(&mut self, other: &Row) {
         // Mirrors the previous `BTreeMap::insert` semantics: every set entry
         // in `other` overwrites the slot wholesale (name and value), no merge.
-        for entry in other.entries.iter().flatten() {
-            let idx = self.ensure_slot(entry.var);
+        for (var, entry) in other.set_entries() {
+            let idx = self.ensure_slot(var);
             let was_set = self.entries[idx].is_some();
             self.entries[idx] = Some(entry.clone());
             if !was_set {
@@ -692,8 +684,8 @@ impl Row {
     /// keeping its name as stored (shared `Arc`, or none for anonymous
     /// variables) rather than materializing the `_{key}` fallback.
     pub fn fill_missing_from(&mut self, other: &Row) {
-        for entry in other.entries.iter().flatten() {
-            let idx = self.ensure_slot(entry.var);
+        for (var, entry) in other.set_entries() {
+            let idx = self.ensure_slot(var);
             if self.entries[idx].is_none() {
                 self.entries[idx] = Some(entry.clone());
                 self.len_set += 1;
@@ -701,11 +693,17 @@ impl Row {
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&VarId, &LoraValue)> {
+    /// The set entries with their variables, in variable order.
+    fn set_entries(&self) -> impl Iterator<Item = (VarId, &RowEntry)> {
         self.entries
             .iter()
-            .flatten()
-            .map(|entry| (&entry.var, entry.value.get()))
+            .enumerate()
+            .filter_map(|(i, slot)| slot.as_ref().map(|entry| (VarId(i as u32), entry)))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (VarId, &LoraValue)> {
+        self.set_entries()
+            .map(|(var, entry)| (var, entry.value.get()))
     }
 
     /// Iterate `(key, name, value)`. The name is a `Cow`: borrowed when an
@@ -713,13 +711,13 @@ impl Row {
     /// entries inserted via the anonymous `insert()` path.
     pub fn iter_named(
         &self,
-    ) -> impl Iterator<Item = (&VarId, std::borrow::Cow<'_, str>, &LoraValue)> {
-        self.entries.iter().flatten().map(|entry| {
+    ) -> impl Iterator<Item = (VarId, std::borrow::Cow<'_, str>, &LoraValue)> {
+        self.set_entries().map(|(var, entry)| {
             let name: std::borrow::Cow<'_, str> = match &entry.name {
                 Some(n) => std::borrow::Cow::Borrowed(&**n),
-                None => std::borrow::Cow::Owned(format!("_{}", entry.var)),
+                None => std::borrow::Cow::Owned(format!("_{var}")),
             };
-            (&entry.var, name, entry.value.get())
+            (var, name, entry.value.get())
         })
     }
 
@@ -728,14 +726,18 @@ impl Row {
     /// names come back as the shared `Arc<str>` so re-inserting them into a
     /// new row costs a refcount, not an allocation.
     pub fn into_iter_named(self) -> impl Iterator<Item = (VarId, Arc<str>, LoraValue)> {
-        self.entries.into_iter().flatten().map(|entry| {
-            let RowEntry { var, name, value } = entry;
-            (
-                var,
-                name.unwrap_or_else(|| Arc::from(format!("_{var}"))),
-                value.into_value(),
-            )
-        })
+        self.entries
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, slot)| slot.map(|entry| (VarId(i as u32), entry)))
+            .map(|(var, entry)| {
+                let RowEntry { name, value } = entry;
+                (
+                    var,
+                    name.unwrap_or_else(|| Arc::from(format!("_{var}"))),
+                    value.into_value(),
+                )
+            })
     }
 
     pub fn len(&self) -> usize {
@@ -1083,6 +1085,8 @@ mod tests {
         // Every row slot holds one: the large temporal, spatial, vector,
         // binary and path payloads are boxed to keep rows small.
         assert_eq!(std::mem::size_of::<LoraValue>(), 32);
+        // A slot is its name and its value; the variable is its position.
+        assert_eq!(std::mem::size_of::<Option<RowEntry>>(), 48);
     }
 
     #[test]

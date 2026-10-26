@@ -89,14 +89,12 @@ pub(crate) fn optional_match_rows(
 }
 
 pub(crate) fn optional_rows_compatible(input_row: &Row, inner_row: &Row) -> bool {
-    input_row
-        .iter()
-        .all(|(var, val)| match inner_row.get(*var) {
-            // A seeded inner row shares the outer row's large values: the
-            // pointer check skips comparing a carried list element-wise.
-            Some(inner_val) => std::ptr::eq(inner_val, val) || inner_val == val,
-            None => true,
-        })
+    input_row.iter().all(|(var, val)| match inner_row.get(var) {
+        // A seeded inner row shares the outer row's large values: the
+        // pointer check skips comparing a carried list element-wise.
+        Some(inner_val) => std::ptr::eq(inner_val, val) || inner_val == val,
+        None => true,
+    })
 }
 
 pub(crate) fn merge_optional_rows(input_row: &Row, inner_row: &Row) -> Row {

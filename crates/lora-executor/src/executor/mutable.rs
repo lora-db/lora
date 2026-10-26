@@ -2238,7 +2238,7 @@ fn merge_candidates_from_index<S: lora_store::GraphStorage>(
 /// The user-facing name of `var` in `row`, for error messages.
 fn bound_var_name(row: &Row, var: VarId) -> String {
     row.iter_named()
-        .find(|(key, _, _)| **key == var)
+        .find(|(key, _, _)| *key == var)
         .map(|(_, name, _)| name.into_owned())
         .unwrap_or_else(|| format!("{var:?}"))
 }

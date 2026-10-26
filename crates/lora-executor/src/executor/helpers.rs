@@ -2515,7 +2515,7 @@ impl RowKeyBuilder {
     pub(crate) fn row_key(&mut self, row: &Row) -> Vec<RowKeyPart> {
         row.iter()
             .enumerate()
-            .map(|(column, (var, value))| self.part(column, row, *var, value))
+            .map(|(column, (var, value))| self.part(column, row, var, value))
             .collect()
     }
 
@@ -2525,7 +2525,7 @@ impl RowKeyBuilder {
         row.iter_named()
             .enumerate()
             .map(|(column, (var, name, value))| {
-                (name.into_owned(), self.part(column, row, *var, value))
+                (name.into_owned(), self.part(column, row, var, value))
             })
             .collect()
     }
