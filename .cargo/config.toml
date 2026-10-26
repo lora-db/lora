@@ -7,14 +7,10 @@ debug = 1
 [profile.release]
 lto = "fat"
 codegen-units = 1
-panic = "abort"
-
-# Release build of the Node binding (`yarn build:native`). It runs inside
-# the host's process, so a panic must unwind: the binding catches it and
-# rejects the one call with LORA_INTERNAL. With `abort` any engine panic
-# killed the whole Node process.
-[profile.release-unwind]
-inherits = "release"
+# Every binding runs inside its host's process (Node, Python, Ruby, Go via
+# the C ABI) and catches panics at its entry points, turning one into a
+# LORA_INTERNAL error for that call. With `abort` any engine panic killed
+# the whole host process and the server.
 panic = "unwind"
 
 # Pin the wasm linear-memory ceiling to the wasm32 maximum (4 GiB). Without

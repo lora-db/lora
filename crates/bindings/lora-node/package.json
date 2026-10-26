@@ -72,7 +72,7 @@
     "prebuild": "yarn run sync:types",
     "pretypecheck": "yarn run sync:types",
     "pretest": "yarn run sync:types",
-    "build:native": "napi build --platform --profile release-unwind --js false",
+    "build:native": "napi build --platform --release --js false",
     "build:native:debug": "napi build --platform --js false",
     "build:ts": "tsc -p tsconfig.json",
     "build": "yarn run build:native && yarn run build:ts",

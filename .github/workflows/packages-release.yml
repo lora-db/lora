@@ -615,7 +615,7 @@ jobs:
             rustup toolchain install 1.95.0 --profile minimal --target "$TARGET" --no-self-update
             export RUSTUP_TOOLCHAIN=1.95.0
           fi
-          corepack yarn exec napi build --platform --profile release-unwind --js false --target "$TARGET" $ZIG
+          corepack yarn exec napi build --platform --release --js false --target "$TARGET" $ZIG
 
       - name: Verify the expected .node file exists
         shell: bash
