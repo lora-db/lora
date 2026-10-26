@@ -127,6 +127,28 @@ pub(super) fn build_point_from_map(
         srid: final_srid,
     };
 
+    if [Some(point.x), Some(point.y), point.z]
+        .into_iter()
+        .flatten()
+        .any(|c| !c.is_finite())
+    {
+        return Err("CAST( AS POINT) coordinates must be finite numbers".to_string());
+    }
+    if point.is_geographic() {
+        if !(-90.0..=90.0).contains(&point.y) {
+            return Err(format!(
+                "CAST( AS POINT) latitude must be between -90 and 90, got {}",
+                point.y
+            ));
+        }
+        if !(-180.0..=180.0).contains(&point.x) {
+            return Err(format!(
+                "CAST( AS POINT) longitude must be between -180 and 180, got {}",
+                point.x
+            ));
+        }
+    }
+
     Ok(Some(point))
 }
 

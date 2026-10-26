@@ -41,6 +41,12 @@ pub fn measure(value: &LoraValue) -> (usize, usize) {
     measure_all(std::iter::once(value))
 }
 
+/// [`measure`] over the items of a list: the deepest item and their total
+/// size.
+pub fn measure_list(items: &[LoraValue]) -> (usize, usize) {
+    measure_all(items)
+}
+
 /// [`measure`] over several values: the deepest depth and the total size.
 fn measure_all<'a>(values: impl IntoIterator<Item = &'a LoraValue>) -> (usize, usize) {
     let mut m = Measure::default();

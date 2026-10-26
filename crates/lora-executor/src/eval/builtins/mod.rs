@@ -23,6 +23,9 @@ use lora_store::GraphStorage;
 
 use super::expr::EvalContext;
 
+#[cfg(test)]
+mod fuzz_tests;
+
 mod bits_ns;
 mod bytes_ns;
 mod cast_ns;

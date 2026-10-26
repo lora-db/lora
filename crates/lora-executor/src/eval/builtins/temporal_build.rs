@@ -726,10 +726,18 @@ impl Amount {
     fn add(&mut self, key: &str, value: &LoraValue, scale: i64) -> Result<(), String> {
         match value {
             LoraValue::Null => {}
-            LoraValue::Int(v) => self.whole += *v as i128 * scale as i128,
+            // An i64 times an i64 scale always fits an i128; the sum of
+            // several may not.
+            LoraValue::Int(v) => {
+                self.whole = checked(self.whole.checked_add(*v as i128 * scale as i128))?
+            }
             LoraValue::Float(f) if f.is_finite() => {
                 let x = f * scale as f64;
-                self.whole += x.trunc() as i128;
+                // Far past any duration, and past what `as i128` keeps.
+                if x.abs() >= 1e30 {
+                    return Err(DURATION_OUT_OF_RANGE.to_string());
+                }
+                self.whole = checked(self.whole.checked_add(x.trunc() as i128))?;
                 self.fraction += x.fract();
             }
             other => {
@@ -743,11 +751,19 @@ impl Amount {
     }
 
     /// Move the whole units the fractions added up to into `whole`.
-    fn settle(&mut self) {
+    fn settle(&mut self) -> Result<(), String> {
         let whole = self.fraction.trunc();
-        self.whole += whole as i128;
+        self.whole = checked(self.whole.checked_add(whole as i128))?;
         self.fraction -= whole;
+        Ok(())
     }
+}
+
+const DURATION_OUT_OF_RANGE: &str = "duration out of range";
+
+/// `sum`, or the out-of-range error when it overflowed.
+fn checked(sum: Option<i128>) -> Result<i128, String> {
+    sum.ok_or_else(|| DURATION_OUT_OF_RANGE.to_string())
 }
 
 /// Each duration key: the amount it adds to (months, days, seconds,
@@ -788,21 +804,25 @@ pub(super) fn duration_from_map(m: &BTreeMap<String, LoraValue>) -> Result<LoraD
     }
     let [mut months, mut days, seconds, nanos] = amounts;
 
-    months.settle();
+    months.settle()?;
     let month_nanos = (months.fraction * NANOS_PER_AVERAGE_MONTH).round() as i128;
-    days.whole += month_nanos / NANOS_PER_DAY;
-    days.settle();
-    let time_nanos = month_nanos % NANOS_PER_DAY
-        + (days.fraction * NANOS_PER_DAY as f64).round() as i128
-        + seconds.whole * NANOS_PER_SECOND
-        + (seconds.fraction * NANOS_PER_SECOND as f64).round() as i128
-        + nanos.whole
-        + nanos.fraction.round() as i128;
-    duration(months.whole, days.whole, time_nanos)
+    days.whole = checked(days.whole.checked_add(month_nanos / NANOS_PER_DAY))?;
+    days.settle()?;
+    let time_nanos = [
+        Some(month_nanos % NANOS_PER_DAY),
+        Some((days.fraction * NANOS_PER_DAY as f64).round() as i128),
+        seconds.whole.checked_mul(NANOS_PER_SECOND),
+        Some((seconds.fraction * NANOS_PER_SECOND as f64).round() as i128),
+        Some(nanos.whole),
+        Some(nanos.fraction.round() as i128),
+    ]
+    .into_iter()
+    .try_fold(0i128, |sum, part| sum.checked_add(part?));
+    duration(months.whole, days.whole, checked(time_nanos)?)
 }
 
 fn duration(months: i128, days: i128, nanos: i128) -> Result<LoraDuration, String> {
-    let out_of_range = |_| "duration out of range".to_string();
+    let out_of_range = |_| DURATION_OUT_OF_RANGE.to_string();
     Ok(LoraDuration {
         months: i64::try_from(months).map_err(out_of_range)?,
         days: i64::try_from(days).map_err(out_of_range)?,
