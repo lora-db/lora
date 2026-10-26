@@ -30,6 +30,7 @@ mod crypto;
 mod edge;
 mod geo;
 mod index_ns;
+pub use index_ns::FulltextPage;
 mod json_ns;
 mod list;
 mod map_ns;

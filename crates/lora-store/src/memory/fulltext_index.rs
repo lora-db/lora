@@ -273,20 +273,24 @@ impl FulltextIndex {
     /// contain *all* query terms (AND semantics). Score is the sum of
     /// term frequencies across the matched terms; ties broken by
     /// entity id ascending.
-    pub(super) fn query(&self, query_text: &str) -> Vec<(u64, f64)> {
+    ///
+    /// With `limit`, only the best `limit` matches are ranked and
+    /// returned: the rest are never sorted or handed to the caller, so a
+    /// broad prefix (`a*` over millions of titles) costs one compact
+    /// `(id, tf)` pair per match, not a row each.
+    pub(super) fn query(&self, query_text: &str, limit: Option<usize>) -> Vec<(u64, f64)> {
         let tokens = analyze(query_text, true);
-        if tokens.is_empty() {
+        if tokens.is_empty() || limit == Some(0) {
             return Vec::new();
         }
         // Resolve each query term to a posting list. A prefix term merges
         // the postings of every indexed term starting with it.
-        let mut merged: Vec<BTreeMap<u64, u32>> = Vec::new();
+        let mut merged: Vec<Vec<(u64, u32)>> = Vec::new();
         let mut exact: Vec<&CowIdMap<u32>> = Vec::with_capacity(tokens.len());
         for (token, prefix) in &tokens {
             if *prefix {
                 // Posting lists iterate in no particular order: gather,
-                // sort and sum runs, then build the map from sorted input
-                // in one go instead of inserting at random.
+                // sort and sum runs into one id-ordered list.
                 let prefix = token.clone();
                 let mut hits: Vec<(u64, u32)> = Vec::new();
                 for (_, posting) in self
@@ -310,7 +314,8 @@ impl FulltextIndex {
                     }
                     same
                 });
-                merged.push(hits.into_iter().collect());
+                hits.shrink_to_fit();
+                merged.push(hits);
                 continue;
             }
             match self.postings.get(token.as_str()) {
@@ -320,47 +325,47 @@ impl FulltextIndex {
         }
         // Find the smallest posting list to seed the intersection.
         let mut posting_iter: Vec<Posting<'_>> = exact.into_iter().map(Posting::Index).collect();
-        posting_iter.extend(merged.iter().map(Posting::Merged));
+        posting_iter.extend(merged.iter().map(|m| Posting::Merged(m)));
         posting_iter.sort_by_key(|p| p.len());
 
-        // Seed with the smallest list (collected: built from sorted input
-        // rather than inserted in the list's arbitrary order).
         let Some(seed) = posting_iter.first() else {
             return Vec::new();
         };
-        let mut results: BTreeMap<u64, u32> = seed.iter().collect();
+        let mut results: Vec<(u64, u32)> = seed.iter().collect();
         // Intersect with the rest, summing TF as we go.
         for posting in posting_iter.iter().skip(1) {
-            let mut next: BTreeMap<u64, u32> = BTreeMap::new();
-            for (id, acc) in &results {
-                if let Some(tf) = posting.get(id) {
-                    next.insert(*id, acc.saturating_add(*tf));
+            results.retain_mut(|(id, acc)| match posting.get(id) {
+                Some(tf) => {
+                    *acc = acc.saturating_add(*tf);
+                    true
                 }
-            }
-            results = next;
+                None => false,
+            });
             if results.is_empty() {
                 return Vec::new();
             }
         }
-        let mut out: Vec<(u64, f64)> = results
+        // Descending score, ascending id for ties.
+        let order = |a: &(u64, u32), b: &(u64, u32)| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0));
+        if let Some(k) = limit {
+            if k < results.len() {
+                results.select_nth_unstable_by(k - 1, order);
+                results.truncate(k);
+            }
+        }
+        results.sort_unstable_by(order);
+        results
             .into_iter()
             .map(|(id, tf)| (id, tf as f64))
-            .collect();
-        // Descending score, ascending id for ties.
-        out.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
-        });
-        out
+            .collect()
     }
 }
 
-/// A query term's posting list: straight from the index, or the union
-/// built for a prefix term.
+/// A query term's posting list: straight from the index, or the
+/// id-ordered union built for a prefix term.
 enum Posting<'a> {
     Index(&'a CowIdMap<u32>),
-    Merged(&'a BTreeMap<u64, u32>),
+    Merged(&'a [(u64, u32)]),
 }
 
 impl Posting<'_> {
@@ -374,14 +379,17 @@ impl Posting<'_> {
     fn get(&self, id: &u64) -> Option<&u32> {
         match self {
             Posting::Index(p) => p.get(id),
-            Posting::Merged(p) => p.get(id),
+            Posting::Merged(p) => p
+                .binary_search_by_key(id, |(entry, _)| *entry)
+                .ok()
+                .map(|at| &p[at].1),
         }
     }
 
     fn iter(&self) -> Box<dyn Iterator<Item = (u64, u32)> + '_> {
         match self {
             Posting::Index(p) => Box::new(p.iter().map(|(id, tf)| (*id, *tf))),
-            Posting::Merged(p) => Box::new(p.iter().map(|(id, tf)| (*id, *tf))),
+            Posting::Merged(p) => Box::new(p.iter().copied()),
         }
     }
 }
@@ -487,9 +495,9 @@ mod tests {
         idx.reindex_entity(1, tokenize_to_term_counts("foo bar"));
         idx.reindex_entity(1, tokenize_to_term_counts("baz"));
         // The old terms should not return entity 1 anymore.
-        let r = idx.query("foo");
+        let r = idx.query("foo", None);
         assert!(r.is_empty(), "expected empty after reindex, got {r:?}");
-        let r = idx.query("baz");
+        let r = idx.query("baz", None);
         assert_eq!(r, vec![(1, 1.0)]);
     }
 
@@ -498,7 +506,7 @@ mod tests {
         let mut idx = FulltextIndex::new(vec!["L".into()], vec!["p".into()]);
         idx.reindex_entity(1, tokenize_to_term_counts("alpha beta gamma"));
         idx.reindex_entity(2, tokenize_to_term_counts("alpha gamma delta"));
-        let r = idx.query("alpha beta");
+        let r = idx.query("alpha beta", None);
         assert_eq!(r, vec![(1, 2.0)], "only entity 1 has both terms");
     }
 
@@ -506,6 +514,33 @@ mod tests {
     fn query_returns_empty_for_unknown_term() {
         let mut idx = FulltextIndex::new(vec!["L".into()], vec!["p".into()]);
         idx.reindex_entity(1, tokenize_to_term_counts("alpha"));
-        assert!(idx.query("zeta").is_empty());
+        assert!(idx.query("zeta", None).is_empty());
+    }
+
+    #[test]
+    fn query_limit_keeps_the_best_in_order() {
+        let mut idx = FulltextIndex::new(vec!["L".into()], vec!["p".into()]);
+        idx.reindex_entity(5, tokenize_to_term_counts("night"));
+        idx.reindex_entity(3, tokenize_to_term_counts("night nights"));
+        idx.reindex_entity(9, tokenize_to_term_counts("nightfall"));
+        idx.reindex_entity(1, tokenize_to_term_counts("nightly"));
+        idx.reindex_entity(7, tokenize_to_term_counts("day"));
+        let all = idx.query("nigh*", None);
+        assert_eq!(all, vec![(3, 2.0), (1, 1.0), (5, 1.0), (9, 1.0)]);
+        for k in 1..=5 {
+            let top = idx.query("nigh*", Some(k));
+            assert_eq!(top, all[..k.min(all.len())], "limit {k}");
+        }
+        assert!(idx.query("nigh*", Some(0)).is_empty());
+    }
+
+    #[test]
+    fn query_intersects_a_prefix_with_an_exact_term() {
+        let mut idx = FulltextIndex::new(vec!["L".into()], vec!["p".into()]);
+        idx.reindex_entity(1, tokenize_to_term_counts("love song"));
+        idx.reindex_entity(2, tokenize_to_term_counts("lovely song"));
+        idx.reindex_entity(3, tokenize_to_term_counts("love story"));
+        assert_eq!(idx.query("lov* song", None), vec![(1, 2.0), (2, 2.0)]);
+        assert_eq!(idx.query("song lov*", Some(1)), vec![(1, 2.0)]);
     }
 }

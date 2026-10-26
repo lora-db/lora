@@ -52,12 +52,62 @@ fn fulltext<S: GraphStorage>(
 ) -> Result<LoraValue, String> {
     let name = string_arg(args, 0, "indexName")?;
     let query = string_arg(args, 1, "queryString")?;
+    let page = match args.get(2) {
+        None | Some(LoraValue::Null) => FulltextPage::default(),
+        Some(LoraValue::Map(options)) => FulltextPage::parse(options)?,
+        Some(other) => return Err(format!("fulltext options must be a MAP, got {other:?}")),
+    };
     check_index(ctx, &name, StoredIndexKind::Fulltext, entity)?;
-    Ok(hits(
-        ctx.storage.fulltext_search(&name, &query),
-        None,
-        entity,
-    ))
+    let scored = ctx.storage.fulltext_search(&name, &query, page.window());
+    Ok(hits(page.skipped(scored), None, entity))
+}
+
+/// The `{skip, limit}` options of a full-text query (Neo4j's names): the
+/// index ranks only `skip + limit` matches, so a broad query with a limit
+/// never turns every match into a row.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FulltextPage {
+    pub skip: usize,
+    pub limit: Option<usize>,
+}
+
+impl FulltextPage {
+    pub fn parse(options: &BTreeMap<String, LoraValue>) -> Result<Self, String> {
+        let mut page = Self::default();
+        for (key, value) in options {
+            if key != "skip" && key != "limit" {
+                return Err(format!(
+                    "unknown fulltext option `{key}` (supported: skip, limit)"
+                ));
+            }
+            let n = match value {
+                LoraValue::Null => continue,
+                LoraValue::Int(n) if *n >= 0 => *n as usize,
+                other => {
+                    return Err(format!(
+                        "fulltext option `{key}` must be a non-negative integer, got {other:?}"
+                    ))
+                }
+            };
+            if key == "skip" {
+                page.skip = n;
+            } else {
+                page.limit = Some(n);
+            }
+        }
+        Ok(page)
+    }
+
+    /// How many of the best matches the index must rank.
+    pub fn window(&self) -> Option<usize> {
+        self.limit.map(|limit| limit.saturating_add(self.skip))
+    }
+
+    /// `scored` (best first) without the skipped head.
+    pub fn skipped(&self, mut scored: Vec<(u64, f64)>) -> Vec<(u64, f64)> {
+        scored.drain(..self.skip.min(scored.len()));
+        scored
+    }
 }
 
 fn vector<S: GraphStorage>(

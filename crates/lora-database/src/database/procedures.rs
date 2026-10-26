@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
 use lora_ast::{Expr, ProcedureInvocationKind, StandaloneCall, YieldItem};
-use lora_executor::{LoraValue, Row};
+use lora_executor::{FulltextPage, LoraValue, Row};
 use lora_store::{
     GraphStorage, GraphStorageMut, IndexDefinition, LoraVector, StoredIndexEntity, StoredIndexKind,
     VectorCoordinateType,
@@ -134,15 +134,18 @@ where
         params: &BTreeMap<String, LoraValue>,
         entity: StoredIndexEntity,
     ) -> Result<Vec<Row>> {
-        let (index_name, query_text) = parse_fulltext_args(args, params)?;
+        let (index_name, query_text, page) = parse_fulltext_args(args, params)?;
         let snapshot = self.read_store();
         let def = snapshot
             .get_index(&index_name)
             .ok_or_else(|| not_found_error(format!("no fulltext index named `{index_name}`")))?;
         validate_procedure_index(&def, StoredIndexKind::Fulltext, entity, "fulltext")?;
 
-        let scored = snapshot.fulltext_search(&index_name, &query_text);
-        Ok(hydrated(scored_rows(scored, None, entity), &*snapshot))
+        let scored = snapshot.fulltext_search(&index_name, &query_text, page.window());
+        Ok(hydrated(
+            scored_rows(page.skipped(scored), None, entity),
+            &*snapshot,
+        ))
     }
 }
 
@@ -262,7 +265,7 @@ fn invocation_parts(
 fn parse_fulltext_args(
     args: &[Expr],
     params: &BTreeMap<String, LoraValue>,
-) -> Result<(String, String)> {
+) -> Result<(String, String, FulltextPage)> {
     if args.len() < 2 || args.len() > 3 {
         return Err(invalid_params_error(format!(
             "fulltext procedure expects 2 or 3 arguments (indexName, queryString, options? ); got {}",
@@ -271,9 +274,22 @@ fn parse_fulltext_args(
     }
     let name = eval_string_arg(&args[0], params, "indexName")?;
     let query = eval_string_arg(&args[1], params, "queryString")?;
-    // args[2] (options map) parses but is currently ignored — we don't
-    // support skip/limit/analyzer overrides yet.
-    Ok((name, query))
+    let page = match args
+        .get(2)
+        .map(|expr| resolve_literal(expr, params))
+        .transpose()?
+    {
+        None | Some(LoraValue::Null) => FulltextPage::default(),
+        Some(LoraValue::Map(options)) => {
+            FulltextPage::parse(&options).map_err(invalid_params_error)?
+        }
+        Some(other) => {
+            return Err(invalid_params_error(format!(
+                "fulltext options must be a MAP like {{limit: 20}}, got {other:?}"
+            )))
+        }
+    };
+    Ok((name, query, page))
 }
 
 fn parse_vector_args(
@@ -440,6 +456,13 @@ fn resolve_literal(expr: &Expr, params: &BTreeMap<String, LoraValue>) -> Result<
                 out.push(resolve_literal(item, params)?);
             }
             Ok(LoraValue::List(out))
+        }
+        Expr::Map(items, _) => {
+            let mut out = BTreeMap::new();
+            for (key, item) in items {
+                out.insert(key.clone(), resolve_literal(item, params)?);
+            }
+            Ok(LoraValue::Map(out))
         }
         Expr::Unary {
             op: lora_ast::UnaryOp::Neg,

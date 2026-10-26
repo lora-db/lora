@@ -214,6 +214,19 @@ RETURN node.title, score;`} />
 names are rejected. `fulltext.eventually_consistent` accepts a boolean
 option, but index maintenance is currently synchronous.
 
+A third argument, `{skip, limit}`, pages through the ranking inside the
+index: only the best `skip + limit` matches are ranked and turned into
+rows. A broad query (a short prefix such as `a*`) over a large index
+otherwise yields a row for every match before any `LIMIT` later in the
+query applies:
+
+<QueryCodeBlock code={String.raw`CALL db.index.fulltext.queryNodes('article_search', 'gra*', {skip: 20, limit: 10})
+YIELD node, score
+RETURN node.title, score;`} />
+
+The limit applies before a `WHERE` on the yielded rows: that query
+filters within the best `limit` matches. Other option keys are rejected.
+
 ## Inspect indexes
 
 <QueryCodeBlock code={String.raw`SHOW INDEXES;`} />

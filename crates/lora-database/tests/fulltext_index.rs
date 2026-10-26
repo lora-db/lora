@@ -3,6 +3,9 @@
 mod test_helpers;
 use test_helpers::TestDb;
 
+use std::collections::BTreeMap;
+
+use lora_database::LoraValue;
 use serde_json::Value as JsonValue;
 
 fn index_named<'a>(rows: &'a [JsonValue], name: &str) -> Option<&'a JsonValue> {
@@ -311,4 +314,111 @@ fn fulltext_node_ids_returned() {
     let rows = db.run("CALL db.index.fulltext.queryNodes('titles', 'graph') YIELD node, score");
     let ids = node_ids(&rows);
     assert_eq!(ids.len(), 1);
+}
+
+// ---------- Options: {skip, limit} ----------
+
+fn seed_nights(db: &TestDb) {
+    db.run("CREATE FULLTEXT INDEX titles FOR (n:Track) ON EACH [n.title]");
+    for (key, title) in [
+        ("a", "Night Nights"),
+        ("b", "Nightfall"),
+        ("c", "Midnight"),
+        ("d", "Nightly"),
+        ("e", "Night"),
+    ] {
+        db.run(&format!(
+            "CREATE (:Track {{key: '{key}', title: '{title}'}})"
+        ));
+    }
+}
+
+fn keys(rows: &[JsonValue]) -> Vec<String> {
+    rows.iter()
+        .map(|r| r["key"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn fulltext_limit_returns_the_best_matches_in_order() {
+    let db = TestDb::new();
+    seed_nights(&db);
+    let all = keys(&db.run(
+        "CALL db.index.fulltext.queryNodes('titles', 'night*') YIELD node, score
+         RETURN node.key AS key",
+    ));
+    assert_eq!(all.len(), 4, "{all:?}");
+    assert_eq!(all[0], "a", "the two-term title ranks first: {all:?}");
+    for limit in 0..=5 {
+        let top = keys(&db.run(&format!(
+            "CALL db.index.fulltext.queryNodes('titles', 'night*', {{limit: {limit}}}) YIELD node, score
+             RETURN node.key AS key"
+        )));
+        assert_eq!(top, all[..limit.min(all.len())], "limit {limit}");
+    }
+}
+
+#[test]
+fn fulltext_skip_and_limit_page_through_the_ranking() {
+    let db = TestDb::new();
+    seed_nights(&db);
+    let all = keys(&db.run(
+        "CALL db.index.fulltext.queryNodes('titles', 'night*') YIELD node, score
+         RETURN node.key AS key",
+    ));
+    let options = BTreeMap::from([
+        ("skip".to_string(), LoraValue::Int(1)),
+        ("limit".to_string(), LoraValue::Int(2)),
+    ]);
+    let page = keys(&db.run_with_params(
+        "CALL db.index.fulltext.queryNodes('titles', 'night*', $options) YIELD node, score
+         RETURN node.key AS key",
+        BTreeMap::from([("options".to_string(), LoraValue::Map(options))]),
+    ));
+    assert_eq!(page, all[1..3]);
+    let tail = keys(&db.run(
+        "CALL db.index.fulltext.queryNodes('titles', 'night*', {skip: 3}) YIELD node, score
+         RETURN node.key AS key",
+    ));
+    assert_eq!(tail, all[3..]);
+}
+
+#[test]
+fn fulltext_limit_applies_before_where() {
+    // The index ranks `limit` matches; a later WHERE filters within them.
+    let db = TestDb::new();
+    seed_nights(&db);
+    let rows = db.run(
+        "CALL db.index.fulltext.queryNodes('titles', 'night*', {limit: 2}) YIELD node AS t, score
+         WHERE t.key <> 'a'
+         RETURN t.key AS key",
+    );
+    assert_eq!(rows.len(), 1, "{rows:?}");
+}
+
+#[test]
+fn fulltext_options_are_checked() {
+    let db = TestDb::new();
+    seed_nights(&db);
+    let err = db.run_err(
+        "CALL db.index.fulltext.queryNodes('titles', 'night', {analyzer: 'english'}) YIELD node",
+    );
+    assert!(
+        err.contains("unknown fulltext option `analyzer`"),
+        "got: {err}"
+    );
+    let err = db.run_err(
+        "CALL db.index.fulltext.queryNodes('titles', 'night', {limit: -1}) YIELD node
+         RETURN node",
+    );
+    assert!(err.contains("non-negative integer"), "got: {err}");
+}
+
+#[test]
+fn fulltext_standalone_call_takes_options() {
+    let db = TestDb::new();
+    seed_nights(&db);
+    let rows = db
+        .run("CALL db.index.fulltext.queryNodes('titles', 'night*', {limit: 1}) YIELD node, score");
+    assert_eq!(rows.len(), 1, "{rows:?}");
 }

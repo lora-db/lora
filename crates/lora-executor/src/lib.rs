@@ -8,6 +8,7 @@ mod value;
 
 pub use cancel::CancellableDeadline;
 pub use errors::{ExecResult, ExecutorError};
+pub use eval::FulltextPage;
 pub use executor::{
     value_matches_property_value, ExecutionContext, Executor, MutableExecutionContext,
     MutableExecutor,

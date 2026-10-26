@@ -28,12 +28,12 @@ impl GraphStorage for InMemoryGraph {
         self.index_catalog_read().get(name).cloned()
     }
 
-    fn fulltext_search(&self, name: &str, query: &str) -> Vec<(u64, f64)> {
+    fn fulltext_search(&self, name: &str, query: &str, limit: Option<usize>) -> Vec<(u64, f64)> {
         // The index lives on exactly one entity scope; check both.
         let node_hits = self
             .fulltext_indexes_read(StoredIndexEntity::Node)
             .get(name)
-            .map(|idx| idx.query(query));
+            .map(|idx| idx.query(query, limit));
         if let Some(hits) = node_hits {
             if !hits.is_empty() {
                 return hits;
@@ -42,7 +42,7 @@ impl GraphStorage for InMemoryGraph {
         let rel_hits = self
             .fulltext_indexes_read(StoredIndexEntity::Relationship)
             .get(name)
-            .map(|idx| idx.query(query));
+            .map(|idx| idx.query(query, limit));
         rel_hits.unwrap_or_default()
     }
 

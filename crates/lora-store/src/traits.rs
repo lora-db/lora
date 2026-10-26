@@ -622,11 +622,12 @@ pub trait GraphStorage {
     }
 
     /// Run a FULLTEXT index query against the named index. Returns
-    /// `(entity_id, score)` pairs sorted descending by score. Backends
-    /// without fulltext support return an empty vector; the caller is
-    /// expected to have validated that the index exists via the
-    /// catalog first.
-    fn fulltext_search(&self, _name: &str, _query: &str) -> Vec<(u64, f64)> {
+    /// `(entity_id, score)` pairs sorted descending by score (ties by
+    /// ascending id), at most `limit` of them: the best `limit`, never
+    /// an arbitrary subset. Backends without fulltext support return an
+    /// empty vector; the caller is expected to have validated that the
+    /// index exists via the catalog first.
+    fn fulltext_search(&self, _name: &str, _query: &str, _limit: Option<usize>) -> Vec<(u64, f64)> {
         Vec::new()
     }
 
