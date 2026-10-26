@@ -170,19 +170,18 @@ where
         }
     }
 
-    pub(crate) fn observe_snapshot_commit_if_needed(
-        &self,
-        store: &S,
-        recorder: &WalRecorder,
-    ) -> Result<()> {
+    /// Managed-snapshot accounting for one written WAL commit. Call it
+    /// after the commit is published: a failing checkpoint is logged, never
+    /// returned, because the write it follows is already durable.
+    pub(crate) fn observe_snapshot_commit_if_needed(&self, store: &S, recorder: &WalRecorder) {
         let Some(snapshots) = &self.snapshots else {
-            return Ok(());
+            return;
         };
-        let graph = (store as &dyn Any)
-            .downcast_ref::<InMemoryGraph>()
-            .ok_or_else(|| anyhow!("managed snapshots require InMemoryGraph storage"))?;
-        snapshots.observe_commit(graph, recorder)?;
-        Ok(())
+        // Managed snapshots are only configured on `InMemoryGraph`
+        // databases.
+        if let Some(graph) = (store as &dyn Any).downcast_ref::<InMemoryGraph>() {
+            snapshots.observe_commit(graph, recorder);
+        }
     }
 
     /// Admin entry into the live-mutate write path.
@@ -314,8 +313,10 @@ where
                         rec.commit()?.wrote()
                     };
                     if wrote {
+                        // The write is live and durable: a checkpoint that
+                        // fails now is logged, not returned.
                         let live = handle.snapshot();
-                        self.observe_snapshot_commit_if_needed(&*live, rec)?;
+                        self.observe_snapshot_commit_if_needed(&*live, rec);
                     }
                 }
                 Err(_) => {
@@ -396,10 +397,6 @@ where
             f(staged)
         };
         let (wrote_commit, captured) = scope.finish(&result, capture)?;
-        if wrote_commit {
-            let staged = guard.staged_or_error()?;
-            self.observe_snapshot_commit_if_needed(staged, &rec)?;
-        }
 
         // Strip the per-mutation recorder before publish — the new live
         // store carries the durable recorder reinstalled below.
@@ -418,14 +415,18 @@ where
                     Some(rec.clone() as Arc<dyn MutationRecorder>),
                 );
             }
-            match captured {
-                Some((lsn, events)) => {
-                    let pre = self.store.load_full();
-                    guard.publish_in_place();
-                    let post = self.store.load_full();
-                    self.publish_changes(Some(lsn), &events, Some(&*pre), &post);
-                }
-                None => guard.publish(),
+            let pre = captured.as_ref().map(|_| self.store.load_full());
+            guard.publish_in_place();
+            let post = self.store.load_full();
+            if let (Some((lsn, events)), Some(pre)) = (captured, pre) {
+                self.publish_changes(Some(lsn), &events, Some(&*pre), &post);
+            }
+            // Once the commit record is written the staged graph is
+            // published whatever happens next, so recovery and the live
+            // graph agree. The checkpoint runs last, still under the writer
+            // lock, and only logs its failures.
+            if wrote_commit {
+                self.observe_snapshot_commit_if_needed(&post, &rec);
             }
         }
         result

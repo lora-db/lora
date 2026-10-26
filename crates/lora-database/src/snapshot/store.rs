@@ -135,26 +135,45 @@ impl ManagedSnapshotStore {
         }
 
         self.commits_since_checkpoint.store(0, Ordering::Relaxed);
-        self.prune_old_snapshots(snapshot_lsn)?;
+        // The new snapshot is in place and `CURRENT` names it: a failed
+        // cleanup of older files only leaves extra files behind.
+        if let Err(err) = self.prune_old_snapshots(snapshot_lsn) {
+            tracing::warn!(
+                lsn = snapshot_lsn.raw(),
+                error = %err,
+                "removing old managed snapshots failed; will retry at the next checkpoint"
+            );
+        }
         Ok(meta)
     }
 
-    pub(crate) fn observe_commit(
-        &self,
-        graph: &InMemoryGraph,
-        recorder: &WalRecorder,
-    ) -> Result<()> {
+    /// Count one committed WAL transaction and checkpoint when the
+    /// configured threshold is reached.
+    ///
+    /// Runs after the commit is durable and published, so it cannot fail
+    /// the write: a failed checkpoint is logged and the count starts over,
+    /// so a checkpoint that keeps failing is retried every
+    /// `checkpoint_every_commits` commits rather than on every one. The
+    /// WAL still holds every commit, so recovery is unaffected.
+    pub(crate) fn observe_commit(&self, graph: &InMemoryGraph, recorder: &WalRecorder) {
         let Some(every) = self.config.checkpoint_every_commits else {
-            return Ok(());
+            return;
         };
         let commits = self
             .commits_since_checkpoint
             .fetch_add(1, Ordering::Relaxed)
             + 1;
-        if commits >= every {
-            self.checkpoint(graph, recorder)?;
+        if commits < every {
+            return;
         }
-        Ok(())
+        if let Err(err) = self.checkpoint(graph, recorder) {
+            self.commits_since_checkpoint.store(0, Ordering::Relaxed);
+            tracing::warn!(
+                dir = %self.config.dir.display(),
+                error = %format!("{err:#}"),
+                "automatic managed checkpoint failed; the WAL keeps every commit and the checkpoint is retried later"
+            );
+        }
     }
 
     fn write_snapshot(&self, graph: &InMemoryGraph, snapshot_lsn: Lsn) -> Result<SnapshotMeta> {

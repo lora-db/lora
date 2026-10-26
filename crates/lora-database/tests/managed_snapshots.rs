@@ -244,6 +244,68 @@ fn managed_snapshot_can_use_password_encryption() {
     assert_eq!(rows, 1);
 }
 
+/// A failing automatic checkpoint must not fail the write it follows: the
+/// commit is already in the WAL, so the write has to be published (and the
+/// next write must not reuse its ids) or recovery diverges from what callers
+/// saw.
+#[cfg(unix)]
+#[test]
+fn failing_automatic_checkpoint_does_not_fail_or_lose_writes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TmpDir::new("failing_auto_checkpoint");
+    let wal_dir = dir.path().join("wal");
+    let snapshot_dir = dir.path().join("snapshots");
+    let config = || SnapshotConfig::enabled(&snapshot_dir).every_commits(1);
+
+    {
+        let db = Database::open_with_wal_snapshots(wal_enabled(&wal_dir), config()).unwrap();
+        std::fs::set_permissions(&snapshot_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        // Auto-commit, explicit transaction and graph API write paths.
+        db.execute("CREATE (:User {name: 'alice'})", opts())
+            .unwrap();
+        db.execute("CREATE (:User {name: 'bob'})", opts()).unwrap();
+        db.execute(
+            "MATCH (u:User {name: 'alice'}) SET u.age = 30 WITH u MATCH (b:User {name: 'bob'}) CREATE (u)-[:KNOWS]->(b)",
+            opts(),
+        )
+        .unwrap();
+        let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+        tx.execute("CREATE (:User {name: 'carol'})", opts())
+            .unwrap();
+        tx.commit().unwrap();
+        db.graph_create_node(vec!["User".to_string()], BTreeMap::new())
+            .unwrap();
+        assert_eq!(
+            row_count(db.execute("MATCH (u:User) RETURN u", opts()).unwrap()),
+            4
+        );
+        assert!(!snapshot_dir.join("CURRENT").exists());
+
+        std::fs::set_permissions(&snapshot_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    let reopened = Database::open_with_wal_snapshots(wal_enabled(&wal_dir), config()).unwrap();
+    assert_eq!(
+        row_count(reopened.execute("MATCH (u:User) RETURN u", opts()).unwrap()),
+        4
+    );
+    assert_eq!(
+        row_count(
+            reopened
+                .execute("MATCH (:User {age: 30})-[:KNOWS]->(:User) RETURN 1", opts())
+                .unwrap()
+        ),
+        1
+    );
+    // With the directory writable again the next commit checkpoints.
+    reopened
+        .execute("CREATE (:User {name: 'dave'})", opts())
+        .unwrap();
+    assert!(snapshot_dir.join("CURRENT").exists());
+}
+
 struct TmpDir {
     path: PathBuf,
 }
