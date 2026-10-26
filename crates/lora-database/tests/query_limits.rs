@@ -192,3 +192,92 @@ fn query_shape_limits_are_parse_errors() {
         assert!(start.elapsed() < Duration::from_secs(30));
     }
 }
+
+/// A chain `(:C {i: 0})-[:N]->(:C {i: 1})-[:N]->...` of `n` nodes.
+fn chain(n: i64) -> Database<InMemoryGraph> {
+    let db = db();
+    db.execute("CREATE INDEX FOR (n:C) ON (n.i)", None).unwrap();
+    db.execute(
+        &format!("UNWIND range(0, {}) AS i CREATE (:C {{i: i}})", n - 1),
+        None,
+    )
+    .unwrap();
+    db.execute(
+        &format!(
+            "UNWIND range(1, {}) AS i MATCH (a:C {{i: i - 1}}) MATCH (b:C {{i: i}}) \
+             CREATE (a)-[:N]->(b)",
+            n - 1
+        ),
+        None,
+    )
+    .unwrap();
+    db
+}
+
+fn single_int(db: &Database<InMemoryGraph>, query: &str) -> i64 {
+    let rows = db
+        .execute_rows(query)
+        .unwrap_or_else(|e| panic!("{query}: {e}"));
+    let value = rows[0].iter().next().map(|(_, v)| v.clone());
+    match value {
+        Some(LoraValue::Int(n)) => n,
+        other => panic!("{query}: {other:?}"),
+    }
+}
+
+#[test]
+fn long_variable_length_paths_do_not_recurse() {
+    on_big_stack(|| {
+        let db = chain(1_200);
+        // In an expression (was a recursive walk), buffered and pulled.
+        for query in [
+            "MATCH (a:C {i: 0}) RETURN size([(a)-[:N*1..1000]->(b) | 1]) AS n",
+            "MATCH (a:C {i: 0})-[:N*1..1000]->(b) RETURN count(b) AS n",
+            "MATCH (a:C {i: 0})-[r:N*1..1000]->(b) RETURN count(r) AS n",
+            "MATCH (a:C {i: 0})-[r:N*1..1000]->(b) WITH b LIMIT 5000 RETURN count(b) AS n",
+        ] {
+            assert_eq!(single_int(&db, query), 1000, "{query}");
+        }
+        // Bounds past the limit are refused when parsed.
+        let err = db
+            .execute("MATCH (a)-[:N*1..1001]->(b) RETURN b", None)
+            .unwrap_err();
+        assert_eq!(err.code(), LoraErrorCode::Parse, "{err}");
+        assert!(err.message().contains("1000 hops"), "{err}");
+    });
+}
+
+#[test]
+fn variable_length_expansion_stops_at_the_deadline() {
+    on_big_stack(|| {
+        // A complete graph: the number of paths explodes with length.
+        let db = db();
+        db.execute("UNWIND range(1, 12) AS i CREATE (:K {i: i})", None)
+            .unwrap();
+        db.execute("MATCH (a:K), (b:K) WHERE a <> b CREATE (a)-[:E]->(b)", None)
+            .unwrap();
+        for query in [
+            "MATCH (a:K {i: 1})-[:E*1..12]->(b) RETURN count(b) AS n",
+            "MATCH (a:K {i: 1})-[r:E*1..12]->(b) RETURN count(r) AS n",
+            "MATCH (a:K {i: 1})-[:E*1..12]->(b {i: 99}) RETURN b LIMIT 1",
+            "MATCH (a:K {i: 1}) RETURN size([(a)-[:E*1..12]->(b) | 1]) AS n",
+        ] {
+            let start = Instant::now();
+            let err = db
+                .execute_with_timeout(query, None, Duration::from_millis(200))
+                .unwrap_err();
+            assert!(
+                matches!(
+                    err.code(),
+                    LoraErrorCode::Timeout | LoraErrorCode::Validation
+                ),
+                "{query}: {err}"
+            );
+            assert!(
+                start.elapsed() < Duration::from_secs(20),
+                "{query}: {:?}",
+                start.elapsed()
+            );
+        }
+    });
+}

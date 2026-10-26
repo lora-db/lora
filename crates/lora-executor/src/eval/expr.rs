@@ -1018,7 +1018,7 @@ fn expand_walk_step<S: GraphStorage>(
             dst_bound,
             rels_bound,
         };
-        walk.visit(src, &mut Vec::new(), out);
+        walk.walk(src, out);
         return;
     }
 
@@ -1227,18 +1227,52 @@ struct VarLengthWalk<'q, 'c, S: GraphStorage> {
 }
 
 impl<S: GraphStorage> VarLengthWalk<'_, '_, S> {
-    fn visit(
+    /// Depth-first walk from `start`, emitting matches in path order. The
+    /// walk keeps its own stack (one frame per hop of the current path)
+    /// instead of recursing, so a long path cannot overflow the thread's.
+    fn walk(&self, start: lora_store::NodeId, out: &mut Vec<Row>) {
+        let mut path: Vec<lora_store::RelationshipId> = Vec::new();
+        // Per hop of `path`: the node reached and its untried edges.
+        let mut frames: Vec<(Vec<(lora_store::RelationshipId, lora_store::NodeId)>, usize)> =
+            Vec::new();
+        self.enter(start, &path, &mut frames, out);
+        while let Some((edges, next)) = frames.last_mut() {
+            let Some(&(rel_id, dst_id)) = edges.get(*next) else {
+                frames.pop();
+                // The root frame has no relationship on the path.
+                if !frames.is_empty() {
+                    path.pop();
+                }
+                continue;
+            };
+            *next += 1;
+            if path.contains(&rel_id)
+                || !rel_matches_properties(rel_id, &self.step.rel.properties, self.row, self.ctx)
+            {
+                continue;
+            }
+            path.push(rel_id);
+            if !self.enter(dst_id, &path, &mut frames, out) {
+                path.pop();
+            }
+        }
+    }
+
+    /// Visit `node` at the end of `path`: emit it if it matches, and push a
+    /// frame of its edges when the path may grow. Returns whether it did.
+    fn enter(
         &self,
         node: lora_store::NodeId,
-        path: &mut Vec<lora_store::RelationshipId>,
+        path: &[lora_store::RelationshipId],
+        frames: &mut Vec<(Vec<(lora_store::RelationshipId, lora_store::NodeId)>, usize)>,
         out: &mut Vec<Row>,
-    ) {
+    ) -> bool {
         let hops = path.len() as u64;
         if hops >= self.min_hops {
             self.emit(node, path, out);
         }
         if hops >= self.max_hops || eval_deadline_hit() {
-            return;
+            return false;
         }
         let mut next = Vec::new();
         let _ = self.ctx.storage.try_for_each_expand_id(
@@ -1250,16 +1284,8 @@ impl<S: GraphStorage> VarLengthWalk<'_, '_, S> {
                 Ok::<(), ()>(())
             },
         );
-        for (rel_id, dst_id) in next {
-            if path.contains(&rel_id)
-                || !rel_matches_properties(rel_id, &self.step.rel.properties, self.row, self.ctx)
-            {
-                continue;
-            }
-            path.push(rel_id);
-            self.visit(dst_id, path, out);
-            path.pop();
-        }
+        frames.push((next, 0));
+        true
     }
 
     fn emit(

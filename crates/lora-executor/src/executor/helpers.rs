@@ -845,6 +845,7 @@ pub(super) fn expand_var_len_rows<S: GraphStorage>(
     input_rows: Vec<Row>,
     op: &ExpandExec,
     range: &RangeLiteral,
+    deadline: Option<Instant>,
 ) -> ExecResult<Vec<Row>> {
     let (min_hops, max_hops) = resolve_range(range);
     let bind_relationships = op.rel.is_some();
@@ -865,7 +866,8 @@ pub(super) fn expand_var_len_rows<S: GraphStorage>(
             min_hops,
             max_hops,
             bind_relationships,
-        );
+            deadline,
+        )?;
 
         for result in expansions {
             if bound_dst.is_some_and(|dst| dst != result.dst_node_id) {
@@ -2583,6 +2585,12 @@ pub(crate) struct VarLenResult {
 ///
 /// Uses BFS with relationship-uniqueness per path (each path does not
 /// reuse the same relationship, but may revisit nodes).
+///
+/// Checks `deadline` per frontier entry, and fails once the paths it holds
+/// (frontier and results together) pass [`VAR_LENGTH_PATH_BUDGET`]: each
+/// path copies its prefix, so a long or bushy expansion used to grow
+/// quadratically until memory ran out.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn variable_length_expand<S: GraphStorage>(
     storage: &S,
     start_node_id: NodeId,
@@ -2591,8 +2599,12 @@ pub(crate) fn variable_length_expand<S: GraphStorage>(
     min_hops: u64,
     max_hops: u64,
     bind_relationships: bool,
-) -> Vec<VarLenResult> {
+    deadline: Option<Instant>,
+) -> ExecResult<Vec<VarLenResult>> {
     let mut results = Vec::new();
+    // Relationship ids (plus one per path) held in `results` and the
+    // frontiers.
+    let mut held = 0usize;
 
     // Each frontier entry: (current_node_id, relationships_used_so_far)
     let mut frontier: Vec<(NodeId, Vec<u64>)> = vec![(start_node_id, Vec::new())];
@@ -2605,6 +2617,9 @@ pub(crate) fn variable_length_expand<S: GraphStorage>(
         let mut next_frontier: Vec<(NodeId, Vec<u64>)> = Vec::new();
 
         for (current_node, rels_used) in &frontier {
+            if let Some(deadline) = deadline {
+                check_deadline_at(deadline)?;
+            }
             // ID-only expand avoids cloning full records/properties for every
             // neighbour on every hop.
             for (rel_id, neighbor_id) in storage.expand_ids(*current_node, direction, types) {
@@ -2612,6 +2627,19 @@ pub(crate) fn variable_length_expand<S: GraphStorage>(
                 // traversed on this particular path.
                 if rels_used.contains(&rel_id) {
                     continue;
+                }
+
+                held += if bind_relationships || !is_last_hop {
+                    rels_used.len() + 2
+                } else {
+                    1
+                };
+                if held > VAR_LENGTH_PATH_BUDGET {
+                    return Err(ExecutorError::RuntimeError(format!(
+                        "variable-length expansion found more paths than fit in {} MiB; \
+                         narrow the pattern, lower its upper bound or add a LIMIT",
+                        crate::limits::MAX_VALUE_BYTES >> 20
+                    )));
                 }
 
                 if is_last_hop {
@@ -2670,8 +2698,12 @@ pub(crate) fn variable_length_expand<S: GraphStorage>(
         );
     }
 
-    results
+    Ok(results)
 }
+
+/// See [`variable_length_expand`]: relationship ids one expansion may hold,
+/// 8 bytes each, within the single-value limit.
+const VAR_LENGTH_PATH_BUDGET: usize = crate::limits::MAX_VALUE_BYTES / 8;
 
 /// Filter rows to keep only shortest paths.
 /// `all` = false → keep one shortest path; `all` = true → keep all shortest.

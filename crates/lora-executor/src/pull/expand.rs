@@ -189,6 +189,21 @@ struct PathSegment {
     parent: Option<Arc<PathSegment>>,
 }
 
+/// Frees a chain iteratively: the derived drop would recurse once per
+/// segment, and a path of a few thousand hops overflowed the stack.
+impl Drop for PathSegment {
+    fn drop(&mut self) {
+        let mut next = self.parent.take();
+        while let Some(segment) = next {
+            match Arc::try_unwrap(segment) {
+                Ok(mut segment) => next = segment.parent.take(),
+                // Still shared with another path: that path frees it.
+                Err(_) => break,
+            }
+        }
+    }
+}
+
 impl PathSegment {
     fn contains(self_: &Option<Arc<Self>>, rel_id: RelationshipId) -> bool {
         let mut cur = self_.as_ref();
@@ -417,6 +432,12 @@ impl<'a, S: GraphStorage> RowSource for VariableLengthExpandSource<'a, S> {
                 while self.cur_edge_idx < self.cur_edges.len() {
                     let (rel_id, neighbor_id) = self.cur_edges[self.cur_edge_idx];
                     self.cur_edge_idx += 1;
+                    // The search can run long without yielding a row (none
+                    // of its paths end at the bound node), so it checks the
+                    // deadline itself.
+                    if crate::cancel::eval_deadline_hit() {
+                        return Err(ExecutorError::QueryTimeout);
+                    }
 
                     if PathSegment::contains(&self.cur_path, rel_id) {
                         continue;

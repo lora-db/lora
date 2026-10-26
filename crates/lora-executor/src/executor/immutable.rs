@@ -924,7 +924,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
     fn exec_expand(&self, plan: &PhysicalPlan, op: &ExpandExec) -> ExecResult<Vec<Row>> {
         let input_rows = self.execute_node(plan, op.input)?;
         if let Some(range) = &op.range {
-            expand_var_len_rows(self.ctx.storage, input_rows, op, range)
+            expand_var_len_rows(self.ctx.storage, input_rows, op, range, self.deadline)
         } else {
             expand_rows(self.ctx.storage, &self.ctx.params, input_rows, op)
         }

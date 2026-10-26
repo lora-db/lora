@@ -41,6 +41,7 @@ pub const MAX_CLAUSES: usize = 256;
 /// any value a query can store also fits in one WAL record.
 pub const MAX_VALUE_BYTES: usize = 128 << 20;
 
-/// Largest explicit upper bound a variable-length relationship pattern
-/// (`-[*1..n]->`) may name.
-pub const MAX_VAR_LENGTH_HOPS: u64 = 10_000;
+/// Largest hop count a variable-length relationship pattern (`-[*1..n]->`)
+/// may name. A pattern without an upper bound (`-[*]->`, `-[*2..]->`)
+/// stops at 100 hops.
+pub const MAX_VAR_LENGTH_HOPS: u64 = 1_000;
