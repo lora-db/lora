@@ -22,13 +22,24 @@
 //! the variant ordering in `PropertyIndexKey` (integers and floats share
 //! one run, by numeric value) plus lexicographic ordering for the inner
 //! data (strings, lists, maps).
+//!
+//! ## List elements
+//!
+//! A list value is indexed twice: whole, in `by_value` (for `n.l = [..]`
+//! and ranges over lists), and by each distinct element, in `by_element`
+//! (for `$x IN n.l`). Element keys put every number at its `f64` image,
+//! as Cypher compares an integer with a float (`1 = 1.0`): a seek finds
+//! every element equal to the value sought, plus, for integers beyond
+//! 2^53, the neighbours that share its image, which the caller refilters.
+//! Null elements are not indexed (`x IN [null]` is never true), nor are
+//! elements without an index image (durations, points, vectors, NaN).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
 use crate::types::PropertyValue;
 
-use super::cow::CowOrdMap;
+use super::cow::{CowMap, CowOrdMap};
 use super::entity_index_store::ScopedPropertyKey;
 use super::id_set::IdSet;
 use super::property_index::PropertyIndexKey;
@@ -49,6 +60,12 @@ pub(super) struct SortedScope {
     /// graph copy shares them and copies only the path (root, group,
     /// partition) to the entry it changes.
     pub(super) by_value: CowOrdMap<PropertyIndexKey, IdSet>,
+    /// Element → ids of the entities whose list value holds it (see
+    /// "List elements" above). Empty unless the property holds lists.
+    pub(super) by_element: CowMap<PropertyIndexKey, IdSet>,
+    /// Sum of the `by_element` bucket sizes: with the bucket count, the
+    /// average number of entities one element seek finds.
+    element_postings: usize,
     /// Refcount of catalog entries pointing at this scope.
     refcount: u32,
 }
@@ -89,14 +106,16 @@ impl SortedPropertyIndex {
     }
 
     pub(super) fn insert(&mut self, label: &str, property: &str, id: u64, value: &PropertyValue) {
-        let Some(key) = PropertyIndexKey::from_value(value) else {
-            return;
-        };
         if let Some(scope) = self
             .by_scope
             .get_mut(&ScopedPropertyKey::new(label, property))
         {
-            insert_id(scope, key, id);
+            // A list holding a duration has no key as a whole, but its
+            // other elements do.
+            if let Some(key) = PropertyIndexKey::from_value(value) {
+                insert_id(scope, key, id);
+            }
+            insert_elements(scope, value, id);
         }
     }
 
@@ -114,12 +133,60 @@ impl SortedPropertyIndex {
         else {
             return;
         };
-        if let Some(old) = old.and_then(PropertyIndexKey::from_value) {
-            Self::remove_from_scope(scope, id, &old);
+        if let Some(old) = old {
+            if let Some(key) = PropertyIndexKey::from_value(old) {
+                Self::remove_from_scope(scope, id, &key);
+            }
+            remove_elements(scope, old, id);
         }
-        if let Some(new) = new.and_then(PropertyIndexKey::from_value) {
-            insert_id(scope, new, id);
+        if let Some(new) = new {
+            if let Some(key) = PropertyIndexKey::from_value(new) {
+                insert_id(scope, key, id);
+            }
+            insert_elements(scope, new, id);
         }
+    }
+
+    /// Ids whose list value holds an element equal to `element`, in
+    /// ascending order; see "List elements" above for the integers this
+    /// may add. `None` when the scope is not indexed or `element` has no
+    /// index image (the caller scans); empty for a null `element`.
+    pub(super) fn element_candidates(
+        &self,
+        label: &str,
+        property: &str,
+        element: &PropertyValue,
+    ) -> Option<Vec<u64>> {
+        let scope = self
+            .by_scope
+            .get(&ScopedPropertyKey::new(label, property))?;
+        if matches!(element, PropertyValue::Null) {
+            return Some(Vec::new());
+        }
+        let key = element_key(element)?;
+        Some(
+            scope
+                .by_element
+                .get(&key)
+                .map(IdSet::to_vec)
+                .unwrap_or_default(),
+        )
+    }
+
+    /// `(label, property, distinct elements, element postings)` for every
+    /// scope holding list elements, in scope order.
+    pub(super) fn element_stats(&self) -> impl Iterator<Item = (&str, &str, usize, usize)> + '_ {
+        self.by_scope
+            .iter()
+            .filter(|(_, scope)| !scope.by_element.is_empty())
+            .map(|(key, scope)| {
+                (
+                    key.label.as_str(),
+                    key.property.as_str(),
+                    scope.by_element.len(),
+                    scope.element_postings,
+                )
+            })
     }
 
     /// Range probe: every id whose value falls in `[lo, hi]`. Both
@@ -305,6 +372,58 @@ fn insert_id(scope: &mut SortedScope, key: PropertyIndexKey, id: u64) {
     );
 }
 
+/// The key a list element is indexed under: numbers at their `f64`
+/// image, everything else as [`PropertyIndexKey::from_value`]. `None`
+/// for null and for values without an image.
+fn element_key(value: &PropertyValue) -> Option<PropertyIndexKey> {
+    match value {
+        PropertyValue::Null => None,
+        PropertyValue::Int(i) => PropertyIndexKey::from_value(&PropertyValue::Float(*i as f64)),
+        other => PropertyIndexKey::from_value(other),
+    }
+}
+
+/// The distinct element keys of `value` when it is a list.
+fn element_keys(value: &PropertyValue) -> Vec<PropertyIndexKey> {
+    let PropertyValue::List(items) = value else {
+        return Vec::new();
+    };
+    let mut keys: Vec<PropertyIndexKey> = items.iter().filter_map(element_key).collect();
+    if keys.len() > 1 {
+        keys.sort_unstable();
+        keys.dedup();
+    }
+    keys
+}
+
+fn insert_elements(scope: &mut SortedScope, value: &PropertyValue, id: u64) {
+    for key in element_keys(value) {
+        let mut added = true;
+        scope
+            .by_element
+            .upsert(key, || IdSet::new(id), |bucket| added = bucket.insert(id));
+        if added {
+            scope.element_postings += 1;
+        }
+    }
+}
+
+fn remove_elements(scope: &mut SortedScope, value: &PropertyValue, id: u64) {
+    for key in element_keys(value) {
+        let Some(bucket) = scope.by_element.get_mut(&key) else {
+            continue;
+        };
+        let held = bucket.len();
+        let emptied = bucket.remove(id);
+        if emptied || bucket.len() < held {
+            scope.element_postings = scope.element_postings.saturating_sub(1);
+        }
+        if emptied {
+            scope.by_element.remove(&key);
+        }
+    }
+}
+
 fn extend_ids<'a>(
     out: &mut BTreeSet<u64>,
     iter: impl Iterator<Item = (&'a PropertyIndexKey, &'a IdSet)>,
@@ -481,6 +600,77 @@ mod tests {
             .into_iter()
             .collect();
         assert_eq!(got, vec![7, 8]);
+    }
+
+    fn list(items: Vec<PropertyValue>) -> PropertyValue {
+        PropertyValue::List(items)
+    }
+
+    fn elements(idx: &SortedPropertyIndex, element: PropertyValue) -> Option<Vec<u64>> {
+        idx.element_candidates("E", "l", &element)
+    }
+
+    /// Each distinct element of a list lists the entity once; numbers
+    /// meet across integer and float; nulls and scalars add nothing; an
+    /// update moves the entity between elements.
+    #[test]
+    fn list_elements_are_indexed_and_maintained() {
+        use PropertyValue::{Float, Int, Null, String as Str};
+        let mut idx = SortedPropertyIndex::default();
+        idx.add_scope("E", "l");
+        let a = list(vec![Str("x".into()), Str("x".into()), Null, Int(1)]);
+        idx.insert("E", "l", 1, &a);
+        idx.insert("E", "l", 2, &list(vec![Float(1.0), Str("y".into())]));
+        idx.insert("E", "l", 3, &Str("x".into()));
+        idx.insert("E", "l", 4, &list(vec![Null]));
+
+        assert_eq!(elements(&idx, Str("x".into())), Some(vec![1]));
+        assert_eq!(elements(&idx, Int(1)), Some(vec![1, 2]));
+        assert_eq!(elements(&idx, Float(1.0)), Some(vec![1, 2]));
+        assert_eq!(elements(&idx, Null), Some(vec![]));
+        assert_eq!(elements(&idx, Str("z".into())), Some(vec![]));
+        assert_eq!(idx.element_candidates("E", "other", &Int(1)), None);
+        let stats: Vec<_> = idx.element_stats().collect();
+        assert_eq!(stats, vec![("E", "l", 3, 4)]);
+        // The whole list is still there for `=` and ranges.
+        assert_eq!(
+            idx.range_candidates("E", "l", Some(&a), Some(&a))
+                .map(|ids| ids.into_iter().collect::<Vec<_>>()),
+            Some(vec![1])
+        );
+
+        let b = list(vec![Str("y".into())]);
+        idx.update("E", "l", 1, Some(&a), Some(&b));
+        assert_eq!(elements(&idx, Str("x".into())), Some(vec![]));
+        assert_eq!(elements(&idx, Int(1)), Some(vec![2]));
+        assert_eq!(elements(&idx, Str("y".into())), Some(vec![1, 2]));
+        idx.update(
+            "E",
+            "l",
+            2,
+            Some(&list(vec![Float(1.0), Str("y".into())])),
+            None,
+        );
+        idx.update("E", "l", 1, Some(&b), None);
+        assert_eq!(elements(&idx, Str("y".into())), Some(vec![]));
+        assert_eq!(idx.element_stats().count(), 0);
+    }
+
+    /// Integers past 2^53 share an element key with their `f64` image:
+    /// a seek of one finds the others too, and the caller refilters.
+    #[test]
+    fn big_integers_share_their_float_image() {
+        use PropertyValue::{Float, Int};
+        let big = 1i64 << 53;
+        let mut idx = SortedPropertyIndex::default();
+        idx.add_scope("E", "l");
+        idx.insert("E", "l", 1, &list(vec![Int(big)]));
+        idx.insert("E", "l", 2, &list(vec![Int(big + 1)]));
+        idx.insert("E", "l", 3, &list(vec![Float(big as f64)]));
+        idx.insert("E", "l", 4, &list(vec![Float(-0.0)]));
+        assert_eq!(elements(&idx, Int(big + 1)), Some(vec![1, 2, 3]));
+        assert_eq!(elements(&idx, Int(0)), Some(vec![4]));
+        assert_eq!(elements(&idx, Float(f64::NAN)), None);
     }
 
     #[test]

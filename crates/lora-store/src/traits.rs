@@ -914,6 +914,34 @@ pub trait GraphStorage {
         None
     }
 
+    /// Ids of `label` nodes whose `property` is a list holding an element
+    /// equal to `element` (`element IN n.property`), from the RANGE index
+    /// on `(label, property)`, ascending. Numbers match across integer and
+    /// float (`1` finds `1.0`); an integer beyond 2^53 also finds the
+    /// integers that share its `f64` image, so the caller refilters. Empty
+    /// for a null `element`. `None` when no RANGE index covers the pair or
+    /// `element` cannot be sought (a duration, point or vector): the
+    /// caller scans.
+    fn node_list_element_candidates(
+        &self,
+        _label: &str,
+        _property: &str,
+        _element: &PropertyValue,
+    ) -> Option<Vec<NodeId>> {
+        None
+    }
+
+    /// Mirror of [`Self::node_list_element_candidates`] for relationships
+    /// of `rel_type`.
+    fn relationship_list_element_candidates(
+        &self,
+        _rel_type: &str,
+        _property: &str,
+        _element: &PropertyValue,
+    ) -> Option<Vec<RelationshipId>> {
+        None
+    }
+
     /// Spatial-index candidates inside the closed `[ll, ur]` 2D
     /// bounding box. The executor refilters every id with the precise
     /// predicate, including the z-coordinate when the indexed point

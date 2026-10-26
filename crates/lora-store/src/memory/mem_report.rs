@@ -493,6 +493,14 @@ fn sorted_one(index: &SortedPropertyIndex) -> usize {
         for (indexed, ids) in sorted_scope.by_value.iter() {
             total += property_index_key_bytes(indexed) + ids.heap_bytes();
         }
+        // List elements: a hash trie like the property index buckets.
+        total += sorted_scope.by_element.structure_bytes();
+        for (element, ids) in sorted_scope.by_element.iter() {
+            total += HASHMAP_PER_ENTRY
+                + property_index_key_bytes(element)
+                + size_of::<IdSet>()
+                + ids.heap_bytes();
+        }
     }
     total
 }

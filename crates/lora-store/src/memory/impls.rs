@@ -370,6 +370,26 @@ impl GraphStorage for InMemoryGraph {
             .ordered_chunk(label, property, lo, hi, descending, after, max)
     }
 
+    fn node_list_element_candidates(
+        &self,
+        label: &str,
+        property: &str,
+        element: &PropertyValue,
+    ) -> Option<Vec<NodeId>> {
+        self.sorted_indexes_read(crate::StoredIndexEntity::Node)
+            .element_candidates(label, property, element)
+    }
+
+    fn relationship_list_element_candidates(
+        &self,
+        rel_type: &str,
+        property: &str,
+        element: &PropertyValue,
+    ) -> Option<Vec<RelationshipId>> {
+        self.sorted_indexes_read(crate::StoredIndexEntity::Relationship)
+            .element_candidates(rel_type, property, element)
+    }
+
     fn node_point_within_bbox(
         &self,
         label: &str,

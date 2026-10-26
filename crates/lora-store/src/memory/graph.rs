@@ -1785,6 +1785,21 @@ impl InMemoryGraph {
                 }
             }
         }
+        for (entity, elements) in [
+            (StoredIndexEntity::Node, &mut stats.node_list_elements),
+            (
+                StoredIndexEntity::Relationship,
+                &mut stats.relationship_list_elements,
+            ),
+        ] {
+            let sorted = self.sorted_indexes_read(entity);
+            for (label, property, distinct, postings) in sorted.element_stats() {
+                elements.insert(
+                    (label.to_string(), property.to_string()),
+                    super::ListElementStats { distinct, postings },
+                );
+            }
+        }
         stats
     }
 
@@ -1821,6 +1836,17 @@ impl InMemoryGraph {
             };
             for property in &def.properties {
                 sig.index(def.entity, def.kind, label, property);
+            }
+        }
+        for entity in [StoredIndexEntity::Node, StoredIndexEntity::Relationship] {
+            let sorted = self.sorted_indexes_read(entity);
+            for (label, property, distinct, postings) in sorted.element_stats() {
+                sig.list_elements(
+                    entity,
+                    label,
+                    property,
+                    super::ListElementStats { distinct, postings },
+                );
             }
         }
         sig.finish()
