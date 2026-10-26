@@ -917,30 +917,34 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         Ok(())
     }
 
-    fn delete_target(&mut self, target: DeleteTarget, detach: bool) -> ExecResult<()> {
-        match target {
-            DeleteTarget::Node(node_id) => {
-                if detach {
-                    self.ctx.storage.detach_delete_node(node_id);
-                    Ok(())
-                } else {
-                    let ok = self.ctx.storage.delete_node(node_id);
-                    if ok {
-                        Ok(())
-                    } else {
-                        Err(ExecutorError::DeleteNodeWithRelationships { node_id })
-                    }
-                }
-            }
-            DeleteTarget::Relationship(rel_id) => {
-                let ok = self.ctx.storage.delete_relationship(rel_id);
-                if ok {
-                    Ok(())
-                } else {
-                    Err(ExecutorError::DeleteRelationshipFailed { rel_id })
-                }
+    /// Delete validated `targets`: relationships first, then nodes, each in
+    /// id order. The store takes each group in one call, so a statement
+    /// deleting many relationships of one hub edits its adjacency lists
+    /// once instead of once per relationship.
+    fn delete_targets(&mut self, targets: &BTreeSet<DeleteTarget>, detach: bool) -> ExecResult<()> {
+        let mut rel_ids = Vec::new();
+        let mut node_ids = Vec::new();
+        for target in targets {
+            match *target {
+                DeleteTarget::Relationship(rel_id) => rel_ids.push(rel_id),
+                DeleteTarget::Node(node_id) => node_ids.push(node_id),
             }
         }
+
+        // Validation found every relationship, and the ids are distinct.
+        let deleted = self.ctx.storage.delete_relationships(&rel_ids);
+        debug_assert_eq!(deleted, rel_ids.len(), "validated relationships exist");
+
+        if detach {
+            self.ctx.storage.detach_delete_nodes(&node_ids);
+            return Ok(());
+        }
+        for node_id in node_ids {
+            if !self.ctx.storage.delete_node(node_id) {
+                return Err(ExecutorError::DeleteNodeWithRelationships { node_id });
+            }
+        }
+        Ok(())
     }
 
     fn exec_merge(&mut self, plan: &PhysicalPlan, op: &MergeExec) -> ExecResult<Vec<Row>> {
@@ -1239,19 +1243,47 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         }
 
         self.validate_delete_targets(&targets, op.detach)?;
-
-        for target in &targets {
-            if let DeleteTarget::Relationship(_) = target {
-                self.delete_target(*target, op.detach)?;
-            }
-        }
-        for target in targets {
-            if let DeleteTarget::Node(_) = target {
-                self.delete_target(target, op.detach)?;
-            }
-        }
+        self.delete_targets(&targets, op.detach)?;
 
         Ok(input_rows)
+    }
+
+    /// [`Self::exec_delete`] for a statement that ends in the DELETE and
+    /// whose input streams: rows are pulled one at a time and only the
+    /// delete targets kept, then deleted together. Deleting row by row
+    /// would interleave the deletes with the reads and remove a hub's
+    /// relationships from its adjacency lists one at a time (quadratic in
+    /// its degree); this sees the same rows `exec_delete` does.
+    pub(crate) fn exec_delete_streaming(
+        &mut self,
+        plan: &PhysicalPlan,
+        op: &DeleteExec,
+    ) -> ExecResult<()> {
+        let mut targets = BTreeSet::new();
+        {
+            let storage: &S = &*self.ctx.storage;
+            let params = std::sync::Arc::new(self.ctx.params.clone());
+            let mut upstream = match self.argument_seed.clone() {
+                Some(seed) => {
+                    crate::pull::build_streaming_seeded(plan, op.input, storage, params, seed)?
+                }
+                None => crate::pull::build_streaming(plan, op.input, storage, params)?,
+            };
+            let eval_ctx = EvalContext {
+                storage,
+                params: &self.ctx.params,
+            };
+            while let Some(row) = upstream.next_row()? {
+                for expr in &op.expressions {
+                    let value = eval_expr_result(expr, &row, &eval_ctx)
+                        .map_err(ExecutorError::from_eval)?;
+                    self.collect_delete_targets(&value, &mut targets)?;
+                }
+            }
+        }
+
+        self.validate_delete_targets(&targets, op.detach)?;
+        self.delete_targets(&targets, op.detach)
     }
 
     fn exec_set(&mut self, plan: &PhysicalPlan, op: &SetExec) -> ExecResult<Vec<Row>> {

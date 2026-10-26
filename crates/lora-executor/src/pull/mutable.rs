@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
-use lora_compiler::physical::{PhysicalNodeId, PhysicalPlan};
+use lora_compiler::physical::{PhysicalNodeId, PhysicalOp, PhysicalPlan};
 use lora_compiler::CompiledQuery;
 use lora_store::{GraphStorage, GraphStorageMut};
 
@@ -60,6 +60,14 @@ fn open_mutable_plan_cursor<'a, S: GraphStorageMut + GraphStorage + 'a>(
 ) -> ExecResult<Box<dyn RowSource + 'a>> {
     if let Some(input) = write_op_input(plan, plan.root) {
         if subtree_is_fully_streaming(plan, input) {
+            // A DELETE collects its targets and deletes them together (see
+            // `exec_delete_streaming`); the statement returns no rows.
+            if let PhysicalOp::Delete(op) = &plan.nodes[plan.root] {
+                let mut executor =
+                    MutableExecutor::new(MutableExecutionContext { storage, params });
+                executor.exec_delete_streaming(plan, op)?;
+                return Ok(Box::new(BufferedRowSource::new(Vec::new())));
+            }
             let cursor = StreamingWriteCursor::open(storage, plan, plan.root, params)?;
             let cursor: Box<dyn RowSource + 'a> = Box::new(cursor);
             if crate::executor::plan_ends_in_write(plan) {

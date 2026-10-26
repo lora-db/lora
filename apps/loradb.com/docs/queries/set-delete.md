@@ -161,6 +161,25 @@ DELETE r`} />
 
 Node endpoints survive — the edge alone is removed.
 
+### Many targets in one statement
+
+A `DELETE` first reads every row it matches, then deletes all of its
+targets together: relationships first, then nodes. That has three
+consequences:
+
+- A relationship matched more than once, as an undirected pattern
+  matches it from both ends, is deleted once.
+- A plain `DELETE` of a node succeeds when the same statement deletes
+  all of its relationships, even if they arrive on different rows:
+  `MATCH (n:Tag {name: 'old'})-[r]-() DELETE r, n`.
+- Deleting many relationships of one busy node (a hub) takes time in
+  proportion to its degree, not its degree squared: each node's
+  adjacency list is edited once per statement.
+
+This holds for `execute` and for streamed queries alike. A
+`CALL { … }` body does it once per incoming row; a `DELETE` inside
+`FOREACH` deletes item by item.
+
 ### Delete everything
 
 <QueryCodeBlock code={String.raw`MATCH (n) DETACH DELETE n`} />

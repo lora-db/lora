@@ -302,6 +302,85 @@ fn failed_delete_leaves_graph_unchanged() {
     db.assert_count("MATCH (a)-[r:R]->(b) RETURN r", 1);
 }
 
+/// A hub with `n` relationships each way to leaves, `n` parallel ones to
+/// another hub, and a ring of leaf-to-leaf relationships that must survive.
+fn seed_hub(db: &TestDb, n: usize) {
+    db.run(&format!(
+        "CREATE (h:Hub), (o:Other) WITH h, o UNWIND range(1, {n}) AS i \
+         CREATE (h)-[:OUT]->(l:Leaf {{i: i}})-[:IN]->(h), (h)-[:PAR]->(o)"
+    ));
+    db.run(&format!(
+        "MATCH (a:Leaf), (b:Leaf) WHERE b.i = a.i % {n} + 1 CREATE (a)-[:RING]->(b)"
+    ));
+}
+
+fn assert_hub_emptied(db: &TestDb, n: usize) {
+    db.assert_count("MATCH (:Hub)-[r]-() RETURN r", 0);
+    db.assert_count("MATCH (:Other)-[r]-() RETURN r", 0);
+    db.assert_count("MATCH ()-[r]->() RETURN r", n);
+    db.assert_count(
+        &format!("MATCH (a:Leaf)-[:RING]->(b:Leaf) WHERE b.i = a.i % {n} + 1 RETURN a"),
+        n,
+    );
+    db.assert_count("MATCH (l:Leaf)-[r]-() RETURN r", 2 * n);
+    db.assert_count("MATCH (n) RETURN n", n + 2);
+}
+
+/// Deleting many relationships of one hub in one statement goes to the
+/// store as one batch (each adjacency list edited once); both ends of
+/// every relationship must lose exactly its entry, an undirected match
+/// that sees each relationship from both ends deletes it once, and the
+/// streaming path (`Database::stream`) agrees.
+#[test]
+fn delete_many_relationships_of_a_hub_in_one_statement() {
+    let n = 3000;
+    for query in [
+        "MATCH (h:Hub)-[r]-() DELETE r",
+        "MATCH (h)-[r:OUT|IN|PAR]-() DELETE r",
+        "MATCH (h:Hub)-[r]->() WITH collect(r) AS rs MATCH (h:Hub)<-[r]-() DELETE r, rs",
+    ] {
+        let db = TestDb::new();
+        seed_hub(&db, n);
+        db.run(query);
+        assert_hub_emptied(&db, n);
+
+        let db = TestDb::new();
+        seed_hub(&db, n);
+        let mut stream = db.service.stream(query).unwrap();
+        while stream.next_row().unwrap().is_some() {}
+        drop(stream);
+        assert_hub_emptied(&db, n);
+    }
+}
+
+/// Detach deleting every leaf of a hub edits the hub's lists once, and
+/// a statement deleting a node with its relationships succeeds on both
+/// paths even when the node has several.
+#[test]
+fn detach_delete_of_many_hub_neighbours_in_one_statement() {
+    let n = 3000;
+    for streamed in [false, true] {
+        let run = |db: &TestDb, query: &str| {
+            if streamed {
+                let mut stream = db.service.stream(query).unwrap();
+                while stream.next_row().unwrap().is_some() {}
+            } else {
+                db.run(query);
+            }
+        };
+        let db = TestDb::new();
+        seed_hub(&db, n);
+        run(&db, "MATCH (l:Leaf) DETACH DELETE l");
+        db.assert_count("MATCH (:Hub)-[r]-() RETURN r", n);
+        db.assert_count("MATCH (:Hub)-[r:PAR]->(:Other) RETURN r", n);
+        db.assert_count("MATCH (n) RETURN n", 2);
+
+        run(&db, "MATCH (h:Hub)-[r]->(o:Other) DELETE r, o");
+        db.assert_count("MATCH ()-[r]->() RETURN r", 0);
+        db.assert_count("MATCH (n) RETURN n", 1);
+    }
+}
+
 // ============================================================
 // SET: null value
 // ============================================================
