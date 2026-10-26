@@ -1327,13 +1327,23 @@ pub fn eval_expr_result<S: GraphStorage>(
 ) -> Result<LoraValue, String> {
     clear_eval_error();
     let value = eval_expr(expr, row, ctx);
+    eval_status()?;
+    Ok(value)
+}
+
+/// The outcome of the evaluations since the last [`clear_eval_error`]: the
+/// error [`eval_expr_result`] would return, without wrapping a value. For a
+/// hot loop that hands the value straight on (an aggregate fold) and only
+/// needs to know whether evaluation failed.
+#[inline]
+pub(crate) fn eval_status() -> Result<(), String> {
     if crate::cancel::eval_tripped() {
         clear_eval_error();
         return Err(DEADLINE_EXCEEDED.to_string());
     }
     match take_eval_error() {
         Some(err) => Err(err),
-        None => Ok(value),
+        None => Ok(()),
     }
 }
 

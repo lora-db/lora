@@ -23,7 +23,7 @@ use lora_analyzer::{AggregateFunction, ResolvedExpr, ResolvedProjection};
 use lora_store::{GraphStorage, LoraDuration};
 
 use crate::errors::{ExecResult, ExecutorError};
-use crate::eval::eval_expr_result;
+use crate::eval::{clear_eval_error, eval_expr, eval_status, EvalContext};
 use crate::executor::{
     compare_values_total, compute_aggregate_expr, group_key, insert_group_by_values, RowKeyBuilder,
     RowKeyPart,
@@ -208,6 +208,29 @@ impl AggState {
     }
 }
 
+/// Fold `row`'s value for `spec` into `agg`. `eval_expr_result` without the
+/// `Result` around the value: the value goes straight from the evaluator
+/// into the fold (wrapping it costs a stack round trip per row and
+/// aggregate).
+#[inline]
+pub(crate) fn fold_one<S: GraphStorage>(
+    agg: &mut AggState,
+    spec: &StreamableAggSpec,
+    row: &Row,
+    eval_ctx: &EvalContext<'_, S>,
+) -> ExecResult<()> {
+    match &spec.arg {
+        Some(arg) => {
+            clear_eval_error();
+            let value = eval_expr(arg, row, eval_ctx);
+            eval_status().map_err(ExecutorError::from_eval)?;
+            agg.fold(spec.kind, value);
+        }
+        None => agg.fold(spec.kind, LoraValue::Null),
+    }
+    Ok(())
+}
+
 struct StreamingGroup {
     /// First input row in this group, retained so we can evaluate the
     /// `group_by` projections for the output without buffering more rows.
@@ -374,13 +397,8 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
         if group_by.is_empty() {
             let mut aggs: Vec<AggState> = specs.iter().map(|s| AggState::seed(s.kind)).collect();
             while let Some(row) = upstream.next_row()? {
-                for (i, spec) in specs.iter().enumerate() {
-                    let value = match &spec.arg {
-                        Some(arg) => eval_expr_result(arg, &row, &eval_ctx)
-                            .map_err(ExecutorError::from_eval)?,
-                        None => LoraValue::Null,
-                    };
-                    aggs[i].fold(spec.kind, value);
+                for (agg, spec) in aggs.iter_mut().zip(specs) {
+                    fold_one(agg, spec, &row, &eval_ctx)?;
                 }
             }
             let mut result = Row::new();
@@ -409,14 +427,8 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
                     .or_insert_with(|| StreamingGroup::new(specs, row.clone())),
             };
 
-            for (i, spec) in specs.iter().enumerate() {
-                let value = match &spec.arg {
-                    Some(arg) => {
-                        eval_expr_result(arg, &row, &eval_ctx).map_err(ExecutorError::from_eval)?
-                    }
-                    None => LoraValue::Null,
-                };
-                entry.aggs[i].fold(spec.kind, value);
+            for (agg, spec) in entry.aggs.iter_mut().zip(specs) {
+                fold_one(agg, spec, &row, &eval_ctx)?;
             }
         }
 
