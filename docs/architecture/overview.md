@@ -153,11 +153,12 @@ Semantic analysis pass. Takes an AST `Document`, resolves variable scoping, vali
 
 ### lora-compiler
 
-Two-phase compilation:
+Compilation:
 
 1. **Planner** — converts `ResolvedQuery` into a `LogicalPlan` (a vector of `LogicalOp` nodes with a root index)
 2. **Optimizer** — applies rewrite rules: push filters below projections; replace `Filter(NodeScan)` / `Filter(Expand)` with indexed node and relationship scans (property, range, text, point), picked by a cost score from `GraphStats`; serve a single-key `ORDER BY` from a range index's order and drop the sort; and annotate `Sort` under a static `LIMIT` as top-k
-3. **Lowering** — converts `LogicalPlan` into `PhysicalPlan` (for example, `NodeScan` with a label becomes `NodeByLabelScan`, `Aggregation` becomes `HashAggregation`)
+3. **Constant folding** — replaces builtin calls on constant arguments (`datetime('2024-01-01T00:00:00Z')`, `point({x: 0, y: 0})`) with their value, through the `FoldCall` the database passes in (`lora_executor::fold_call`), which declines the clock, random values, a `TIME` and calls that fail (`src/param_fold.rs`, which also folds `$p IS NULL` for known parameters)
+4. **Lowering** — converts `LogicalPlan` into `PhysicalPlan` (for example, `NodeScan` with a label becomes `NodeByLabelScan`, `Aggregation` becomes `HashAggregation`)
 
 **Key files**:
 - `src/logical.rs` — logical operator definitions

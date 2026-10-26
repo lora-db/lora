@@ -438,6 +438,10 @@ pub enum LiteralValue {
     TypeName(String),
     Bool(bool),
     Null,
+    /// A temporal or spatial value the compiler folded from a call on
+    /// constant arguments, such as `datetime('2024-01-01T00:00:00Z')`, so
+    /// the call is not evaluated again for every row.
+    Value(Box<lora_store::PropertyValue>),
 }
 
 impl ResolvedExpr {
