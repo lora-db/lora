@@ -78,6 +78,18 @@ macro_rules! check_deadline_or_discard {
     };
 }
 
+/// [`check_deadline_at`] that always reads the clock, for operator
+/// boundaries: an operator can do a lot of work before its first per-row
+/// check (building a cartesian product, for one), so the boundary must not
+/// fall between two strided reads.
+pub(super) fn check_deadline_now(deadline: Instant) -> ExecResult<()> {
+    if crate::cancel::eval_tripped() || crate::cancel::deadline_reached(deadline) {
+        Err(ExecutorError::QueryTimeout)
+    } else {
+        Ok(())
+    }
+}
+
 /// Fail once `deadline` passed or its query was cancelled. Called per row,
 /// so the clock is read only every few calls (see
 /// [`crate::cancel::row_check_due`]).

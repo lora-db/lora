@@ -68,7 +68,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
     #[inline]
     fn check_deadline(&self) -> ExecResult<()> {
         if let Some(deadline) = self.deadline {
-            check_deadline_at(deadline)
+            super::helpers::check_deadline_now(deadline)
         } else {
             Ok(())
         }

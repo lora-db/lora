@@ -30,12 +30,11 @@ use web_time::Instant;
 
 use super::aggregate_rows;
 use super::helpers::{
-    build_path_value, check_deadline_at, dedup_rows, eval_properties_expr, expand_rows,
-    expand_var_len_rows, filter_rows_checked, filter_shortest_paths, flatten_label_groups,
-    hydrate_node_record, hydrate_relationship_record, limit_rows, node_by_label_scan_rows,
-    node_by_property_scan_rows, node_matches_label_groups, node_scan_rows, plan_may_need_hydration,
-    project_rows_checked, scan_node_ids_for_label_groups, unwind_rows,
-    value_matches_property_value,
+    build_path_value, dedup_rows, eval_properties_expr, expand_rows, expand_var_len_rows,
+    filter_rows_checked, filter_shortest_paths, flatten_label_groups, hydrate_node_record,
+    hydrate_relationship_record, limit_rows, node_by_label_scan_rows, node_by_property_scan_rows,
+    node_matches_label_groups, node_scan_rows, plan_may_need_hydration, project_rows_checked,
+    scan_node_ids_for_label_groups, unwind_rows, value_matches_property_value,
 };
 use super::optional_match_rows;
 use super::{sort_checked, sort_row_bound, sort_rows_with_top_k};
@@ -109,7 +108,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     #[inline]
     fn check_deadline(&self) -> ExecResult<()> {
         if let Some(deadline) = self.deadline {
-            check_deadline_at(deadline)
+            super::helpers::check_deadline_now(deadline)
         } else {
             Ok(())
         }
