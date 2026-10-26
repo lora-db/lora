@@ -983,10 +983,12 @@ fn replay_rejects_relationship_with_missing_endpoint() {
         Ok(_) => panic!("recovery should reject the malformed relationship"),
         Err(err) => err,
     };
+    assert_eq!(err.code(), lora_database::LoraErrorCode::WalCorruption);
     assert!(
-        err.debug_context().contains("missing source node 10"),
+        err.message().contains("WAL replay failed at event 0")
+            && err.message().contains("missing source node 10"),
         "unexpected recovery error: {}",
-        err.debug_context()
+        err.message()
     );
 }
 

@@ -20,7 +20,7 @@ use lora_store::{
 };
 use lora_wal::{Lsn, SyncMode, Wal, WalError};
 
-use crate::error::LoraError;
+use crate::error::{LoraError, LoraErrorCode};
 
 /// Best-effort: install a mutation recorder on the storage when the
 /// concrete type is `InMemoryGraph`. The WAL's recorder lives on the
@@ -97,9 +97,16 @@ pub(crate) fn open_wal_into(
     );
     match (opened, failure) {
         (Ok(wal), _) => Ok(wal),
-        (Err(_), Some(err)) => Err(LoraError::from_anyhow(err)),
+        (Err(_), Some(err)) => Err(replay_error(err)),
         (Err(err), None) => Err(err.into()),
     }
+}
+
+/// A committed WAL transaction that cannot be applied to the graph it
+/// follows: the log does not describe a reachable state, so it is reported
+/// as WAL corruption with the failing event, not as an internal error.
+pub(crate) fn replay_error(err: anyhow::Error) -> LoraError {
+    LoraError::new(LoraErrorCode::WalCorruption, format!("{err:#}"))
 }
 
 /// [`replay_into`] for events that follow `first_idx` already applied,

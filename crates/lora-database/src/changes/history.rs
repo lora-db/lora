@@ -21,7 +21,7 @@ use lora_wal::{oldest_retained_lsn, CommittedTxReader, Lsn};
 
 use super::build::{build_changes, PreImages};
 use super::ChangeBatch;
-use crate::database::replay::replay_into;
+use crate::database::replay::{replay_error, replay_into};
 use crate::error::{LoraError, LoraErrorCode};
 use crate::snapshot::ManagedSnapshotStore;
 
@@ -177,11 +177,11 @@ impl HistoryReplay {
                 return Ok(None);
             };
             if tx.commit_lsn <= self.after {
-                replay_into(&mut running.graph, tx.events).map_err(LoraError::from_anyhow)?;
+                replay_into(&mut running.graph, tx.events).map_err(replay_error)?;
                 continue;
             }
             let pre = PreImages::capture(&tx.events, &running.graph);
-            replay_into(&mut running.graph, tx.events.clone()).map_err(LoraError::from_anyhow)?;
+            replay_into(&mut running.graph, tx.events.clone()).map_err(replay_error)?;
             let changes = build_changes(&tx.events, &pre, &running.graph);
             if changes.is_empty() {
                 continue;
