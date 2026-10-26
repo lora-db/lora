@@ -461,10 +461,21 @@ impl Leaf {
 
 type Interior = Arc<[Arc<Leaf>]>;
 
+/// The one leaf every empty leaf position points at. A leaf whose last
+/// record is removed is swapped for it, so the ids a delete-heavy workload
+/// leaves behind cost a pointer per leaf rather than a 2 KiB leaf, and
+/// scans skip them without reading their offsets. The first write to such
+/// a position copies it, as any write to a shared leaf does.
+fn empty_leaf() -> &'static Arc<Leaf> {
+    static EMPTY_LEAF: std::sync::OnceLock<Arc<Leaf>> = std::sync::OnceLock::new();
+    EMPTY_LEAF.get_or_init(|| Arc::new(Leaf::new()))
+}
+
 /// Encoded records by slot index. Empty slots read as `None`.
 pub(super) struct RecordSlab {
     root: Arc<[Interior]>,
-    /// Slots, empty or not. Leaves exist for all of them.
+    /// Slots, empty or not. Leaf positions exist for all of them; one
+    /// without records may hold the shared [`empty_leaf`].
     len: usize,
 }
 
@@ -544,7 +555,14 @@ impl RecordSlab {
         if !self.contains(i) {
             return false;
         }
-        self.leaf_mut(i).remove(i & MASK)
+        let leaf = self.leaf_mut(i);
+        let removed = leaf.remove(i & MASK);
+        if leaf.live == 0 {
+            // `leaf_mut` left the path to this leaf unshared.
+            let node = &mut Arc::make_mut(&mut self.root)[i >> SPAN_SHIFT];
+            Arc::make_mut(node)[(i >> SHIFT) & FAN_MASK] = Arc::clone(empty_leaf());
+        }
+        removed
     }
 
     /// Check that `additional` more slots are representable, failing
@@ -573,7 +591,7 @@ impl RecordSlab {
             // Leaves start at slot multiples of CHUNK; `leaves * CHUNK` is
             // the first slot of the new one.
             let first = self.len.div_ceil(CHUNK) * CHUNK;
-            let leaf = Arc::new(Leaf::new());
+            let leaf = Arc::clone(empty_leaf());
             if first & SPAN_MASK == 0 {
                 self.root = self
                     .root
@@ -598,12 +616,18 @@ impl RecordSlab {
         from: usize,
     ) -> impl Iterator<Item = (usize, &Leaf, std::ops::Range<usize>)> + '_ {
         let first = from / CHUNK;
-        (first..self.len.div_ceil(CHUNK)).map(move |l| {
-            let base = l * CHUNK;
-            let start = if l == first { from & MASK } else { 0 };
-            let end = (self.len - base).min(CHUNK);
-            (base, self.leaf(base), start..end)
-        })
+        // A pointer test, not `leaf.live`: that field sits past the offsets,
+        // on a cache line a scan of a full leaf would not otherwise touch.
+        let empty: *const Leaf = &**empty_leaf();
+        (first..self.len.div_ceil(CHUNK))
+            .map(move |l| (l, self.leaf(l * CHUNK)))
+            .filter(move |&(_, leaf)| !std::ptr::eq(leaf, empty))
+            .map(move |(l, leaf)| {
+                let base = l * CHUNK;
+                let start = if l == first { from & MASK } else { 0 };
+                let end = (self.len - base).min(CHUNK);
+                (base, leaf, start..end)
+            })
     }
 
     /// `(slot, bytes)` of every record from slot `from` on, in slot order.
@@ -641,6 +665,7 @@ impl RecordSlab {
             .root
             .iter()
             .flat_map(|node| node.iter())
+            .filter(|leaf| !Arc::ptr_eq(leaf, empty_leaf()))
             .map(|leaf| ARC_HEADER + size_of::<Leaf>() + leaf.heap_bytes())
             .sum();
         tree + leaves
@@ -662,6 +687,10 @@ impl RecordSlab {
         }
         for (base, leaf, slots) in self.leaves_from(0) {
             leaf.check_invariants();
+            assert!(
+                leaf.live > 0 || std::ptr::eq(leaf, &**empty_leaf()),
+                "an empty leaf of its own at {base}"
+            );
             assert!(
                 (slots.end..CHUNK).all(|s| !leaf.contains(s)),
                 "a record past len in the leaf at {base}"
@@ -883,5 +912,40 @@ mod tests {
         // 11 bytes and a length byte per record, plus a 4-byte offset.
         let per_record = slab.heap_bytes() as f64 / n as f64;
         assert!(per_record < 17.5, "{per_record}");
+    }
+
+    /// A leaf emptied by removes is released: a slab whose records are all
+    /// deleted keeps only its tree, scans skip it, and its slots fill again.
+    #[test]
+    fn emptied_leaves_are_released_and_refill() {
+        let mut slab = RecordSlab::default();
+        let len = 3 * CHUNK + 7;
+        slab.grow_to(len);
+        let empty_bytes = slab.heap_bytes();
+        let mut model = BTreeMap::new();
+        for i in 0..len {
+            slab.set(i, &record(i as u64));
+            model.insert(i, record(i as u64));
+        }
+        let full_bytes = slab.heap_bytes();
+        let shared = slab.clone();
+        for i in 0..len {
+            if i != CHUNK + 3 {
+                assert!(slab.remove(i));
+                model.remove(&i);
+            }
+        }
+        check(&slab, &model, len);
+        // One leaf left: its record's segment, not the others' leaves.
+        assert!(slab.heap_bytes() < full_bytes / 2);
+        assert!(slab.remove(CHUNK + 3));
+        model.clear();
+        check(&slab, &model, len);
+        assert_eq!(slab.heap_bytes(), empty_bytes);
+        assert_eq!(shared.iter().count(), len);
+
+        slab.set(2 * CHUNK + 1, b"again");
+        model.insert(2 * CHUNK + 1, b"again".to_vec());
+        check(&slab, &model, len);
     }
 }
