@@ -856,6 +856,37 @@ impl Database {
         })
     }
 
+    /// Write a self-contained copy of this named database into
+    /// `target_dir` (missing or empty) while queries keep running: the
+    /// graph as of one committed transaction, as a `.loradb` that opens
+    /// with `createDatabase(name, { databaseDir: target_dir })`. Off the JS
+    /// thread; writers wait only while the graph is taken.
+    #[napi(
+        ts_return_type = "Promise<{ path: string; bytes: number; lsn: number; nodeCount: number; relationshipCount: number }>"
+    )]
+    pub fn snapshot(&self, env: Env, target_dir: String) -> Result<JsObject> {
+        guard(|| {
+            let task = tasks::SnapshotDirTask {
+                db: self.inner()?,
+                target_dir,
+            };
+            tasks::spawn(&env, task, stream::js_bound_writers())
+        })
+    }
+
+    /// Checkpoint now: for a named database what `sync()` does, reporting
+    /// the snapshot it wrote; with `walDir` + `snapshotDir`, a managed
+    /// checkpoint.
+    #[napi(
+        ts_return_type = "Promise<{ formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }>"
+    )]
+    pub fn checkpoint(&self, env: Env) -> Result<JsObject> {
+        guard(|| {
+            let task = tasks::CheckpointTask { db: self.inner()? };
+            tasks::spawn(&env, task, stream::js_bound_writers())
+        })
+    }
+
     /// Drop every node and relationship, returning the database to an empty
     /// state.
     #[napi(ts_return_type = "Promise<void>")]

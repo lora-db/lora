@@ -25,6 +25,9 @@
     "n-api"
   ],
   "main": "dist/index.js",
+  "bin": {
+    "lora": "dist/cli.js"
+  },
   "types": "dist/index.d.ts",
   "exports": {
     ".": {

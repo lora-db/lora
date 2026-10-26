@@ -9,6 +9,10 @@
 //!
 //! `build` writes a `.loradb` with `<nodes>` nodes (a unique key, a short
 //! hash, two integers, a float and a list each) and as many relationships.
+//! `records <dir> <batches> [<batch size>]` writes Festimap's G-70 shape
+//! instead: batches (default 10,000) `:Record` nodes with a string key, then a uniqueness
+//! constraint, and closes without a checkpoint, so the first open replays
+//! the whole WAL.
 //! `writes <dir> <count>` times single-statement creates against it.
 //! `measure` opens it, calls `sync()` three times and drops it, reporting
 //! for each step the live heap after it and the peak during it. The
@@ -151,6 +155,32 @@ fn main() {
                 db.relationship_count()
             );
         }
+        Some("records") => {
+            let dir = PathBuf::from(&args[2]);
+            let batches: usize = args[3].parse().expect("batch count");
+            // Nodes per transaction: one large transaction leaves one
+            // large WAL segment, which every container rewrite copies.
+            let per_batch: usize = args.get(4).map_or(10_000, |n| n.parse().expect("batch size"));
+            let db = Database::open_named("probe", options(&dir)).unwrap();
+            for b in 0..batches {
+                let (start, end) = (b * per_batch, (b + 1) * per_batch - 1);
+                db.execute(
+                    &format!(
+                        "UNWIND range({start}, {end}) AS i CREATE (:Record {{key: 'src:item:' + toString(i), \
+                         hash: '0123456789abcdef', seenIn: 3, changedIn: 2}})"
+                    ),
+                    rows(),
+                )
+                .unwrap();
+            }
+            db.execute(
+                "CREATE CONSTRAINT rk IF NOT EXISTS FOR (r:Record) REQUIRE r.key IS UNIQUE",
+                rows(),
+            )
+            .unwrap();
+            measure("built", || ());
+            measure("dispose", || drop(db));
+        }
         Some("measure") => {
             let dir = PathBuf::from(&args[2]);
             let db = measure("open", || {
@@ -159,6 +189,11 @@ fn main() {
             for i in 1..=3 {
                 measure(&format!("sync {i}"), || db.sync().unwrap());
             }
+            measure("dispose", || drop(db));
+            let db = measure("reopen", || {
+                Database::open_named("probe", options(&dir)).unwrap()
+            });
+            measure("sync 4", || db.sync().unwrap());
             measure("dispose", || drop(db));
         }
         Some("writes") => {
@@ -184,7 +219,7 @@ fn main() {
             );
         }
         _ => eprintln!(
-            "usage: sync_memory_probe build <dir> <nodes> | measure <dir> | writes <dir> <count>"
+            "usage: sync_memory_probe build <dir> <nodes> | records <dir> <batches> [<batch size>] | measure <dir> | writes <dir> <count>"
         ),
     }
 }

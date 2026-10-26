@@ -12,9 +12,11 @@
 //! `lora-store` now owns only the [`SnapshotPayload`] vocabulary, this
 //! module owns the encode/decode integration.
 
+mod directory;
 mod json;
 pub(crate) mod store;
 
+pub use directory::DirectorySnapshot;
 pub use json::{snapshot_credentials_from_json, snapshot_options_from_json};
 pub(crate) use store::ManagedSnapshotStore;
 pub use store::SnapshotConfig;

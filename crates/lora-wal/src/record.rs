@@ -368,6 +368,11 @@ impl RawRecord {
         }))
     }
 
+    /// Size of the whole frame, length prefix and checksum included.
+    pub(crate) fn encoded_len(&self) -> usize {
+        4 + self.rest.len()
+    }
+
     /// Decode the payload. Errors here mean the frame was intact, so the
     /// bytes are what was written: they are never a torn tail.
     pub(crate) fn decode(self) -> Result<WalRecord, WalError> {

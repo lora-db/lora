@@ -24,8 +24,11 @@ The WAL is shipped today through:
   - `Database::checkpoint_to(path)`
   - `Database::open_with_wal_snapshots(wal_config, snapshot_config)`
   - `Database::open_named(name, options)` for `.loradb` container-backed WAL mirrors
+  - `Database::snapshot_to_dir(target)` and `Database::checkpoint()` on a
+    named database (see [Online snapshots](#online-snapshots-of-a-named-database))
 - The **Node.js binding** through named archive databases and explicit
-  `openWalDatabase(...)`.
+  `openWalDatabase(...)`, with `db.snapshot()`, `db.checkpoint()` and the
+  `lora snapshot` command.
 - The **Python, Go, and Ruby bindings** through named archive databases and raw
   WAL opens with managed snapshot options.
 - The **HTTP server** `lora-server` via the `--wal-dir`,
@@ -125,7 +128,14 @@ uncommitted transaction records.
 2. Open the WAL at `dir` with that fence. `replay_segments` walks
    every segment, drops records at or below the fence (already in the
    loaded snapshot), buffers per-transaction events, and emits only
-   *committed* events in commit order.
+   *committed* events in commit order. A transaction is buffered only
+   up to `PENDING_BUDGET_BYTES` (4 MiB) of encoded records; past that
+   its events go to the sink as they are read (`ReplayStep::Partial`),
+   followed by `Commit` with the rest or `Discard` when it aborts, never
+   commits, or another transaction's record comes first. `lora-database`
+   applies the parts over a copy-on-write clone of the graph and puts
+   the clone back on `Discard`, so an open holds one WAL record of a
+   large transaction decoded rather than all of it.
 3. Apply the replay events to the in-memory graph **before** the
    `WalRecorder` is installed, so replay's mutations don't get
    re-recorded.
@@ -192,6 +202,31 @@ deleted, and the segment immediately before it is kept so a crash before the
 next checkpoint still finds a self-describing log start. `checkpoint_to` calls
 it after writing the `Checkpoint` marker, under the writer mutex;
 `/admin/wal/truncate` calls it without taking any store lock.
+
+## Online snapshots of a named database
+
+`Database::snapshot_to_dir(target)` (`src/snapshot/directory.rs`) copies
+a named database while it runs, without the work directory:
+
+1. Check `target` is missing or empty, create it.
+2. Under the writer mutex: `force_fsync_wal_only`, then take the graph
+   `Arc` and the WAL's `durable_lsn`. That is the whole writer pause:
+   the graph's storage is copy-on-write, so later writes copy the parts
+   they change and the taken version stays as it was.
+3. Stream a snapshot of that graph, fenced at the LSN, into
+   `snapshot.lsnap` in a staging directory beside the target, named like
+   the container's temporary files
+   (`<name>.loradb.<pid>.<nanos>.<seq>.tmp`), which an open of the target
+   directory removes.
+4. Write a container holding only that snapshot frame through the same
+   `write_archive_atomic` the archive uses: a temporary file, fsync,
+   rename to `<target>/<name>.loradb`, fsync of the directory.
+
+The copy opens like any container: the snapshot loads, the WAL is empty,
+and new LSNs start above the fence. A kill at any point leaves either no
+`<name>.loradb` in the target or a complete one. It holds the archive's
+checkpoint lock not at all, so it composes with `sync()` and any
+automatic checkpoint, which only touch the live work directory.
 
 ## See also
 

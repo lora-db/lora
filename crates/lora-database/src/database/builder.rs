@@ -140,6 +140,7 @@ impl Database<InMemoryGraph> {
         let name = DatabaseName::parse(database_name.as_ref())?;
         let archive = Arc::new(WalArchive::open(
             options.database_path_for(&name),
+            name.relative_path().to_path_buf(),
             options.max_database_bytes,
         )?);
         let (mut graph, snapshot_lsn) = match archive.snapshot_path() {
@@ -174,6 +175,8 @@ impl Database<InMemoryGraph> {
             // on clean database drop.
             recorder.flush()?;
         }
+        // Loading and replaying freed about as much as the graph holds.
+        crate::release_memory::release_free_memory();
         Ok(db)
     }
 

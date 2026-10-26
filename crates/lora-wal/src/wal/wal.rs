@@ -45,7 +45,7 @@ use crate::lock::DirLock;
 use crate::lsn::Lsn;
 use crate::record::{encode_frame, framed_len, RecordKind, WalRecord};
 use crate::recorder::WroteCommit;
-use crate::replay::{replay_segments, CorruptCut, ReplaySink, TornTailInfo};
+use crate::replay::{replay_segments, CollectEvents, CorruptCut, ReplaySink, TornTailInfo};
 use crate::segment::{SegmentReader, SegmentWriter, SEGMENT_HEADER_LEN};
 use crate::{codec, record::MAX_RECORD_LEN};
 
@@ -144,24 +144,25 @@ impl Wal {
         segment_target_bytes: u64,
         checkpoint_lsn: Lsn,
     ) -> Result<(Arc<Self>, Vec<MutationEvent>), WalError> {
-        let mut events = Vec::new();
+        let mut collected = CollectEvents::default();
         let wal = Self::open_replaying(
             dir,
             sync_mode,
             segment_target_bytes,
             checkpoint_lsn,
-            &mut |committed| {
-                events.extend(committed);
+            &mut |step| {
+                collected.step(step);
                 Ok(())
             },
         )?;
-        Ok((wal, events))
+        Ok((wal, collected.events))
     }
 
     /// [`Self::open`], handing each committed transaction's events to
-    /// `apply` as replay reads its commit, so memory holds the open
-    /// transactions rather than the whole log. An error from `apply`
-    /// stops the open and is returned.
+    /// `apply` as replay reads its commit (see [`crate::ReplayStep`]), so
+    /// memory holds at most [`crate::PENDING_BUDGET_BYTES`] of an open
+    /// transaction rather than the whole log. An error from `apply` stops
+    /// the open and is returned.
     pub fn open_replaying(
         dir: impl Into<std::path::PathBuf>,
         sync_mode: SyncMode,

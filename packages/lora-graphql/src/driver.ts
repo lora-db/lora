@@ -86,6 +86,23 @@ export interface LoraDriver {
     fromLsn?: number;
     signal?: AbortSignal;
   }): AsyncIterable<DriverChangeBatch> & { ready: Promise<void> };
+  /**
+   * Write an online copy of the database into `targetDir` (lora-node
+   * `db.snapshot()`). Optional: only a named, directory-backed database
+   * has one.
+   */
+  snapshot?(targetDir: string): Promise<DriverSnapshot>;
+}
+
+/** What a snapshot wrote, as lora-node's `db.snapshot()` reports it. */
+export interface DriverSnapshot {
+  /** The `.loradb` written under the target directory. */
+  path: string;
+  bytes: number;
+  /** The LSN of the last committed transaction the copy holds. */
+  lsn: number;
+  nodeCount: number;
+  relationshipCount: number;
 }
 
 /** One change of a committed write, as lora-node reports it. */
@@ -142,6 +159,7 @@ export interface LoraDatabaseLike {
     fromLsn?: number;
     signal?: AbortSignal;
   }): AsyncIterable<DriverChangeBatch> & { ready: Promise<void> };
+  snapshot?(targetDir: string): Promise<DriverSnapshot>;
   begin?(
     mode?: "read_write" | "read_only",
     options?: { timeoutMs?: number; signal?: AbortSignal },
@@ -272,6 +290,9 @@ export function loraDriver(db: LoraDatabaseLike): LoraDriver {
   if (typeof db.changes === "function") {
     driver.changes = db.changes.bind(db);
   }
+  if (typeof db.snapshot === "function") {
+    driver.snapshot = db.snapshot.bind(db);
+  }
   return driver;
 }
 
@@ -329,6 +350,9 @@ export function boundedWrites(
           changes: (options: { fromLsn?: number; signal?: AbortSignal }) =>
             driver.changes!(options),
         }
+      : {}),
+    ...(driver.snapshot
+      ? { snapshot: (targetDir: string) => driver.snapshot!(targetDir) }
       : {}),
     begin: async (options) => {
       if (options.mode !== "write") return begin(options);

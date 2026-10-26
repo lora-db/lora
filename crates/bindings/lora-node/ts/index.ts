@@ -52,6 +52,24 @@ export interface SnapshotMeta {
   walLsn: number | null;
 }
 
+/**
+ * What `db.snapshot(targetDir)` wrote: an online copy of a named database.
+ */
+export interface DatabaseSnapshot {
+  /** The `.loradb` written under the target directory. */
+  path: string;
+  /** Its size in bytes. */
+  bytes: number;
+  /**
+   * The WAL position the copy is taken at: it holds every transaction
+   * committed at or below this LSN and none above it. The change feed
+   * batch with this `lsn` is the last write it contains.
+   */
+  lsn: number;
+  nodeCount: number;
+  relationshipCount: number;
+}
+
 export type SnapshotCompression =
   | "none"
   | "gzip"
@@ -1216,6 +1234,48 @@ class DatabaseImpl {
   async sync(): Promise<void> {
     try {
       await this.#inner.sync();
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  /**
+   * Write a self-contained copy of this database into `targetDir` while
+   * reads and writes keep running, for an off-host backup.
+   *
+   * The copy is the graph as of one committed transaction (the last one
+   * when the call starts), written as `<targetDir>/<name>.loradb`; it
+   * opens with `createDatabase(name, { databaseDir: targetDir })`.
+   * `targetDir` must be missing or empty and may be on another
+   * filesystem. Writers wait only while the graph is taken, not while it
+   * is written; the copy runs off the JS thread in bounded memory. The
+   * `.loradb` appears only once it is complete and fsynced: a crash or
+   * `kill -9` mid-copy leaves the target without one.
+   *
+   * Only for a database opened with a name and `databaseDir`; rejects
+   * with `LORA_CONFIG` otherwise, and with `LORA_VALIDATION` when
+   * `targetDir` is not empty.
+   */
+  async snapshot(targetDir: string | URL): Promise<DatabaseSnapshot> {
+    try {
+      return await this.#inner.snapshot(
+        targetDir instanceof URL ? fileURLToPath(targetDir) : targetDir,
+      );
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  /**
+   * Take a checkpoint now and report the snapshot it wrote. For a named
+   * database this is what `sync()` does: the `.loradb` is rewritten as a
+   * snapshot of the graph plus the WAL since. With `walDir` and
+   * `snapshotDir` it writes a managed snapshot. Rejects with
+   * `LORA_CONFIG` on an in-memory database.
+   */
+  async checkpoint(): Promise<SnapshotMeta> {
+    try {
+      return await this.#inner.checkpoint();
     } catch (err) {
       throw wrapError(err);
     }
