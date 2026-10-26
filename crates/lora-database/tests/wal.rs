@@ -1153,3 +1153,109 @@ fn catalog_survives_crash_and_recovers_via_wal() {
         "label_lookup should have been removed by the DROP replay"
     );
 }
+
+/// Snapshot bytes of a database holding `n` `:Restored` nodes.
+fn restored_snapshot(n: usize) -> Vec<u8> {
+    let source = Database::in_memory();
+    for i in 0..n {
+        source
+            .execute(&format!("CREATE (:Restored {{i: {i}}})"), rows())
+            .unwrap();
+    }
+    source.save_snapshot_to_bytes().unwrap()
+}
+
+#[test]
+fn snapshot_restore_on_a_managed_wal_database_survives_restart() {
+    let dir = TmpDir::new("restore-managed");
+    let wal_dir = dir.path().join("wal");
+    let snapshot_dir = dir.path().join("snapshots");
+    let open = || {
+        Database::open_with_wal_snapshots(
+            enabled(&wal_dir),
+            lora_database::SnapshotConfig::enabled(&snapshot_dir),
+        )
+        .unwrap()
+    };
+    {
+        let db = open();
+        for _ in 0..3 {
+            db.execute("CREATE (:Old)", rows()).unwrap();
+        }
+        db.load_snapshot_from_bytes(&restored_snapshot(5)).unwrap();
+        db.execute("CREATE (:New)", rows()).unwrap();
+        assert_eq!(db.node_count(), 6);
+    }
+    let db = open();
+    assert_eq!(db.node_count(), 6);
+    assert_eq!(db.graph_node_ids_by_label("Old").len(), 0);
+    assert_eq!(db.graph_node_ids_by_label("New").len(), 1);
+    // Ids continue past the restored graph after recovery too.
+    db.execute("CREATE (:Later)", rows()).unwrap();
+    assert_eq!(db.node_count(), 7);
+}
+
+#[test]
+fn snapshot_restore_on_a_named_database_survives_restart() {
+    let dir = TmpDir::new("restore-named");
+    let open = || {
+        Database::open_named(
+            "app",
+            DatabaseOpenOptions::default().with_database_dir(dir.path()),
+        )
+        .unwrap()
+    };
+    {
+        let db = open();
+        for _ in 0..3 {
+            db.execute("CREATE (:Old)", rows()).unwrap();
+        }
+        db.load_snapshot_from_bytes(&restored_snapshot(5)).unwrap();
+        db.execute("CREATE (:New)", rows()).unwrap();
+        assert_eq!(db.node_count(), 6);
+    }
+    let db = open();
+    assert_eq!(db.node_count(), 6);
+    assert_eq!(db.graph_node_ids_by_label("Old").len(), 0);
+}
+
+#[test]
+fn snapshot_restore_on_a_wal_database_without_snapshot_dir_is_refused() {
+    let dir = TmpDir::new("restore-plain-wal");
+    let db = Database::open_with_wal(enabled(dir.path())).unwrap();
+    db.execute("CREATE (:Old)", rows()).unwrap();
+    let err = db
+        .load_snapshot_from_bytes(&restored_snapshot(5))
+        .unwrap_err();
+    assert_eq!(err.code(), lora_database::LoraErrorCode::Config);
+    assert_eq!(db.node_count(), 1);
+    db.execute("CREATE (:Old)", rows()).unwrap();
+    drop(db);
+    assert_eq!(
+        Database::open_with_wal(enabled(dir.path()))
+            .unwrap()
+            .node_count(),
+        2
+    );
+}
+
+#[test]
+fn with_store_mut_writes_through_the_wal() {
+    let dir = TmpDir::new("with-store-mut");
+    {
+        let db = Database::open_with_wal(enabled(dir.path())).unwrap();
+        let id = db
+            .with_store_mut(|graph| {
+                use lora_store::GraphStorageMut;
+                graph
+                    .create_node(vec!["Admin".into()], Properties::new())
+                    .id
+            })
+            .unwrap();
+        assert_eq!(id, 0);
+        db.execute("CREATE (:Query)", rows()).unwrap();
+    }
+    let db = Database::open_with_wal(enabled(dir.path())).unwrap();
+    assert_eq!(db.node_count(), 2);
+    assert_eq!(db.graph_node_ids_by_label("Admin").len(), 1);
+}

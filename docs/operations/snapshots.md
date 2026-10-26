@@ -66,6 +66,14 @@ manifest. Node, Python, Go, and Ruby can open WAL-backed databases and managed
 snapshot directories; WASM remains snapshot-only and pathless. See
 [wal.md](wal.md) for the WAL surface.
 
+Loading a snapshot into a WAL-backed database replaces the graph without
+writing WAL records, so the load is made durable as a checkpoint before it
+becomes visible: into the managed snapshot directory, or into the container
+of a named `.loradb` database. A WAL-backed database with neither (plain
+`open_with_wal` / `--wal-dir`) refuses the load with `LORA_CONFIG`, because a
+restart would replay the old WAL instead of the loaded graph. Restore such a
+database with `Database::recover` / `--restore-from` at startup.
+
 All API surfaces return a `SnapshotMeta` describing the file:
 
 ```json

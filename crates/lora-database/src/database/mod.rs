@@ -309,21 +309,16 @@ where
     /// it atomically after the closure returns. Reserved for admin paths;
     /// regular mutation goes through `execute_with_params`.
     ///
+    /// The closure's mutations are recorded like any other write: on a
+    /// WAL-backed database they are committed to the WAL before the staged
+    /// store is published, and an error from that commit is returned. Change
+    /// feeds see them as one batch.
+    ///
     /// If the closure panics, the staged copy is dropped and the live store is
     /// left untouched.
-    pub fn with_store_mut<R>(&self, f: impl FnOnce(&mut S) -> R) -> R {
-        let _writer_lock = self
-            .writer
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let snapshot = self.store.load_full();
-        let mut staged: S = (*snapshot).clone();
-        let result = f(&mut staged);
-        self.store.store(Arc::new(staged));
-        // The closure bypasses the recorder, so a change feed can only be
-        // told that the graph was replaced.
-        self.publish_reset();
-        result
+    pub fn with_store_mut<R>(&self, f: impl FnOnce(&mut S) -> R) -> Result<R, LoraError> {
+        self.with_logged_store_mut(|store| Ok(f(store)))
+            .map_err(LoraError::from_anyhow)
     }
 }
 

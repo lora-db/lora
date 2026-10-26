@@ -22,6 +22,7 @@ pub use store::SnapshotConfig;
 use std::fs::OpenOptions;
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Result;
 
@@ -30,7 +31,8 @@ use lora_snapshot::{
     write_snapshot as write_database_snapshot, Compression, SnapshotCodecError,
     SnapshotCredentials, SnapshotInfo, SnapshotOptions, DATABASE_SNAPSHOT_MAGIC,
 };
-use lora_store::{InMemoryGraph, SnapshotMeta, SnapshotPayload};
+use lora_store::{InMemoryGraph, MutationRecorder, SnapshotMeta, SnapshotPayload};
+use lora_wal::WalRecorder;
 
 use crate::durable_io::{sync_dir, sync_file};
 use crate::error::{LoraError, LoraErrorCode};
@@ -263,6 +265,12 @@ impl Database<InMemoryGraph> {
 
     /// Replace the current graph state from snapshot bytes, supplying
     /// credentials when loading an encrypted database snapshot.
+    ///
+    /// On a WAL-backed database the restore is made durable by a
+    /// checkpoint before it becomes visible: into the managed snapshot
+    /// directory, or the container of a named database. A WAL-backed
+    /// database with neither refuses the load with `LORA_CONFIG`, since
+    /// recovery would rebuild the pre-restore graph from its WAL.
     pub fn load_snapshot_from_bytes_with_credentials(
         &self,
         bytes: &[u8],
@@ -274,21 +282,99 @@ impl Database<InMemoryGraph> {
                 "snapshot bytes have unrecognized magic",
             ));
         }
-        let mut guard = self.write_store();
+        let Some(recorder) = self.wal.clone() else {
+            let mut guard = self.write_store();
+            let (payload, info) = decode_snapshot_bytes(bytes, credentials)?;
+            let meta = snapshot_info_to_meta(info);
+            guard
+                .staged_mut_or_error()?
+                .load_snapshot_payload(payload)?;
+            // Publish the staged graph atomically into the live store;
+            // dropping the guard without `publish` would discard the restore
+            // (rollback semantics on the writer lease).
+            guard.publish_in_place();
+            // Still under the writer lock: change feeds see the restore in
+            // commit order.
+            self.publish_reset();
+            drop(guard);
+            return Ok(meta);
+        };
+
+        // A restore writes no WAL records, so on a WAL-backed database it
+        // is only durable as a checkpoint: the loaded graph becomes the
+        // snapshot recovery starts from, fenced at the WAL's current end.
+        if self.snapshots.is_none() && self.named_archive.is_none() {
+            return Err(LoraError::new(
+                LoraErrorCode::Config,
+                "cannot load a snapshot into a WAL-backed database without a snapshot directory, because recovery would replay the old WAL instead; open it with managed snapshots or as a named database, or use `Database::recover` with the snapshot",
+            ));
+        }
         let (payload, info) = decode_snapshot_bytes(bytes, credentials)?;
         let meta = snapshot_info_to_meta(info);
-        guard
-            .staged_mut_or_error()?
-            .load_snapshot_payload(payload)?;
-        // Publish the staged graph atomically into the live store; dropping
-        // the guard without `publish` would discard the restore (rollback
-        // semantics on the writer lease).
+
+        // Checkpoint lock before writer lock, as `sync()` takes them.
+        let _checkpoint = match &self.named_archive {
+            Some(archive) => Some(archive.checkpoint_lock()?),
+            None => None,
+        };
+        let mut guard = self.write_store();
+        let staged = guard.staged_mut_or_error()?;
+        staged.load_snapshot_payload(payload)?;
+        staged.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
+
+        let mut installed = false;
+        let checkpointed =
+            self.checkpoint_restored(guard.staged_or_error()?, &recorder, &mut installed);
+        if let Err(err) = checkpointed {
+            if installed {
+                // Recovery may now start from the restored graph while the
+                // live one is the old graph: stop writes until a reopen
+                // settles which one is durable.
+                recorder.poison(
+                    "snapshot restore failed after its checkpoint was written; reopen the database",
+                );
+            }
+            return Err(err);
+        }
         guard.publish_in_place();
-        // Still under the writer lock: change feeds see the restore in
-        // commit order.
         self.publish_reset();
         drop(guard);
         Ok(meta)
+    }
+
+    /// Checkpoint a restored graph on a WAL-backed database, into the
+    /// managed snapshot directory or the named database's container.
+    /// Caller holds the writer lock (and the archive's checkpoint lock).
+    fn checkpoint_restored(
+        &self,
+        graph: &InMemoryGraph,
+        recorder: &WalRecorder,
+        installed: &mut bool,
+    ) -> Result<(), LoraError> {
+        if let Some(snapshots) = &self.snapshots {
+            snapshots
+                .checkpoint_tracked(graph, recorder, installed)
+                .map_err(LoraError::from_anyhow)?;
+            return Ok(());
+        }
+        let Some(archive) = &self.named_archive else {
+            return Ok(());
+        };
+        recorder.force_fsync_wal_only()?;
+        let snapshot_lsn = recorder.wal().durable_lsn();
+        let staged = archive.staged_snapshot_path();
+        let staged_guard = TempFileGuard::new(staged.clone());
+        write_graph_snapshot_file(
+            &staged,
+            graph,
+            Some(snapshot_lsn.raw()),
+            &SnapshotOptions::default(),
+        )?;
+        // From here the work directory may hold the restored graph.
+        *installed = true;
+        archive.install_snapshot(|| recorder.truncate_covered_by_mirror(snapshot_lsn))?;
+        staged_guard.commit();
+        Ok(())
     }
 
     /// Replace the current graph state from a database snapshot file,

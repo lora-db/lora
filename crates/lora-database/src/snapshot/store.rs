@@ -114,11 +114,23 @@ impl ManagedSnapshotStore {
         graph: &InMemoryGraph,
         recorder: &WalRecorder,
     ) -> Result<SnapshotMeta> {
+        self.checkpoint_tracked(graph, recorder, &mut false)
+    }
+
+    /// [`Self::checkpoint`], setting `installed` once the new snapshot file
+    /// is in place, from where recovery may load it. A failure with
+    /// `installed` still `false` left the recovered state unchanged.
+    pub(crate) fn checkpoint_tracked(
+        &self,
+        graph: &InMemoryGraph,
+        recorder: &WalRecorder,
+        installed: &mut bool,
+    ) -> Result<SnapshotMeta> {
         recorder
             .force_fsync()
             .map_err(|e| anyhow!("WAL fsync before managed snapshot failed: {e}"))?;
         let snapshot_lsn = recorder.wal().durable_lsn();
-        let meta = self.write_snapshot(graph, snapshot_lsn)?;
+        let meta = self.write_snapshot(graph, snapshot_lsn, installed)?;
 
         recorder
             .checkpoint_marker(snapshot_lsn)
@@ -176,7 +188,12 @@ impl ManagedSnapshotStore {
         }
     }
 
-    fn write_snapshot(&self, graph: &InMemoryGraph, snapshot_lsn: Lsn) -> Result<SnapshotMeta> {
+    fn write_snapshot(
+        &self,
+        graph: &InMemoryGraph,
+        snapshot_lsn: Lsn,
+        installed: &mut bool,
+    ) -> Result<SnapshotMeta> {
         let target = snapshot_path(&self.config.dir, snapshot_lsn);
         let tmp = tmp_path(&target);
         let mut file = OpenOptions::new()
@@ -204,6 +221,8 @@ impl ManagedSnapshotStore {
 
         fs::rename(&tmp, &target)
             .with_context(|| format!("rename {} to {}", tmp.display(), target.display()))?;
+        // Without `CURRENT`, recovery picks the newest file in the dir.
+        *installed = true;
         sync_dir(&self.config.dir)
             .with_context(|| format!("sync snapshot dir {}", self.config.dir.display()))?;
         write_current(&self.config.dir, &target)?;
