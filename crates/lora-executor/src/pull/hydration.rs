@@ -24,13 +24,7 @@ impl<'a, S: GraphStorage> RowSource for HydratingSource<'a, S> {
     fn next_row(&mut self) -> ExecResult<Option<Row>> {
         match self.upstream.next_row()? {
             None => Ok(None),
-            Some(row) => {
-                let mut out = Row::new();
-                for (var, name, value) in row.into_iter_named() {
-                    out.insert_named_inline(var, name, hydrate_value(value, self.storage));
-                }
-                Ok(Some(out))
-            }
+            Some(row) => Ok(Some(hydrate_row(row, self.storage))),
         }
     }
 }
@@ -38,11 +32,30 @@ impl<'a, S: GraphStorage> RowSource for HydratingSource<'a, S> {
 /// Replace node / relationship id references in `row` with their full
 /// hydrated form (labels, type, properties), as every query result does.
 pub fn hydrate_row<S: GraphStorage>(row: Row, storage: &S) -> Row {
+    if !row_holds_entity(&row) {
+        return row;
+    }
     let mut out = Row::new();
     for (var, name, value) in row.into_iter_named() {
         out.insert_named_inline(var, name, hydrate_value(value, storage));
     }
     out
+}
+
+/// Whether hydration would change `row`: it holds a node or relationship
+/// reference, possibly nested in a list or map. A plan that may return
+/// entities still returns many rows that hold none (scalar columns, a
+/// null from OPTIONAL MATCH); those pass through untouched.
+pub(crate) fn row_holds_entity(row: &Row) -> bool {
+    fn holds(value: &LoraValue) -> bool {
+        match value {
+            LoraValue::Node(_) | LoraValue::Relationship(_) => true,
+            LoraValue::List(values) => values.iter().any(holds),
+            LoraValue::Map(map) => map.values().any(holds),
+            _ => false,
+        }
+    }
+    row.iter().any(|(_, value)| holds(value))
 }
 
 pub(crate) fn hydrate_value<S: GraphStorage>(value: LoraValue, storage: &S) -> LoraValue {

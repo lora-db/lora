@@ -240,6 +240,9 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     pub(crate) fn hydrate_row(&self, row: Row) -> Row {
+        if !crate::pull::row_holds_entity(&row) {
+            return row;
+        }
         let mut out = Row::new();
 
         for (var, name, value) in row.into_iter_named() {

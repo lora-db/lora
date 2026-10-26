@@ -103,7 +103,7 @@ pub(crate) use aggregate::{
 };
 pub(crate) use context::StreamCtx;
 pub use hydration::hydrate_row;
-pub(crate) use hydration::HydratingSource;
+pub(crate) use hydration::{row_holds_entity, HydratingSource};
 pub(crate) use source::ArgumentSource;
 pub(crate) use traits::{
     build_streaming, build_streaming_seeded, subtree_has_write, subtree_is_fully_streaming,

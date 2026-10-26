@@ -104,7 +104,8 @@ impl<'a, S: GraphStorage> RowSource for UnwindSource<'a, S> {
     fn next_row(&mut self) -> ExecResult<Option<Row>> {
         loop {
             if self.cur_idx < self.cur_values.len() {
-                let value = self.cur_values[self.cur_idx].clone();
+                // Each element is emitted once: move it out.
+                let value = std::mem::replace(&mut self.cur_values[self.cur_idx], LoraValue::Null);
                 self.cur_idx += 1;
                 let Some(cur_row) = self.cur_row.as_ref() else {
                     return Err(ExecutorError::RuntimeError(

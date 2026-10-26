@@ -822,7 +822,10 @@ pub fn project_rows(rows: Vec<Row>, options: ExecuteOptions) -> QueryResult {
 
         ResultFormat::RowArrays => {
             let columns = infer_columns(&rows);
-            let projected_rows = rows.iter().map(|row| row_to_array(row, &columns)).collect();
+            let projected_rows = rows
+                .into_iter()
+                .map(|row| row_into_array(row, &columns))
+                .collect();
 
             QueryResult::RowArrays(RowArraysResult {
                 columns,
@@ -874,6 +877,40 @@ fn row_to_array(row: &Row, columns: &[String]) -> Vec<LoraValue> {
                 .unwrap_or(LoraValue::Null)
         })
         .collect()
+}
+
+/// [`row_to_array`] for a row we own: values are moved out, not cloned.
+fn row_into_array(row: Row, columns: &[String]) -> Vec<LoraValue> {
+    // (name, value not yet moved out, output position it was moved to)
+    let mut entries: Vec<(Arc<str>, Option<LoraValue>, usize)> = row
+        .into_iter_named()
+        .map(|(_, name, value)| (name, Some(value), 0))
+        .collect();
+    let mut out: Vec<LoraValue> = Vec::with_capacity(columns.len());
+    for (i, col) in columns.iter().enumerate() {
+        // Columns come from the first row's names, so a row usually holds
+        // the column at the same position.
+        let found = match entries.get(i) {
+            Some((name, _, _)) if **name == **col => Some(i),
+            _ => entries.iter().position(|(name, _, _)| **name == **col),
+        };
+        let value = match found {
+            Some(at) => {
+                let (_, slot, placed) = &mut entries[at];
+                match slot.take() {
+                    Some(value) => {
+                        *placed = i;
+                        value
+                    }
+                    // A column named twice reads the same value twice.
+                    None => out[*placed].clone(),
+                }
+            }
+            None => LoraValue::Null,
+        };
+        out.push(value);
+    }
+    out
 }
 
 fn collect_hydrated_graph(rows: &[Row]) -> HydratedGraph {
@@ -1045,5 +1082,40 @@ mod tests {
         assert_eq!(value, big());
         // The original still holds its own copy.
         assert_eq!(row.get(VarId(0)), Some(&big()));
+    }
+
+    #[test]
+    fn row_arrays_move_values_into_column_order() {
+        let mut first = Row::new();
+        first.insert_named(VarId(0), "a", LoraValue::Int(1));
+        first.insert_named(VarId(1), "b", LoraValue::String("x".into()));
+        // Same names, other positions, one missing.
+        let mut second = Row::new();
+        second.insert_named(VarId(3), "b", LoraValue::String("y".into()));
+        second.insert_named(VarId(4), "c", LoraValue::Int(9));
+        let QueryResult::RowArrays(result) = project_rows(
+            vec![first, second],
+            ExecuteOptions {
+                format: ResultFormat::RowArrays,
+            },
+        ) else {
+            panic!("row arrays");
+        };
+        assert_eq!(result.columns, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![LoraValue::Int(1), LoraValue::String("x".into())],
+                vec![LoraValue::Null, LoraValue::String("y".into())],
+            ]
+        );
+        // A column named twice reads the same value twice.
+        let mut row = Row::new();
+        row.insert_named(VarId(0), "a", LoraValue::Int(5));
+        let columns = vec!["a".to_string(), "a".to_string()];
+        assert_eq!(
+            row_into_array(row, &columns),
+            vec![LoraValue::Int(5), LoraValue::Int(5)]
+        );
     }
 }
