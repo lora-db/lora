@@ -142,12 +142,15 @@ export interface CreateDatabaseOptions {
   queryTimeoutMs?: number;
   /**
    * Most transactions and write streams this database keeps open at once.
-   * Each open `begin()` transaction, each read-write `transaction()` batch
-   * still running, and each write stream that waits for the writer lock
-   * (see `stream()`) runs on a thread of its own; past this many, the next
-   * one rejects at once with `LORA_TOO_MANY_OPEN` instead of starting yet
-   * another thread. A slot frees up when its transaction commits or rolls
-   * back, or its stream ends or is closed. Defaults to 1024.
+   * Each open `begin()` transaction and each write stream that waits for
+   * the writer lock (see `stream()`) runs on a thread of its own; past
+   * this many, the next one rejects at once with `LORA_TOO_MANY_OPEN`
+   * instead of starting yet another thread. A slot frees up when its
+   * transaction commits or rolls back, or its stream ends or is closed.
+   * Read-write `transaction()` batches have a budget of the same size of
+   * their own: past it they wait their turn (first in, first out), and
+   * the wait counts against their `timeoutMs` and `signal`. Defaults to
+   * 1024.
    */
   maxOpenTransactions?: number;
 }
@@ -849,13 +852,99 @@ function normalizeSnapshotLoadOptions(
  * concurrent read-only `execute()` calls against one instance can share
  * the store read lock; writes serialize without blocking the event loop.
  */
+/**
+ * FIFO admission of read-write `transaction()` batches. Each running batch
+ * has a native thread of its own, so at most `max` run at once and the
+ * rest wait their turn here. Unlike `begin()` and write streams, a batch
+ * can wait: nothing in JS holds one open, so every running batch finishes
+ * by itself and lets the next one in. A waiting batch is a plain pending
+ * promise (plus an unref'd timer for its timeout): it does not keep the
+ * process alive.
+ */
+class BatchGate {
+  readonly #max: number;
+  #running = 0;
+  readonly #waiting: Array<() => void> = [];
+
+  constructor(max: number) {
+    this.#max = max;
+  }
+
+  /**
+   * Take a place, or `null` if one was free: the batch may start now.
+   * Otherwise a promise that resolves once the batch may start, or
+   * rejects (leaving the queue) when `timeoutMs` passes or `signal`
+   * aborts first. Call `leave()` once an admitted batch is done.
+   */
+  enter(timeoutMs: number | null, signal: AbortSignal | undefined) {
+    if (this.#running < this.#max && this.#waiting.length === 0) {
+      this.#running++;
+      return null;
+    }
+    return new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const quit = (err: unknown) => {
+        const at = this.#waiting.indexOf(admit);
+        if (at !== -1) this.#waiting.splice(at, 1);
+        done();
+        reject(err);
+      };
+      const onAbort = () => quit(signal?.reason);
+      const done = () => {
+        if (timer !== undefined) clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      // `leave()` hands its place over: `#running` stays as it is.
+      const admit = () => {
+        done();
+        resolve();
+      };
+      if (signal?.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      this.#waiting.push(admit);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (timeoutMs !== null) {
+        timer = setTimeout(
+          () =>
+            quit(
+              new LoraError(
+                "query deadline exceeded waiting for a free transaction slot",
+                "LORA_TIMEOUT",
+              ),
+            ),
+          timeoutMs,
+        );
+        timer.unref?.();
+      }
+    });
+  }
+
+  leave(): void {
+    const next = this.#waiting.shift();
+    if (next) next();
+    else this.#running--;
+  }
+}
+
 class DatabaseImpl {
   readonly #inner: NativeDatabase;
   /** Open feeds, held weakly so a dropped feed can be collected. */
   readonly #feeds = new Set<WeakRef<NativeChangeFeed>>();
+  /** Database-wide `queryTimeoutMs`; 0 for none. */
+  readonly #defaultTimeoutMs: number;
+  /** Queues read-write `transaction()` batches past `maxOpenTransactions`. */
+  readonly #batches: BatchGate;
 
-  constructor(inner: NativeDatabase) {
+  constructor(
+    inner: NativeDatabase,
+    defaultTimeoutMs: number | null,
+    maxOpen: number | null,
+  ) {
     this.#inner = inner;
+    this.#defaultTimeoutMs = defaultTimeoutMs ?? 0;
+    this.#batches = new BatchGate(maxOpen ?? DEFAULT_MAX_OPEN_TRANSACTIONS);
     trackDatabase(inner);
   }
 
@@ -1076,14 +1165,43 @@ class DatabaseImpl {
       // every read would wait behind them.
       const write =
         mode === "read_write" || mode === "readwrite" || mode === "rw";
-      const buffers = await this.#limited(options, (timeoutMs, token) =>
-        write
-          ? this.#inner.writeTransaction(encoded, timeoutMs, token)
-          : this.#inner.transaction(encoded, mode, timeoutMs, token),
-      );
+      const buffers = write
+        ? await this.#writeBatch(encoded, options)
+        : await this.#limited(options, (timeoutMs, token) =>
+            this.#inner.transaction(encoded, mode, timeoutMs, token),
+          );
       return buffers.map((buf) => decodeResult(buf)) as Array<QueryResult<T>>;
     } catch (err) {
       throw wrapError(err);
+    }
+  }
+
+  /**
+   * Run a read-write batch once the gate lets it in. Time spent waiting
+   * counts against its timeout, and its signal can abandon the wait.
+   */
+  async #writeBatch(
+    encoded: TransactionStatement[],
+    options: QueryOptions | undefined,
+  ): Promise<Buffer[]> {
+    const timeoutMs =
+      normalizeTimeout(options?.timeoutMs) ?? this.#defaultTimeoutMs;
+    const waiting = this.#batches.enter(timeoutMs || null, options?.signal);
+    let limits = options;
+    if (waiting !== null) {
+      const since = Date.now();
+      await waiting;
+      if (timeoutMs) {
+        const left = Math.max(1, timeoutMs - (Date.now() - since));
+        limits = { ...options, timeoutMs: left };
+      }
+    }
+    try {
+      return await this.#limited(limits, (ms, token) =>
+        this.#inner.writeTransaction(encoded, ms, token),
+      );
+    } finally {
+      this.#batches.leave();
     }
   }
 
@@ -1570,6 +1688,7 @@ export async function createDatabase(
     }
     const syncMode = options.syncMode ?? null;
     const groupSyncIntervalMs = options.groupSyncIntervalMs ?? null;
+    const maxOpen = maxOpenTransactions(options.maxOpenTransactions);
     // Opening reads the snapshot and replays the WAL on the libuv
     // threadpool, so a large graph does not hold the event loop.
     return new DatabaseImpl(
@@ -1584,8 +1703,10 @@ export async function createDatabase(
         null,
         null,
         options.queryTimeoutMs ?? null,
-        maxOpenTransactions(options.maxOpenTransactions),
+        maxOpen,
       ),
+      options.queryTimeoutMs ?? null,
+      maxOpen,
     );
   } catch (err) {
     throw wrapError(err);
@@ -1616,6 +1737,7 @@ export async function openWalDatabase(
     const groupSyncIntervalMs = options.groupSyncIntervalMs ?? null;
     const snapshotEveryCommits = options.snapshotEveryCommits ?? null;
     const snapshotKeepOld = options.snapshotKeepOld ?? null;
+    const maxOpen = maxOpenTransactions(options.maxOpenTransactions);
     return new DatabaseImpl(
       await openNativeDatabase(
         null,
@@ -1628,13 +1750,18 @@ export async function openWalDatabase(
         snapshotKeepOld,
         options.snapshotOptions ?? null,
         null,
-        maxOpenTransactions(options.maxOpenTransactions),
+        maxOpen,
       ),
+      null,
+      maxOpen,
     );
   } catch (err) {
     throw wrapError(err);
   }
 }
+
+/** Default of `maxOpenTransactions`; the native side has the same. */
+const DEFAULT_MAX_OPEN_TRANSACTIONS = 1024;
 
 /** Validate `maxOpenTransactions`: a whole number of at least 1. */
 function maxOpenTransactions(value: number | undefined): number | null {

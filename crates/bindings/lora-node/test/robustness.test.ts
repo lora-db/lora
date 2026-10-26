@@ -197,6 +197,22 @@ describe("handles dropped without being closed", () => {
     expect(r.out).toContain("begin=ok");
   });
 
+  it("exits on process.exit() with transaction() batches queued", async () => {
+    const r = await child(
+      `const db = await createDatabase(undefined, { maxOpenTransactions: 1 });
+       const holder = await db.begin();
+       for (let i = 0; i < 5; i++) {
+         db.transaction([{ query: "CREATE (:B)" }], "read_write", { timeoutMs: 60000 })
+           .catch(() => undefined);
+       }
+       await sleep(50);
+       console.log("exiting");
+       process.exit(0);`,
+    );
+    expect(r.finished, r.out).toBe(true);
+    expect(r.code).toBe(0);
+  });
+
   it("lets a database with an open change feed be collected", async () => {
     // The native waker held the feed's callback strongly, and through it
     // the feed and the database handle: neither could ever be collected.

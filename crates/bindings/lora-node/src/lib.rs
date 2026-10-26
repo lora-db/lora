@@ -91,7 +91,7 @@ pub struct Database {
     /// Open change feeds (see [`changes`]).
     feeds: changes::FeedRegistry,
     next_feed_id: AtomicU32,
-    /// Caps the actor threads (transactions, write batches, mutating
+    /// Caps the actor threads JS code holds open (transactions, mutating
     /// streams) this handle runs at once (see [`actor`]).
     open_slots: Arc<actor::OpenSlots>,
 }
@@ -504,7 +504,7 @@ impl Database {
                 db,
                 mode,
                 deadline,
-                slot,
+                Some(slot),
                 interactive::done(move |opened| {
                     // Settled on the JS thread, after this call has registered
                     // the actor: a failed open unregisters it there. A
@@ -659,7 +659,6 @@ impl Database {
             let limit = self.limit(timeout_ms, cancel_token)?;
             let deadline = limit.deadline();
             let db = self.inner()?;
-            let slot = self.open_slots.acquire().map_err(interactive::napi_err)?;
             let mut txs = lock(&self.txs);
             let id = self.next_tx_id.fetch_add(1, Ordering::Relaxed);
             let (deferred, promise) =
@@ -673,7 +672,9 @@ impl Database {
                 db,
                 lora_database::TransactionMode::ReadWrite,
                 deadline,
-                slot,
+                // Not capped here: nothing holds a batch open, so the TS
+                // wrapper queues batches past `maxOpenTransactions`.
+                None,
                 interactive::done(move |opened| {
                     if let Err(message) = opened {
                         let taken = lock(&opening).take();

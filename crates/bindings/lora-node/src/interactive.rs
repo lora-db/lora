@@ -109,12 +109,12 @@ impl TxActor {
     /// Spawn the actor, which opens the transaction; returns at once.
     /// `opened` is called when the transaction is open (for a read-write
     /// one, once the writer lock is held), failed to open, or was closed
-    /// before it opened. The actor holds `slot` until it ends.
+    /// before it opened. The actor holds `slot` (if any) until it ends.
     pub(crate) fn spawn(
         db: Arc<InnerDatabase<InMemoryGraph>>,
         mode: TransactionMode,
         deadline: Option<Instant>,
-        slot: Slot,
+        slot: Option<Slot>,
         opened: Done<()>,
     ) -> Self {
         let (commands, inbox) = mpsc::channel::<Command>();

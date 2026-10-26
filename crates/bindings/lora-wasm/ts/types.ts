@@ -707,7 +707,7 @@ export interface RowParseError {
  * - `LORA_INTERNAL` — last-resort fallback when the engine cannot classify the failure
  *
  * Binding-only:
- * - `LORA_TOO_MANY_OPEN` — the database has `maxOpenTransactions` transactions and write streams open (lora-node only)
+ * - `LORA_TOO_MANY_OPEN` — the database has `maxOpenTransactions` interactive transactions and write streams open (lora-node only)
  * - `WORKER_ERROR` — worker transport / lifecycle failure (wasm worker only)
  * - `UNKNOWN` — fall-through for unrecognised error shapes
  */

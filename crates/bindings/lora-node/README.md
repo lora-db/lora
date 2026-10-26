@@ -150,12 +150,11 @@ with the data statements.
 
 #### Open transaction limit
 
-Each open `begin()` transaction, each read-write `transaction()` batch
-still running, and each mutating `stream()` that opens on its own thread
-(see Known limitations) runs on a dedicated OS thread. A database runs at
-most `maxOpenTransactions` of them at once, 1024 by default. Past the
-limit, `begin()` and `transaction()` reject and `stream()` throws at once
-with `LORA_TOO_MANY_OPEN`; nothing waits in a queue, as a queued
+Each open `begin()` transaction and each mutating `stream()` that opens
+on its own thread (see Known limitations) runs on a dedicated OS thread.
+A database runs at most `maxOpenTransactions` of them at once, 1024 by
+default. Past the limit, `begin()` rejects and `stream()` throws at once
+with `LORA_TOO_MANY_OPEN`. They do not wait in a queue: a queued
 transaction could wait for one that JavaScript has not finished yet.
 A slot frees up as soon as its transaction commits or rolls back (a
 failed statement or a failed `begin()` included) or its stream ends or is
@@ -175,7 +174,15 @@ try {
 }
 ```
 
-`openWalDatabase()` takes the same option. The limit is per database
+Read-write `db.transaction()` batches also run on threads of their own,
+but nothing in JavaScript holds one open, so they queue instead: at most
+`maxOpenTransactions` batches run at once (a budget separate from the one
+above), and the rest wait their turn, first in, first out. Time spent
+waiting counts against the batch's `timeoutMs` (or `queryTimeoutMs`),
+which rejects with `LORA_TIMEOUT`, and its `signal` abandons the wait. A
+waiting batch does not keep the process alive.
+
+`openWalDatabase()` takes the same option. The limits are per database
 handle.
 
 ### Change feed

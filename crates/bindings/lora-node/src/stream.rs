@@ -212,7 +212,7 @@ impl StreamActor {
         slot: Slot,
     ) -> Result<Self, String> {
         let (requests, inbox) = mpsc::channel();
-        let lifecycle = Lifecycle::new(slot);
+        let lifecycle = Lifecycle::new(Some(slot));
         let writer = JsBoundWriter::register();
         let thread = {
             let lifecycle = lifecycle.clone();

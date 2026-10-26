@@ -323,10 +323,9 @@ snapshots; write commits still serialize.
 
 ### Limit on open transactions
 
-Each open `db.begin()` transaction, each read-write `db.transaction()`
-batch still running, and each write `stream()` that has to wait for the
-writer lock runs on a thread of its own. A database keeps at most
-`maxOpenTransactions` of them open at once: 1024 unless you set it.
+Each open `db.begin()` transaction and each write `stream()` that has to
+wait for the writer lock runs on a thread of its own. A database keeps at
+most `maxOpenTransactions` of them open at once: 1024 unless you set it.
 Past the limit the call fails at once with `LORA_TOO_MANY_OPEN` instead
 of starting another thread or waiting in a queue.
 
@@ -354,8 +353,28 @@ try {
 A slot frees up as soon as its transaction commits or rolls back, or its
 stream ends or is closed. A transaction or stream you drop without
 finishing frees its slot once it is garbage-collected, so finish them
-explicitly. `openWalDatabase()` takes the same option, and the limit
-applies per database handle.
+explicitly.
+
+Read-write `db.transaction()` batches never fail this way. At most
+`maxOpenTransactions` of them run at once, and the rest wait their turn
+in order. The wait counts against the batch's `timeoutMs`, and its
+`signal` can cancel it:
+
+```ts
+// 2000 batches: up to 256 run at a time, the others queue.
+await Promise.all(
+  orders.map((o) =>
+    db.transaction(
+      [{ query: "CREATE (:Order {id: $id})", params: { id: o.id } }],
+      'read_write',
+      { timeoutMs: 5000 },
+    ),
+  ),
+);
+```
+
+`openWalDatabase()` takes the same option, and the limits apply per
+database handle.
 
 ### Persisting your graph
 

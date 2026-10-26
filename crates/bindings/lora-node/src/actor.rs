@@ -18,14 +18,16 @@
 //!   itself (it rolls back as soon as it has the lock or its statement
 //!   ends).
 //!
-//! Each actor is an unpooled OS thread, and queuing actors instead could
-//! deadlock (a transaction waiting in the queue for a thread while the JS
-//! code that would let one go waits for it). So a database caps how many
-//! it runs at once ([`OpenSlots`]) and rejects one past the cap at once
-//! with `LORA_TOO_MANY_OPEN`. An actor's [`Slot`] lives in its
-//! [`Lifecycle`] and is released when the actor ends: before it settles
-//! its last command, or when its thread exits (a panic included), so a
-//! caller that hears the transaction finished can open the next one.
+//! Each actor is an unpooled OS thread. Those JS code holds open (an
+//! interactive transaction, a mutating stream) cannot wait in a queue for
+//! a thread: the JS code that would let one go may be waiting for them. So
+//! a database caps how many it runs at once ([`OpenSlots`]) and rejects
+//! one past the cap at once with `LORA_TOO_MANY_OPEN`. An actor's [`Slot`]
+//! lives in its [`Lifecycle`] and is released when the actor ends: before
+//! it settles its last command, or when its thread exits (a panic
+//! included), so a caller that hears the transaction finished can open
+//! the next one. A write batch (`transaction()`) is held by nothing: the
+//! TS wrapper queues those instead, so they take no slot here.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -85,8 +87,8 @@ pub(crate) const DEFAULT_MAX_OPEN: u32 = 1024;
 /// Wire code of the error an actor past the cap is rejected with.
 pub(crate) const TOO_MANY_OPEN_CODE: &str = "LORA_TOO_MANY_OPEN";
 
-/// One database's budget of actors (interactive transactions, write
-/// batches and mutating streams on their own thread).
+/// One database's budget of actors held open by JS code (interactive
+/// transactions and mutating streams on their own thread).
 pub(crate) struct OpenSlots {
     open: AtomicUsize,
     max: usize,
@@ -134,7 +136,7 @@ impl Drop for Slot {
 struct State {
     phase: Phase,
     closed: bool,
-    /// The actor's slot, released when it ends.
+    /// The actor's slot, if it takes one; released when it ends.
     slot: Option<Slot>,
 }
 
@@ -143,11 +145,11 @@ struct State {
 pub(crate) struct Lifecycle(Arc<Mutex<State>>);
 
 impl Lifecycle {
-    pub(crate) fn new(slot: Slot) -> Self {
+    pub(crate) fn new(slot: Option<Slot>) -> Self {
         Self(Arc::new(Mutex::new(State {
             phase: Phase::Opening,
             closed: false,
-            slot: Some(slot),
+            slot,
         })))
     }
 
@@ -257,11 +259,11 @@ mod tests {
     #[test]
     fn an_actor_gives_its_slot_back_when_it_ends_or_its_thread_exits() {
         let slots = OpenSlots::new(1);
-        let lifecycle = Lifecycle::new(slots.acquire().unwrap());
+        let lifecycle = Lifecycle::new(Some(slots.acquire().unwrap()));
         lifecycle.ending();
         assert_eq!(slots.open(), 0);
 
-        let lifecycle = Lifecycle::new(slots.acquire().unwrap());
+        let lifecycle = Lifecycle::new(Some(slots.acquire().unwrap()));
         let exit = lifecycle.exit_guard();
         let thread = std::thread::spawn(move || {
             let _exit = exit;
