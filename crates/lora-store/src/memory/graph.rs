@@ -44,6 +44,14 @@ use crate::dict::Dicts;
 use crate::encoded::{self, Scratch, StoredNode, StoredRel};
 use crate::{NodeRef, RelRef};
 
+/// The largest node or relationship id the store accepts. Slot storage
+/// grows with the highest id ever used (about 16 bytes per 512 ids even
+/// when the ids are deleted), so a corrupt snapshot or WAL claiming an id
+/// near `u64::MAX` would otherwise allocate until the process aborts. At
+/// 2^34 the worst case is about 512 MiB of slot tables, and no real
+/// database allocates 17 billion ids.
+pub(crate) const MAX_ENTITY_ID: u64 = (1 << 34) - 1;
+
 #[derive(Default)]
 pub struct InMemoryGraph {
     pub(super) next_node_id: NodeId,
@@ -371,6 +379,11 @@ impl InMemoryGraph {
     /// lists are kept in lockstep with `nodes`, so a freshly-grown slot has
     /// empty outgoing/incoming Vecs ready to receive edges.
     fn slot_len_for_id(id: u64, kind: &str) -> Result<usize, String> {
+        if id > MAX_ENTITY_ID {
+            return Err(format!(
+                "{kind} id {id} is above the largest supported id {MAX_ENTITY_ID}"
+            ));
+        }
         let idx = usize::try_from(id)
             .map_err(|_| format!("{kind} id {id} does not fit in usize on this platform"))?;
         idx.checked_add(1)

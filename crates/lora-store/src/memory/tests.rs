@@ -1376,3 +1376,23 @@ fn nodes_without_relationships_share_one_empty_adjacency_leaf() {
     assert!(g.detach_delete_node(a));
     assert_eq!(g.relationship_count(), 0);
 }
+
+#[test]
+fn ids_above_the_supported_maximum_are_refused_without_allocating() {
+    // A corrupt snapshot or WAL naming an id near 2^40 used to grow the
+    // slot tables until the allocation aborted the process.
+    let mut g = InMemoryGraph::new();
+    let err = g
+        .replay_create_node(1 << 40, vec![], Properties::new())
+        .unwrap_err();
+    assert!(err.contains("above the largest supported id"), "{err}");
+    assert_eq!(g.node_count(), 0);
+
+    let max = super::graph::MAX_ENTITY_ID;
+    let a = g.replay_create_node(0, vec![], Properties::new()).unwrap();
+    let b = g.replay_create_node(1, vec![], Properties::new()).unwrap();
+    let err = g
+        .replay_create_relationship(max + 1, a.id, b.id, "R", Properties::new())
+        .unwrap_err();
+    assert!(err.contains("above the largest supported id"), "{err}");
+}
