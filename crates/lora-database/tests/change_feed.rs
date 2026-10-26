@@ -342,6 +342,37 @@ fn resumes_inside_the_in_memory_window_and_rejects_older_lsns() {
 }
 
 #[test]
+fn retention_is_bounded_by_bytes_as_well_as_batches() {
+    let db = Database::in_memory();
+    db.set_change_retention_bytes(64 * 1024);
+    let mut feed = open(&db);
+    let mut lsns = Vec::new();
+    // Each batch carries about 16 KiB of property data.
+    for i in 0..8 {
+        exec(
+            &db,
+            &format!("CREATE (:N {{i: {i}, pad: '{}'}})", "x".repeat(16 * 1024)),
+        );
+        lsns.push(next(&mut feed).lsn);
+    }
+
+    // The newest batches fit and resume from memory.
+    let mut resumed = open_from(&db, lsns[5]);
+    assert_eq!(next(&mut resumed).lsn, lsns[6]);
+    assert_eq!(next(&mut resumed).lsn, lsns[7]);
+
+    // The oldest were dropped although far fewer than the batch limit.
+    let err = db
+        .changes(ChangeFeedOptions {
+            from_lsn: Some(lsns[0]),
+            ..ChangeFeedOptions::default()
+        })
+        .err()
+        .unwrap();
+    assert_eq!(err.code(), LoraErrorCode::ChangesTruncated);
+}
+
+#[test]
 fn slow_consumer_lags_without_blocking_writers() {
     let db = Database::in_memory();
     let mut feed = db

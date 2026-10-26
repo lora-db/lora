@@ -16,8 +16,9 @@
 //!
 //! Capture is off until the first feed opens. From then on every write
 //! builds its batch (net changes per entity plus property maps) under the
-//! writer lock and keeps the last [`DEFAULT_RETENTION`] batches in memory
-//! so feeds can resume from a recent LSN without touching disk.
+//! writer lock and keeps the last [`DEFAULT_RETENTION`] batches, at most
+//! [`DEFAULT_RETENTION_BYTES`] of them, in memory so feeds can resume from
+//! a recent LSN without touching disk.
 //!
 //! # Back-pressure
 //!
@@ -34,7 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
-use lora_store::{InMemoryGraph, MutationEvent, NodeId, Properties, RelationshipId};
+use lora_store::{InMemoryGraph, MutationEvent, NodeId, Properties, PropertyValue, RelationshipId};
 
 pub(crate) use build::{build_changes, PreImageSink, PreImages};
 pub(crate) use history::{HistoryReplay, HistorySources};
@@ -43,6 +44,11 @@ use crate::error::{LoraError, LoraErrorCode};
 
 /// Batches kept in memory for same-process resume.
 pub const DEFAULT_RETENTION: usize = 1024;
+
+/// Approximate heap bytes of the batches kept in memory for same-process
+/// resume. Older batches are dropped past either limit, so a few bulk
+/// writes cannot pin gigabytes.
+pub const DEFAULT_RETENTION_BYTES: usize = 64 * 1024 * 1024;
 
 /// Default per-feed queue capacity, in batches.
 pub const DEFAULT_FEED_BUFFER: usize = 1024;
@@ -221,9 +227,14 @@ struct HubState {
     last_lsn: u64,
     /// Recent batches, oldest first.
     ring: VecDeque<Arc<ChangeBatch>>,
+    /// Approximate heap bytes of each batch in `ring`, in the same order.
+    ring_sizes: VecDeque<usize>,
+    /// Sum of `ring_sizes`.
+    ring_bytes: usize,
     /// Every published batch with an LSN above this one is in `ring`.
     ring_floor: u64,
     retention: usize,
+    retention_bytes: usize,
     subscribers: Vec<Arc<Subscriber>>,
     closed: bool,
 }
@@ -242,8 +253,11 @@ impl Default for ChangeHub {
             state: Mutex::new(HubState {
                 last_lsn: 0,
                 ring: VecDeque::new(),
+                ring_sizes: VecDeque::new(),
+                ring_bytes: 0,
                 ring_floor: 0,
                 retention: DEFAULT_RETENTION,
+                retention_bytes: DEFAULT_RETENTION_BYTES,
                 subscribers: Vec::new(),
                 closed: false,
             }),
@@ -282,6 +296,12 @@ impl ChangeHub {
         trim_ring(&mut state);
     }
 
+    pub(crate) fn set_retention_bytes(&self, bytes: usize) {
+        let mut state = self.lock();
+        state.retention_bytes = bytes;
+        trim_ring(&mut state);
+    }
+
     pub(crate) fn head(&self) -> Option<u64> {
         self.is_active().then(|| self.lock().last_lsn)
     }
@@ -299,8 +319,11 @@ impl ChangeHub {
         }
         let lsn = lsn.unwrap_or(state.last_lsn + 1).max(state.last_lsn + 1);
         state.last_lsn = lsn;
+        let bytes = changes.iter().map(change_bytes).sum::<usize>();
         let batch = Arc::new(ChangeBatch { lsn, changes });
         state.ring.push_back(batch.clone());
+        state.ring_sizes.push_back(bytes);
+        state.ring_bytes += bytes;
         trim_ring(&mut state);
         state.subscribers.retain(|sub| {
             sub.push(&batch);
@@ -340,11 +363,88 @@ impl ChangeHub {
 }
 
 fn trim_ring(state: &mut HubState) {
-    while state.ring.len() > state.retention {
-        if let Some(evicted) = state.ring.pop_front() {
-            state.ring_floor = evicted.lsn;
-        }
+    while state.ring.len() > state.retention || state.ring_bytes > state.retention_bytes {
+        let Some(evicted) = state.ring.pop_front() else {
+            break;
+        };
+        state.ring_floor = evicted.lsn;
+        state.ring_bytes -= state.ring_sizes.pop_front().unwrap_or(0);
     }
+}
+
+/// Approximate heap bytes a change holds, for the retention byte limit.
+fn change_bytes(change: &Change) -> usize {
+    let strings = |values: &[String]| values.iter().map(String::len).sum::<usize>();
+    std::mem::size_of::<Change>()
+        + match change {
+            Change::NodeCreated {
+                labels, properties, ..
+            }
+            | Change::NodeDeleted {
+                labels, properties, ..
+            } => strings(labels) + properties_bytes(properties),
+            Change::NodeUpdated {
+                labels,
+                properties,
+                set_keys,
+                removed_keys,
+                added_labels,
+                removed_labels,
+                ..
+            } => {
+                strings(labels)
+                    + properties_bytes(properties)
+                    + strings(set_keys)
+                    + strings(removed_keys)
+                    + strings(added_labels)
+                    + strings(removed_labels)
+            }
+            Change::RelationshipCreated {
+                rel_type,
+                properties,
+                ..
+            }
+            | Change::RelationshipDeleted {
+                rel_type,
+                properties,
+                ..
+            } => rel_type.len() + properties_bytes(properties),
+            Change::RelationshipUpdated {
+                rel_type,
+                properties,
+                set_keys,
+                removed_keys,
+                ..
+            } => {
+                rel_type.len()
+                    + properties_bytes(properties)
+                    + strings(set_keys)
+                    + strings(removed_keys)
+            }
+            Change::Reset => 0,
+        }
+}
+
+fn properties_bytes(properties: &Properties) -> usize {
+    properties
+        .iter()
+        .map(|(key, value)| key.len() + value_bytes(value))
+        .sum()
+}
+
+fn value_bytes(value: &PropertyValue) -> usize {
+    std::mem::size_of::<PropertyValue>()
+        + match value {
+            PropertyValue::String(value) => value.len(),
+            PropertyValue::Binary(value) => value.len(),
+            PropertyValue::List(values) => values.iter().map(value_bytes).sum(),
+            PropertyValue::Map(values) => values
+                .iter()
+                .map(|(key, value)| key.len() + value_bytes(value))
+                .sum(),
+            PropertyValue::Vector(vector) => vector.dimension * std::mem::size_of::<f64>(),
+            _ => 0,
+        }
 }
 
 /// How a new feed catches up before it switches to live batches.
