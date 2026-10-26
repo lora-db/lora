@@ -22,7 +22,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph, MutationRecorder};
-use lora_wal::{replay_dir, Lsn, WalConfig, WalMirror, WalRecorder};
+use lora_wal::{newest_checkpoint_marker, Lsn, WalConfig, WalMirror, WalRecorder};
 
 use crate::database::Database;
 use crate::error::{LoraError, LoraErrorCode};
@@ -212,20 +212,19 @@ impl Database<InMemoryGraph> {
                 // as "no marker" — the subsequent `Wal::open` will
                 // surface the real failure if there is one.
                 if dir.exists() {
-                    if let Ok(outcome) = replay_dir(&dir, Lsn::ZERO) {
-                        if let Some(marker) = outcome.checkpoint_lsn_observed {
-                            if marker > snapshot_lsn {
-                                eprintln!(
-                                    "lora-wal: snapshot at LSN {} is older than the newest \
-                                     checkpoint marker on disk (LSN {}). Replaying every WAL \
-                                     record above LSN {}; consider passing the more recent \
-                                     snapshot to --restore-from.",
-                                    snapshot_lsn.raw(),
-                                    marker.raw(),
-                                    snapshot_lsn.raw()
-                                );
-                            }
+                    match newest_checkpoint_marker(&dir) {
+                        Ok(Some(marker)) if marker > snapshot_lsn => {
+                            eprintln!(
+                                "lora-wal: snapshot at LSN {} is older than the newest \
+                                 checkpoint marker on disk (LSN {}). Replaying every WAL \
+                                 record above LSN {}; consider passing the more recent \
+                                 snapshot to --restore-from.",
+                                snapshot_lsn.raw(),
+                                marker.raw(),
+                                snapshot_lsn.raw()
+                            );
                         }
+                        _ => {}
                     }
                 }
 
