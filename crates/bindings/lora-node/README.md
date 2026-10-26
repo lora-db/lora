@@ -514,9 +514,18 @@ See `ts/types.ts` (`LoraErrorCode`) for the full list.
   deadlocking: the writer holding the lock always runs). Prefer
   `await`-in-a-loop or a single batched query for heavy write workloads.
   While an interactive transaction or a mutating stream is open (it holds
-  the lock until JavaScript finishes it), auto-commit writes, `clear()`,
-  `sync()` and `loadSnapshot()` wait on lora's own threads instead, so the
-  pool stays free for `fs`, `dns`, `zlib` and `crypto`.
+  the lock until JavaScript finishes it), writes wait off the pool instead,
+  so it stays free for `fs`, `dns`, `zlib` and `crypto`. Auto-commit
+  `execute()` and `profile()` writes then wait in a first-in, first-out
+  queue per database handle, run by one thread: 2 000 writes behind a long
+  transaction take one thread, not 2 000. A queued write still rejects with
+  `LORA_TIMEOUT` when its `timeoutMs` (or `queryTimeoutMs`) passes or its
+  `signal` aborts, and the time it spends queued counts against the
+  timeout. `dispose()` rejects the writes still queued. `clear()`,
+  `sync()`, `loadSnapshot()` and reads never wait behind that queue:
+  `sync()` on an in-memory or WAL database finishes while writes are
+  queued (on a database opened by name it takes the writer lock, so it
+  waits for the transaction like a write).
   Interactive transactions wait on their own threads, not the pool, and so
   do mutating `stream()`s while the lock may be busy: one opens without
   blocking the event loop, and its first `next()` waits for the writer
