@@ -192,8 +192,12 @@ describe("maxOpenTransactions", () => {
       const holder = await db.begin("read_write");
       const first = db.transaction([{ query: "CREATE (:A)" }]);
       const second = db.transaction([{ query: "CREATE (:B)" }]);
-      await expect(first).rejects.toMatchObject({ code: "LORA_TIMEOUT" });
-      await expect(second).rejects.toMatchObject({ code: "LORA_TIMEOUT" });
+      // Both can time out at once: handle them together, so the second
+      // rejection is never unhandled while the first is awaited.
+      await Promise.all([
+        expect(first).rejects.toMatchObject({ code: "LORA_TIMEOUT" }),
+        expect(second).rejects.toMatchObject({ code: "LORA_TIMEOUT" }),
+      ]);
       await holder.rollback();
       // No default deadline for this one: the machine may be slow.
       await db.transaction([{ query: "CREATE (:C)" }], "read_write", {
