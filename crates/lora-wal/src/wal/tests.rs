@@ -857,6 +857,22 @@ fn large_transaction_is_split_into_several_batches() {
 }
 
 #[test]
+fn idle_force_fsync_skips_the_fsync() {
+    let dir = TmpDir::new("idle-sync");
+    let (wal, _) = open_default(&dir.path);
+    write_txs(&wal, 0..1);
+    wal.force_fsync().unwrap();
+    let after_first = wal.fsync_count();
+    wal.force_fsync().unwrap();
+    wal.force_fsync().unwrap();
+    assert_eq!(wal.fsync_count(), after_first, "nothing new was written");
+    write_txs(&wal, 1..2);
+    wal.force_fsync().unwrap();
+    assert_eq!(wal.fsync_count(), after_first + 1);
+    assert_eq!(wal.durable_lsn().raw(), wal.next_lsn().raw() - 1);
+}
+
+#[test]
 fn newest_checkpoint_marker_matches_full_replay() {
     let dir = TmpDir::new("ckpt-scan");
     assert_eq!(

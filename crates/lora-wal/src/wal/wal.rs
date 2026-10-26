@@ -28,7 +28,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
@@ -114,6 +114,8 @@ pub struct Wal {
     flusher: Mutex<Option<GroupFlusherHandle>>,
     /// See [`BATCH_TARGET_BYTES`]; a field so tests can shrink it.
     batch_target_bytes: AtomicUsize,
+    /// Number of `fsync`s issued by [`Self::flush_inner`]. Diagnostic.
+    fsyncs: AtomicU64,
     /// Held for the lifetime of the WAL so a second handle cannot append
     /// to the same active segment concurrently.
     _dir_lock: DirLock,
@@ -202,6 +204,7 @@ impl Wal {
             #[cfg(not(target_arch = "wasm32"))]
             flusher: Mutex::new(None),
             batch_target_bytes: AtomicUsize::new(BATCH_TARGET_BYTES),
+            fsyncs: AtomicU64::new(0),
             _dir_lock: dir_lock,
         });
 
@@ -609,6 +612,12 @@ impl Wal {
         self.batch_target_bytes.store(bytes, Ordering::Relaxed);
     }
 
+    /// Number of `fsync`s the WAL has issued for its log since open.
+    /// Diagnostic; an idle WAL does not grow it.
+    pub fn fsync_count(&self) -> u64 {
+        self.fsyncs.load(Ordering::Relaxed)
+    }
+
     /// Append a `Checkpoint` marker. `snapshot_lsn` should equal the
     /// LSN written into the snapshot file's header — replay uses
     /// it to defend against the snapshot-rename-but-no-marker race.
@@ -663,15 +672,32 @@ impl Wal {
     /// Single source of truth for the flush state machine. Skips the
     /// `check_healthy` gate so clean shutdown can force a final GroupSync
     /// sync even if callers are otherwise done with the handle.
+    ///
+    /// The `fsync` itself runs after the state lock is released, so
+    /// commits keep appending while the disk catches up. Only the LSN
+    /// written before the `fsync` started becomes durable, and a WAL with
+    /// nothing new since the last `fsync` skips it.
     pub(super) fn flush_inner(&self, kind: FlushKind) -> Result<(), WalError> {
-        let mut state = self.lock_state()?;
-        let written_lsn = Lsn::new(state.next_lsn.raw().saturating_sub(1));
-
-        if matches!(kind, FlushKind::ForceFsync) {
-            state.active_writer.flush_and_sync()?;
-            state.durable_lsn = written_lsn;
-        } else {
+        let (file, written_lsn) = {
+            let mut state = self.lock_state()?;
             state.active_writer.flush_buffer()?;
+            if matches!(kind, FlushKind::PerConfiguredMode) {
+                return Ok(());
+            }
+            let written_lsn = Lsn::new(state.next_lsn.raw().saturating_sub(1));
+            if state.durable_lsn >= written_lsn {
+                return Ok(());
+            }
+            // If the segment rotates before the `fsync` below runs, the
+            // rotation syncs it too (`seal`), and this handle keeps the
+            // file open either way.
+            (state.active_writer.sync_handle(), written_lsn)
+        };
+        sync_file(&file)?;
+        self.fsyncs.fetch_add(1, Ordering::Relaxed);
+        let mut state = self.lock_state()?;
+        if written_lsn > state.durable_lsn {
+            state.durable_lsn = written_lsn;
         }
         Ok(())
     }

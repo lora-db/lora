@@ -26,6 +26,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::errors::WalError;
 use crate::io::sync_file;
@@ -152,7 +153,10 @@ fn fixed_bytes<const N: usize>(bytes: &[u8]) -> Result<[u8; N], WalError> {
 /// CRC) and syncs the segment. Once sealed, [`append`] returns
 /// [`WalError::Poisoned`] — a sealed segment is immutable.
 pub(crate) struct SegmentWriter {
-    file: File,
+    /// Shared so a background fsync can run on this segment without
+    /// holding the WAL state lock (see [`Self::sync_handle`]). Writes go
+    /// through `&File`, which shares the one file offset.
+    file: Arc<File>,
     header: SegmentHeader,
     bytes_written: u64,
     pending: Vec<u8>,
@@ -176,7 +180,7 @@ impl SegmentWriter {
         // segment behind.
         sync_file(&file)?;
         Ok(Self {
-            file,
+            file: Arc::new(file),
             header,
             bytes_written: SEGMENT_HEADER_LEN as u64,
             pending: Vec::with_capacity(PENDING_RETAINED_CAPACITY),
@@ -226,7 +230,7 @@ impl SegmentWriter {
         file.seek(SeekFrom::Start(last_good))?;
         Ok((
             Self {
-                file,
+                file: Arc::new(file),
                 header,
                 bytes_written: last_good,
                 pending: Vec::with_capacity(PENDING_RETAINED_CAPACITY),
@@ -261,7 +265,7 @@ impl SegmentWriter {
         }
         file.seek(SeekFrom::Start(offset))?;
         Ok(Self {
-            file,
+            file: Arc::new(file),
             header,
             bytes_written: offset,
             pending: Vec::with_capacity(PENDING_RETAINED_CAPACITY),
@@ -316,13 +320,13 @@ impl SegmentWriter {
         if self.pending.is_empty() {
             return Ok(());
         }
-        if let Err(err) = (&self.file).write_all(&self.pending) {
+        if let Err(err) = (&*self.file).write_all(&self.pending) {
             // Undo a partial write. Leaving half a buffer in the file
             // would let a retry (or the flush on drop) append whole
             // records after it, turning a failed write into corruption
             // in the middle of the log.
             let _ = self.file.set_len(self.bytes_written);
-            let _ = (&self.file).seek(SeekFrom::Start(self.bytes_written));
+            let _ = (&*self.file).seek(SeekFrom::Start(self.bytes_written));
             return Err(err.into());
         }
         self.bytes_written += self.pending.len() as u64;
@@ -342,6 +346,13 @@ impl SegmentWriter {
         Ok(())
     }
 
+    /// Shared handle to the segment file, so a caller can `fsync` it after
+    /// releasing the lock that guards this writer. Bytes already passed to
+    /// the OS by [`Self::flush_buffer`] are covered by that `fsync`.
+    pub fn sync_handle(&self) -> Arc<File> {
+        Arc::clone(&self.file)
+    }
+
     /// Mark the segment as sealed (no more appends). Rewrites the
     /// header in place with `FLAG_SEALED` set and `fsync`s.
     pub fn seal(&mut self) -> Result<(), WalError> {
@@ -351,7 +362,7 @@ impl SegmentWriter {
         self.flush_and_sync()?;
         self.header.sealed = true;
         let header_bytes = self.header.encode();
-        let mut file = &self.file;
+        let mut file = &*self.file;
         file.seek(SeekFrom::Start(0))?;
         file.write_all(&header_bytes)?;
         // Restore the write cursor to end-of-segment so any stray
@@ -371,7 +382,7 @@ impl SegmentWriter {
         }
         self.flush_buffer()?;
         self.file.set_len(offset)?;
-        (&self.file).seek(SeekFrom::Start(offset))?;
+        (&*self.file).seek(SeekFrom::Start(offset))?;
         self.bytes_written = offset;
         sync_file(&self.file)?;
         Ok(())
