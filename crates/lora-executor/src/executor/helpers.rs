@@ -115,8 +115,19 @@ pub(crate) fn project_item<S: GraphStorage>(
     item: &lora_analyzer::ResolvedProjection,
     eval_ctx: &EvalContext<'_, S>,
 ) -> ExecResult<()> {
+    project_item_as(projected, source, item, &item.name, eval_ctx)
+}
+
+/// [`project_item`] naming the column `name` (see [`ProjectionNames`]).
+pub(crate) fn project_item_as<S: GraphStorage>(
+    projected: &mut Row,
+    source: &Row,
+    item: &lora_analyzer::ResolvedProjection,
+    name: &Arc<str>,
+    eval_ctx: &EvalContext<'_, S>,
+) -> ExecResult<()> {
     if let ResolvedExpr::Variable(var) = &item.expr {
-        if projected.insert_named_from(item.output, item.name.clone(), source, *var) {
+        if projected.insert_named_from(item.output, name.clone(), source, *var) {
             return Ok(());
         }
     }
@@ -127,42 +138,92 @@ pub(crate) fn project_item<S: GraphStorage>(
             .map_err(ExecutorError::from_eval)?
         {
             Projected::Var(var) => {
-                projected.insert_named_from(item.output, item.name.clone(), source, var);
+                projected.insert_named_from(item.output, name.clone(), source, var);
             }
-            Projected::Value(value) => {
-                projected.insert_named(item.output, item.name.clone(), value)
-            }
+            Projected::Value(value) => projected.insert_named(item.output, name.clone(), value),
         }
         return Ok(());
     }
     let value = eval_expr_result(&item.expr, source, eval_ctx).map_err(ExecutorError::from_eval)?;
-    projected.insert_named(item.output, item.name.clone(), value);
+    projected.insert_named(item.output, name.clone(), value);
     Ok(())
 }
 
-/// [`project_item`] for a projection that keeps the row's existing bindings.
+/// Column names for projecting many rows. Every projected row holds a
+/// refcount on its column's name; with the plan's own `Arc`s, concurrent
+/// queries running one cached plan would all count on the same cache line.
+/// Past a few rows a projection mints private copies (one small allocation
+/// per column) and counts on those instead.
+pub(crate) struct ProjectionNames {
+    names: Option<Vec<Arc<str>>>,
+}
+
+impl ProjectionNames {
+    /// Rows a projection runs on the plan's names before minting copies.
+    pub(crate) const SHARED_ROWS: usize = 32;
+
+    pub(crate) fn shared() -> Self {
+        Self { names: None }
+    }
+
+    pub(crate) fn private(items: &[lora_analyzer::ResolvedProjection]) -> Self {
+        Self {
+            names: Some(items.iter().map(|item| Arc::from(&*item.name)).collect()),
+        }
+    }
+
+    /// Names for `rows` rows of `items`: private copies when there are
+    /// enough rows to pay for them.
+    pub(crate) fn for_rows(items: &[lora_analyzer::ResolvedProjection], rows: usize) -> Self {
+        if rows >= Self::SHARED_ROWS {
+            Self::private(items)
+        } else {
+            Self::shared()
+        }
+    }
+
+    #[inline]
+    pub(crate) fn get<'n>(
+        &'n self,
+        items: &'n [lora_analyzer::ResolvedProjection],
+        i: usize,
+    ) -> &'n Arc<str> {
+        match &self.names {
+            Some(names) => &names[i],
+            None => &items[i].name,
+        }
+    }
+
+    pub(crate) fn is_private(&self) -> bool {
+        self.names.is_some()
+    }
+}
+
+/// [`project_item`] for a projection that keeps the row's existing
+/// bindings, naming the column `name`.
 #[inline]
-pub(crate) fn project_item_in_place<S: GraphStorage>(
+pub(crate) fn project_item_in_place_as<S: GraphStorage>(
     row: &mut Row,
     item: &lora_analyzer::ResolvedProjection,
+    name: &Arc<str>,
     eval_ctx: &EvalContext<'_, S>,
 ) -> ExecResult<()> {
     if let ResolvedExpr::Variable(var) = &item.expr {
-        if row.insert_named_from_self(item.output, item.name.clone(), *var) {
+        if row.insert_named_from_self(item.output, name.clone(), *var) {
             return Ok(());
         }
     }
     if passes_through(&item.expr) {
         match eval_projected_result(&item.expr, row, eval_ctx).map_err(ExecutorError::from_eval)? {
             Projected::Var(var) => {
-                row.insert_named_from_self(item.output, item.name.clone(), var);
+                row.insert_named_from_self(item.output, name.clone(), var);
             }
-            Projected::Value(value) => row.insert_named(item.output, item.name.clone(), value),
+            Projected::Value(value) => row.insert_named(item.output, name.clone(), value),
         }
         return Ok(());
     }
     let value = eval_expr_result(&item.expr, row, eval_ctx).map_err(ExecutorError::from_eval)?;
-    row.insert_named(item.output, item.name.clone(), value);
+    row.insert_named(item.output, name.clone(), value);
     Ok(())
 }
 
@@ -196,22 +257,17 @@ pub(super) fn project_rows_checked<S: GraphStorage>(
     eval_ctx: &EvalContext<'_, S>,
 ) -> ExecResult<Vec<Row>> {
     let mut out = Vec::with_capacity(input_rows.len());
+    let names = ProjectionNames::for_rows(&op.items, input_rows.len());
 
     for row in input_rows {
         check_active_deadline()?;
-        if op.include_existing {
-            let mut projected = row;
-            for item in &op.items {
-                project_item_in_place(&mut projected, item, eval_ctx)?;
-            }
-            out.push(projected);
-        } else {
-            let mut projected = Row::new();
-            for item in &op.items {
-                project_item(&mut projected, &row, item, eval_ctx)?;
-            }
-            out.push(projected);
-        }
+        out.push(project_row(
+            row,
+            &op.items,
+            op.include_existing,
+            &names,
+            eval_ctx,
+        )?);
     }
 
     Ok(if op.distinct {
@@ -219,6 +275,30 @@ pub(super) fn project_rows_checked<S: GraphStorage>(
     } else {
         out
     })
+}
+
+/// Project one row through `items`, naming columns from `names`.
+#[inline]
+pub(crate) fn project_row<S: GraphStorage>(
+    row: Row,
+    items: &[lora_analyzer::ResolvedProjection],
+    include_existing: bool,
+    names: &ProjectionNames,
+    eval_ctx: &EvalContext<'_, S>,
+) -> ExecResult<Row> {
+    if include_existing {
+        let mut projected = row;
+        for (i, item) in items.iter().enumerate() {
+            project_item_in_place_as(&mut projected, item, names.get(items, i), eval_ctx)?;
+        }
+        Ok(projected)
+    } else {
+        let mut projected = Row::new();
+        for (i, item) in items.iter().enumerate() {
+            project_item_as(&mut projected, &row, item, names.get(items, i), eval_ctx)?;
+        }
+        Ok(projected)
+    }
 }
 
 pub(super) fn unwind_rows<S: GraphStorage>(

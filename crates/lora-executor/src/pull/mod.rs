@@ -99,7 +99,7 @@ pub use traits::{collect_compiled, collect_compiled_with_deadline, PullExecutor}
 // `crate::executor` for the streaming aggregate fast-path and for
 // the `StreamingWriteCursor` plan-shape probes.
 pub(crate) use aggregate::{
-    classify_streamable_aggregates, AggState, StreamableAggKind, StreamableAggSpec,
+    classify_streamable_aggregates, fold_one, AggState, StreamableAggKind, StreamableAggSpec,
 };
 pub(crate) use context::StreamCtx;
 pub use hydration::hydrate_row;

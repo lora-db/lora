@@ -227,11 +227,7 @@ where
     S: GraphStorage,
 {
     for (agg, spec) in aggs.iter_mut().zip(specs) {
-        let value = match &spec.arg {
-            Some(arg) => eval_expr_result(arg, row, eval_ctx).map_err(ExecutorError::from_eval)?,
-            None => LoraValue::Null,
-        };
-        agg.fold(spec.kind, value);
+        crate::pull::fold_one(agg, spec, row, eval_ctx)?;
     }
 
     Ok(())

@@ -72,7 +72,7 @@ pub(crate) use helpers::{
     scan_node_ids_for_label_groups, GroupValueKey, NodePropertyCandidates,
 };
 pub(crate) use helpers::{other_kind_node_ids, OrderedRangeCursor, OtherKindScan, RangeValues};
-pub(crate) use helpers::{project_item, project_item_in_place};
+pub(crate) use helpers::{project_row, ProjectionNames};
 pub(crate) use helpers::{RowKeyBuilder, RowKeyPart};
 pub(crate) use optional::{
     merge_optional_rows, null_extend_optional_row, optional_can_correlate, optional_match_rows,
