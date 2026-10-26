@@ -609,6 +609,58 @@ fn detach_delete_removes_incident_relationships() {
     assert_eq!(g.all_relationships().len(), 0);
 }
 
+/// A hub's own lists are dropped before its relationships go, so the
+/// far ends (and self-loops and parallel edges) must still lose exactly
+/// their entries, and a staged copy must leave the original untouched.
+#[test]
+fn detach_delete_hub_keeps_neighbour_adjacency_exact() {
+    let mut g = InMemoryGraph::new();
+    let hub = g.create_node(vec!["H".into()], Properties::new()).id;
+    let a = g.create_node(vec!["L".into()], Properties::new()).id;
+    let b = g.create_node(vec!["L".into()], Properties::new()).id;
+    let ab = g
+        .create_relationship(a, b, "R", Properties::new())
+        .unwrap()
+        .id;
+    let mut hub_rels = Vec::new();
+    for (src, dst) in [
+        (hub, a),
+        (a, hub),
+        (hub, a),
+        (hub, hub),
+        (b, hub),
+        (hub, hub),
+    ] {
+        hub_rels.push(
+            g.create_relationship(src, dst, "R", Properties::new())
+                .unwrap()
+                .id,
+        );
+    }
+    let original = g.clone();
+
+    assert!(g.detach_delete_node(hub));
+    assert!(g.node(hub).is_none());
+    for id in &hub_rels {
+        assert!(g.relationship(*id).is_none());
+    }
+    assert_eq!(g.relationship_ids_of(a, Direction::Undirected), vec![ab]);
+    assert_eq!(g.relationship_ids_of(b, Direction::Undirected), vec![ab]);
+    assert_eq!(GraphStorage::relationship_count(&g), 1);
+
+    assert!(original.node(hub).is_some());
+    assert_eq!(
+        original
+            .relationship_ids_of(hub, Direction::Undirected)
+            .len(),
+        6
+    );
+    assert_eq!(
+        original.relationship_ids_of(a, Direction::Undirected).len(),
+        4
+    );
+}
+
 #[test]
 fn duplicate_labels_are_normalized_on_create() {
     let mut g = InMemoryGraph::new();

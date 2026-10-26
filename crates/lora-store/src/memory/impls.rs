@@ -1201,6 +1201,10 @@ impl GraphStorageMut for InMemoryGraph {
         // (now-empty) node. The emit-before-delete choice costs one extra
         // event per mutation but keeps the replay contract simple:
         // "apply every event in order".
+        //
+        // The node's own lists go first: each removal below then edits only
+        // the other endpoint's list (a self-loop finds nothing on either side).
+        self.clear_adjacency(node_id);
         for rel_id in rel_ids {
             let _ = self.delete_relationship(rel_id);
         }
