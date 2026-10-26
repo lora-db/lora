@@ -32,6 +32,7 @@ export declare class Database {
     snapshotKeepOld?: number | null,
     snapshotOptions?: NativeSnapshotOptions | null,
     queryTimeoutMs?: number | null,
+    maxOpenTransactions?: number | null,
   );
   /**
    * Non-blocking: runs on the libuv threadpool, returns a Promise.
@@ -183,6 +184,8 @@ export declare class Database {
   __panicForTesting(): void;
   /** Test hook: a task that panics on the pool or a lora thread. */
   __panicInTaskForTesting(offPool: boolean): Promise<void>;
+  /** Test hook: panics on transaction `txId`'s own thread. */
+  __panicInTransactionForTesting(txId: number): void;
 }
 
 /**
@@ -201,4 +204,5 @@ export declare function openDatabase(
   snapshotKeepOld?: number | null,
   snapshotOptions?: NativeSnapshotOptions | null,
   queryTimeoutMs?: number | null,
+  maxOpenTransactions?: number | null,
 ): Promise<Database>;

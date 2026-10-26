@@ -91,6 +91,9 @@ pub struct Database {
     /// Open change feeds (see [`changes`]).
     feeds: changes::FeedRegistry,
     next_feed_id: AtomicU32,
+    /// Caps the actor threads JS code holds open (transactions, mutating
+    /// streams) this handle runs at once (see [`actor`]).
+    open_slots: Arc<actor::OpenSlots>,
 }
 
 pub(crate) type TxRegistry = Arc<Mutex<BTreeMap<u32, Arc<interactive::TxActor>>>>;
@@ -118,6 +121,7 @@ impl Database {
             serde_json::Value,
         >,
         #[napi(ts_arg_type = "number | null | undefined")] query_timeout_ms: Option<u32>,
+        #[napi(ts_arg_type = "number | null | undefined")] max_open_transactions: Option<u32>,
     ) -> Result<Self> {
         let request = OpenRequest {
             database_name,
@@ -130,7 +134,14 @@ impl Database {
             snapshot_keep_old,
             snapshot_options,
         };
-        guard(|| Ok(Self::from_inner(request.open()?, query_timeout_ms)))
+        guard(|| {
+            let max_open = max_open(max_open_transactions)?;
+            Ok(Self::from_inner(
+                request.open()?,
+                query_timeout_ms,
+                max_open,
+            ))
+        })
     }
 
     /// Execute a Lora query on the libuv threadpool.
@@ -307,10 +318,20 @@ impl Database {
                     stream::LocalStream::open(db, &query, params_map, deadline, writer)
                         .map_err(lora_err)?,
                 ),
-                None => StreamKind::Actor(
-                    stream::StreamActor::spawn(db, query, params_map, deadline, shape.columns)
+                None => {
+                    let slot = self.open_slots.acquire().map_err(interactive::napi_err)?;
+                    StreamKind::Actor(
+                        stream::StreamActor::spawn(
+                            db,
+                            query,
+                            params_map,
+                            deadline,
+                            shape.columns,
+                            slot,
+                        )
                         .map_err(interactive::napi_err)?,
-                ),
+                    )
+                }
             };
             let stream_id = self.next_stream_id.fetch_add(1, Ordering::Relaxed);
             let mut streams = lock(&self.streams);
@@ -474,6 +495,7 @@ impl Database {
                 .filter(|ms| *ms > 0)
                 .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms.into()));
             let db = self.inner()?;
+            let slot = self.open_slots.acquire().map_err(interactive::napi_err)?;
             let mut txs = lock(&self.txs);
             let id = self.next_tx_id.fetch_add(1, Ordering::Relaxed);
             let (deferred, promise) = env.create_deferred::<u32, Resolver<u32>>()?;
@@ -482,6 +504,7 @@ impl Database {
                 db,
                 mode,
                 deadline,
+                Some(slot),
                 interactive::done(move |opened| {
                     // Settled on the JS thread, after this call has registered
                     // the actor: a failed open unregisters it there. A
@@ -649,6 +672,9 @@ impl Database {
                 db,
                 lora_database::TransactionMode::ReadWrite,
                 deadline,
+                // Not capped here: nothing holds a batch open, so the TS
+                // wrapper queues batches past `maxOpenTransactions`.
+                None,
                 interactive::done(move |opened| {
                     if let Err(message) = opened {
                         let taken = lock(&opening).take();
@@ -1005,6 +1031,17 @@ impl Database {
         guard(|| tasks::spawn(&env, tasks::PanicTask, off_pool))
     }
 
+    /// Test hook, not public API: make the actor thread of interactive
+    /// transaction `tx_id` panic. Lets the test suite check that the
+    /// transaction's slot (see `maxOpenTransactions`) is given back.
+    #[napi(js_name = "__panicInTransactionForTesting")]
+    pub fn panic_in_transaction_for_testing(&self, tx_id: u32) -> Result<()> {
+        guard(|| {
+            self.tx_actor(tx_id)?.panic_for_testing();
+            Ok(())
+        })
+    }
+
     fn inner(&self) -> Result<Arc<InnerDatabase<InMemoryGraph>>> {
         let slot = lock(&self.db);
         slot.as_ref()
@@ -1014,7 +1051,11 @@ impl Database {
 }
 
 impl Database {
-    fn from_inner(db: Arc<InnerDatabase<InMemoryGraph>>, query_timeout_ms: Option<u32>) -> Self {
+    fn from_inner(
+        db: Arc<InnerDatabase<InMemoryGraph>>,
+        query_timeout_ms: Option<u32>,
+        max_open_transactions: u32,
+    ) -> Self {
         Self {
             db: Mutex::new(Some(db)),
             streams: Mutex::new(BTreeMap::new()),
@@ -1027,6 +1068,7 @@ impl Database {
             next_tx_id: AtomicU32::new(1),
             feeds: Arc::new(Mutex::new(changes::FeedSet::default())),
             next_feed_id: AtomicU32::new(1),
+            open_slots: actor::OpenSlots::new(max_open_transactions),
         }
     }
 }
@@ -1051,6 +1093,7 @@ pub fn open_database(
         serde_json::Value,
     >,
     #[napi(ts_arg_type = "number | null | undefined")] query_timeout_ms: Option<u32>,
+    #[napi(ts_arg_type = "number | null | undefined")] max_open_transactions: Option<u32>,
 ) -> AsyncTask<Guarded<OpenTask>> {
     AsyncTask::new(Guarded(OpenTask {
         request: Some(OpenRequest {
@@ -1065,7 +1108,20 @@ pub fn open_database(
             snapshot_options,
         }),
         query_timeout_ms,
+        max_open_transactions,
     }))
+}
+
+/// `maxOpenTransactions`, defaulted; 0 is rejected (nothing could open).
+fn max_open(max_open_transactions: Option<u32>) -> Result<u32> {
+    match max_open_transactions {
+        None => Ok(actor::DEFAULT_MAX_OPEN),
+        Some(0) => Err(NapiError::new(
+            Status::InvalidArg,
+            format!("{INVALID_PARAMS_CODE}: `maxOpenTransactions` must be at least 1"),
+        )),
+        Some(max) => Ok(max),
+    }
 }
 
 /// What to open: the arguments `Database`'s constructor and
@@ -1128,6 +1184,7 @@ impl OpenRequest {
 pub struct OpenTask {
     request: Option<OpenRequest>,
     query_timeout_ms: Option<u32>,
+    max_open_transactions: Option<u32>,
 }
 
 impl Task for OpenTask {
@@ -1135,6 +1192,7 @@ impl Task for OpenTask {
     type JsValue = Database;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        max_open(self.max_open_transactions)?;
         self.request
             .take()
             .ok_or_else(|| NapiError::new(Status::GenericFailure, "open task ran twice"))?
@@ -1142,7 +1200,11 @@ impl Task for OpenTask {
     }
 
     fn resolve(&mut self, _env: Env, db: Self::Output) -> Result<Self::JsValue> {
-        Ok(Database::from_inner(db, self.query_timeout_ms))
+        Ok(Database::from_inner(
+            db,
+            self.query_timeout_ms,
+            max_open(self.max_open_transactions)?,
+        ))
     }
 }
 
@@ -1328,8 +1390,10 @@ fn parse_sync_mode(
 
 impl Default for Database {
     fn default() -> Self {
-        Self::new(None, None, None, None, None, None, None, None, None, None)
-            .expect("in-memory Database::default should not fail")
+        Self::new(
+            None, None, None, None, None, None, None, None, None, None, None,
+        )
+        .expect("in-memory Database::default should not fail")
     }
 }
 

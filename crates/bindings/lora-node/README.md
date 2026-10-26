@@ -115,8 +115,8 @@ rather than relying on it.
 
 `db.transaction(statements)` runs a batch in one transaction and commits:
 the whole thing is one call. A read-write batch waits for the writer lock
-on a thread of its own, never on a libuv worker, so any number of queued
-write batches leave reads running. The lock is released before
+on a thread of its own, never on a libuv worker, so queued write batches
+leave reads running. The lock is released before
 JavaScript hears of the result. Pair it with `assert(condition,
 message)`, which fails the statement and so rolls the batch back, to
 change data and check the outcome without a round trip:
@@ -147,6 +147,43 @@ const [created, total] = await tx.executeMany([
 Schema commands (`CREATE CONSTRAINT`, `CREATE INDEX`, `DROP ...`) work
 inside `transaction()` and `db.begin()` and commit or roll back together
 with the data statements.
+
+#### Open transaction limit
+
+Each open `begin()` transaction and each mutating `stream()` that opens
+on its own thread (see Known limitations) runs on a dedicated OS thread.
+A database runs at most `maxOpenTransactions` of them at once, 1024 by
+default. Past the limit, `begin()` rejects and `stream()` throws at once
+with `LORA_TOO_MANY_OPEN`. They do not wait in a queue: a queued
+transaction could wait for one that JavaScript has not finished yet.
+A slot frees up as soon as its transaction commits or rolls back (a
+failed statement or a failed `begin()` included) or its stream ends or is
+closed. A dropped handle frees its slot once it is garbage-collected and
+rolled back; one dropped while still waiting for the writer lock frees it
+when that wait ends.
+
+```ts
+const db = await createDatabase("app", { maxOpenTransactions: 256 });
+try {
+  await using tx = await db.begin();
+  // ...
+} catch (err) {
+  if (err instanceof LoraError && err.code === "LORA_TOO_MANY_OPEN") {
+    // Too many transactions in flight: shed load or retry later.
+  }
+}
+```
+
+Read-write `db.transaction()` batches also run on threads of their own,
+but nothing in JavaScript holds one open, so they queue instead: at most
+`maxOpenTransactions` batches run at once (a budget separate from the one
+above), and the rest wait their turn, first in, first out. Time spent
+waiting counts against the batch's `timeoutMs` (or `queryTimeoutMs`),
+which rejects with `LORA_TIMEOUT`, and its `signal` abandons the wait. A
+waiting batch does not keep the process alive.
+
+`openWalDatabase()` takes the same option. The limits are per database
+handle.
 
 ### Change feed
 
@@ -455,6 +492,8 @@ Common ones:
 - `LORA_CHANGES_TRUNCATED`, `LORA_CHANGES_LAGGED`: a change feed cannot
   resume from its `fromLsn`, or fell behind its buffer (see Change feed)
 - `LORA_INTERNAL` — last-resort fallback when the engine cannot classify the failure
+- `LORA_TOO_MANY_OPEN`: `maxOpenTransactions` transactions and write streams
+  are already open on this database (see Open transaction limit)
 - `UNKNOWN` — catch-all for messages without a recognized code
 
 See `ts/types.ts` (`LoraErrorCode`) for the full list.

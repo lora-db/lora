@@ -38,7 +38,7 @@ use lora_database::{
     QueryStream, Row,
 };
 
-use crate::actor::{self, Lifecycle};
+use crate::actor::{self, Lifecycle, Slot};
 use crate::errors::format_lora_error;
 
 type Db = Arc<InnerDatabase<InMemoryGraph>>;
@@ -202,24 +202,27 @@ pub(crate) struct StreamActor {
 impl StreamActor {
     /// Spawn the actor, which waits for the writer lock and opens the
     /// stream; returns at once. An open failure is reported by the first
-    /// pull.
+    /// pull. The actor holds `slot` until it ends.
     pub(crate) fn spawn(
         db: Db,
         query: String,
         params: BTreeMap<String, LoraValue>,
         deadline: Option<Instant>,
         columns: Arc<[String]>,
+        slot: Slot,
     ) -> Result<Self, String> {
         let (requests, inbox) = mpsc::channel();
-        let lifecycle = Lifecycle::new();
+        let lifecycle = Lifecycle::new(Some(slot));
         let writer = JsBoundWriter::register();
         let thread = {
             let lifecycle = lifecycle.clone();
+            let exit = lifecycle.exit_guard();
             std::thread::Builder::new()
                 .name("lora-stream".into())
                 .spawn(move || {
                     // Released once `run` has dropped the stream.
                     let _writer = writer;
+                    let _exit = exit;
                     run(db, query, params, deadline, inbox, lifecycle)
                 })
                 .map_err(|e| format!("LORA_INTERNAL: could not start stream thread: {e}"))?

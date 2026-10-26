@@ -142,6 +142,77 @@ describe("handles dropped without being closed", () => {
     expect(r.out).toContain("nodes=1");
   });
 
+  // With `maxOpenTransactions: 1`, the next begin() only succeeds once the
+  // dropped handle's slot is back. Retried briefly: the slot comes back
+  // when the dropped handle's thread winds down, just after collection.
+  const beginAgain = `
+       let opened = "full";
+       for (let i = 0; i < 100 && opened === "full"; i++) {
+         try {
+           const tx = await db.begin("read_only");
+           await tx.rollback();
+           opened = "ok";
+         } catch (e) {
+           if (e.code !== "LORA_TOO_MANY_OPEN") { opened = e.code; break; }
+           await sleep(20);
+         }
+       }
+       console.log("begin=" + opened);`;
+
+  it("gives a dropped transaction's slot back", async () => {
+    const r = await child(
+      `const db = await createDatabase(undefined, { maxOpenTransactions: 1 });
+       await (async () => {
+         const tx = await db.begin();
+         await tx.execute("CREATE (:T)");
+       })();
+       try { await db.begin("read_only"); console.log("full=no"); }
+       catch (e) { console.log("full=" + e.code); }
+       await collect();
+       ${beginAgain}`,
+      GC,
+    );
+    expect(r.finished, r.out).toBe(true);
+    expect(r.out).toContain("full=LORA_TOO_MANY_OPEN");
+    expect(r.out).toContain("begin=ok");
+  });
+
+  it("gives a dropped write stream's slot back", async () => {
+    const r = await child(
+      `const db = await createDatabase(undefined, { maxOpenTransactions: 2 });
+       const holder = await db.begin();
+       // Opens on its own thread, waiting for the writer lock.
+       (() => { db.stream("CREATE (n:S) RETURN n"); })();
+       try { await db.begin("read_only"); console.log("full=no"); }
+       catch (e) { console.log("full=" + e.code); }
+       await collect();
+       await holder.rollback();
+       const other = await db.begin("read_only");
+       ${beginAgain}
+       await other.rollback();`,
+      GC,
+    );
+    expect(r.finished, r.out).toBe(true);
+    expect(r.out).toContain("full=LORA_TOO_MANY_OPEN");
+    expect(r.out).toContain("begin=ok");
+  });
+
+  it("exits on process.exit() with transaction() batches queued", async () => {
+    const r = await child(
+      `const db = await createDatabase(undefined, { maxOpenTransactions: 1 });
+       const holder = await db.begin();
+       for (let i = 0; i < 5; i++) {
+         db.transaction([{ query: "CREATE (:B)" }], "read_write", { timeoutMs: 60000 })
+           .catch(() => undefined);
+       }
+       await sleep(50);
+       console.log("exiting");
+       process.exit(0);`,
+    );
+    expect(r.finished, r.out).toBe(true);
+    expect(r.code).toBe(0);
+  });
+
   it("lets a database with an open change feed be collected", async () => {
     // The native waker held the feed's callback strongly, and through it
     // the feed and the database handle: neither could ever be collected.
