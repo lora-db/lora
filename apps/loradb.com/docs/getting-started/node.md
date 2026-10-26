@@ -329,6 +329,13 @@ most `maxOpenTransactions` of them open at once: 1024 unless you set it.
 Past the limit the call fails at once with `LORA_TOO_MANY_OPEN` instead
 of starting another thread or waiting in a queue.
 
+Plain `db.execute()` writes that arrive while a transaction holds the
+writer lock do not take a thread each. They wait in one queue per
+database and run in order, on a single thread, once the lock is free. A
+queued write still fails with `LORA_TIMEOUT` when its `timeoutMs` (or the
+database's `queryTimeoutMs`) runs out or its `signal` aborts, and the time
+spent queued counts. `dispose()` rejects the writes still queued.
+
 ```ts
 const db = await createDatabase('app', {
   databaseDir: './data',
