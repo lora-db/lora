@@ -43,6 +43,21 @@ pub enum WalError {
     #[error("WAL structure is malformed: {0}")]
     Malformed(String),
 
+    /// Damage replay must not repair by truncation: a bad record with
+    /// valid records after it, a bad record in a sealed or older segment,
+    /// or a CRC-valid record whose payload does not decode.
+    #[error("WAL segment `{}` is corrupt at byte {offset}: {reason}", path.display())]
+    Corrupt {
+        path: PathBuf,
+        offset: u64,
+        reason: String,
+    },
+
+    /// The log does not reach back to the replay fence, or is missing a
+    /// segment in the middle, so replaying it would skip transactions.
+    #[error("WAL history has a gap: {0}")]
+    Gap(String),
+
     #[error("database directory is locked by another process or live handle: {dir}")]
     AlreadyOpen { dir: PathBuf },
 

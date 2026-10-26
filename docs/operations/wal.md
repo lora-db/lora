@@ -127,9 +127,27 @@ uncommitted transaction records.
    re-recorded.
 4. Install the recorder; the server is ready.
 
-A torn tail (CRC mismatch on the last record of the active segment) is
-truncated to the offset just before the bad bytes. Subsequent appends
-pick up at that boundary.
+A torn tail is truncated to the offset just before the bad bytes, and
+subsequent appends pick up at that boundary. A bad frame (CRC mismatch,
+length out of range, or a record running past end of file) counts as a
+torn tail only when it is in the newest segment, that segment is not
+sealed, and no CRC-valid record with a higher LSN starts anywhere after
+it. The cut bytes are copied to `<segment>.wal.torn-<offset>` first.
+Anything else fails the open with `WalError::Corrupt`: a bad frame with
+valid records after it, a bad frame in an older or sealed segment, or a
+CRC-valid record whose payload does not decode. Read errors fail the open
+as `WalError::Io`.
+
+Replay also fails with `WalError::Gap` when the oldest segment starts
+above `fence + 1` (its predecessors were removed by a checkpoint whose
+snapshot was not loaded) or when a segment id is missing between the
+first and last segment.
+
+Segment rotation fsyncs the old segment, creates and fsyncs the next one,
+then seals the old one. Open repairs the two states a crash in that
+sequence can leave: a newest segment without a valid header and no
+records is removed, and a sealed newest segment gets its successor
+created.
 
 If the WAL contains a `Checkpoint` marker newer than the snapshot's
 `wal_lsn`, recovery prints a one-line warning to stderr — the

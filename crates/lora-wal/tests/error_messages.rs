@@ -153,3 +153,25 @@ fn buffered_commit_commit() {
     // `#[error(transparent)]` defers to the inner Display.
     assert_eq!(err.to_string(), "WAL commit failed: WAL I/O error: boom");
 }
+
+#[test]
+fn corrupt() {
+    let err = WalError::Corrupt {
+        path: PathBuf::from("/data/wal/0000000003.wal"),
+        offset: 17957,
+        reason: "bad CRC".into(),
+    };
+    assert_eq!(
+        err.to_string(),
+        "WAL segment `/data/wal/0000000003.wal` is corrupt at byte 17957: bad CRC"
+    );
+}
+
+#[test]
+fn gap() {
+    let err = WalError::Gap("segment 2 is missing".into());
+    assert_eq!(
+        err.to_string(),
+        "WAL history has a gap: segment 2 is missing"
+    );
+}

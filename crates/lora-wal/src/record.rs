@@ -13,14 +13,15 @@
 //!
 //! The CRC covers the length prefix too so that a torn write — where the
 //! length got persisted but the rest of the record did not — fails the
-//! check and replay stops cleanly at that boundary. The first failing
-//! record is treated as the new tail of the log.
+//! check and replay stops cleanly at that boundary. A failing record is
+//! treated as the new tail of the log only when nothing valid follows it;
+//! see [`crate::replay`].
 //!
 //! Records are written by the append paths on `Wal` and read back by replay.
 //! Both paths funnel through [`WalRecord::encode`] and [`WalRecord::decode`] so
 //! the framing only lives in one place.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 
 use lora_store::MutationEvent;
 
@@ -174,38 +175,26 @@ impl WalRecord {
 
     /// Encode this record into `out`. Returns the number of bytes
     /// written, which equals the value stored in the `length` prefix.
-    pub fn encode<W: Write>(&self, mut out: W) -> Result<u32, WalError> {
-        let payload_len = self.encoded_payload_len()?;
-        let total = RECORD_HEADER_LEN
-            .checked_add(payload_len)
-            .and_then(|n| n.checked_add(RECORD_TRAILER_LEN))
-            .ok_or_else(|| WalError::Encode("record larger than usize::MAX".into()))?;
-        if total > MAX_RECORD_LEN {
-            return Err(WalError::Encode(format!(
-                "record length {total} exceeds maximum {MAX_RECORD_LEN}"
-            )));
-        }
-        let length = u32::try_from(total)
-            .map_err(|_| WalError::Encode("record larger than 4 GiB".into()))?;
-
+    #[cfg(test)]
+    pub fn encode<W: std::io::Write>(&self, mut out: W) -> Result<u32, WalError> {
         let mut framed = Vec::new();
-        framed.try_reserve_exact(total).map_err(|_| {
-            WalError::Encode(format!("record length {total} is too large to allocate"))
-        })?;
-        framed.extend_from_slice(&length.to_le_bytes());
-        framed.push(self.kind() as u8);
-        framed.extend_from_slice(&self.lsn().raw().to_le_bytes());
-        framed.extend_from_slice(&self.tx_begin_lsn().raw().to_le_bytes());
-        self.encode_payload_into(&mut framed)?;
-        debug_assert_eq!(framed.len(), total - RECORD_TRAILER_LEN);
-
-        let mut hasher = crc32fast::Hasher::new();
-        hasher.update(&framed);
-        let crc = hasher.finalize();
-        framed.extend_from_slice(&crc.to_le_bytes());
-
+        let length = self.encode_into(&mut framed)?;
         out.write_all(&framed)?;
         Ok(length)
+    }
+
+    /// Append this record's framed bytes to `out` without an intermediate
+    /// buffer. On error `out` is left exactly as it was.
+    pub(crate) fn encode_into(&self, out: &mut Vec<u8>) -> Result<u32, WalError> {
+        let payload_len = self.encoded_payload_len()?;
+        encode_frame(
+            out,
+            self.kind(),
+            self.lsn(),
+            self.tx_begin_lsn(),
+            payload_len,
+            |out| self.encode_payload_into(out),
+        )
     }
 
     /// Decode a single record from `reader`.
@@ -216,7 +205,92 @@ impl WalRecord {
     /// treated as a torn write and surfaces as
     /// [`WalError::Truncated`]; the caller is expected to truncate the
     /// segment at the position of the last successful decode.
-    pub fn decode<R: Read>(mut reader: R) -> Result<Option<Self>, WalError> {
+    #[cfg(test)]
+    pub fn decode<R: Read>(reader: R) -> Result<Option<Self>, WalError> {
+        match RawRecord::read(reader)? {
+            Some(raw) => raw.decode().map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
+/// Append one framed record (`length`, `kind`, LSNs, payload, CRC) to
+/// `out`. `payload_len` must be the exact length `payload` appends. On
+/// error `out` is truncated back to its original length, so a failed
+/// encode never leaves half a record in a pending buffer.
+pub(crate) fn encode_frame(
+    out: &mut Vec<u8>,
+    kind: RecordKind,
+    lsn: Lsn,
+    tx_begin_lsn: Lsn,
+    payload_len: usize,
+    payload: impl FnOnce(&mut Vec<u8>) -> Result<(), WalError>,
+) -> Result<u32, WalError> {
+    let total = framed_len(payload_len)?;
+    let length =
+        u32::try_from(total).map_err(|_| WalError::Encode("record larger than 4 GiB".into()))?;
+
+    let start = out.len();
+    out.try_reserve(total)
+        .map_err(|_| WalError::Encode(format!("record length {total} is too large to allocate")))?;
+    out.extend_from_slice(&length.to_le_bytes());
+    out.push(kind as u8);
+    out.extend_from_slice(&lsn.raw().to_le_bytes());
+    out.extend_from_slice(&tx_begin_lsn.raw().to_le_bytes());
+    if let Err(err) = payload(out) {
+        out.truncate(start);
+        return Err(err);
+    }
+    if out.len() - start != total - RECORD_TRAILER_LEN {
+        out.truncate(start);
+        return Err(WalError::Encode(
+            "record payload length disagrees with its size estimate".into(),
+        ));
+    }
+
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(&out[start..]);
+    let crc = hasher.finalize();
+    out.extend_from_slice(&crc.to_le_bytes());
+    Ok(length)
+}
+
+/// Total framed size of a record carrying `payload_len` payload bytes,
+/// rejecting records over [`MAX_RECORD_LEN`].
+pub(crate) fn framed_len(payload_len: usize) -> Result<usize, WalError> {
+    let total = RECORD_HEADER_LEN
+        .checked_add(payload_len)
+        .and_then(|n| n.checked_add(RECORD_TRAILER_LEN))
+        .ok_or_else(|| WalError::Encode("record larger than usize::MAX".into()))?;
+    if total > MAX_RECORD_LEN {
+        return Err(WalError::Encode(format!(
+            "record length {total} exceeds maximum {MAX_RECORD_LEN}"
+        )));
+    }
+    Ok(total)
+}
+
+/// A record whose framing checked out (length in bounds, every byte
+/// present, CRC matches) but whose payload is not decoded yet.
+///
+/// Splitting the two steps lets replay tell a torn or corrupt *frame*,
+/// which can be the tail of an interrupted write, from a CRC-valid
+/// record whose payload does not decode, which can only be a bug or
+/// tampering and must never be cut off as a torn tail.
+pub(crate) struct RawRecord {
+    kind: u8,
+    lsn: Lsn,
+    tx_begin_lsn: Lsn,
+    /// Everything after the length prefix, CRC trailer included.
+    rest: Vec<u8>,
+}
+
+impl RawRecord {
+    /// Read one frame. `Ok(None)` on a clean EOF; [`WalError::Truncated`],
+    /// [`WalError::CrcMismatch`] or [`WalError::Decode`] (length out of
+    /// bounds) when the frame is torn or corrupt; [`WalError::Io`] when
+    /// the read itself failed.
+    pub(crate) fn read<R: Read>(mut reader: R) -> Result<Option<Self>, WalError> {
         let mut len_buf = [0u8; 4];
         match read_exact_or_eof(&mut reader, &mut len_buf)? {
             ReadOutcome::Eof => return Ok(None),
@@ -272,18 +346,12 @@ impl WalRecord {
 
         let crc_offset = remaining - RECORD_TRAILER_LEN;
         let stored_crc = le_u32(&rest[crc_offset..])?;
-
         let mut hasher = crc32fast::Hasher::new();
         hasher.update(&len_buf);
         hasher.update(&rest[..crc_offset]);
         let actual_crc = hasher.finalize();
 
-        // Reconstruct fields from the buffer.
-        let kind = RecordKind::from_byte(rest[0])?;
         let lsn = Lsn::new(le_u64(&rest[1..9])?);
-        let tx_begin_lsn = Lsn::new(le_u64(&rest[9..17])?);
-        let payload = &rest[(RECORD_HEADER_LEN - 4)..crc_offset];
-
         if stored_crc != actual_crc {
             return Err(WalError::CrcMismatch {
                 lsn,
@@ -291,8 +359,29 @@ impl WalRecord {
                 actual: actual_crc,
             });
         }
+        let tx_begin_lsn = Lsn::new(le_u64(&rest[9..17])?);
+        Ok(Some(Self {
+            kind: rest[0],
+            lsn,
+            tx_begin_lsn,
+            rest,
+        }))
+    }
 
-        Ok(Some(match kind {
+    /// Decode the payload. Errors here mean the frame was intact, so the
+    /// bytes are what was written: they are never a torn tail.
+    pub(crate) fn decode(self) -> Result<WalRecord, WalError> {
+        let Self {
+            kind,
+            lsn,
+            tx_begin_lsn,
+            rest,
+        } = self;
+        let kind = RecordKind::from_byte(kind)?;
+        let crc_offset = rest.len() - RECORD_TRAILER_LEN;
+        let payload = &rest[(RECORD_HEADER_LEN - 4)..crc_offset];
+
+        Ok(match kind {
             RecordKind::Mutation => {
                 let event = codec::decode_event(payload)?;
                 WalRecord::Mutation {
@@ -336,8 +425,41 @@ impl WalRecord {
                     snapshot_lsn: tx_begin_lsn,
                 }
             }
-        }))
+        })
     }
+}
+
+/// True when `bytes` starts with a complete, CRC-valid record frame of a
+/// known kind whose LSN is above `after`. Used to decide whether a bad
+/// frame is followed by more log (corruption) or is the end of it (a torn
+/// tail).
+pub(crate) fn is_valid_frame_at(bytes: &[u8], after: Lsn) -> bool {
+    if bytes.len() < RECORD_HEADER_LEN + RECORD_TRAILER_LEN {
+        return false;
+    }
+    let length = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let max = MAX_RECORD_LEN.min(bytes.len());
+    if !(RECORD_HEADER_LEN + RECORD_TRAILER_LEN..=max).contains(&length) {
+        return false;
+    }
+    if RecordKind::from_byte(bytes[4]).is_err() {
+        return false;
+    }
+    let mut lsn = [0u8; 8];
+    lsn.copy_from_slice(&bytes[5..13]);
+    if u64::from_le_bytes(lsn) <= after.raw() {
+        return false;
+    }
+    let crc_offset = length - RECORD_TRAILER_LEN;
+    let stored = u32::from_le_bytes([
+        bytes[crc_offset],
+        bytes[crc_offset + 1],
+        bytes[crc_offset + 2],
+        bytes[crc_offset + 3],
+    ]);
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(&bytes[..crc_offset]);
+    hasher.finalize() == stored
 }
 
 enum ReadOutcome {

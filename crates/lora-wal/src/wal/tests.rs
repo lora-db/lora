@@ -490,3 +490,407 @@ fn truncate_up_to_drops_old_sealed_segments() {
     // Everything was at or below the fence, so replay is empty.
     assert!(replay.is_empty());
 }
+
+// ---------------------------------------------------------------------
+// Crash and corruption recovery.
+// ---------------------------------------------------------------------
+
+fn open_with(dir: &Path, target: u64, checkpoint_lsn: Lsn) -> Result<Arc<Wal>, WalError> {
+    Wal::open(
+        dir,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        target,
+        checkpoint_lsn,
+    )
+    .map(|(wal, _)| wal)
+}
+
+fn replay_with(
+    dir: &Path,
+    target: u64,
+    checkpoint_lsn: Lsn,
+) -> Result<Vec<MutationEvent>, WalError> {
+    Wal::open(
+        dir,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        target,
+        checkpoint_lsn,
+    )
+    .map(|(_, events)| events)
+}
+
+/// Write `count` single-event transactions through `commit_tx`.
+fn write_txs(wal: &Wal, ids: std::ops::Range<u64>) -> Lsn {
+    let mut last = Lsn::ZERO;
+    for i in ids {
+        last = wal.commit_tx_lsn(vec![ev(i)]).unwrap().unwrap();
+    }
+    last
+}
+
+fn segment_paths(dir: &Path) -> Vec<std::path::PathBuf> {
+    SegmentDir::new(dir)
+        .list()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.path)
+        .collect()
+}
+
+fn flip_byte(path: &Path, offset: u64) {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let mut f = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    f.seek(SeekFrom::Start(offset)).unwrap();
+    let mut b = [0u8; 1];
+    f.read_exact(&mut b).unwrap();
+    b[0] ^= 0x10;
+    f.seek(SeekFrom::Start(offset)).unwrap();
+    f.write_all(&b).unwrap();
+    f.sync_all().unwrap();
+}
+
+#[test]
+fn crash_after_seal_before_next_segment_reopens() {
+    let dir = TmpDir::new("crash-seal");
+    {
+        let (wal, _) = open_default(&dir.path);
+        write_txs(&wal, 0..3);
+    }
+    // Simulate the old rotation order dying between `seal()` and the
+    // creation of the next segment: the newest segment is sealed.
+    let newest = segment_paths(&dir.path).pop().unwrap();
+    let len = fs::metadata(&newest).unwrap().len();
+    let mut writer =
+        crate::segment::SegmentWriter::open_for_append_at(newest.clone(), len).unwrap();
+    writer.seal().unwrap();
+    drop(writer);
+
+    let (wal, replay) = open_default(&dir.path);
+    assert_eq!(replay, vec![ev(0), ev(1), ev(2)]);
+    write_txs(&wal, 3..4);
+    drop(wal);
+    let (_, replay) = open_default(&dir.path);
+    assert_eq!(replay, vec![ev(0), ev(1), ev(2), ev(3)]);
+}
+
+#[test]
+fn crash_during_segment_create_reopens() {
+    for partial in [0usize, 10, 32] {
+        let dir = TmpDir::new("crash-create");
+        {
+            let (wal, _) = open_default(&dir.path);
+            write_txs(&wal, 0..3);
+        }
+        // A next segment whose header never became durable: empty,
+        // short, or a full-length header of zeros.
+        let next = SegmentDir::new(&dir.path).path_for(crate::dir::SegmentId::new(2));
+        fs::write(&next, vec![0u8; partial]).unwrap();
+
+        let (wal, replay) = open_default(&dir.path);
+        assert_eq!(replay, vec![ev(0), ev(1), ev(2)], "partial = {partial}");
+        write_txs(&wal, 3..4);
+        drop(wal);
+        let (_, replay) = open_default(&dir.path);
+        assert_eq!(
+            replay,
+            vec![ev(0), ev(1), ev(2), ev(3)],
+            "partial = {partial}"
+        );
+    }
+}
+
+#[test]
+fn rotation_survives_crash_between_create_and_seal() {
+    let dir = TmpDir::new("rotate-order");
+    {
+        let wal = open_with(&dir.path, 128, Lsn::ZERO).unwrap();
+        write_txs(&wal, 0..6);
+        assert!(wal.active_segment_id() >= 2);
+    }
+    // Unseal every segment, as if each rotation died after creating the
+    // next segment but before sealing the previous one.
+    for path in segment_paths(&dir.path) {
+        let mut reader = crate::segment::SegmentReader::open(&path).unwrap();
+        while reader.read_record().unwrap().is_some() {}
+        let header = crate::segment::SegmentHeader::new(reader.header().base_lsn);
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = OpenOptions::new().write(true).open(&path).unwrap();
+        f.seek(SeekFrom::Start(0)).unwrap();
+        f.write_all(&header.encode()).unwrap();
+    }
+    let events = replay_with(&dir.path, 128, Lsn::ZERO).unwrap();
+    assert_eq!(events, (0..6).map(ev).collect::<Vec<_>>());
+}
+
+#[test]
+fn mid_log_bit_flip_fails_open_without_truncating() {
+    let dir = TmpDir::new("bitflip");
+    {
+        let (wal, _) = open_default(&dir.path);
+        write_txs(&wal, 0..100);
+    }
+    let path = segment_paths(&dir.path).pop().unwrap();
+    let len = fs::metadata(&path).unwrap().len();
+    flip_byte(&path, len / 2);
+
+    let err = replay_with(&dir.path, 8 * 1024 * 1024, Lsn::ZERO).unwrap_err();
+    assert!(
+        err.to_string().contains("corrupt"),
+        "expected a corruption error, got {err}"
+    );
+    assert_eq!(
+        fs::metadata(&path).unwrap().len(),
+        len,
+        "file must not be cut"
+    );
+}
+
+#[test]
+fn corrupt_length_prefix_mid_log_fails_open() {
+    let dir = TmpDir::new("bad-len");
+    {
+        let (wal, _) = open_default(&dir.path);
+        write_txs(&wal, 0..20);
+    }
+    let path = segment_paths(&dir.path).pop().unwrap();
+    let len = fs::metadata(&path).unwrap().len();
+    // The first record starts right after the 32-byte header. Setting the
+    // high byte of its length makes it run past end-of-file.
+    flip_byte(&path, 32 + 3);
+    let err = replay_with(&dir.path, 8 * 1024 * 1024, Lsn::ZERO).unwrap_err();
+    assert!(
+        err.to_string().contains("corrupt"),
+        "expected a corruption error, got {err}"
+    );
+    assert_eq!(fs::metadata(&path).unwrap().len(), len);
+}
+
+#[test]
+fn corruption_in_sealed_segment_fails_open() {
+    let dir = TmpDir::new("sealed-corrupt");
+    {
+        let wal = open_with(&dir.path, 256, Lsn::ZERO).unwrap();
+        write_txs(&wal, 0..20);
+        assert!(wal.active_segment_id() >= 3);
+    }
+    let first = segment_paths(&dir.path).remove(0);
+    let len = fs::metadata(&first).unwrap().len();
+    flip_byte(&first, len - 2);
+    let err = replay_with(&dir.path, 256, Lsn::ZERO).unwrap_err();
+    assert!(
+        err.to_string().contains("corrupt"),
+        "expected a corruption error, got {err}"
+    );
+    assert_eq!(fs::metadata(&first).unwrap().len(), len);
+}
+
+#[test]
+fn torn_tail_bytes_are_kept_beside_the_segment() {
+    let dir = TmpDir::new("torn-keep");
+    {
+        let (wal, _) = open_default(&dir.path);
+        write_txs(&wal, 0..3);
+    }
+    let path = segment_paths(&dir.path).pop().unwrap();
+    let good_len = fs::metadata(&path).unwrap().len();
+    {
+        use std::io::Write;
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(&[0xab; 40]).unwrap();
+    }
+    let (_, replay) = open_default(&dir.path);
+    assert_eq!(replay, vec![ev(0), ev(1), ev(2)]);
+    assert_eq!(fs::metadata(&path).unwrap().len(), good_len);
+    let kept: Vec<_> = fs::read_dir(&dir.path)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains(".torn-"))
+        .collect();
+    assert_eq!(kept.len(), 1, "torn bytes should be preserved");
+    assert_eq!(fs::read(kept[0].path()).unwrap(), vec![0xab; 40]);
+}
+
+#[test]
+fn replay_rejects_gap_after_truncated_segments() {
+    let dir = TmpDir::new("gap");
+    let fence;
+    {
+        let wal = open_with(&dir.path, 128, Lsn::ZERO).unwrap();
+        fence = write_txs(&wal, 0..10);
+        wal.truncate_up_to(fence).unwrap();
+        write_txs(&wal, 10..12);
+    }
+    // The first segments are gone; without the snapshot that covers them
+    // the log is not a complete history.
+    let err = replay_with(&dir.path, 128, Lsn::ZERO).unwrap_err();
+    assert!(
+        err.to_string().contains("gap"),
+        "expected a gap error, got {err}"
+    );
+    // With the covering fence it opens and replays only the tail.
+    let events = replay_with(&dir.path, 128, fence).unwrap();
+    assert_eq!(events, vec![ev(10), ev(11)]);
+}
+
+#[test]
+fn replay_rejects_missing_middle_segment() {
+    let dir = TmpDir::new("gap-middle");
+    {
+        let wal = open_with(&dir.path, 128, Lsn::ZERO).unwrap();
+        write_txs(&wal, 0..10);
+        assert!(wal.active_segment_id() >= 4);
+    }
+    let paths = segment_paths(&dir.path);
+    fs::remove_file(&paths[1]).unwrap();
+    let err = replay_with(&dir.path, 128, Lsn::ZERO).unwrap_err();
+    assert!(
+        err.to_string().contains("gap"),
+        "expected a gap error, got {err}"
+    );
+}
+
+#[test]
+fn fresh_wal_starts_above_the_checkpoint_fence() {
+    let dir = TmpDir::new("fresh-fence");
+    {
+        let wal = open_with(&dir.path, 8 * 1024 * 1024, Lsn::new(500)).unwrap();
+        assert_eq!(wal.next_lsn(), Lsn::new(501));
+        write_txs(&wal, 0..1);
+    }
+    let events = replay_with(&dir.path, 8 * 1024 * 1024, Lsn::new(500)).unwrap();
+    assert_eq!(events, vec![ev(0)]);
+}
+
+#[test]
+fn reopen_with_fence_past_log_end_never_reuses_fenced_lsns() {
+    let dir = TmpDir::new("fence-past-end");
+    {
+        let (wal, _) = open_default(&dir.path);
+        write_txs(&wal, 0..2);
+    }
+    // A snapshot fenced beyond the surviving log (the tail was lost).
+    {
+        let wal = open_with(&dir.path, 8 * 1024 * 1024, Lsn::new(100)).unwrap();
+        assert_eq!(wal.next_lsn(), Lsn::new(101));
+        write_txs(&wal, 2..3);
+    }
+    let events = replay_with(&dir.path, 8 * 1024 * 1024, Lsn::new(100)).unwrap();
+    assert_eq!(events, vec![ev(2)]);
+}
+
+fn nested_list(depth: usize) -> PropertyValue {
+    let mut value = PropertyValue::Null;
+    for _ in 0..depth {
+        value = PropertyValue::List(vec![value]);
+    }
+    value
+}
+
+#[test]
+fn failed_encode_leaves_the_wal_usable() {
+    let dir = TmpDir::new("encode-fail");
+    let (wal, _) = open_default(&dir.path);
+    write_txs(&wal, 0..1);
+    let next = wal.next_lsn();
+    let deep = MutationEvent::SetNodeProperty {
+        node_id: 0,
+        key: "deep".into(),
+        value: nested_list(10_000),
+    };
+    // Run on a big stack so the baseline (recursive, uncapped encoder)
+    // reaches the assertion instead of overflowing.
+    let wal2 = Arc::clone(&wal);
+    let result = std::thread::Builder::new()
+        .stack_size(512 * 1024 * 1024)
+        .spawn(move || wal2.commit_tx(vec![ev(1), deep]).map(|_| ()))
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(result.is_err(), "too-deep value must be rejected");
+    assert_eq!(
+        wal.next_lsn(),
+        next,
+        "a failed encode must not consume LSNs"
+    );
+    write_txs(&wal, 2..3);
+    drop(wal);
+    let (_, replay) = open_default(&dir.path);
+    assert_eq!(replay, vec![ev(0), ev(2)]);
+}
+
+#[test]
+fn large_transaction_is_split_into_several_batches() {
+    let dir = TmpDir::new("split");
+    {
+        let (wal, _) = open_default(&dir.path);
+        wal.set_batch_target_bytes_for_tests(1024);
+        let events: Vec<_> = (0..200).map(ev).collect();
+        wal.commit_tx(events).unwrap();
+        write_txs(&wal, 200..201);
+    }
+    let path = segment_paths(&dir.path).pop().unwrap();
+    let mut reader = crate::segment::SegmentReader::open(&path).unwrap();
+    let mut batches = 0;
+    while let Some(record) = reader.read_record().unwrap() {
+        if let crate::record::WalRecord::MutationBatch { .. } = record {
+            batches += 1;
+        }
+    }
+    assert!(
+        batches > 3,
+        "expected the tx to span several batches, got {batches}"
+    );
+    let (_, replay) = open_default(&dir.path);
+    assert_eq!(replay, (0..201).map(ev).collect::<Vec<_>>());
+    let mut reader =
+        crate::history::CommittedTxReader::open(&dir.path, Lsn::ZERO, Lsn::new(u64::MAX)).unwrap();
+    let tx = reader.next_tx().unwrap().unwrap();
+    assert_eq!(tx.events.len(), 200);
+}
+
+#[test]
+fn idle_force_fsync_skips_the_fsync() {
+    let dir = TmpDir::new("idle-sync");
+    let (wal, _) = open_default(&dir.path);
+    write_txs(&wal, 0..1);
+    wal.force_fsync().unwrap();
+    let after_first = wal.fsync_count();
+    wal.force_fsync().unwrap();
+    wal.force_fsync().unwrap();
+    assert_eq!(wal.fsync_count(), after_first, "nothing new was written");
+    write_txs(&wal, 1..2);
+    wal.force_fsync().unwrap();
+    assert_eq!(wal.fsync_count(), after_first + 1);
+    assert_eq!(wal.durable_lsn().raw(), wal.next_lsn().raw() - 1);
+}
+
+#[test]
+fn newest_checkpoint_marker_matches_full_replay() {
+    let dir = TmpDir::new("ckpt-scan");
+    assert_eq!(
+        crate::replay::newest_checkpoint_marker(&dir.path).unwrap(),
+        None
+    );
+    {
+        let wal = open_with(&dir.path, 256, Lsn::ZERO).unwrap();
+        let first = write_txs(&wal, 0..5);
+        wal.checkpoint_marker(first).unwrap();
+        let second = write_txs(&wal, 5..12);
+        wal.checkpoint_marker(second).unwrap();
+        write_txs(&wal, 12..14);
+    }
+    let scanned = crate::replay::newest_checkpoint_marker(&dir.path).unwrap();
+    let replayed = crate::replay::replay_dir(&dir.path, Lsn::ZERO)
+        .unwrap()
+        .checkpoint_lsn_observed;
+    assert!(scanned.is_some());
+    assert_eq!(scanned, replayed);
+}

@@ -194,8 +194,20 @@ fires.
 
 Replay is query-atomic even when the log records individual primitive
 mutations. A crashed process can leave an uncommitted tail; replay drops it. A
-torn record in the active segment is truncated back to the last valid record
-before new appends resume.
+torn record at the end of the active segment is truncated back to the last
+valid record before new appends resume, and the cut bytes are kept beside the
+segment as `<segment>.wal.torn-<offset>`.
+
+Damage anywhere else fails the open with `LORA_WAL_CORRUPTION` instead of
+being cut off: a bad record followed by valid records, a bad record in an
+older or sealed segment, or a record whose checksum is valid but whose
+contents do not decode. So does a WAL that does not reach back to the replay
+fence, for example a log whose early segments a checkpoint removed, opened
+without that checkpoint's snapshot, or a log missing a segment in the middle.
+
+A transaction too large for one WAL record is split across several
+`MutationBatch` records inside one `TxBegin`/`TxCommit` pair. Property values
+nested more than 128 lists or maps deep are rejected when they are written.
 
 ## Recovery and checkpoints
 

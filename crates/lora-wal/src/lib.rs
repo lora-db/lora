@@ -52,5 +52,5 @@ pub use lsn::Lsn;
 pub use recorder::{
     WalBufferedCommitError, WalCommitError, WalMirror, WalPoisonError, WalRecorder, WroteCommit,
 };
-pub use replay::{replay_dir, ReplayOutcome, ReplaySink, TornTailInfo};
+pub use replay::{newest_checkpoint_marker, replay_dir, ReplayOutcome, ReplaySink, TornTailInfo};
 pub use wal::Wal;

@@ -25,8 +25,10 @@
 //! [`Mutex`]. The store write lock already serialises query commits in
 //! production, so the inner mutex is uncontested and effectively free.
 
-use std::fs;
-use std::path::Path;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
@@ -38,12 +40,20 @@ use super::group_flusher::{spawn_group_flusher, GroupFlusherHandle};
 use crate::config::SyncMode;
 use crate::dir::{SegmentDir, SegmentId};
 use crate::errors::WalError;
+use crate::io::sync_file;
 use crate::lock::DirLock;
 use crate::lsn::Lsn;
-use crate::record::WalRecord;
+use crate::record::{encode_frame, framed_len, RecordKind, WalRecord};
 use crate::recorder::WroteCommit;
-use crate::replay::{replay_segments, ReplayOutcome, ReplaySink};
-use crate::segment::SegmentWriter;
+use crate::replay::{replay_segments, ReplaySink, TornTailInfo};
+use crate::segment::{SegmentReader, SegmentWriter, SEGMENT_HEADER_LEN};
+use crate::{codec, record::MAX_RECORD_LEN};
+
+/// Target size of one `MutationBatch` record. A transaction whose events
+/// encode to more than this is written as several batch records between
+/// its `TxBegin` and `TxCommit`, so no transaction is too large for one
+/// record and the pending buffer holds about one batch at a time.
+const BATCH_TARGET_BYTES: usize = 8 * 1024 * 1024;
 
 /// State guarded by the inner `Mutex`. Nothing in this struct is
 /// `Send`-unsafe; the lock is purely for `&self`-safe interior
@@ -102,6 +112,10 @@ pub struct Wal {
     /// drop-time flush.
     #[cfg(not(target_arch = "wasm32"))]
     flusher: Mutex<Option<GroupFlusherHandle>>,
+    /// See [`BATCH_TARGET_BYTES`]; a field so tests can shrink it.
+    batch_target_bytes: AtomicUsize,
+    /// Number of `fsync`s issued by [`Self::flush_inner`]. Diagnostic.
+    fsyncs: AtomicU64,
     /// Held for the lifetime of the WAL so a second handle cannot append
     /// to the same active segment concurrently.
     _dir_lock: DirLock,
@@ -156,27 +170,20 @@ impl Wal {
         fs::create_dir_all(segments.root())?;
         let dir_lock = DirLock::acquire(segments.root())?;
 
-        let entries = segments.list()?;
-        let (active_id, active_writer, replay) = if entries.is_empty() {
-            Self::open_fresh(&segments)?
+        let mut entries = segments.list()?;
+        Self::discard_unborn_segment(&segments, &mut entries)?;
+        let (active_id, active_writer, next_lsn) = if entries.is_empty() {
+            Self::open_fresh(&segments, checkpoint_lsn)?
         } else {
             Self::open_existing(&segments, &entries, checkpoint_lsn, apply)?
         };
 
-        let next_lsn = if replay.max_lsn.is_zero() {
-            Lsn::new(1)
-        } else {
-            replay
-                .max_lsn
-                .checked_next()
-                .ok_or_else(|| WalError::Malformed("WAL LSN space is exhausted".into()))?
-        };
-        // Treat everything readable at open time as the recovered
-        // durability fence. This does not prove the bytes were
-        // fsync-confirmed before the previous process died; it means
-        // they survived to this open and future appends must start
-        // after them.
-        let durable_lsn = replay.max_lsn;
+        // Treat everything readable at open time, and everything the
+        // snapshot covers, as the recovered durability fence. This does
+        // not prove the bytes were fsync-confirmed before the previous
+        // process died; it means they survived to this open and future
+        // appends must start after them.
+        let durable_lsn = Lsn::new(next_lsn.raw() - 1);
 
         let oldest_segment_id = entries.first().map(|e| e.id).unwrap_or(active_id);
 
@@ -196,6 +203,8 @@ impl Wal {
             bg_failure: Arc::new(Mutex::new(None)),
             #[cfg(not(target_arch = "wasm32"))]
             flusher: Mutex::new(None),
+            batch_target_bytes: AtomicUsize::new(BATCH_TARGET_BYTES),
+            fsyncs: AtomicU64::new(0),
             _dir_lock: dir_lock,
         });
 
@@ -215,34 +224,67 @@ impl Wal {
         Ok(wal)
     }
 
-    /// Brand-new WAL directory. Create segment 1 with `base_lsn = 1`
-    /// so LSN 0 stays reserved for "empty / never written".
+    /// Brand-new WAL directory. Create segment 1 with `base_lsn` just
+    /// above the snapshot fence (1 without a snapshot, so LSN 0 stays
+    /// reserved for "empty / never written"). Starting above the fence
+    /// keeps new records from reusing LSNs the snapshot already covers,
+    /// which replay would skip.
     fn open_fresh(
         segments: &SegmentDir,
-    ) -> Result<(SegmentId, SegmentWriter, ReplayOutcome), WalError> {
+        checkpoint_lsn: Lsn,
+    ) -> Result<(SegmentId, SegmentWriter, Lsn), WalError> {
         let id = SegmentId::FIRST;
-        let writer = SegmentWriter::create(segments.path_for(id), Lsn::new(1))?;
+        let base = next_lsn_after(checkpoint_lsn)?;
+        let writer = SegmentWriter::create(segments.path_for(id), base)?;
         segments.sync_dir()?;
-        let replay = ReplayOutcome {
-            max_lsn: Lsn::ZERO,
-            torn_tail: None,
-            checkpoint_lsn_observed: None,
-            last_good_offset: crate::segment::SEGMENT_HEADER_LEN as u64,
+        Ok((id, writer, base))
+    }
+
+    /// A crash inside [`SegmentWriter::create`] can leave the newest
+    /// segment without a durable header: empty, shorter than a header, or
+    /// a header-sized run of bytes that does not decode. Such a file never
+    /// held a record, so remove it and open from the segment before it.
+    fn discard_unborn_segment(
+        segments: &SegmentDir,
+        entries: &mut Vec<crate::dir::SegmentEntry>,
+    ) -> Result<(), WalError> {
+        let Some(newest) = entries.last() else {
+            return Ok(());
         };
-        Ok((id, writer, replay))
+        if fs::metadata(&newest.path)?.len() > SEGMENT_HEADER_LEN as u64 {
+            return Ok(());
+        }
+        match SegmentReader::open(&newest.path) {
+            Ok(_) => Ok(()),
+            Err(WalError::Io(err)) if err.kind() != std::io::ErrorKind::UnexpectedEof => {
+                Err(WalError::Io(err))
+            }
+            Err(_) => {
+                fs::remove_file(&newest.path)?;
+                segments.sync_dir()?;
+                entries.pop();
+                Ok(())
+            }
+        }
     }
 
     /// Existing directory. Replay every segment to surface committed
     /// events + detect a torn tail; reopen the highest-id segment
     /// for append; truncate it if the torn tail is in *that* segment.
+    /// Returns the active segment, its writer, and the next LSN to hand
+    /// out.
     fn open_existing(
         segments: &SegmentDir,
         entries: &[crate::dir::SegmentEntry],
         checkpoint_lsn: Lsn,
         apply: &mut ReplaySink<'_>,
-    ) -> Result<(SegmentId, SegmentWriter, ReplayOutcome), WalError> {
+    ) -> Result<(SegmentId, SegmentWriter, Lsn), WalError> {
         let paths: Vec<_> = entries.iter().map(|e| e.path.clone()).collect();
         let replay = replay_segments(&paths, checkpoint_lsn, apply)?;
+        // Never hand out an LSN at or below the fence: a snapshot can be
+        // ahead of a log whose tail was lost, and replay skips everything
+        // the fence covers.
+        let next_lsn = next_lsn_after(replay.max_lsn.max(checkpoint_lsn))?;
 
         // The active segment is whichever file has the highest
         // numeric id — segment file names are self-describing, so
@@ -250,26 +292,38 @@ impl Wal {
         let active = entries
             .last()
             .ok_or_else(|| WalError::Malformed("WAL directory has no segments".into()))?;
+
+        if SegmentReader::open(&active.path)?.header().sealed {
+            // The previous process sealed this segment and died before
+            // its successor existed. Finish the rotation.
+            let next_id = active
+                .id
+                .checked_next()
+                .ok_or_else(|| WalError::Malformed("WAL segment id space is exhausted".into()))?;
+            let writer = SegmentWriter::create(segments.path_for(next_id), next_lsn)?;
+            segments.sync_dir()?;
+            return Ok((next_id, writer, next_lsn));
+        }
+
         let mut writer = SegmentWriter::open_for_append_at(
             segments.path_for(active.id),
             replay.last_good_offset,
         )?;
 
-        // A torn tail in a *sealed* segment is impossible (sealed
-        // segments are never appended to), so we only need to handle
-        // the active one.
+        // Replay reports a torn tail only for the newest, unsealed
+        // segment; anything else already failed as corruption.
         if let Some(t) = &replay.torn_tail {
-            if t.segment_path == active.path {
-                writer.truncate_to(t.last_good_offset)?;
-            } else {
+            if t.segment_path != active.path {
                 return Err(WalError::Malformed(format!(
                     "torn tail found in sealed segment {}",
                     t.segment_path.display()
                 )));
             }
+            preserve_torn_tail(segments, t)?;
+            writer.truncate_to(t.last_good_offset)?;
         }
 
-        Ok((active.id, writer, replay))
+        Ok((active.id, writer, next_lsn))
     }
 
     pub fn dir(&self) -> &Path {
@@ -450,44 +504,52 @@ impl Wal {
     /// record it wrote (`None` when `events` was empty and nothing was
     /// written). Change feeds use it as the transaction's resume token.
     pub fn commit_tx_lsn(&self, events: Vec<MutationEvent>) -> Result<Option<Lsn>, WalError> {
+        self.commit_tx_events(&events)
+    }
+
+    /// [`Self::commit_tx_lsn`] for borrowed events, so a caller that
+    /// keeps the events (a change feed) does not have to clone them.
+    ///
+    /// Events that encode to more than one batch record's worth are
+    /// written as several `MutationBatch` records inside the one
+    /// transaction. A value the encoder rejects fails the call before
+    /// any byte is buffered or any LSN is used, and leaves the WAL
+    /// usable.
+    pub fn commit_tx_events(&self, events: &[MutationEvent]) -> Result<Option<Lsn>, WalError> {
         self.check_healthy()?;
         if events.is_empty() {
             return Ok(None);
         }
 
-        // Phase 1: allocate the LSN window and encode all three
-        // records into the active segment's pending buffer in one
-        // critical section. Collapsing what was four separate state
-        // lock acquisitions (begin / append_batch / commit / flush)
-        // into one is the lock-side win that pairs with the
-        // lock-free emit short-circuit on the recorder side.
+        // Size every event before taking the lock. This is also where an
+        // unencodable event fails, so nothing below can hit an encode
+        // error after bytes reached the file.
+        let batches = plan_batches(events, self.batch_target_bytes.load(Ordering::Relaxed))?;
+
+        // Phase 1: allocate the LSN window and encode the records into
+        // the active segment's pending buffer in one critical section,
+        // instead of separate lock acquisitions per record.
         let commit_lsn = {
             let mut state = self.lock_state()?;
             self.maybe_rotate(&mut state)?;
-            let begin_lsn = state.next_lsn;
-            let batch_lsn = begin_lsn
-                .checked_next()
-                .ok_or_else(|| WalError::Malformed("WAL LSN space is exhausted".into()))?;
-            let commit_lsn = batch_lsn
-                .checked_next()
-                .ok_or_else(|| WalError::Malformed("WAL LSN space is exhausted".into()))?;
-            let next_lsn = commit_lsn
-                .checked_next()
-                .ok_or_else(|| WalError::Malformed("WAL LSN space is exhausted".into()))?;
-            state.next_lsn = next_lsn;
-            state
-                .active_writer
-                .append(&WalRecord::TxBegin { lsn: begin_lsn })?;
-            state.active_writer.append(&WalRecord::MutationBatch {
-                lsn: batch_lsn,
-                tx_begin_lsn: begin_lsn,
-                events,
-            })?;
-            state.active_writer.append(&WalRecord::TxCommit {
-                lsn: commit_lsn,
-                tx_begin_lsn: begin_lsn,
-            })?;
-            commit_lsn
+            let first_lsn = state.next_lsn;
+            let pending_mark = state.active_writer.pending_len();
+            let file_mark = state.active_writer.flushed_len();
+            let result = Self::append_tx(&mut state, events, &batches);
+            if result.is_err() {
+                if state.active_writer.flushed_len() == file_mark {
+                    // Nothing of this transaction reached the file:
+                    // forget it entirely, LSNs included.
+                    state.active_writer.rollback_pending(pending_mark);
+                    state.next_lsn = first_lsn;
+                } else {
+                    // Its first batches are on disk without a commit,
+                    // which replay discards. Drop the rest; the LSNs
+                    // stay used.
+                    state.active_writer.rollback_pending(0);
+                }
+            }
+            result?
         };
 
         // Phase 2: make commit bytes visible to the OS page cache. Storage
@@ -496,6 +558,64 @@ impl Wal {
         self.flush_inner(FlushKind::PerConfiguredMode)?;
 
         Ok(Some(commit_lsn))
+    }
+
+    /// Append `TxBegin`, one `MutationBatch` per entry of `batches`, and
+    /// `TxCommit`. A transaction larger than one batch is written to the
+    /// file batch by batch so the pending buffer stays bounded; after the
+    /// first such write a failure leaves an uncommitted transaction on
+    /// disk, which replay discards.
+    fn append_tx(
+        state: &mut WalState,
+        events: &[MutationEvent],
+        batches: &BatchPlan,
+    ) -> Result<Lsn, WalError> {
+        let begin_lsn = Self::alloc_lsn(state)?;
+        state
+            .active_writer
+            .append(&WalRecord::TxBegin { lsn: begin_lsn })?;
+        let mut start = 0;
+        for (index, &(end, payload_len)) in batches.iter().enumerate() {
+            if index > 0 {
+                state.active_writer.flush_buffer()?;
+            }
+            let chunk = &events[start..end];
+            let lsn = Self::alloc_lsn(state)?;
+            encode_frame(
+                state.active_writer.pending_mut()?,
+                RecordKind::MutationBatch,
+                lsn,
+                begin_lsn,
+                payload_len,
+                |out| codec::encode_events_into(out, chunk),
+            )?;
+            start = end;
+        }
+        let commit_lsn = Self::alloc_lsn(state)?;
+        state.active_writer.append(&WalRecord::TxCommit {
+            lsn: commit_lsn,
+            tx_begin_lsn: begin_lsn,
+        })?;
+        Ok(commit_lsn)
+    }
+
+    fn alloc_lsn(state: &mut WalState) -> Result<Lsn, WalError> {
+        let lsn = state.next_lsn;
+        state.next_lsn = lsn
+            .checked_next()
+            .ok_or_else(|| WalError::Malformed("WAL LSN space is exhausted".into()))?;
+        Ok(lsn)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_batch_target_bytes_for_tests(&self, bytes: usize) {
+        self.batch_target_bytes.store(bytes, Ordering::Relaxed);
+    }
+
+    /// Number of `fsync`s the WAL has issued for its log since open.
+    /// Diagnostic; an idle WAL does not grow it.
+    pub fn fsync_count(&self) -> u64 {
+        self.fsyncs.load(Ordering::Relaxed)
     }
 
     /// Append a `Checkpoint` marker. `snapshot_lsn` should equal the
@@ -552,15 +672,32 @@ impl Wal {
     /// Single source of truth for the flush state machine. Skips the
     /// `check_healthy` gate so clean shutdown can force a final GroupSync
     /// sync even if callers are otherwise done with the handle.
+    ///
+    /// The `fsync` itself runs after the state lock is released, so
+    /// commits keep appending while the disk catches up. Only the LSN
+    /// written before the `fsync` started becomes durable, and a WAL with
+    /// nothing new since the last `fsync` skips it.
     pub(super) fn flush_inner(&self, kind: FlushKind) -> Result<(), WalError> {
-        let mut state = self.lock_state()?;
-        let written_lsn = Lsn::new(state.next_lsn.raw().saturating_sub(1));
-
-        if matches!(kind, FlushKind::ForceFsync) {
-            state.active_writer.flush_and_sync()?;
-            state.durable_lsn = written_lsn;
-        } else {
+        let (file, written_lsn) = {
+            let mut state = self.lock_state()?;
             state.active_writer.flush_buffer()?;
+            if matches!(kind, FlushKind::PerConfiguredMode) {
+                return Ok(());
+            }
+            let written_lsn = Lsn::new(state.next_lsn.raw().saturating_sub(1));
+            if state.durable_lsn >= written_lsn {
+                return Ok(());
+            }
+            // If the segment rotates before the `fsync` below runs, the
+            // rotation syncs it too (`seal`), and this handle keeps the
+            // file open either way.
+            (state.active_writer.sync_handle(), written_lsn)
+        };
+        sync_file(&file)?;
+        self.fsyncs.fetch_add(1, Ordering::Relaxed);
+        let mut state = self.lock_state()?;
+        if written_lsn > state.durable_lsn {
+            state.durable_lsn = written_lsn;
         }
         Ok(())
     }
@@ -618,17 +755,32 @@ impl Wal {
         if state.active_writer.bytes_written() < self.segment_target_bytes {
             return Ok(());
         }
-        // Seal the current segment (forces a flush + fsync) and open
-        // a fresh one with `base_lsn = next_lsn` so the segment file
-        // names line up with the record LSNs they contain.
-        state.active_writer.seal()?;
-
+        // Order matters for crash safety. Make the current segment
+        // durable first, so it can never end in a torn tail once a newer
+        // segment exists. Then create the next segment with `base_lsn =
+        // next_lsn` (so file names line up with the LSNs they contain)
+        // and make its directory entry durable. Seal the old segment
+        // last: a crash before the seal leaves an unsealed but complete
+        // segment, which replay reads like any other, and a crash inside
+        // `create` leaves a headerless newest file that open removes.
+        state.active_writer.flush_and_sync()?;
         let next_id = state
             .active_segment_id
             .checked_next()
             .ok_or_else(|| WalError::Malformed("WAL segment id space is exhausted".into()))?;
-        let writer = SegmentWriter::create(self.segments.path_for(next_id), state.next_lsn)?;
-        self.segments.sync_dir()?;
+        let next_path = self.segments.path_for(next_id);
+        let writer = SegmentWriter::create(next_path.clone(), state.next_lsn)?;
+        let sealed = self
+            .segments
+            .sync_dir()
+            .and_then(|()| state.active_writer.seal());
+        if let Err(err) = sealed {
+            // Keep appending to the old segment; drop the new one so the
+            // next rotation can create it again.
+            drop(writer);
+            let _ = fs::remove_file(&next_path);
+            return Err(err);
+        }
         state.active_writer = writer;
         state.active_segment_id = next_id;
         Ok(())
@@ -637,6 +789,105 @@ impl Wal {
     fn lock_state(&self) -> Result<MutexGuard<'_, WalState>, WalError> {
         self.state.lock().map_err(|_| WalError::Poisoned)
     }
+}
+
+/// LSN that follows `lsn`, the first one a WAL fenced at `lsn` may use.
+fn next_lsn_after(lsn: Lsn) -> Result<Lsn, WalError> {
+    lsn.checked_next()
+        .ok_or_else(|| WalError::Malformed("WAL LSN space is exhausted".into()))
+}
+
+/// How a transaction's events split into `MutationBatch` records: for each
+/// record, the end index (exclusive) of its events and its payload length.
+type BatchPlan = Vec<(usize, usize)>;
+
+/// Split `events` into batch records of at most about `target` bytes each
+/// (a single event larger than that gets a record of its own, up to the
+/// record size limit). Sizes every event, so an event the encoder would
+/// reject fails here.
+fn plan_batches(events: &[MutationEvent], target: usize) -> Result<BatchPlan, WalError> {
+    let mut plan = Vec::with_capacity(1);
+    let mut start = 0;
+    let mut chunk_bytes = 0usize;
+    for (index, event) in events.iter().enumerate() {
+        let size = codec::encoded_batch_event_len(event)?;
+        let count = index - start;
+        if count > 0 {
+            let grown = codec::batch_payload_len(count + 1, chunk_bytes.saturating_add(size))?;
+            if !matches!(framed_len(grown), Ok(len) if len <= target) {
+                plan.push((index, batch_payload_len_checked(count, chunk_bytes)?));
+                start = index;
+                chunk_bytes = 0;
+            }
+        }
+        chunk_bytes = chunk_bytes
+            .checked_add(size)
+            .ok_or_else(|| WalError::Encode("transaction payload length overflows usize".into()))?;
+    }
+    plan.push((
+        events.len(),
+        batch_payload_len_checked(events.len() - start, chunk_bytes)?,
+    ));
+    Ok(plan)
+}
+
+/// Payload length of one planned batch record, rejecting a record over
+/// the size limit (only possible for a batch of one huge event).
+fn batch_payload_len_checked(count: usize, events_len: usize) -> Result<usize, WalError> {
+    let payload_len = codec::batch_payload_len(count, events_len)?;
+    framed_len(payload_len).map_err(|_| {
+        WalError::Encode(format!(
+            "a single mutation encodes to {payload_len} bytes, over the {MAX_RECORD_LEN}-byte \
+             WAL record limit"
+        ))
+    })?;
+    Ok(payload_len)
+}
+
+/// Copy the bytes a torn-tail truncation is about to drop to
+/// `<segment>.torn-<offset>` beside the segment, so an operator can
+/// inspect them. Replay only calls a tail torn when no valid record
+/// follows it, but keeping the bytes costs little and makes a wrong call
+/// recoverable.
+fn preserve_torn_tail(segments: &SegmentDir, torn: &TornTailInfo) -> Result<(), WalError> {
+    let mut source = fs::File::open(&torn.segment_path)?;
+    let len = source.metadata()?.len();
+    if len <= torn.last_good_offset {
+        return Ok(());
+    }
+    source.seek(SeekFrom::Start(torn.last_good_offset))?;
+    let file_name = torn
+        .segment_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut attempt = 0u32;
+    let (mut out, _path): (fs::File, PathBuf) = loop {
+        let suffix = if attempt == 0 {
+            String::new()
+        } else {
+            format!("-{attempt}")
+        };
+        let path = segments.root().join(format!(
+            "{file_name}.torn-{}{suffix}",
+            torn.last_good_offset
+        ));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => break (file, path),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && attempt < 1000 => {
+                attempt += 1;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    };
+    std::io::copy(
+        &mut (&mut source).take(len - torn.last_good_offset),
+        &mut out,
+    )?;
+    out.flush()?;
+    sync_file(&out)?;
+    segments.sync_dir()?;
+    Ok(())
 }
 
 impl Drop for Wal {

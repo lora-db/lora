@@ -442,6 +442,8 @@ fn wal_code(err: &WalError) -> LoraErrorCode {
         | WalError::UnknownKind(_)
         | WalError::BadSegmentHeader(_)
         | WalError::Malformed(_)
+        | WalError::Corrupt { .. }
+        | WalError::Gap(_)
         | WalError::Encode(_)
         | WalError::Decode(_) => LoraErrorCode::WalCorruption,
         WalError::Poisoned => LoraErrorCode::WalPoisoned,

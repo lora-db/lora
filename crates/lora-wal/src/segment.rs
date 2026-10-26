@@ -26,11 +26,12 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::errors::WalError;
 use crate::io::sync_file;
 use crate::lsn::Lsn;
-use crate::record::WalRecord;
+use crate::record::{RawRecord, WalRecord};
 
 /// Magic bytes at the head of every segment.
 pub(crate) const SEGMENT_MAGIC: &[u8; 8] = b"LORAWAL\0";
@@ -46,6 +47,13 @@ pub(crate) const SEGMENT_HEADER_LEN: usize = 32;
 
 /// Bit set in `flags` when the segment has been sealed (no more appends).
 const FLAG_SEALED: u32 = 1 << 0;
+
+/// Pending-buffer capacity a writer starts with and shrinks back to.
+const PENDING_RETAINED_CAPACITY: usize = 64 * 1024;
+
+/// A pending buffer that grew past this (one large transaction) gives the
+/// memory back after it is written.
+const PENDING_SHRINK_ABOVE: usize = 4 * 1024 * 1024;
 
 /// Decoded segment header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +72,7 @@ impl SegmentHeader {
         }
     }
 
-    fn encode(&self) -> [u8; SEGMENT_HEADER_LEN] {
+    pub(crate) fn encode(&self) -> [u8; SEGMENT_HEADER_LEN] {
         let mut out = [0u8; SEGMENT_HEADER_LEN];
         out[0..8].copy_from_slice(SEGMENT_MAGIC);
         out[8..12].copy_from_slice(&self.format_version.to_le_bytes());
@@ -145,7 +153,10 @@ fn fixed_bytes<const N: usize>(bytes: &[u8]) -> Result<[u8; N], WalError> {
 /// CRC) and syncs the segment. Once sealed, [`append`] returns
 /// [`WalError::Poisoned`] — a sealed segment is immutable.
 pub(crate) struct SegmentWriter {
-    file: File,
+    /// Shared so a background fsync can run on this segment without
+    /// holding the WAL state lock (see [`Self::sync_handle`]). Writes go
+    /// through `&File`, which shares the one file offset.
+    file: Arc<File>,
     header: SegmentHeader,
     bytes_written: u64,
     pending: Vec<u8>,
@@ -169,10 +180,10 @@ impl SegmentWriter {
         // segment behind.
         sync_file(&file)?;
         Ok(Self {
-            file,
+            file: Arc::new(file),
             header,
             bytes_written: SEGMENT_HEADER_LEN as u64,
-            pending: Vec::with_capacity(64 * 1024),
+            pending: Vec::with_capacity(PENDING_RETAINED_CAPACITY),
         })
     }
 
@@ -219,10 +230,10 @@ impl SegmentWriter {
         file.seek(SeekFrom::Start(last_good))?;
         Ok((
             Self {
-                file,
+                file: Arc::new(file),
                 header,
                 bytes_written: last_good,
-                pending: Vec::with_capacity(64 * 1024),
+                pending: Vec::with_capacity(PENDING_RETAINED_CAPACITY),
             },
             torn,
         ))
@@ -254,10 +265,10 @@ impl SegmentWriter {
         }
         file.seek(SeekFrom::Start(offset))?;
         Ok(Self {
-            file,
+            file: Arc::new(file),
             header,
             bytes_written: offset,
-            pending: Vec::with_capacity(64 * 1024),
+            pending: Vec::with_capacity(PENDING_RETAINED_CAPACITY),
         })
     }
 
@@ -268,11 +279,40 @@ impl SegmentWriter {
     /// Append a single record to the in-memory buffer. The record is
     /// not on disk until [`flush_buffer`] is called.
     pub fn append(&mut self, record: &WalRecord) -> Result<(), WalError> {
+        self.ensure_appendable()?;
+        record.encode_into(&mut self.pending)?;
+        Ok(())
+    }
+
+    /// Mutable access to the pending buffer for callers that frame a
+    /// record themselves ([`crate::record::encode_frame`]).
+    pub fn pending_mut(&mut self) -> Result<&mut Vec<u8>, WalError> {
+        self.ensure_appendable()?;
+        Ok(&mut self.pending)
+    }
+
+    fn ensure_appendable(&self) -> Result<(), WalError> {
         if self.header.sealed {
             return Err(WalError::Poisoned);
         }
-        record.encode(&mut self.pending)?;
         Ok(())
+    }
+
+    /// Bytes that have reached the file (header included), excluding the
+    /// pending buffer.
+    pub fn flushed_len(&self) -> u64 {
+        self.bytes_written
+    }
+
+    /// Length of the not-yet-written buffer, for [`Self::rollback_pending`].
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Drop buffered bytes past `len`, undoing appends that have not
+    /// reached the file yet.
+    pub fn rollback_pending(&mut self, len: usize) {
+        self.pending.truncate(len);
     }
 
     /// Drain the in-memory buffer to the OS file (no `fsync`).
@@ -280,9 +320,22 @@ impl SegmentWriter {
         if self.pending.is_empty() {
             return Ok(());
         }
-        self.file.write_all(&self.pending)?;
+        if let Err(err) = (&*self.file).write_all(&self.pending) {
+            // Undo a partial write. Leaving half a buffer in the file
+            // would let a retry (or the flush on drop) append whole
+            // records after it, turning a failed write into corruption
+            // in the middle of the log.
+            let _ = self.file.set_len(self.bytes_written);
+            let _ = (&*self.file).seek(SeekFrom::Start(self.bytes_written));
+            return Err(err.into());
+        }
         self.bytes_written += self.pending.len() as u64;
         self.pending.clear();
+        // One large transaction must not pin its size in memory for the
+        // life of the segment.
+        if self.pending.capacity() > PENDING_SHRINK_ABOVE {
+            self.pending.shrink_to(PENDING_RETAINED_CAPACITY);
+        }
         Ok(())
     }
 
@@ -291,6 +344,13 @@ impl SegmentWriter {
         self.flush_buffer()?;
         sync_file(&self.file)?;
         Ok(())
+    }
+
+    /// Shared handle to the segment file, so a caller can `fsync` it after
+    /// releasing the lock that guards this writer. Bytes already passed to
+    /// the OS by [`Self::flush_buffer`] are covered by that `fsync`.
+    pub fn sync_handle(&self) -> Arc<File> {
+        Arc::clone(&self.file)
     }
 
     /// Mark the segment as sealed (no more appends). Rewrites the
@@ -302,12 +362,13 @@ impl SegmentWriter {
         self.flush_and_sync()?;
         self.header.sealed = true;
         let header_bytes = self.header.encode();
-        self.file.seek(SeekFrom::Start(0))?;
-        self.file.write_all(&header_bytes)?;
+        let mut file = &*self.file;
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(&header_bytes)?;
         // Restore the write cursor to end-of-segment so any stray
         // append errors loudly instead of corrupting the header region.
-        self.file.seek(SeekFrom::Start(self.bytes_written))?;
-        sync_file(&self.file)?;
+        file.seek(SeekFrom::Start(self.bytes_written))?;
+        sync_file(file)?;
         Ok(())
     }
 
@@ -321,7 +382,7 @@ impl SegmentWriter {
         }
         self.flush_buffer()?;
         self.file.set_len(offset)?;
-        self.file.seek(SeekFrom::Start(offset))?;
+        (&*self.file).seek(SeekFrom::Start(offset))?;
         self.bytes_written = offset;
         sync_file(&self.file)?;
         Ok(())
@@ -383,6 +444,15 @@ impl SegmentReader {
     }
 
     pub fn read_record(&mut self) -> Result<Option<WalRecord>, WalError> {
+        match self.read_frame()? {
+            Some(raw) => raw.decode().map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Read the next record's frame without decoding its payload. See
+    /// [`RawRecord::read`] for the error classes.
+    pub fn read_frame(&mut self) -> Result<Option<RawRecord>, WalError> {
         // We need to know how many bytes were consumed so we can
         // advance `position`. Wrap the file in a counting reader for
         // the duration of this single decode.
@@ -391,14 +461,36 @@ impl SegmentReader {
             inner: &mut self.file,
             consumed: 0,
         };
-        match WalRecord::decode(&mut counting) {
-            Ok(Some(record)) => {
-                self.position = start + counting.consumed;
-                Ok(Some(record))
-            }
-            Ok(None) => Ok(None),
-            Err(err) => Err(err),
+        let raw = RawRecord::read(&mut counting)?;
+        if raw.is_some() {
+            self.position = start + counting.consumed;
         }
+        Ok(raw)
+    }
+
+    /// Offset of the first complete, CRC-valid record frame with an LSN
+    /// above `after` that starts after `from`, if any. Replay uses this to
+    /// tell a torn tail (nothing valid follows the bad frame) from
+    /// corruption inside the log (valid records follow it).
+    ///
+    /// Reads the rest of the segment into memory; this only runs on the
+    /// recovery path after a bad frame was found.
+    pub fn find_valid_frame_after(
+        &mut self,
+        from: u64,
+        after: Lsn,
+    ) -> Result<Option<u64>, WalError> {
+        let len = self.file.metadata()?.len();
+        if from >= len {
+            return Ok(None);
+        }
+        self.file.seek(SeekFrom::Start(from))?;
+        let mut tail = Vec::new();
+        (&mut self.file).take(len - from).read_to_end(&mut tail)?;
+        self.file.seek(SeekFrom::Start(self.position))?;
+        Ok((1..tail.len())
+            .find(|&at| crate::record::is_valid_frame_at(&tail[at..], after))
+            .map(|at| from + at as u64))
     }
 }
 
