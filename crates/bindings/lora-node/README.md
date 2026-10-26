@@ -340,6 +340,33 @@ const db = await openWalDatabase({
 `snapshotOptions` accepts the same compression/encryption options as
 `saveSnapshot`.
 
+### Online backups
+
+Copying a named database's directory while it runs does not give a
+database, and another process cannot open it. Take the copy from the
+process that owns it:
+
+```ts
+const snapshot = await db.snapshot("./backups/2026-10-26");
+// { bytes: 69283, lsn: 3, nodeCount: 100000,
+//   path: './backups/2026-10-26/app.loradb', relationshipCount: 0 }
+```
+
+It writes `<targetDir>/<name>.loradb` (the target must be missing or empty)
+as of one committed transaction, every write up to `lsn`, while reads and
+writes keep running, off the JS thread and in bounded memory. The file
+appears only once it is complete, so a crash mid-copy leaves no partial
+database. Open it with `createDatabase("app", { databaseDir: targetDir })`.
+`await db.checkpoint()` checkpoints on demand and resolves with the
+snapshot's metadata.
+
+For a directory no process has open, the package's `lora` command does the
+same, and refuses a directory another process owns:
+
+```bash
+npx lora snapshot ./data ./backups/offline
+```
+
 ## Snapshots
 
 `saveSnapshot(path)` writes the current graph to a local file. Plain strings
@@ -525,8 +552,8 @@ See `ts/types.ts` (`LoraErrorCode`) for the full list.
   an `AbortSignal` cannot fire while a pull runs. Give expensive streams a
   `timeoutMs`, or use `execute()`, which runs on the threadpool.
 - **WAL surface.** Node persistence exposes container-backed initialization,
-  `syncMode: "groupSync"`, and `db.sync()`. Checkpoint, truncate,
-  and status controls are not exposed yet.
+  `syncMode: "groupSync"`, `db.sync()`, `db.checkpoint()` and
+  `db.snapshot()`. WAL truncate and status controls are not exposed yet.
 - **Archive ownership.** One archive can only be open by one writer process at a
   time. Multiple Node handles in the same process share the same live engine;
   a second process is rejected with `LORA_LOCKED` while the first holds the
