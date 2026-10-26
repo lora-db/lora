@@ -226,15 +226,24 @@ fn replace(args: &[LoraValue]) -> LoraValue {
             None => re.replace_all(s, with.as_str()).into_owned(),
         }
     } else {
-        let matches = if pat.is_empty() {
-            s.chars().count() + 1
-        } else {
-            s.matches(pat.as_str()).count()
-        };
-        let matches = limit.map_or(matches, |n| n.min(matches));
-        let grown = s.len().saturating_add(matches.saturating_mul(with.len()));
-        if let Err(message) = crate::limits::check_bytes(grown) {
-            return super::fail(message);
+        // At most one match per `pat.len()` bytes (one per character, plus
+        // one, for an empty `pat`); count them only when that bound is not
+        // enough.
+        let at_most = s.len() / pat.len().max(1) + 1;
+        let growth = with.len().saturating_sub(pat.len());
+        if crate::limits::check_bytes(s.len().saturating_add(at_most.saturating_mul(growth)))
+            .is_err()
+        {
+            let matches = if pat.is_empty() {
+                s.chars().count() + 1
+            } else {
+                s.matches(pat.as_str()).count()
+            };
+            let matches = limit.map_or(matches, |n| n.min(matches));
+            let grown = s.len().saturating_add(matches.saturating_mul(growth));
+            if let Err(message) = crate::limits::check_bytes(grown) {
+                return super::fail(message);
+            }
         }
         match limit {
             Some(n) => s.replacen(pat.as_str(), with, n),
@@ -255,6 +264,11 @@ fn check_regex_replacement(
 ) -> Result<(), String> {
     let limit = limit.unwrap_or(usize::MAX);
     if !with.contains('$') {
+        // At most one match per byte, plus an empty one at the end.
+        let at_most = (s.len() + 1).saturating_mul(with.len());
+        if crate::limits::check_bytes(s.len().saturating_add(at_most)).is_ok() {
+            return Ok(());
+        }
         let matches = re.find_iter(s).take(limit).count();
         return crate::limits::check_bytes(
             s.len().saturating_add(matches.saturating_mul(with.len())),

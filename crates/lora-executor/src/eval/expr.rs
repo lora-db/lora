@@ -388,7 +388,7 @@ pub fn eval_expr<S: GraphStorage>(
 
 /// `items` as a new list value, or null with an error when the list would
 /// break a value limit (see [`crate::limits`]).
-#[inline]
+#[inline(never)]
 pub(super) fn built_list(items: Vec<LoraValue>) -> LoraValue {
     match crate::limits::check_built_list(&items) {
         Ok(()) => LoraValue::List(items),
@@ -400,7 +400,7 @@ pub(super) fn built_list(items: Vec<LoraValue>) -> LoraValue {
 }
 
 /// [`built_list`] for a map.
-#[inline]
+#[inline(never)]
 pub(super) fn built_map(map: BTreeMap<String, LoraValue>) -> LoraValue {
     match crate::limits::check_built(map.values()) {
         Ok(()) => LoraValue::Map(map),
@@ -434,10 +434,11 @@ fn case_branch<'e, S: GraphStorage>(
     else_expr
 }
 
-/// Where an expression's value comes from: a variable the row holds, whose
-/// value can be read or shared in place, or a value computed for this call.
+/// Where an expression's value comes from: a variable the row holds (or a
+/// parameter, with no variable), whose value can be read or shared in
+/// place, or a value computed for this call.
 enum Source<'r> {
-    Var(VarId, &'r LoraValue),
+    Var(Option<VarId>, &'r LoraValue),
     Value(LoraValue),
 }
 
@@ -449,13 +450,16 @@ enum Source<'r> {
 fn eval_source<'r, S: GraphStorage>(
     expr: &ResolvedExpr,
     row: &'r Row,
-    ctx: &EvalContext<'_, S>,
+    ctx: &EvalContext<'r, S>,
 ) -> Source<'r> {
     match expr {
         ResolvedExpr::Variable(var) => match row.get(*var) {
-            Some(value) => Source::Var(*var, value),
+            Some(value) => Source::Var(Some(*var), value),
             None => Source::Value(LoraValue::Null),
         },
+        // A parameter is read in place too: `x IN $list` per row must not
+        // copy the list each time.
+        ResolvedExpr::Parameter(name) => Source::Var(None, ctx.params.get(name).unwrap_or(&NULL)),
         ResolvedExpr::Function { function, args, .. } if is_coalesce(*function) => {
             let mut args = args.iter();
             let mut first = Source::Value(LoraValue::Null);
@@ -510,10 +514,11 @@ fn is_coalesce(function: lora_analyzer::FunctionId) -> bool {
 fn eval_ref<'r, S: GraphStorage>(
     expr: &ResolvedExpr,
     row: &'r Row,
-    ctx: &EvalContext<'_, S>,
+    ctx: &EvalContext<'r, S>,
 ) -> Cow<'r, LoraValue> {
     match expr {
         ResolvedExpr::Variable(var) => Cow::Borrowed(row.get(*var).unwrap_or(&NULL)),
+        ResolvedExpr::Parameter(name) => Cow::Borrowed(ctx.params.get(name).unwrap_or(&NULL)),
         _ if passes_through(expr) => match eval_source(expr, row, ctx) {
             Source::Var(_, value) => Cow::Borrowed(value),
             Source::Value(value) => Cow::Owned(value),
@@ -575,7 +580,8 @@ pub fn eval_projected_result<S: GraphStorage>(
 ) -> Result<Projected, String> {
     clear_eval_error();
     let projected = match eval_source(expr, row, ctx) {
-        Source::Var(var, _) => Projected::Var(var),
+        Source::Var(Some(var), _) => Projected::Var(var),
+        Source::Var(None, value) => Projected::Value(value.clone()),
         Source::Value(value) => Projected::Value(value),
     };
     if crate::cancel::eval_tripped() {
@@ -627,7 +633,7 @@ impl ExactSizeIterator for ItemIter<'_> {}
 fn list_items<'r, S: GraphStorage>(
     list: &ResolvedExpr,
     row: &'r Row,
-    ctx: &EvalContext<'_, S>,
+    ctx: &EvalContext<'r, S>,
 ) -> ListItems<'r> {
     match eval_source(list, row, ctx) {
         Source::Var(_, LoraValue::List(items)) => {

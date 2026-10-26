@@ -23,12 +23,7 @@ pub(super) fn eval_function<S: GraphStorage>(
     match function {
         FunctionId::Builtin(spec) => {
             let value = super::builtins::dispatch(spec.name, args, ctx).unwrap_or(LoraValue::Null);
-            // `range` checks its length before allocating and builds a
-            // flat list; walking a long one again would cost a pass.
-            if spec.name == "list.range" {
-                return value;
-            }
-            within_limits(value)
+            within_limits(value, spec.name)
         }
         FunctionId::Aggregate(_) => LoraValue::Null,
     }
@@ -38,8 +33,11 @@ pub(super) fn eval_function<S: GraphStorage>(
 /// Builtins that could allocate without bound check their sizes before
 /// building; this catches the rest, such as a list function that wraps its
 /// argument one level deeper.
-fn within_limits(value: LoraValue) -> LoraValue {
+fn within_limits(value: LoraValue, function: &str) -> LoraValue {
     let checked = match &value {
+        // `range` checks its length before allocating and builds a flat
+        // list; walking a long one again would cost a pass.
+        LoraValue::List(_) if function == "list.range" => Ok(()),
         LoraValue::List(_) | LoraValue::Map(_) => crate::limits::check_value(&value),
         LoraValue::String(s) => crate::limits::check_bytes(s.len()),
         _ => Ok(()),
