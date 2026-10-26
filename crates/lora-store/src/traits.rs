@@ -1283,14 +1283,28 @@ pub trait GraphStorageMut: GraphStorage {
 
     fn delete_relationships_of(&mut self, node_id: NodeId, direction: Direction) -> usize {
         let rel_ids = self.relationship_ids_of(node_id, direction);
+        self.delete_relationships(&rel_ids)
+    }
 
-        let mut deleted = 0;
-        for rel_id in rel_ids {
-            if self.delete_relationship(rel_id) {
-                deleted += 1;
-            }
-        }
-        deleted
+    /// Delete each relationship in `rel_ids` that exists, in order, and
+    /// return how many went. Same effect and the same mutation events as
+    /// [`Self::delete_relationship`] on each id; a backend may batch the
+    /// work (the in-memory graph edits each adjacency list once).
+    fn delete_relationships(&mut self, rel_ids: &[RelationshipId]) -> usize {
+        rel_ids
+            .iter()
+            .filter(|&&rel_id| self.delete_relationship(rel_id))
+            .count()
+    }
+
+    /// [`Self::detach_delete_node`] each node in `node_ids`, in order, and
+    /// return how many were deleted. The mutation events are the same as
+    /// those calls emit; a backend may batch the work.
+    fn detach_delete_nodes(&mut self, node_ids: &[NodeId]) -> usize {
+        node_ids
+            .iter()
+            .filter(|&&node_id| self.detach_delete_node(node_id))
+            .count()
     }
 
     fn get_or_create_node(

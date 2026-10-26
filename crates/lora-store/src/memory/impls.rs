@@ -14,6 +14,7 @@ use crate::{
     PropertyValue, RelRef, RelationshipId, RelationshipRecord, StoredIndexEntity,
 };
 
+use super::graph::PendingAdjRemovals;
 use super::property_index::PropertyIndexKey;
 use super::InMemoryGraph;
 
@@ -966,6 +967,71 @@ impl GraphStorage for InMemoryGraph {
     }
 }
 
+impl InMemoryGraph {
+    /// [`GraphStorageMut::delete_relationship`], leaving the edits of long
+    /// adjacency lists in `pending` when it is given. The caller flushes
+    /// them before anything reads adjacency again.
+    fn delete_relationship_deferring(
+        &mut self,
+        rel_id: RelationshipId,
+        pending: Option<&mut PendingAdjRemovals>,
+    ) -> bool {
+        let applied = match self.take_rel(rel_id) {
+            Some(rel) => {
+                if let Some(sink) = &self.deleted_sink {
+                    sink.relationship_deleted(&rel);
+                }
+                self.on_relationship_deleted(&rel, pending);
+                true
+            }
+            None => false,
+        };
+        if applied {
+            self.emit(|| MutationEvent::DeleteRelationship { rel_id });
+        }
+        applied
+    }
+
+    /// [`GraphStorageMut::detach_delete_node`] with the far ends' long
+    /// lists left in `pending`. The node's own lists are read and cleared
+    /// first, so an entry still pending there (from an earlier node of the
+    /// same batch) only names a relationship that is gone, which the
+    /// delete skips, as it would have found the entry removed.
+    fn detach_delete_deferring(
+        &mut self,
+        node_id: NodeId,
+        pending: &mut PendingAdjRemovals,
+    ) -> bool {
+        if !self.has_node_at(node_id) {
+            return false;
+        }
+
+        let rel_ids = self.incident_relationship_ids(node_id);
+
+        // We deliberately fire per-relationship DeleteRelationship events
+        // here and a DetachDeleteNode event at the end. A WAL replayer that
+        // sees DetachDeleteNode can ignore the preceding DeleteRelationship
+        // events, or replay them, after which the DetachDeleteNode is a
+        // no-op on the remaining (now-empty) node. The
+        // emit-before-delete choice costs one extra event per mutation but
+        // keeps the replay contract simple: "apply every event in order".
+        //
+        // The node's own lists go first: each removal below then edits only
+        // the other endpoint's list (a self-loop finds nothing on either side).
+        self.clear_adjacency(node_id);
+        for rel_id in rel_ids {
+            let _ = self.delete_relationship_deferring(rel_id, Some(pending));
+        }
+
+        if self.delete_node(node_id) {
+            self.emit(|| MutationEvent::DetachDeleteNode { node_id });
+            true
+        } else {
+            false
+        }
+    }
+}
+
 impl GraphStorageMut for InMemoryGraph {
     fn try_create_node(
         &mut self,
@@ -1148,20 +1214,17 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn delete_relationship(&mut self, rel_id: RelationshipId) -> bool {
-        let applied = match self.take_rel(rel_id) {
-            Some(rel) => {
-                if let Some(sink) = &self.deleted_sink {
-                    sink.relationship_deleted(&rel);
-                }
-                self.on_relationship_deleted(&rel);
-                true
-            }
-            None => false,
-        };
-        if applied {
-            self.emit(|| MutationEvent::DeleteRelationship { rel_id });
-        }
-        applied
+        self.delete_relationship_deferring(rel_id, None)
+    }
+
+    fn delete_relationships(&mut self, rel_ids: &[RelationshipId]) -> usize {
+        let mut pending = PendingAdjRemovals::new();
+        let deleted = rel_ids
+            .iter()
+            .filter(|&&rel_id| self.delete_relationship_deferring(rel_id, Some(&mut pending)))
+            .count();
+        self.flush_adjacency_removals(&mut pending);
+        deleted
     }
 
     fn delete_node(&mut self, node_id: NodeId) -> bool {
@@ -1191,37 +1254,17 @@ impl GraphStorageMut for InMemoryGraph {
     }
 
     fn detach_delete_node(&mut self, node_id: NodeId) -> bool {
-        if !self.has_node_at(node_id) {
-            return false;
-        }
+        self.detach_delete_nodes(&[node_id]) == 1
+    }
 
-        let rel_ids: Vec<_> = self
-            .incident_relationship_ids(node_id)
-            .into_iter()
-            .collect();
-
-        // We deliberately fire per-relationship DeleteRelationship events
-        // here (via `delete_relationship`) and a DetachDeleteNode event at
-        // the end. A WAL replayer that sees DetachDeleteNode can ignore the
-        // preceding DeleteRelationship events — or, equivalently, replay
-        // them and the DetachDeleteNode becomes a no-op on the remaining
-        // (now-empty) node. The emit-before-delete choice costs one extra
-        // event per mutation but keeps the replay contract simple:
-        // "apply every event in order".
-        //
-        // The node's own lists go first: each removal below then edits only
-        // the other endpoint's list (a self-loop finds nothing on either side).
-        self.clear_adjacency(node_id);
-        for rel_id in rel_ids {
-            let _ = self.delete_relationship(rel_id);
-        }
-
-        if self.delete_node(node_id) {
-            self.emit(|| MutationEvent::DetachDeleteNode { node_id });
-            true
-        } else {
-            false
-        }
+    fn detach_delete_nodes(&mut self, node_ids: &[NodeId]) -> usize {
+        let mut pending = PendingAdjRemovals::new();
+        let deleted = node_ids
+            .iter()
+            .filter(|&&node_id| self.detach_delete_deferring(node_id, &mut pending))
+            .count();
+        self.flush_adjacency_removals(&mut pending);
+        deleted
     }
 
     fn clear(&mut self) {

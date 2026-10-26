@@ -501,6 +501,105 @@ impl Adjacency {
         true
     }
 
+    /// Remove the entries for every relationship in `rels` (sorted
+    /// ascending) from the list on `side` in one pass, keeping the order
+    /// of the rest. Returns how many entries went. Removing them one at a
+    /// time with [`Self::remove`] scans and compacts the list once per
+    /// entry, which is quadratic for a hub losing many relationships.
+    pub(super) fn remove_all(&mut self, side: Side, rels: &[RelationshipId]) -> usize {
+        debug_assert!(rels.windows(2).all(|w| w[0] <= w[1]));
+        let gone = |rel: RelationshipId| rels.binary_search(&rel).is_ok();
+        // The first entry to remove: everything before it stays in place,
+        // and a list without one is left alone (and unshared).
+        let mut iter = self.side(side).iter();
+        let first = loop {
+            let before = iter.pos();
+            let Some(entry) = iter.next() else {
+                return 0;
+            };
+            if gone(entry.rel) {
+                break before;
+            }
+        };
+        // Offsets are relative to the side's bytes, which a copy keeps.
+        self.make_unique(0);
+        let Some(ptr) = self.ptr else {
+            return 0;
+        };
+        let mut removed = 0;
+        // SAFETY: the slice is exactly the side's written bytes, the
+        // allocation is unshared and `&mut self` makes the access
+        // exclusive. Every move stays inside the slice.
+        unsafe {
+            let cap = Self::cap_of(ptr);
+            let header = &mut *ptr.as_ptr();
+            let data = Self::data(ptr);
+            if side == Side::Out {
+                let len = header.out_len as usize;
+                let bytes = std::slice::from_raw_parts_mut(data, len);
+                // Kept entries move down to `write`, oldest first.
+                let (mut read, mut write) = (first, first);
+                while read < len {
+                    let n = entry_len(bytes[read]);
+                    let rel = AdjIter {
+                        bytes,
+                        pos: read,
+                        mirrored: false,
+                    }
+                    .next()
+                    .expect("an entry starts here")
+                    .rel;
+                    if gone(rel) {
+                        removed += 1;
+                    } else {
+                        bytes.copy_within(read..read + n, write);
+                        write += n;
+                    }
+                    read += n;
+                }
+                header.out_len = write as u32;
+            } else {
+                // Mirrored: the oldest entry is at the end of the slice, and
+                // kept entries move up towards it, ending at `write`.
+                let len = header.in_len as usize;
+                let bytes = std::slice::from_raw_parts_mut(data.add(cap - len), len);
+                let (mut read, mut write) = (first, first);
+                while read > 0 {
+                    let n = entry_len(bytes[read - 1]);
+                    let rel = AdjIter {
+                        bytes,
+                        pos: read,
+                        mirrored: true,
+                    }
+                    .next()
+                    .expect("an entry ends here")
+                    .rel;
+                    if gone(rel) {
+                        removed += 1;
+                    } else {
+                        bytes.copy_within(read - n..read, write - n);
+                        write -= n;
+                    }
+                    read -= n;
+                }
+                header.in_len = (len - write) as u32;
+            }
+        }
+        if self.outgoing().is_empty() && self.incoming().is_empty() {
+            self.free();
+        }
+        removed
+    }
+
+    /// Bytes of the list on `side`, without walking it.
+    #[inline]
+    pub(super) fn side_bytes(&self, side: Side) -> usize {
+        self.header().map_or(0, |h| match side {
+            Side::Out => h.out_len as usize,
+            Side::In => h.in_len as usize,
+        })
+    }
+
     /// Heap bytes of the allocation, counted in full by every handle that
     /// shares it.
     pub(super) fn heap_bytes(&self) -> usize {
@@ -827,6 +926,60 @@ mod tests {
             for e in other {
                 assert!(adj.remove(dir.opposite(), e.rel));
             }
+            assert_eq!(adj.heap_bytes(), 0);
+        }
+    }
+
+    #[test]
+    fn remove_all_takes_exactly_the_given_entries_and_keeps_order() {
+        for dir in [Side::Out, Side::In] {
+            let entries = entries();
+            let mut adj = Adjacency::default();
+            for &e in &entries {
+                adj.push(dir, e);
+                adj.push(
+                    dir.opposite(),
+                    AdjEntry {
+                        rel: e.rel ^ 1,
+                        ..e
+                    },
+                );
+            }
+            let other: Vec<_> = adj.side(dir.opposite()).iter().collect();
+            let shared = adj.clone();
+            // Every third entry, the oldest, the newest and an absent id.
+            let mut gone: Vec<_> = entries
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| i % 3 == 1 || *i == 0 || *i == entries.len() - 1)
+                .map(|(_, e)| e.rel)
+                .collect();
+            let absent = (0..).find(|r| entries.iter().all(|e| e.rel != *r)).unwrap();
+            gone.push(absent);
+            gone.sort_unstable();
+            let expected: Vec<_> = entries
+                .iter()
+                .copied()
+                .filter(|e| gone.binary_search(&e.rel).is_err())
+                .collect();
+            assert_eq!(adj.remove_all(dir, &gone), entries.len() - expected.len());
+            assert_eq!(adj.side(dir).iter().collect::<Vec<_>>(), expected);
+            assert_eq!(adj.side(dir).count(), expected.len());
+            assert_eq!(adj.side(dir.opposite()).iter().collect::<Vec<_>>(), other);
+            assert_eq!(
+                shared.side(dir).iter().collect::<Vec<_>>(),
+                entries,
+                "the shared handle keeps every entry"
+            );
+            assert_eq!(adj.remove_all(dir, &[absent]), 0);
+            // Then everything that is left, on both sides: the allocation goes.
+            let mut rest: Vec<_> = expected.iter().map(|e| e.rel).collect();
+            rest.sort_unstable();
+            assert_eq!(adj.remove_all(dir, &rest), expected.len());
+            assert!(adj.side(dir).is_empty());
+            let mut rest: Vec<_> = other.iter().map(|e| e.rel).collect();
+            rest.sort_unstable();
+            assert_eq!(adj.remove_all(dir.opposite(), &rest), other.len());
             assert_eq!(adj.heap_bytes(), 0);
         }
     }

@@ -661,6 +661,216 @@ fn detach_delete_hub_keeps_neighbour_adjacency_exact() {
     );
 }
 
+/// A graph with two hubs (lists far past the batch-defer threshold),
+/// self-loops, parallel edges both ways and plain leaf-to-leaf edges.
+/// Returns the graph and its relationship ids.
+fn hub_graph() -> (InMemoryGraph, Vec<u64>) {
+    use super::test_util::splitmix;
+    let mut g = InMemoryGraph::new();
+    let hub = g.create_node(vec!["H".into()], Properties::new()).id;
+    let other = g.create_node(vec!["H".into()], Properties::new()).id;
+    let leaves: Vec<_> = (0..300)
+        .map(|_| g.create_node(vec!["L".into()], Properties::new()).id)
+        .collect();
+    let mut rels = Vec::new();
+    let mut rel = |g: &mut InMemoryGraph, src, dst, ty: &str| {
+        rels.push(
+            g.create_relationship(src, dst, ty, Properties::new())
+                .unwrap()
+                .id,
+        );
+    };
+    for i in 0..1200u64 {
+        let leaf = leaves[(splitmix(i) % leaves.len() as u64) as usize];
+        match i % 7 {
+            0 | 1 => rel(&mut g, hub, leaf, "OUT"),
+            2 => rel(&mut g, leaf, hub, "IN"),
+            3 => rel(&mut g, hub, other, "PAR"),
+            4 => rel(&mut g, other, hub, "PAR"),
+            5 if i % 5 == 0 => rel(&mut g, hub, hub, "SELF"),
+            _ => {
+                let far = leaves[(splitmix(i + 7) % leaves.len() as u64) as usize];
+                rel(&mut g, leaf, far, "LEAF")
+            }
+        }
+    }
+    (g, rels)
+}
+
+fn with_events(g: &mut InMemoryGraph) -> Arc<std::sync::Mutex<Vec<MutationEvent>>> {
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = events.clone();
+    g.set_mutation_recorder(Some(Arc::new(crate::ClosureRecorder(
+        move |event: MutationEvent| sink.lock().unwrap().push(event),
+    ))));
+    events
+}
+
+/// Every node's lists, in order, and every live relationship.
+fn shape(g: &InMemoryGraph) -> Vec<(u64, Vec<u64>, Vec<u64>)> {
+    let mut nodes = g.all_node_ids();
+    nodes.sort_unstable();
+    nodes
+        .into_iter()
+        .map(|n| {
+            (
+                n,
+                g.relationship_ids_of(n, Direction::Right),
+                g.relationship_ids_of(n, Direction::Left),
+            )
+        })
+        .collect()
+}
+
+/// Deleting relationships and detach deleting nodes in a batch must leave
+/// exactly the graph, adjacency order and mutation events of doing it one
+/// at a time, and must not touch a staged copy.
+#[test]
+fn batch_deletes_match_one_at_a_time() {
+    use super::test_util::splitmix;
+    let (base, rels) = hub_graph();
+    let mut doomed: Vec<_> = rels
+        .iter()
+        .copied()
+        .filter(|&r| splitmix(r) % 3 != 0)
+        .collect();
+    // Out of id order, with a repeat and an id that never existed.
+    doomed.sort_by_key(|&r| splitmix(r ^ 99));
+    doomed.push(doomed[0]);
+    doomed.push(u64::from(u32::MAX));
+    let detach: Vec<u64> = [1, 5, 9, 9, 40, 0, 77, 100_000].into_iter().collect();
+
+    let mut one = base.clone();
+    let one_events = with_events(&mut one);
+    let one_deleted = doomed
+        .iter()
+        .filter(|&&r| one.delete_relationship(r))
+        .count();
+    let one_detached = detach
+        .iter()
+        .filter(|&&n| one.detach_delete_node(n))
+        .count();
+
+    let mut batch = base.clone();
+    let batch_events = with_events(&mut batch);
+    assert_eq!(batch.delete_relationships(&doomed), one_deleted);
+    assert_eq!(batch.detach_delete_nodes(&detach), one_detached);
+
+    assert_eq!(one_deleted, doomed.len() - 2);
+    assert_eq!(one_detached, 6);
+    assert_eq!(shape(&batch), shape(&one));
+    assert_eq!(
+        GraphStorage::relationship_count(&batch),
+        GraphStorage::relationship_count(&one)
+    );
+    assert_eq!(
+        *batch_events.lock().unwrap(),
+        *one_events.lock().unwrap(),
+        "the same events in the same order"
+    );
+    let mut live = batch.all_relationships();
+    live.sort_by_key(|r| r.id);
+    for r in &live {
+        assert!(batch
+            .relationship_ids_of(r.src, Direction::Right)
+            .contains(&r.id));
+        assert!(batch
+            .relationship_ids_of(r.dst, Direction::Left)
+            .contains(&r.id));
+    }
+
+    // The staged copies left the original alone.
+    let (fresh, _) = hub_graph();
+    assert_eq!(shape(&base), shape(&fresh));
+}
+
+/// Best-of-three milliseconds of `run` on a fresh graph from `build`.
+fn best_ms<T>(build: impl Fn() -> T, run: impl Fn(&mut T)) -> f64 {
+    (0..3)
+        .map(|_| {
+            let mut input = build();
+            let start = std::time::Instant::now();
+            run(&mut input);
+            start.elapsed().as_secs_f64() * 1000.0
+        })
+        .fold(f64::MAX, f64::min)
+}
+
+/// A star: one hub with `n` relationships each way to `n` leaves.
+fn star(n: usize) -> (InMemoryGraph, u64, Vec<u64>, Vec<u64>) {
+    let mut g = InMemoryGraph::new();
+    let hub = g.create_node(vec!["H".into()], Properties::new()).id;
+    let mut leaves = Vec::with_capacity(n);
+    let mut rels = Vec::with_capacity(2 * n);
+    for _ in 0..n {
+        let leaf = g.create_node(vec!["L".into()], Properties::new()).id;
+        leaves.push(leaf);
+        rels.push(
+            g.create_relationship(hub, leaf, "R", Properties::new())
+                .unwrap()
+                .id,
+        );
+        rels.push(
+            g.create_relationship(leaf, hub, "R", Properties::new())
+                .unwrap()
+                .id,
+        );
+    }
+    (g, hub, leaves, rels)
+}
+
+/// Deleting many relationships of one hub in one batch is linear in its
+/// degree: one at a time it scanned and compacted the hub's list per
+/// relationship, and 80k took half a second in a release build. The
+/// check is a growth ratio (8x the work must cost well under 64x the
+/// time), so it holds on slow debug builds.
+#[test]
+fn deleting_a_hubs_relationships_is_linear_in_its_degree() {
+    let ratio = |run: &dyn Fn(&mut (InMemoryGraph, u64, Vec<u64>, Vec<u64>))| {
+        let small = best_ms(|| star(10_000), run);
+        let large = best_ms(|| star(80_000), run);
+        large / small.max(0.01)
+    };
+    let all_rels = |s: &mut (InMemoryGraph, u64, Vec<u64>, Vec<u64>)| {
+        assert_eq!(s.0.delete_relationships(&s.3), s.3.len());
+        assert!(!s.0.has_incident_relationships(s.1));
+    };
+    let all_leaves = |s: &mut (InMemoryGraph, u64, Vec<u64>, Vec<u64>)| {
+        assert_eq!(s.0.detach_delete_nodes(&s.2), s.2.len());
+        assert!(!s.0.has_incident_relationships(s.1));
+    };
+    for (name, run) in [
+        ("delete_relationships", &all_rels as &dyn Fn(&mut _)),
+        ("detach_delete_nodes", &all_leaves),
+    ] {
+        let r = ratio(run);
+        assert!(
+            r < 24.0,
+            "{name}: 8x the relationships took {r:.1}x as long"
+        );
+    }
+
+    // Parallel edges: detach deleting one end edits the other end's
+    // single long list.
+    let pair = |n: usize| {
+        move || {
+            let mut g = InMemoryGraph::new();
+            let a = g.create_node(vec![], Properties::new()).id;
+            let b = g.create_node(vec![], Properties::new()).id;
+            for _ in 0..n {
+                g.create_relationship(a, b, "R", Properties::new()).unwrap();
+            }
+            (g, a, b)
+        }
+    };
+    let detach_a = |s: &mut (InMemoryGraph, u64, u64)| {
+        assert!(s.0.detach_delete_node(s.1));
+        assert!(!s.0.has_incident_relationships(s.2));
+    };
+    let r = best_ms(pair(80_000), detach_a) / best_ms(pair(10_000), detach_a).max(0.01);
+    assert!(r < 24.0, "detach of a parallel-edge end: 8x took {r:.1}x");
+}
+
 #[test]
 fn duplicate_labels_are_normalized_on_create() {
     let mut g = InMemoryGraph::new();
