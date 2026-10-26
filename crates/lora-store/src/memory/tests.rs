@@ -732,7 +732,7 @@ fn batch_deletes_match_one_at_a_time() {
     let mut doomed: Vec<_> = rels
         .iter()
         .copied()
-        .filter(|&r| splitmix(r) % 3 != 0)
+        .filter(|&r| !splitmix(r).is_multiple_of(3))
         .collect();
     // Out of id order, with a repeat and an id that never existed.
     doomed.sort_by_key(|&r| splitmix(r ^ 99));
@@ -796,8 +796,11 @@ fn best_ms<T>(build: impl Fn() -> T, run: impl Fn(&mut T)) -> f64 {
         .fold(f64::MAX, f64::min)
 }
 
+/// A hub, its id, its neighbours' ids and its relationships' ids.
+type Star = (InMemoryGraph, u64, Vec<u64>, Vec<u64>);
+
 /// A star: one hub with `n` relationships each way to `n` leaves.
-fn star(n: usize) -> (InMemoryGraph, u64, Vec<u64>, Vec<u64>) {
+fn star(n: usize) -> Star {
     let mut g = InMemoryGraph::new();
     let hub = g.create_node(vec!["H".into()], Properties::new()).id;
     let mut leaves = Vec::with_capacity(n);
@@ -826,16 +829,16 @@ fn star(n: usize) -> (InMemoryGraph, u64, Vec<u64>, Vec<u64>) {
 /// time), so it holds on slow debug builds.
 #[test]
 fn deleting_a_hubs_relationships_is_linear_in_its_degree() {
-    let ratio = |run: &dyn Fn(&mut (InMemoryGraph, u64, Vec<u64>, Vec<u64>))| {
+    let ratio = |run: &dyn Fn(&mut Star)| {
         let small = best_ms(|| star(10_000), run);
         let large = best_ms(|| star(80_000), run);
         large / small.max(0.01)
     };
-    let all_rels = |s: &mut (InMemoryGraph, u64, Vec<u64>, Vec<u64>)| {
+    let all_rels = |s: &mut Star| {
         assert_eq!(s.0.delete_relationships(&s.3), s.3.len());
         assert!(!s.0.has_incident_relationships(s.1));
     };
-    let all_leaves = |s: &mut (InMemoryGraph, u64, Vec<u64>, Vec<u64>)| {
+    let all_leaves = |s: &mut Star| {
         assert_eq!(s.0.detach_delete_nodes(&s.2), s.2.len());
         assert!(!s.0.has_incident_relationships(s.1));
     };
