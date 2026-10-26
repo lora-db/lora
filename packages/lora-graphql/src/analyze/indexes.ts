@@ -73,6 +73,8 @@ const TEXT_OPS = new Set<FilterOperator>([
  * - `@sortable` on a non-null field → existence constraint: keyset
  *   pagination may then bound the scan with `>=` without losing nulls.
  * - `EQ` / `IN` → nothing: LoraDB builds exact-match indexes lazily.
+ * - `INCLUDES` on a list → RANGE: it keeps each list's elements, so
+ *   `$v IN n.list` seeks them instead of scanning the label (G-63).
  * - `LT` / `LTE` / `GT` / `GTE` → RANGE; `@sortable` too, when a root list
  *   or connection can sort by it (see `rootSortable`).
  * - `CONTAINS` / `STARTS_WITH` / `ENDS_WITH` → TEXT.
@@ -147,6 +149,8 @@ export function inferRequirements(model: GraphModel): SchemaRequirement[] {
         const range = ops.filter((op) => RANGE_OPS.has(op));
         if (range.length > 0) {
           kinds.set("RANGE", `${at} is @filterable by ${range.join(", ")}`);
+        } else if (f.list && ops.includes("INCLUDES")) {
+          kinds.set("RANGE", `${at} is @filterable by INCLUDES`);
         } else if (rootSortable(model, node, f)) {
           kinds.set("RANGE", `${at} is @sortable`);
         }
