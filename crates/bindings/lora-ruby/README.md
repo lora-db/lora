@@ -80,9 +80,9 @@ LoraRuby::Database.create(database_name = nil, options = nil)  # -> Database
 LoraRuby::Database.new(database_name = nil, options = nil)     # -> Database
 LoraRuby::Database.open_wal(wal_dir, options = nil)            # -> Database
 
-db.execute(query, params = nil)       # -> { "columns" => [...], "rows" => [...] }
-db.explain(query, params = nil)       # -> plan Hash; never executes
-db.profile(query, params = nil)       # -> { "plan" => ..., "metrics" => ... }; PROFILE executes writes
+db.execute(query, params = nil, timeout_ms: nil)  # -> { "columns" => [...], "rows" => [...] }
+db.explain(query, params = nil)                   # -> plan Hash; never executes
+db.profile(query, params = nil, timeout_ms: nil)  # -> { "plan" => ..., "metrics" => ... }; PROFILE executes writes
 db.clear                              # -> nil
 db.node_count                         # -> Integer
 db.relationship_count                 # -> Integer
@@ -218,12 +218,26 @@ binding has no interactive transactions: each write takes the lock and
 releases it within one call. So a waiting writer never blocks the writer
 holding the lock, however many threads write at once.
 
-The engine has no cancellation hook, so we pass a `NULL` unblock
-function. A thread interrupted mid-query (`Thread#kill`, `Ctrl-C`) will
-observe the interrupt **after** the current call finishes, including a
-write that was still waiting for the writer lock (it runs, then the
-interrupt fires). Keep queries short if you rely on cooperative
-cancellation.
+### Timeouts and interrupts
+
+Pass `timeout_ms:` to bound a query. When the time runs out the query
+stops at its next check point, rolls back any writes, releases its locks,
+and raises `LoraRuby::QueryError` with code `LORA_TIMEOUT`:
+
+```ruby
+db.execute("MATCH (a), (b) RETURN count(*)", nil, timeout_ms: 2_000)
+db.execute("MATCH (n {id: $id}) RETURN n", { id: 1 }, timeout_ms: 500)
+```
+
+A query with `timeout_ms:` can also be interrupted: `Thread#raise`,
+`Thread#kill`, `Timeout.timeout` and `Ctrl-C` cancel it the same way, and
+the interrupt is then raised as usual. A query without `timeout_ms:` runs
+without a deadline (deadline checks cost a little on large scans) and
+observes an interrupt only **after** it finishes.
+
+`timeout_ms` is a reserved keyword: other keywords are still accepted as
+query params (`db.execute(q, name: "Ada")`), but a param named
+`timeout_ms` has to go in an explicit params hash.
 
 ## Local development
 
