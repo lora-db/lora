@@ -609,6 +609,58 @@ fn detach_delete_removes_incident_relationships() {
     assert_eq!(g.all_relationships().len(), 0);
 }
 
+/// A hub's own lists are dropped before its relationships go, so the
+/// far ends (and self-loops and parallel edges) must still lose exactly
+/// their entries, and a staged copy must leave the original untouched.
+#[test]
+fn detach_delete_hub_keeps_neighbour_adjacency_exact() {
+    let mut g = InMemoryGraph::new();
+    let hub = g.create_node(vec!["H".into()], Properties::new()).id;
+    let a = g.create_node(vec!["L".into()], Properties::new()).id;
+    let b = g.create_node(vec!["L".into()], Properties::new()).id;
+    let ab = g
+        .create_relationship(a, b, "R", Properties::new())
+        .unwrap()
+        .id;
+    let mut hub_rels = Vec::new();
+    for (src, dst) in [
+        (hub, a),
+        (a, hub),
+        (hub, a),
+        (hub, hub),
+        (b, hub),
+        (hub, hub),
+    ] {
+        hub_rels.push(
+            g.create_relationship(src, dst, "R", Properties::new())
+                .unwrap()
+                .id,
+        );
+    }
+    let original = g.clone();
+
+    assert!(g.detach_delete_node(hub));
+    assert!(g.node(hub).is_none());
+    for id in &hub_rels {
+        assert!(g.relationship(*id).is_none());
+    }
+    assert_eq!(g.relationship_ids_of(a, Direction::Undirected), vec![ab]);
+    assert_eq!(g.relationship_ids_of(b, Direction::Undirected), vec![ab]);
+    assert_eq!(GraphStorage::relationship_count(&g), 1);
+
+    assert!(original.node(hub).is_some());
+    assert_eq!(
+        original
+            .relationship_ids_of(hub, Direction::Undirected)
+            .len(),
+        6
+    );
+    assert_eq!(
+        original.relationship_ids_of(a, Direction::Undirected).len(),
+        4
+    );
+}
+
 #[test]
 fn duplicate_labels_are_normalized_on_create() {
     let mut g = InMemoryGraph::new();
@@ -1237,4 +1289,50 @@ fn a_lookup_without_a_label_finds_every_node_once_through_label_changes() {
         vec![other]
     );
     g.assert_property_indexes_match_scan();
+}
+
+/// A vector written under a label (or key) no vector index covers must
+/// not take the vector registry's write guard: on a graph shared with a
+/// reader that copies every vector index.
+#[test]
+fn uncovered_vector_write_keeps_vector_indexes_shared() {
+    use crate::{IndexRequest, LoraVector, StoredIndexEntity, StoredIndexKind, VectorValues};
+    use std::collections::BTreeMap;
+
+    let vector = |x: f32| {
+        PropertyValue::Vector(LoraVector {
+            dimension: 2,
+            values: VectorValues::Float32(vec![x, 1.0]),
+        })
+    };
+    let mut g = InMemoryGraph::new();
+    g.create_node(vec!["Doc".into()], props(&[("emb", vector(0.5))]));
+    g.create_index(
+        IndexRequest {
+            explicit_name: Some("doc_emb".into()),
+            kind: StoredIndexKind::Vector,
+            entity: StoredIndexEntity::Node,
+            label: Some("Doc".into()),
+            additional_labels: Vec::new(),
+            properties: vec!["emb".into()],
+            options: BTreeMap::new(),
+        },
+        false,
+    )
+    .unwrap();
+    let registry =
+        |g: &InMemoryGraph| &*g.vector_indexes_read(StoredIndexEntity::Node) as *const _ as usize;
+
+    let mut staged = g.clone();
+    staged.create_node(vec!["Other".into()], props(&[("emb", vector(1.0))]));
+    staged.create_node(vec!["Doc".into()], props(&[("other", vector(1.0))]));
+    assert_eq!(registry(&staged), registry(&g));
+
+    // A covered write still reaches the index.
+    staged.create_node(vec!["Doc".into()], props(&[("emb", vector(2.0))]));
+    assert_ne!(registry(&staged), registry(&g));
+    let PropertyValue::Vector(query) = vector(2.0) else {
+        unreachable!()
+    };
+    assert_eq!(staged.vector_search("doc_emb", &query, 10, None).len(), 2);
 }

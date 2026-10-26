@@ -252,7 +252,12 @@ impl FulltextIndex {
         }
         let mut new_terms: Vec<Arc<str>> = Vec::with_capacity(terms.len());
         for (term, tf) in terms {
-            let term: Arc<str> = Arc::from(term);
+            // Share the posting list's key: a fresh `Arc` per entity would
+            // keep another copy of the term for every entity holding it.
+            let term: Arc<str> = match self.postings.get_key_value(term.as_str()) {
+                Some((stored, _)) => stored.clone(),
+                None => Arc::from(term),
+            };
             self.postings
                 .get_or_insert_with(term.clone(), CowIdMap::default)
                 .insert(entity_id, tf);
@@ -506,6 +511,21 @@ mod tests {
         assert!(r.is_empty(), "expected empty after reindex, got {r:?}");
         let r = idx.query("baz", None);
         assert_eq!(r, vec![(1, 1.0)]);
+    }
+
+    /// Entities holding the same term share the posting list's key
+    /// instead of each keeping a copy.
+    #[test]
+    fn entities_share_the_stored_term() {
+        let mut idx = FulltextIndex::new(vec!["L".into()], vec!["p".into()]);
+        idx.reindex_entity(1, tokenize_to_term_counts("alpha beta"));
+        idx.reindex_entity(2, tokenize_to_term_counts("beta alpha"));
+        let (stored, _) = idx.postings.get_key_value("alpha").expect("indexed");
+        for id in [1, 2] {
+            let terms = idx.entity_terms.get(&id).expect("indexed");
+            let term = terms.iter().find(|t| &***t == "alpha").expect("term");
+            assert!(Arc::ptr_eq(term, stored), "entity {id}");
+        }
     }
 
     #[test]

@@ -187,10 +187,16 @@ impl TrigramScope {
         // narrowed, intersection on subsequent probes runs over a
         // smaller working set.
         grams.sort_by_key(|tri| self.grams.get(tri).map(CowIdMap::len).unwrap_or(usize::MAX));
-        let first = self.grams.get(&grams[0])?;
+        // The scope indexes every value, so a trigram it has never seen
+        // is in no value: nothing matches (`None` would mean a full scan).
+        let Some(first) = self.grams.get(&grams[0]) else {
+            return Some(BTreeSet::new());
+        };
         let mut out: BTreeSet<u64> = first.keys().collect();
         for tri in &grams[1..] {
-            let next = self.grams.get(tri)?;
+            let Some(next) = self.grams.get(tri) else {
+                return Some(BTreeSet::new());
+            };
             out.retain(|id| next.contains_key(id));
             if out.is_empty() {
                 return Some(out);
@@ -235,15 +241,37 @@ mod tests {
     }
 
     #[test]
+    fn unseen_trigram_matches_nothing_without_a_scan() {
+        let mut reg = TrigramRegistry::default();
+        reg.add_scope("Person", "name");
+        reg.insert("Person", "name", 1, "Alice");
+        assert_eq!(
+            reg.candidates("Person", "name", "zzz"),
+            Some(BTreeSet::new())
+        );
+        assert_eq!(
+            reg.candidates("Person", "name", "Alizz"),
+            Some(BTreeSet::new())
+        );
+        // An empty scope has seen no trigram either.
+        reg.add_scope("Person", "nick");
+        assert_eq!(
+            reg.candidates("Person", "nick", "Ali"),
+            Some(BTreeSet::new())
+        );
+        assert!(reg.candidates("Other", "name", "Ali").is_none());
+    }
+
+    #[test]
     fn remove_after_insert_clears_buckets() {
         let mut reg = TrigramRegistry::default();
         reg.add_scope("Person", "name");
         reg.insert("Person", "name", 1, "Alice");
         reg.remove("Person", "name", 1, "Alice");
-        assert!(reg
-            .candidates("Person", "name", "Alic")
-            .map(|s| s.is_empty())
-            .unwrap_or(true));
+        assert_eq!(
+            reg.candidates("Person", "name", "Alic"),
+            Some(BTreeSet::new())
+        );
     }
 
     #[test]
