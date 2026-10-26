@@ -214,11 +214,28 @@ nested more than 128 lists or maps deep are rejected when they are written.
 Recovery follows the same steps in Rust and `lora-server`:
 
 1. Load the snapshot if one was supplied. Its `walLsn` becomes the
-   replay fence. A pure snapshot has `walLsn: null`, which is treated as
-   fence `0`.
+   replay fence. A snapshot saved without a WAL has `walLsn: null`,
+   which is treated as fence `0`.
 2. Open the WAL directory or `.loradb` archive and replay every committed transaction above
    the fence.
 3. Install the live WAL recorder, then accept new queries.
+
+Any snapshot saved from a WAL-backed database carries a fence, whether
+it came from `saveSnapshot`, `POST /admin/snapshot/save` or a checkpoint.
+The save fsyncs the WAL and reads its durable LSN while holding the
+writer lock, so the snapshot and the fence describe the same graph and
+recovery replays exactly the writes made after the save. Writers pause
+for that fsync, not for the snapshot encode. A plain save does not
+write a `Checkpoint` marker or drop WAL segments.
+
+A snapshot with `walLsn: null` (saved without a WAL) is a seed: start
+it over an empty WAL directory with
+`lora-server --restore-from seed.bin --wal-dir <dir>`, and keep passing
+the same seed on later boots. Over a WAL whose early segments a
+checkpoint removed, recovery fails with `LORA_WAL_CORRUPTION` instead of
+replaying a partial log onto it. If the WAL is poisoned, a save writes
+`walLsn: null` too and logs a warning; use that file as a seed for a
+new WAL directory.
 
 Checkpointing creates a new fence:
 

@@ -38,10 +38,27 @@ Writers always emit v5. The reader accepts v2 through v5; a missing trailer
 loads as empty (no indexes, no constraints, vector backends rebuilt from the
 property store).
 
-`wal_lsn` marks a checkpoint produced by `Database::checkpoint_to`, managed
-snapshot checkpointing, or HTTP `POST /admin/checkpoint`. It carries the WAL's
-durable LSN at the time the snapshot was taken so recovery knows which records
-the snapshot already covers. Pure snapshots leave `wal_lsn = null`.
+`wal_lsn` is the WAL fence: the WAL's durable LSN at the time the snapshot was
+taken, so recovery knows which records the snapshot already covers. Every
+snapshot of a WAL-backed database carries it: checkpoints
+(`Database::checkpoint_to`, managed snapshot checkpointing, HTTP
+`POST /admin/checkpoint`) and plain saves (`save_snapshot_to`,
+`save_snapshot_to_bytes` and their `_with_options` forms, every binding's
+`saveSnapshot`, HTTP `POST /admin/snapshot/save`). A save fsyncs the WAL and
+reads its durable LSN under the writer lock, so the graph and the fence match:
+`Database::recover(snapshot, wal)` replays exactly the writes made after the
+save. Writers wait for that fsync (and for an open write transaction to
+finish), not for the snapshot encode. Unlike a checkpoint, a save appends no
+`Checkpoint` marker and truncates no WAL segments.
+
+A database without a WAL writes `wal_lsn = null` (a pure snapshot). So does a
+WAL-backed database whose WAL is poisoned, with a warning in the log: its graph
+may no longer match the log, so that snapshot is a seed for a fresh WAL
+directory, not something to recover over the old WAL. Recovery treats
+`wal_lsn = null` as fence 0 and replays the whole WAL on top of it, which is
+right for a seed over a new WAL directory (`lora-server --restore-from seed.bin
+--wal-dir <empty dir>`) and fails with `WalError::Gap` over a WAL whose early
+segments a checkpoint removed.
 
 Default Rust snapshot options use gzip level 1 with no encryption. The JSON
 options surfaces used by bindings/admin helpers also accept no compression or

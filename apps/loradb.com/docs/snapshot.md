@@ -103,7 +103,7 @@ Node `saveSnapshot()` return the snapshot bytes directly instead.
 | `formatVersion` | integer | On-disk file format the payload is written in. Currently `1`. |
 | `nodeCount` | integer | Nodes in the saved / restored graph. |
 | `relationshipCount` | integer | Relationships in the saved / restored graph. |
-| `walLsn` | integer or null | `null` for a pure snapshot; non-`null` for a checkpoint snapshot written with WAL enabled. |
+| `walLsn` | integer or null | The WAL fence on a WAL-backed database, for saves and checkpoints alike; `null` for a database without a WAL. |
 
 Whenever metadata is returned, every binding uses the same four
 fields; the spelling of the field names matches the wire shape
@@ -346,8 +346,8 @@ if _, err := db2.LoadSnapshot("graph.bin"); err != nil {
 }
 ```
 
-`SnapshotMeta.WalLsn` is a `*uint64`; it is `nil` for pure snapshots
-and non-`nil` when you load or save a checkpoint snapshot stamped by a
+`SnapshotMeta.WalLsn` is a `*uint64`; it is `nil` for snapshots saved
+without a WAL and non-`nil` when you load or save a snapshot stamped by a
 WAL-enabled surface.
 
 ### Ruby
@@ -410,8 +410,11 @@ curl -sX POST http://127.0.0.1:4747/admin/snapshot/save \
 The response includes the same four metadata fields as every other
 binding, plus the `path` that was actually used.
 
-When WAL is enabled, `POST /admin/checkpoint` writes the same snapshot
-format but stamps `walLsn` with the durable WAL fence. See
+When WAL is enabled, every save stamps `walLsn` with the durable WAL
+fence, so the file can be recovered over the same WAL directory without
+replaying writes it already holds. `POST /admin/checkpoint` writes the
+same format and also marks the WAL and drops the segments the snapshot
+covers; a plain save leaves the WAL alone. See
 [WAL and checkpoints](./wal).
 
 ### Restoring at boot

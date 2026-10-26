@@ -100,8 +100,10 @@ startup with "database directory is locked by another process or live handle"
   --wal-sync-mode group-sync
 ```
 
-Combine `--wal-dir` with `--restore-from` to load a checkpoint snapshot and
-replay committed WAL records above the snapshot's fence. Add `--snapshot-path`
+Combine `--wal-dir` with `--restore-from` to load a snapshot and replay
+committed WAL records above the snapshot's fence. Snapshots saved while the
+WAL is on (`/admin/snapshot/save` or `/admin/checkpoint`) carry that fence; a
+seed saved without a WAL has none and should start over an empty `--wal-dir`. Add `--snapshot-path`
 when you also want snapshot save/load admin routes or a default checkpoint path.
 
 > ⚠️ **Security** — The admin endpoints have no authentication and the optional `path` body field is passed straight to the OS. See [Security → Admin surface](security.md#admin-surface) before exposing them.

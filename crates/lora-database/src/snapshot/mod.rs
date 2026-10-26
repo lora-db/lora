@@ -186,6 +186,12 @@ impl Database<InMemoryGraph> {
     /// atomic via a unique `<path>.<pid>.<n>.tmp` + rename + parent-dir
     /// fsync.
     ///
+    /// On a WAL-backed database the WAL is fsynced first and its durable
+    /// LSN is stamped into the snapshot as the fence, so
+    /// [`Database::recover`] from this file replays only the writes made
+    /// after it. Unlike [`Self::checkpoint_to`] it appends no checkpoint
+    /// marker and truncates no WAL segments.
+    ///
     /// Callers that need compression or encryption should reach for
     /// [`Self::save_snapshot_to_with_options`] directly.
     pub fn save_snapshot_to(&self, path: impl AsRef<Path>) -> Result<SnapshotMeta, LoraError> {
@@ -215,8 +221,10 @@ impl Database<InMemoryGraph> {
     /// Serialize the current graph state into the database snapshot byte
     /// format.
     ///
-    /// This uses the column-oriented `lora-snapshot` codec — the same one
-    /// driven by `save_snapshot_to_with_options`, but without a WAL fence.
+    /// This uses the column-oriented `lora-snapshot` codec, the same one
+    /// driven by `save_snapshot_to_with_options`. On a WAL-backed database
+    /// the bytes carry the WAL fence, as a checkpoint does, so
+    /// `Database::recover` replays only the writes made after the save.
     /// The default is uncompressed so bytes stay portable across native
     /// and WASM builds; callers that want a specific codec can use
     /// [`Self::save_snapshot_to_bytes_with_options`].
@@ -235,10 +243,10 @@ impl Database<InMemoryGraph> {
         &self,
         options: &SnapshotOptions,
     ) -> Result<(Vec<u8>, SnapshotInfo), LoraError> {
-        let guard = self.read_store();
-        let payload = guard.snapshot_payload();
+        let (graph, wal_lsn) = self.graph_with_wal_fence()?;
+        let payload = graph.snapshot_payload();
         let mut bytes = Vec::new();
-        let info = encode_snapshot_to(&mut bytes, &payload, None, options)?;
+        let info = encode_snapshot_to(&mut bytes, &payload, wal_lsn, options)?;
         Ok((bytes, info))
     }
 
@@ -253,11 +261,11 @@ impl Database<InMemoryGraph> {
     ) -> Result<SnapshotMeta, LoraError> {
         let path = path.as_ref();
         let tmp = snapshot_tmp_path(path);
-        let guard = self.read_store();
+        let (graph, wal_lsn) = self.graph_with_wal_fence()?;
 
         let tmp_guard = TempFileGuard::new(tmp.clone());
-        let info = write_graph_snapshot_file(&tmp, &guard, None, options)?;
-        drop(guard);
+        let info = write_graph_snapshot_file(&tmp, &graph, wal_lsn, options)?;
+        drop(graph);
 
         std::fs::rename(&tmp, path)?;
         tmp_guard.commit();
@@ -265,6 +273,40 @@ impl Database<InMemoryGraph> {
         sync_parent_dir(path).map_err(|e| LoraError::new(LoraErrorCode::Io, e.to_string()))?;
 
         Ok(snapshot_info_to_meta(info))
+    }
+
+    /// The published graph and, on a WAL-backed database, the WAL fence
+    /// that covers it: the durable LSN of the last record the graph
+    /// contains. Both are taken under the writer lock after a WAL fsync,
+    /// so `Database::recover` from a snapshot of this graph replays
+    /// exactly the records after it. Writers wait only for the fsync,
+    /// not while the snapshot is encoded.
+    ///
+    /// A database without a WAL has no fence. Neither has a poisoned
+    /// WAL: its graph may not match the log any more, so the snapshot is
+    /// written unfenced, as a seed for a fresh WAL directory.
+    fn graph_with_wal_fence(&self) -> Result<(Arc<InMemoryGraph>, Option<u64>), LoraError> {
+        let Some(recorder) = &self.wal else {
+            return Ok((self.read_store(), None));
+        };
+        let _writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match recorder.force_fsync_wal_only() {
+            Ok(()) => Ok((
+                self.store.load_full(),
+                Some(recorder.wal().durable_lsn().raw()),
+            )),
+            Err(lora_wal::WalError::Poisoned) => {
+                tracing::warn!(
+                    reason = recorder.poisoned_reason().unwrap_or_default(),
+                    "WAL is poisoned; saving an unfenced snapshot that must not be recovered over this WAL"
+                );
+                Ok((self.store.load_full(), None))
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Replace the current graph state from snapshot bytes (columnar
@@ -404,8 +446,8 @@ impl Database<InMemoryGraph> {
     /// fence.
     ///
     /// Errors with "checkpoint requires WAL enabled" when called on a
-    /// database constructed without a WAL — operators that just want
-    /// a fence-less dump should use [`Self::save_snapshot_to`] instead.
+    /// database constructed without a WAL; [`Self::save_snapshot_to`]
+    /// writes a snapshot without touching the WAL.
     ///
     /// The write-lock-held window covers snapshot serialization plus the
     /// checkpoint marker append. Truncation runs after the rename

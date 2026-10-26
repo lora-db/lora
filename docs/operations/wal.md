@@ -117,7 +117,11 @@ uncommitted transaction records.
 
 1. Load the snapshot, capturing its `wal_lsn` (the fence). A missing
    snapshot file is treated as "fresh start", so operators can pass
-   the same path on every boot.
+   the same path on every boot. Snapshots saved from a WAL-backed
+   database carry the fence whether they came from `checkpoint_to` or
+   `save_snapshot_to*` (see [Snapshots](snapshots.md)); a snapshot saved
+   without a WAL has none and counts as fence 0, a seed for a fresh WAL
+   directory.
 2. Open the WAL at `dir` with that fence. `replay_segments` walks
    every segment, drops records at or below the fence (already in the
    loaded snapshot), buffers per-transaction events, and emits only

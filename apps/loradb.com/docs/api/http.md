@@ -277,7 +277,7 @@ Both endpoints accept the same optional JSON body:
 | `formatVersion` | number | The snapshot file format version (currently `1`). |
 | `nodeCount` | number | Nodes in the saved / loaded graph. |
 | `relationshipCount` | number | Relationships in the saved / loaded graph. |
-| `walLsn` | number or null | `null` for a pure snapshot; non-`null` for a checkpoint snapshot written with WAL enabled. |
+| `walLsn` | number or null | The WAL fence when the server runs with `--wal-dir`, for saves and checkpoints alike; `null` without a WAL. |
 | `path` | string | Filesystem path the server actually used. |
 
 ### Snapshot save / load response (error)
