@@ -585,24 +585,22 @@ fn vector_one(registry: &VectorIndexRegistry) -> usize {
 }
 
 fn flat_backend_bytes(b: &FlatBackend) -> usize {
-    let mut total = 0;
-    for v in b.items.values() {
-        total +=
-            BTREE_PER_ENTRY + size_of::<u64>() + size_of::<LoraVector>() + vector_heap_bytes(v);
+    let mut total = b.items.heap_bytes();
+    for (_, v) in b.items.iter() {
+        total += ARC_HEADER + size_of::<LoraVector>() + vector_heap_bytes(v);
     }
     total
 }
 
 fn hnsw_backend_bytes(b: &HnswBackend) -> usize {
-    let mut total = 0;
-    for node in b.nodes.values() {
-        total += BTREE_PER_ENTRY
-            + size_of::<u64>()
+    let mut total = b.nodes.heap_bytes();
+    for (_, node) in b.nodes.iter() {
+        total += ARC_HEADER
             + size_of::<LoraVector>()
             + vector_heap_bytes(&node.vector)
-            + size_of::<usize>() // level
-            + node.neighbors.capacity() * size_of::<Vec<u64>>();
-        for layer in &node.neighbors {
+            + ARC_HEADER
+            + node.neighbors.len() * size_of::<Vec<u64>>();
+        for layer in node.neighbors.iter() {
             total += layer.capacity() * size_of::<u64>();
         }
     }
