@@ -130,11 +130,13 @@ const FAN: usize = 1 << BITS;
 /// `Arc` and a table header, ~100 bytes) stays a few percent of the
 /// entries. 448 is the most a 512-slot table holds; one more entry would
 /// double the table at under half full.
-const LEAF_MAX: usize = 448;
-/// A branch whose subtree drops below this many entries collapses back
-/// into one leaf. Well under `LEAF_MAX`, so a key added and removed at
-/// the boundary does not split and merge on every write.
-const LEAF_MIN: usize = LEAF_MAX / 4;
+///
+/// This is the default; a map whose writes touch many leaves at once can
+/// pick smaller ones (the `LEAF` parameter of [`CowMap`]). A branch whose
+/// subtree drops below a quarter of the leaf size collapses back into one
+/// leaf: well under it, so a key added and removed at the boundary does
+/// not split and merge on every write.
+pub(super) const LEAF_MAX: usize = 448;
 /// Deepest level that still splits; the routing hash has 64 bits. Keys
 /// that share all of them share a leaf, however large.
 const MAX_DEPTH: usize = 64 / BITS - 1;
@@ -236,14 +238,14 @@ impl<K: Eq + Hash + Clone, V: Clone> Node<K, V> {
 /// A hash map as a persistent hash trie of small hash tables (see the
 /// module docs). Empty maps allocate nothing; maps up to [`LEAF_MAX`]
 /// entries are a single table.
-pub(super) struct CowMap<K, V> {
+pub(super) struct CowMap<K, V, const LEAF: usize = LEAF_MAX> {
     root: Node<K, V>,
     /// Entries in the map. Branches do not count theirs, so an insert
     /// learns whether the key is new at the leaf, in one walk.
     len: usize,
 }
 
-impl<K, V> Default for CowMap<K, V> {
+impl<K, V, const LEAF: usize> Default for CowMap<K, V, LEAF> {
     fn default() -> Self {
         Self {
             root: Node::Empty,
@@ -252,7 +254,7 @@ impl<K, V> Default for CowMap<K, V> {
     }
 }
 
-impl<K, V> Clone for CowMap<K, V> {
+impl<K, V, const LEAF: usize> Clone for CowMap<K, V, LEAF> {
     /// O(1): one refcount bump on the root.
     fn clone(&self) -> Self {
         Self {
@@ -262,19 +264,21 @@ impl<K, V> Clone for CowMap<K, V> {
     }
 }
 
-impl<K: std::fmt::Debug, V: std::fmt::Debug> std::fmt::Debug for CowMap<K, V> {
+impl<K: std::fmt::Debug, V: std::fmt::Debug, const LEAF: usize> std::fmt::Debug
+    for CowMap<K, V, LEAF>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_map().entries(self.iter()).finish()
     }
 }
 
-impl<K: Eq + Hash, V: PartialEq> PartialEq for CowMap<K, V> {
+impl<K: Eq + Hash, V: PartialEq, const LEAF: usize> PartialEq for CowMap<K, V, LEAF> {
     fn eq(&self, other: &Self) -> bool {
         self.len() == other.len() && self.iter().all(|(k, v)| other.lookup(k) == Some(v))
     }
 }
 
-impl<K, V> CowMap<K, V> {
+impl<K, V, const LEAF: usize> CowMap<K, V, LEAF> {
     pub(super) fn len(&self) -> usize {
         self.len
     }
@@ -315,7 +319,7 @@ impl<K, V> CowMap<K, V> {
     }
 }
 
-impl<K: Eq + Hash, V> CowMap<K, V> {
+impl<K: Eq + Hash, V, const LEAF: usize> CowMap<K, V, LEAF> {
     fn lookup<Q>(&self, key: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
@@ -344,7 +348,11 @@ impl<K: Eq + Hash, V> CowMap<K, V> {
     }
 }
 
-impl<K: Eq + Hash + Clone, V: Clone> CowMap<K, V> {
+impl<K: Eq + Hash + Clone, V: Clone, const LEAF: usize> CowMap<K, V, LEAF> {
+    /// A branch whose subtree drops below this many entries collapses
+    /// back into one leaf (see [`LEAF_MAX`]).
+    const LEAF_MIN: usize = LEAF / 4;
+
     pub(super) fn get<Q>(&self, key: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
@@ -426,7 +434,7 @@ impl<K: Eq + Hash + Clone, V: Clone> CowMap<K, V> {
         let mut depth = 0;
         loop {
             if depth <= MAX_DEPTH
-                && matches!(node, Node::Leaf(map) if map.len() >= LEAF_MAX && !map.contains_key(&key))
+                && matches!(node, Node::Leaf(map) if map.len() >= LEAF && !map.contains_key(&key))
             {
                 let Node::Leaf(map) = std::mem::replace(node, Node::Empty) else {
                     unreachable!("matched a leaf");
@@ -468,7 +476,7 @@ impl<K: Eq + Hash + Clone, V: Clone> CowMap<K, V> {
         if routes.is_empty() {
             return Node::Empty;
         }
-        if depth > MAX_DEPTH || routes.len() <= LEAF_MAX {
+        if depth > MAX_DEPTH || routes.len() <= LEAF {
             let map = LeafMap::with_capacity_and_hasher(routes.len(), Default::default());
             return Node::Leaf(Arc::new(map));
         }
@@ -528,10 +536,10 @@ impl<K: Eq + Hash + Clone, V: Clone> CowMap<K, V> {
                 // keep: fold it into one leaf once all its children are
                 // leaves holding under `LEAF_MIN` entries together. (Only
                 // then: summing the children touches all of them.)
-                let fold = (left <= LEAF_MIN / FAN)
+                let fold = (left <= Self::LEAF_MIN / FAN)
                     .then(|| branch.leaf_total())
                     .flatten()
-                    .filter(|total| *total < LEAF_MIN);
+                    .filter(|total| *total < Self::LEAF_MIN);
                 if let Some(total) = fold {
                     let mut map = LeafMap::default();
                     map.reserve(total);
@@ -584,10 +592,11 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> {
 /// Largest partition of a [`CowOrdMap`] before it splits in two. A write
 /// copies one partition, so this bounds its cost (a `BTreeMap` rebuild of
 /// up to this many entries).
-const PART_MAX: usize = 256;
-/// A partition that shrinks below this merges into a neighbour when the
-/// two fit in three quarters of [`PART_MAX`].
-const PART_MIN: usize = PART_MAX / 4;
+///
+/// This is the default (the `PART` parameter of [`CowOrdMap`]). A
+/// partition that shrinks below a quarter of it merges into a neighbour
+/// when the two fit in three quarters of it.
+pub(super) const PART_MAX: usize = 256;
 /// Most partitions in one group before it splits in two. A write copies
 /// one group (up to this many key + pointer pairs) and the root table (one
 /// pair per group: 61 at 2M keys inserted in ascending order, up to four
@@ -747,14 +756,14 @@ type Group<K, V> = Arc<Vec<(K, Part<K, V>)>>;
 /// the module docs). Unlike [`CowMap`] it keeps key order, so range scans
 /// (the sorted property index behind RANGE indexes and uniqueness
 /// constraints, fulltext prefix terms) work in both directions.
-pub(super) struct CowOrdMap<K, V> {
+pub(super) struct CowOrdMap<K, V, const PART: usize = PART_MAX> {
     /// Non-empty groups of non-empty partitions, each with its smallest
     /// key, in ascending key order.
     groups: Arc<Vec<(K, Group<K, V>)>>,
     len: usize,
 }
 
-impl<K, V> Default for CowOrdMap<K, V> {
+impl<K, V, const PART: usize> Default for CowOrdMap<K, V, PART> {
     fn default() -> Self {
         Self {
             groups: Arc::new(Vec::new()),
@@ -763,7 +772,7 @@ impl<K, V> Default for CowOrdMap<K, V> {
     }
 }
 
-impl<K, V> Clone for CowOrdMap<K, V> {
+impl<K, V, const PART: usize> Clone for CowOrdMap<K, V, PART> {
     /// O(1): one refcount bump on the root.
     fn clone(&self) -> Self {
         Self {
@@ -773,7 +782,9 @@ impl<K, V> Clone for CowOrdMap<K, V> {
     }
 }
 
-impl<K: std::fmt::Debug, V: std::fmt::Debug> std::fmt::Debug for CowOrdMap<K, V> {
+impl<K: std::fmt::Debug, V: std::fmt::Debug, const PART: usize> std::fmt::Debug
+    for CowOrdMap<K, V, PART>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_map()
             .entries(
@@ -820,7 +831,7 @@ fn merge_slot<K: Clone, X: Clone>(
     true
 }
 
-impl<K: Ord + Clone, V: Clone> CowOrdMap<K, V> {
+impl<K: Ord + Clone, V: Clone, const PART: usize> CowOrdMap<K, V, PART> {
     pub(super) fn len(&self) -> usize {
         self.len
     }
@@ -925,7 +936,7 @@ impl<K: Ord + Clone, V: Clone> CowOrdMap<K, V> {
         let part = Arc::make_mut(&mut group[p].1);
         let split_at = if append { Some(key.clone()) } else { None };
         part.insert(key, value);
-        if part.len() <= PART_MAX {
+        if part.len() <= PART {
             return;
         }
         let split_at =
@@ -961,10 +972,8 @@ impl<K: Ord + Clone, V: Clone> CowOrdMap<K, V> {
         if part.is_empty() {
             group.remove(p);
         } else {
-            if part.len() < PART_MIN {
-                merge_slot(group, p, PART_MAX * 3 / 4, SortedPart::len, |a, b| {
-                    a.append(b)
-                });
+            if part.len() < PART / 4 {
+                merge_slot(group, p, PART * 3 / 4, SortedPart::len, |a, b| a.append(b));
             }
             // Removing a partition's smallest key moves its minimum.
             let p = slot_for(group, key);
@@ -1093,31 +1102,31 @@ mod tests {
 
     /// The map's `len` matches its entries; every leaf is non-empty and
     /// within `LEAF_MAX`, and every branch holds something.
-    fn check_trie<K: Eq + Hash, V>(m: &CowMap<K, V>) {
-        fn walk<K: Eq + Hash, V>(node: &Node<K, V>) -> usize {
+    fn check_trie<K: Eq + Hash, V, const LEAF: usize>(m: &CowMap<K, V, LEAF>) {
+        fn walk<K: Eq + Hash, V>(node: &Node<K, V>, leaf: usize) -> usize {
             match node {
                 Node::Empty => 0,
                 Node::Leaf(map) => {
                     assert!(!map.is_empty(), "empty leaf");
-                    assert!(map.len() <= LEAF_MAX, "oversized leaf {}", map.len());
+                    assert!(map.len() <= leaf, "oversized leaf {}", map.len());
                     map.len()
                 }
                 Node::Branch(b) => {
-                    let n: usize = b.kids.iter().map(walk).sum();
+                    let n: usize = b.kids.iter().map(|kid| walk(kid, leaf)).sum();
                     assert!(n > 0, "empty branch");
                     n
                 }
             }
         }
-        assert_eq!(walk(&m.root), m.len(), "len");
+        assert_eq!(walk(&m.root, LEAF), m.len(), "len");
     }
 
     /// Every leaf holds only keys routed to it.
-    fn check_routing(m: &CowMap<u64, u64>) {
+    fn check_routing<const LEAF: usize>(m: &CowMap<u64, u64, LEAF>) {
         check_routing_of(m)
     }
 
-    fn check_routing_of<V>(m: &CowMap<u64, V>) {
+    fn check_routing_of<V, const LEAF: usize>(m: &CowMap<u64, V, LEAF>) {
         fn walk<V>(node: &Node<u64, V>, path: &mut Vec<usize>) {
             match node {
                 Node::Empty => {}
@@ -1232,10 +1241,16 @@ mod tests {
 
     #[test]
     fn cow_map_matches_a_hashmap_through_splits_and_collapses() {
+        cow_map_model::<LEAF_MAX>();
+        cow_map_model::<112>();
+        cow_map_model::<32>();
+    }
+
+    fn cow_map_model<const LEAF: usize>() {
         let mut seed = 0x2545_f491_4f6c_dd1d;
         let mut model: BTreeMap<u64, u64> = BTreeMap::new();
-        let mut m: CowMap<u64, u64> = CowMap::default();
-        let mut snapshots: Vec<(CowMap<u64, u64>, BTreeMap<u64, u64>)> = Vec::new();
+        let mut m: CowMap<u64, u64, LEAF> = CowMap::default();
+        let mut snapshots: Vec<(CowMap<u64, u64, LEAF>, BTreeMap<u64, u64>)> = Vec::new();
         // Grow to ~40k keys (three levels), shrink to a few hundred, grow
         // again: every split and collapse threshold is crossed both ways.
         for step in 0..160_000u64 {
@@ -1486,14 +1501,14 @@ mod tests {
 
     /// Partitions and groups are non-empty, within bounds, sorted, and
     /// carry their true minimum keys.
-    fn check_ord<V>(m: &CowOrdMap<u64, V>) {
+    fn check_ord<V, const PART: usize>(m: &CowOrdMap<u64, V, PART>) {
         let mut prev: Option<u64> = None;
         let mut n = 0;
         for (gmin, group) in m.groups.iter() {
             assert!(!group.is_empty() && group.len() <= GROUP_MAX);
             assert_eq!(*gmin, group[0].0, "group minimum");
             for (pmin, part) in group.iter() {
-                assert!(!part.is_empty() && part.len() <= PART_MAX);
+                assert!(!part.is_empty() && part.len() <= PART);
                 assert_eq!(pmin, part.keys().next().unwrap(), "partition minimum");
                 for k in part.keys() {
                     assert!(prev.is_none_or(|p| p < *k), "out of order");
@@ -1507,10 +1522,16 @@ mod tests {
 
     #[test]
     fn cow_ord_map_matches_btreemap_through_splits_and_merges() {
+        cow_ord_map_model::<PART_MAX>();
+        cow_ord_map_model::<64>();
+        cow_ord_map_model::<8>();
+    }
+
+    fn cow_ord_map_model<const PART: usize>() {
         use std::ops::Bound::{Excluded, Included, Unbounded};
         let mut seed = 0x9e37_79b9_7f4a_7c15;
         let mut model: BTreeMap<u64, u64> = BTreeMap::new();
-        let mut m: CowOrdMap<u64, u64> = CowOrdMap::default();
+        let mut m: CowOrdMap<u64, u64, PART> = CowOrdMap::default();
         let mut snapshots = Vec::new();
         // Up to ~60k keys (several groups), down to a handful, up again;
         // a quarter of the inserts are below every key so far.

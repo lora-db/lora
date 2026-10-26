@@ -31,6 +31,12 @@ use super::cow::CowMap;
 use super::entity_index_store::ScopedPropertyKey;
 use super::id_map::CowIdMap;
 
+/// Leaf size of the trigram trie. A ~20-character value touches ~20
+/// trigrams spread over most leaves, and a staged write copies each leaf
+/// it touches: a quarter of the default leaf size cut that copying (and
+/// the old leaves' drop) and made indexed MERGE/CREATE ~10% faster.
+const GRAM_LEAF: usize = 112;
+
 /// Registry of trigram scopes for either nodes or relationships.
 #[derive(Debug, Default, Clone)]
 pub(super) struct TrigramRegistry {
@@ -40,7 +46,7 @@ pub(super) struct TrigramRegistry {
 #[derive(Debug, Default, Clone)]
 pub(super) struct TrigramScope {
     /// Trigram → entity ids whose property value contains it.
-    pub(super) grams: CowMap<[u8; 3], CowIdMap<()>>,
+    pub(super) grams: CowMap<[u8; 3], CowIdMap<()>, GRAM_LEAF>,
     /// Reference count: how many catalog entries point at this scope.
     /// We allow multiple TEXT indexes on the same `(label, property)`
     /// (different names, redundant); the scope is freed only when the
@@ -238,6 +244,38 @@ mod tests {
             .candidates("Person", "name", "Alic")
             .map(|s| s.is_empty())
             .unwrap_or(true));
+    }
+
+    #[test]
+    fn update_moves_an_id_between_values_sharing_trigrams() {
+        let mut reg = TrigramRegistry::default();
+        reg.add_scope("Person", "name");
+        reg.insert("Person", "name", 1, "Festival number 42");
+        reg.insert("Person", "name", 2, "Festival number 7");
+        reg.update(
+            "Person",
+            "name",
+            1,
+            Some("Festival number 42"),
+            Some("Festival nummer 42 aaaa"),
+        );
+        fn hits(reg: &TrigramRegistry, q: &str) -> BTreeSet<u64> {
+            reg.candidates("Person", "name", q).unwrap_or_default()
+        }
+        assert_eq!(hits(&reg, "Festival"), BTreeSet::from([1, 2]));
+        assert_eq!(hits(&reg, "nummer 42"), BTreeSet::from([1]));
+        assert_eq!(hits(&reg, "aaaa"), BTreeSet::from([1]));
+        assert!(
+            hits(&reg, "number 4").is_empty(),
+            "'r 4' was only in the old value"
+        );
+        assert_eq!(hits(&reg, "number"), BTreeSet::from([2]));
+        // Dropping the value clears every trigram it alone held.
+        reg.update("Person", "name", 1, Some("Festival nummer 42 aaaa"), None);
+        assert!(hits(&reg, "aaa").is_empty());
+        assert!(hits(&reg, "mme").is_empty());
+        reg.update("Person", "name", 2, Some("Festival number 7"), None);
+        assert!(reg.by_scope.values().all(|scope| scope.grams.is_empty()));
     }
 
     #[test]
