@@ -97,6 +97,7 @@ in the internal documentation.
 | Fixed-precision decimals | Not supported — use scaled integers or strings |
 | User-defined types | Not supported |
 | Numeric overflow guarding | Integer `+`, `-`, `*`, `%` and unary `-` fail the query on overflow (`LORA_VALIDATION`); `list.sum` over integers still wraps |
+| Very large or deeply nested values | Bounded; see [Query limits](#query-limits) |
 
 ## Spatial
 
@@ -139,6 +140,55 @@ in the internal documentation.
 | Index coverage is scoped | `CREATE INDEX`, `CREATE TEXT INDEX`, `CREATE POINT INDEX`, `CREATE VECTOR INDEX`, `CREATE FULLTEXT INDEX`, `DROP INDEX`, and `SHOW INDEXES` exist. Composite RANGE indexes are cataloged, but current planner rewrites are single-property. Vector indexes are exact flat scans unless created with the `'hnsw'` provider. |
 | Explicit transactions are surface-dependent | Rust and in-process bindings expose transaction APIs; HTTP has no multi-query transaction endpoint |
 | ID reuse — not supported | Deleting an entity does not free its `u64` id |
+
+## Query limits
+
+Every stage of the engine walks queries and values recursively, so a
+query is bounded in shape and in the size of the values it builds. A
+query over a limit fails with an error instead of exhausting the stack
+or memory of the process it runs in.
+
+| Limit | Value | Error |
+|---|---|---|
+| Nesting of brackets, parentheses, braces, `CASE` expressions and `LIST<...>` types in query text | 64 levels | `LORA_PARSE` |
+| Depth of an operator chain: each operator in `a + b + c`, each `NOT`, comparison, sign and postfix lookup (`.key`, `[i]`, `::TYPE`) adds a level, summed through nested expressions | 256 levels | `LORA_PARSE` |
+| Clauses in one query, counting the clauses of `CALL { ... }` bodies; each `UNION` branch counts separately | 256 | `LORA_PARSE` |
+| Hops named by a variable-length relationship (`-[*1..n]->`); without an upper bound a pattern stops at 100 hops | 1000 | `LORA_PARSE` |
+| Nesting of lists and maps in any value: parameters, values a query builds, stored properties | 128 levels | `LORA_INVALID_PARAMS` for a parameter, otherwise `LORA_VALIDATION` |
+| Size of a single value: a string or byte array, or a list or map counted as 8 bytes per element plus the strings it holds; also the properties one `CREATE` writes for one node or relationship | 128 MiB | `LORA_INVALID_PARAMS` for a parameter, otherwise `LORA_VALIDATION` |
+| Paths one variable-length expansion holds at once when a query has no `LIMIT` to stream against | 128 MiB of relationship ids | `LORA_VALIDATION` |
+| Length of a regular expression | 16 KiB | `LORA_VALIDATION` |
+| Compiled size of a regular expression | 2 MiB | `LORA_VALIDATION` |
+| Character pairs `text.distance` and `text.similarity` compare (the product of both lengths, except for `'hamming'`) | 2^28 | `LORA_VALIDATION` |
+
+A query at every limit at once still runs on a 1 MiB thread stack in a
+release build. For example, a long chain of `OR` tests is better written
+with `IN`:
+
+```cypher
+// 300 alternatives is past the operator-chain limit:
+//   MATCH (n) WHERE n.id = 1 OR n.id = 2 OR ... OR n.id = 300 RETURN n
+// One list membership test is a single operator:
+MATCH (n) WHERE n.id IN $ids RETURN n
+```
+
+The long chain fails with code `LORA_PARSE` and the message:
+
+```text
+parse error at 16..4105: expression nests more than 256 operators deep; split it up, for example with WITH or a list function
+```
+
+A value nested too deeply is refused while it is built:
+
+```cypher
+RETURN reduce(acc = [], i IN range(1, 200) | [acc]) AS deep
+```
+
+fails with code `LORA_VALIDATION` and the message:
+
+```text
+value nests lists and maps more than 128 levels deep
+```
 
 ## Concurrency
 
