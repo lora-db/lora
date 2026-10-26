@@ -1,3 +1,4 @@
+use super::limits::DepthGuard;
 use super::literals::{
     lower_exists_subquery, lower_function_invocation, lower_list_predicate, lower_literal,
     lower_parameter, lower_reduce_expression, lower_schema_name, lower_signed_integer_literal,
@@ -38,17 +39,9 @@ pub(super) fn lower_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
         Rule::literal => lower_literal(single_inner(pair)?),
         Rule::parameter => Ok(lower_parameter(pair)),
         Rule::function_invocation => lower_function_invocation(pair),
-        Rule::type_cast_expression => lower_type_cast_expression(pair),
         Rule::cast_call_expression => lower_type_cast_call_expression(pair, false),
         Rule::try_cast_call_expression => lower_type_cast_call_expression(pair, true),
-        Rule::parenthesized_expression => {
-            let span = pair_span(&pair);
-            let expr = pair
-                .into_inner()
-                .find(|p| p.as_rule() == Rule::expression)
-                .ok_or_else(|| ParseError::new("expected expression", span.start, span.end))?;
-            lower_expression(expr)
-        }
+        Rule::parenthesized_expression => lower_parenthesized_expression(pair),
         Rule::exists_subquery => lower_exists_subquery(pair),
         Rule::count_subquery => lower_count_subquery(pair),
         Rule::label_predicate => lower_label_predicate(pair),
@@ -56,7 +49,8 @@ pub(super) fn lower_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
     }
 }
 
-fn lower_type_cast_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
+/// `(expr)`, or the cast `(expr AS TYPE)` when a type follows.
+fn lower_parenthesized_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
     let span = pair_span(&pair);
     let mut value = None;
     let mut target = None;
@@ -66,18 +60,20 @@ fn lower_type_cast_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
             Rule::expression => value = Some(lower_expression(p)?),
             Rule::literal_type_expr => target = Some(lower_literal_type_expr(p)?),
             Rule::AS => {}
-            _ => return Err(unexpected_rule("type_cast_expression", p)),
+            _ => return Err(unexpected_rule("parenthesized_expression", p)),
         }
     }
 
-    Ok(Expr::TypeCast {
-        expr: Box::new(
-            value.ok_or_else(|| ParseError::new("expected expression", span.start, span.end))?,
-        ),
-        target: target
-            .ok_or_else(|| ParseError::new("expected type after AS", span.start, span.end))?,
-        try_cast: false,
-        span,
+    let value =
+        value.ok_or_else(|| ParseError::new("expected expression", span.start, span.end))?;
+    Ok(match target {
+        Some(target) => Expr::TypeCast {
+            expr: Box::new(value),
+            target,
+            try_cast: false,
+            span,
+        },
+        None => value,
     })
 }
 
@@ -200,6 +196,17 @@ fn lower_vector_coord_type_name(pair: Pair<Rule>) -> Result<String, ParseError> 
     Ok(name.to_string())
 }
 
+/// Reserve expression depth for the binary-operator chain `inner`
+/// (operands interleaved with operators): it lowers into a left-deep tree
+/// one level per operator.
+fn chain_guard(
+    inner: &pest::iterators::Pairs<'_, Rule>,
+    span: Span,
+) -> Result<DepthGuard, ParseError> {
+    let operators = inner.clone().count() / 2;
+    DepthGuard::expression(operators, span.start, span.end)
+}
+
 pub(super) fn lower_left_assoc(
     pair: Pair<Rule>,
     recurse: fn(Pair<Rule>) -> Result<Expr, ParseError>,
@@ -207,6 +214,7 @@ pub(super) fn lower_left_assoc(
 ) -> Result<Expr, ParseError> {
     let span = pair_span(&pair);
     let mut inner = pair.into_inner();
+    let _depth = chain_guard(&inner, span)?;
     let first = inner
         .next()
         .ok_or_else(|| ParseError::new("expected lhs", span.start, span.end))?;
@@ -258,6 +266,7 @@ pub(super) fn lower_not_expression(pair: Pair<Rule>) -> Result<Expr, ParseError>
         }
     }
 
+    let _depth = DepthGuard::expression(not_count, span.start, span.end)?;
     let mut expr = lower_expression(
         tail.ok_or_else(|| ParseError::new("expected expression", span.start, span.end))?,
     )?;
@@ -280,6 +289,7 @@ pub(super) fn lower_comparison_expression(pair: Pair<Rule>) -> Result<Expr, Pars
     let first = inner
         .next()
         .ok_or_else(|| ParseError::new("expected lhs", span.start, span.end))?;
+    let _depth = DepthGuard::expression(inner.clone().count(), span.start, span.end)?;
     let mut expr = lower_expression(first)?;
 
     for tail in inner {
@@ -444,6 +454,7 @@ fn expect_tail_rule(
 pub(super) fn lower_add_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
     let span = pair_span(&pair);
     let mut inner = pair.into_inner();
+    let _depth = chain_guard(&inner, span)?;
     let first = inner
         .next()
         .ok_or_else(|| ParseError::new("expected lhs", span.start, span.end))?;
@@ -475,6 +486,7 @@ pub(super) fn lower_add_expression(pair: Pair<Rule>) -> Result<Expr, ParseError>
 pub(super) fn lower_mul_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
     let span = pair_span(&pair);
     let mut inner = pair.into_inner();
+    let _depth = chain_guard(&inner, span)?;
     let first = inner
         .next()
         .ok_or_else(|| ParseError::new("expected lhs", span.start, span.end))?;
@@ -507,6 +519,7 @@ pub(super) fn lower_mul_expression(pair: Pair<Rule>) -> Result<Expr, ParseError>
 pub(super) fn lower_pow_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
     let span = pair_span(&pair);
     let mut inner = pair.into_inner();
+    let _depth = chain_guard(&inner, span)?;
     let first = inner
         .next()
         .ok_or_else(|| ParseError::new("expected lhs", span.start, span.end))?;
@@ -543,6 +556,7 @@ pub(super) fn lower_unary_expression(pair: Pair<Rule>) -> Result<Expr, ParseErro
     }
 
     let tail = tail.ok_or_else(|| ParseError::new("expected expression", span.start, span.end))?;
+    let _depth = DepthGuard::expression(ops.len(), span.start, span.end)?;
 
     // `-<integer literal>` is one negative literal, so i64::MIN parses.
     let mut expr = match (ops.last(), bare_integer_literal(&tail)) {
@@ -592,6 +606,7 @@ pub(super) fn lower_postfix_expression(pair: Pair<Rule>) -> Result<Expr, ParseEr
         .next()
         .ok_or_else(|| ParseError::new("expected atom", span.start, span.end))?;
 
+    let _depth = DepthGuard::expression(inner.clone().count(), span.start, span.end)?;
     let mut expr = lower_expression(atom)?;
 
     for p in inner {
@@ -632,46 +647,41 @@ pub(super) fn lower_postfix_expression(pair: Pair<Rule>) -> Result<Expr, ParseEr
                     }
                     Rule::index_or_slice => {
                         let is_span = pair_span(&inner_pair);
-                        let inner_op = single_inner(inner_pair)?;
-                        match inner_op.as_rule() {
-                            Rule::slice_op => {
-                                let mut from_expr = None;
-                                let mut to_expr = None;
-                                let mut seen_dots = false;
-                                for p in inner_op.into_inner() {
-                                    if p.as_rule() == Rule::slice_dots {
-                                        seen_dots = true;
-                                    } else if p.as_rule() == Rule::expression {
-                                        if !seen_dots {
-                                            from_expr = Some(Box::new(lower_expression(p)?));
-                                        } else {
-                                            to_expr = Some(Box::new(lower_expression(p)?));
-                                        }
-                                    }
-                                }
-                                let merged = merge_spans(expr.span(), is_span);
-                                expr = Expr::Slice {
-                                    expr: Box::new(expr),
-                                    from: from_expr,
-                                    to: to_expr,
-                                    span: merged,
-                                };
-                            }
-                            Rule::index_op => {
-                                let idx_pair = inner_op
-                                    .into_inner()
-                                    .find(|p| p.as_rule() == Rule::expression);
-                                if let Some(idx) = idx_pair {
-                                    let merged = merge_spans(expr.span(), is_span);
-                                    expr = Expr::Index {
-                                        expr: Box::new(expr),
-                                        index: Box::new(lower_expression(idx)?),
-                                        span: merged,
-                                    };
+                        let mut from_expr = None;
+                        let mut to_expr = None;
+                        let mut seen_dots = false;
+                        for p in inner_pair.into_inner() {
+                            if p.as_rule() == Rule::slice_dots {
+                                seen_dots = true;
+                            } else if p.as_rule() == Rule::expression {
+                                if !seen_dots {
+                                    from_expr = Some(Box::new(lower_expression(p)?));
+                                } else {
+                                    to_expr = Some(Box::new(lower_expression(p)?));
                                 }
                             }
-                            _ => {}
                         }
+                        let merged = merge_spans(expr.span(), is_span);
+                        expr = if seen_dots {
+                            Expr::Slice {
+                                expr: Box::new(expr),
+                                from: from_expr,
+                                to: to_expr,
+                                span: merged,
+                            }
+                        } else {
+                            Expr::Index {
+                                expr: Box::new(expr),
+                                index: from_expr.ok_or_else(|| {
+                                    ParseError::new(
+                                        "expected an index or a slice",
+                                        is_span.start,
+                                        is_span.end,
+                                    )
+                                })?,
+                                span: merged,
+                            }
+                        };
                     }
                     Rule::type_cast_postfix => {
                         let cast_span = pair_span(&inner_pair);

@@ -105,7 +105,15 @@ pub(super) fn lower_list_literal(pair: Pair<Rule>) -> Result<Expr, ParseError> {
         Rule::pattern_comprehension if inner.peek().is_none() => {
             return lower_pattern_comprehension(first, span);
         }
-        Rule::list_comprehension | Rule::pattern_comprehension => {
+        Rule::list_comprehension => {
+            return Err(ParseError::new(
+                "a list whose first element tests `x IN list` needs parentheses around \
+                 that element: [(x IN list), ...]",
+                span.start,
+                span.end,
+            ));
+        }
+        Rule::pattern_comprehension => {
             return Err(ParseError::new(
                 "invalid list literal",
                 span.start,

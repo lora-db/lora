@@ -5,7 +5,9 @@ line_comment = _{ "//" ~ (!"\n" ~ ANY)* }
 query = { SOI ~ statement ~ semicolon? ~ EOI }
 semicolon = _{ ";" }
 
-statement = { schema_command | regular_query | standalone_call }
+// A standalone CALL is the whole statement; anything after it (YIELD ...
+// RETURN, further clauses) makes it an in-query CALL instead.
+statement = { schema_command | standalone_call | regular_query }
 
 schema_command = {
     create_index_command
@@ -167,20 +169,13 @@ show_constraints_command = { SHOW ~ (CONSTRAINTS | CONSTRAINT) ~ show_pipeline? 
 regular_query = { single_query ~ (union_clause ~ single_query)* }
 union_clause = { UNION ~ ALL? }
 
-single_query = { multi_part_query | single_part_query }
-multi_part_query = { query_part+ ~ single_part_query }
-query_part = { reading_clause* ~ updating_clause* ~ with_clause }
-
-// The last alternative admits a query that ends in a unit `CALL { ... }`
-// subquery (one whose body ends in an update, not a RETURN; the analyzer
-// checks that). Each earlier reading clause must be followed by another,
-// so the final one is the `CALL { ... }`.
-single_part_query = {
-    (reading_clause* ~ return_clause)
-    | (reading_clause* ~ updating_clause+ ~ return_clause?)
-    | ((reading_clause ~ &reading_clause)* ~ call_subquery_clause)
-}
-call_subquery_clause = { call_subquery }
+// A flat clause sequence; the lowering groups it into WITH-separated parts
+// and checks the clause order (reading clauses, then updating clauses, then
+// WITH or RETURN; a query ends in RETURN, an update or a unit
+// `CALL { ... }`). Grouping in the grammar instead made PEG parse every
+// clause once per alternative tried, which doubles the work at each nested
+// `CALL { ... }`.
+single_query = { (reading_clause | updating_clause | with_clause | return_clause)+ }
 
 reading_clause = { match_clause | unwind_clause | call_subquery | in_query_call }
 updating_clause = { create_clause | merge_clause | delete_clause | set_clause | remove_clause | foreach_clause }
@@ -222,7 +217,7 @@ remove_item = {
 }
 
 in_query_call = { CALL ~ procedure_invocation ~ yield_clause? ~ where_clause? }
-standalone_call = { CALL ~ (procedure_invocation | procedure_name) ~ yield_clause? }
+standalone_call = { CALL ~ (procedure_invocation | procedure_name) ~ yield_clause? ~ &(semicolon? ~ EOI) }
 // CALL { ... } subquery. Body is a regular query (head + UNIONs); the
 // alternative comes before `in_query_call` in `reading_clause` so PEG
 // commits to the brace form when it sees one.
@@ -292,8 +287,11 @@ expression = { or_expression }
 
 case_expression = { simple_case_expression | generic_case_expression }
 
+// `!WHEN`: `WHEN` would otherwise parse as a variable and the simple form
+// would read the generic form's first condition before failing, doubling
+// the work at every nested `CASE WHEN (...)`.
 simple_case_expression = {
-    CASE ~ expression ~ (WHEN ~ expression ~ THEN ~ expression)+ ~ (ELSE ~ expression)? ~ END
+    CASE ~ !WHEN ~ expression ~ (WHEN ~ expression ~ THEN ~ expression)+ ~ (ELSE ~ expression)? ~ END
 }
 
 generic_case_expression = {
@@ -354,11 +352,13 @@ atom = {
     | reduce_expression
     | cast_call_expression
     | try_cast_call_expression
-    | type_cast_expression
     | function_invocation
     | literal
     | parameter
-    | variable
+    // Were `case` a variable name, a nested `CASE` that fails to parse
+    // would be re-read as a variable and the outer `CASE` would parse its
+    // body a second time, doubling the work per nesting level.
+    | !CASE ~ variable
     | parenthesized_expression
 }
 
@@ -374,7 +374,7 @@ count_subquery = {
 
 // `n:Label`, `n:A:B` (all), `n:A|B` (any) as a boolean expression, e.g.
 // `WHERE n:Festival`. Lowered to `node.has_label` calls.
-label_predicate = { variable ~ node_labels }
+label_predicate = { !CASE ~ variable ~ node_labels }
 
 reduce_expression = {
     REDUCE ~ lparen ~ variable ~ eq ~ expression ~ comma ~ variable ~ IN ~ expression ~ pipe ~ expression ~ rparen
@@ -387,11 +387,10 @@ list_predicate = {
     ~ lparen ~ variable ~ IN ~ expression ~ WHERE ~ expression ~ rparen
 }
 
-parenthesized_expression = { lparen ~ expression ~ rparen }
-
-type_cast_expression = {
-    lparen ~ expression ~ AS ~ literal_type_expr ~ rparen
-}
+// `(expr)` and the cast `(expr AS TYPE)` share one rule: as separate
+// alternatives each would parse the inner expression before the other
+// could try, which doubles the work at every nesting level.
+parenthesized_expression = { lparen ~ expression ~ (AS ~ literal_type_expr)? ~ rparen }
 
 cast_call_expression = {
     CAST ~ lparen ~ expression ~ AS ~ literal_type_expr ~ rparen
@@ -423,8 +422,13 @@ literal_named_type = {
     | symbolic_name
 }
 
+// The special forms that look like calls (`reduce(`, `cast(`, `any(`, ...)
+// are not functions: once their own rule fails, retrying them as a call
+// would re-parse their arguments, which doubles the work at every nesting
+// level.
 function_invocation = {
-    function_name ~ lparen ~ DISTINCT? ~ (STAR | expression ~ (comma ~ expression)*)? ~ rparen
+    !((REDUCE | CAST | TRY_CAST | ANY_ | ALL | NONE | SINGLE) ~ lparen)
+    ~ function_name ~ lparen ~ DISTINCT? ~ (STAR | expression ~ (comma ~ expression)*)? ~ rparen
 }
 
 procedure_invocation = {
@@ -447,7 +451,28 @@ literal = {
 boolean_literal = { TRUE | FALSE }
 null_literal = { NULL }
 
-list_literal = { lbrack ~ (pattern_comprehension | list_comprehension | (expression ~ (comma ~ expression)*)?) ~ rbrack }
+// A list starting `[x IN ...` is always read as a comprehension; a list
+// whose first element is an `x IN list` test needs parentheses:
+// `[(x IN list), ...]` (the lowering says so). Retrying such a list as plain
+// elements would re-parse the comprehension's operands, doubling the work
+// at every nesting level.
+list_literal = {
+    lbrack
+    ~ (
+        &pattern_start ~ pattern_comprehension
+        | list_comprehension ~ (comma ~ expression)*
+        | !(variable ~ IN) ~ (expression ~ (comma ~ expression)*)?
+    )
+    ~ rbrack
+}
+
+// A pattern comprehension starts with a node pattern (possibly inside
+// parentheses) followed by a relationship, WHERE or `|`. Checking that by
+// skipping balanced parentheses, before parsing the node's property
+// expressions, keeps `[(a {k: [...]})]` from being parsed once as a pattern
+// and again as an expression at every nesting level.
+pattern_start = _{ paren_skip ~ (dash | left_arrow | WHERE | pipe) | lparen ~ pattern_start }
+paren_skip = _{ lparen ~ (paren_skip | string_literal | escaped_symbolic_name | !rparen ~ ANY)* ~ rparen }
 
 pattern_comprehension = {
     pattern_element ~ (WHERE ~ expression)? ~ pipe ~ expression
@@ -589,14 +614,10 @@ TRY_CAST = @{ ^"TRY_CAST" ~ !ident_part }
 ANY_ = @{ ^"ANY" ~ !ident_part }
 NONE = @{ ^"NONE" ~ !ident_part }
 SINGLE = @{ ^"SINGLE" ~ !ident_part }
-index_or_slice = {
-    slice_op
-    | index_op
-}
-
-slice_op = { lbrack ~ expression? ~ slice_dots ~ expression? ~ rbrack }
+// `[i]` or `[from..to]` (either bound optional). One rule, so the first
+// expression parses once whichever form it turns out to be.
+index_or_slice = { lbrack ~ expression? ~ (slice_dots ~ expression?)? ~ rbrack }
 slice_dots = { ".." }
-index_op = { lbrack ~ expression ~ rbrack }
 
 SHORTEST_PATH = @{ ^"shortestPath" ~ !ident_part }
 ALL_SHORTEST_PATHS = @{ ^"allShortestPaths" ~ !ident_part }

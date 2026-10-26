@@ -6,6 +6,7 @@
 #![allow(clippy::large_enum_variant)]
 
 pub mod ast;
+pub mod limits;
 
 pub use ast::{
     BinaryOp, CallSubquery, ConstraintKind, ConstraintNameSpec, Create, CreateConstraint,
