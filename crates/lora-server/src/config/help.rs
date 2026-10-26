@@ -2,9 +2,10 @@
 
 use super::{
     ADMIN_PATH_ROOT_ENV, DEFAULT_HEADER_READ_TIMEOUT_MS, DEFAULT_HOST, DEFAULT_MAX_BODY_BYTES,
-    DEFAULT_PORT, DEFAULT_QUERY_TIMEOUT_MS, HEADER_READ_TIMEOUT_MS_ENV, HOST_ENV,
-    MAX_BODY_BYTES_ENV, MAX_CONCURRENT_QUERIES_ENV, PORT_ENV, QUERY_TIMEOUT_MS_ENV,
-    SNAPSHOT_PATH_ENV, WAL_DIR_ENV, WAL_SYNC_MODE_ENV, WAL_TRUNCATE_CORRUPT_TAIL_ENV,
+    DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_RESULT_ROWS, DEFAULT_PORT, DEFAULT_QUERY_TIMEOUT_MS,
+    HEADER_READ_TIMEOUT_MS_ENV, HOST_ENV, MAX_BODY_BYTES_ENV, MAX_CONCURRENT_QUERIES_ENV,
+    MAX_RESPONSE_BYTES_ENV, MAX_RESULT_ROWS_ENV, PORT_ENV, QUERY_TIMEOUT_MS_ENV, SNAPSHOT_PATH_ENV,
+    WAL_DIR_ENV, WAL_SYNC_MODE_ENV, WAL_TRUNCATE_CORRUPT_TAIL_ENV,
 };
 
 pub fn help_text() -> String {
@@ -69,6 +70,19 @@ OPTIONS:
                                    Also read from ${MAX_CONCURRENT_QUERIES_ENV}.
         --max-body-bytes <BYTES>   Largest accepted request body.
                                    Default: {DEFAULT_MAX_BODY_BYTES}. Also read from ${MAX_BODY_BYTES_ENV}.
+        --max-result-rows <N>      Most rows a /query result may have. A
+                                   query that goes over stops there, any
+                                   write it made is rolled back, and it is
+                                   answered with LORA_RESULT_TOO_LARGE
+                                   (HTTP 422). 0 means unlimited.
+                                   Default: {DEFAULT_MAX_RESULT_ROWS}. Also read from ${MAX_RESULT_ROWS_ENV}.
+        --max-response-bytes <BYTES>
+                                   Largest /query response body. A larger
+                                   response is answered with
+                                   LORA_RESULT_TOO_LARGE (HTTP 422); a write
+                                   behind it stays committed. 0 means
+                                   unlimited.
+                                   Default: {DEFAULT_MAX_RESPONSE_BYTES}. Also read from ${MAX_RESPONSE_BYTES_ENV}.
         --header-read-timeout-ms <MS>
                                    Time a connection gets to send a
                                    request's headers before it is closed,
@@ -92,6 +106,8 @@ ENVIRONMENT:
     {QUERY_TIMEOUT_MS_ENV}         Value used by --query-timeout-ms.
     {MAX_CONCURRENT_QUERIES_ENV}   Value used by --max-concurrent-queries.
     {MAX_BODY_BYTES_ENV}           Value used by --max-body-bytes.
+    {MAX_RESULT_ROWS_ENV}          Value used by --max-result-rows.
+    {MAX_RESPONSE_BYTES_ENV}       Value used by --max-response-bytes.
     {ADMIN_PATH_ROOT_ENV}          Directory used by --admin-path-root.
     {HEADER_READ_TIMEOUT_MS_ENV}   Value used by --header-read-timeout-ms.
     {WAL_TRUNCATE_CORRUPT_TAIL_ENV} Value used by --wal-truncate-corrupt-tail.

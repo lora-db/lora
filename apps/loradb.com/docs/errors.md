@@ -34,6 +34,7 @@ on the message.
 | `LORA_CHANGES_LAGGED` | A change feed subscriber fell further behind than its buffer allows. Resume with the last LSN it processed. |
 | `LORA_INVALID_VECTOR` | A vector value failed dimension or coordinate-type validation. |
 | `LORA_TIMEOUT` | The query exceeded its cooperative deadline. |
+| `LORA_RESULT_TOO_LARGE` | HTTP server only. The query's result has more rows than `--max-result-rows`, or its response is larger than `--max-response-bytes`. Add a `LIMIT` or page with `SKIP` / `LIMIT`. |
 | `LORA_DATABASE_NAME` | A logical database name violates the portable-path rules. |
 | `LORA_CONFIG` | A CLI flag or configuration value is invalid. |
 
@@ -79,7 +80,7 @@ code follows the category, with these refinements:
 | `404 Not Found` | `LORA_NOT_FOUND` |
 | `408 Request Timeout` | `LORA_TIMEOUT` |
 | `409 Conflict` | `LORA_CONSTRAINT`, `LORA_UNIQUE_CONSTRAINT`, `LORA_NOT_NULL_CONSTRAINT`, `LORA_FOREIGN_KEY`, `LORA_TRANSACTION` |
-| `422 Unprocessable Entity` | `LORA_INVALID_PARAMS`, `LORA_INVALID_VECTOR`, `LORA_VALIDATION` |
+| `422 Unprocessable Entity` | `LORA_INVALID_PARAMS`, `LORA_INVALID_VECTOR`, `LORA_VALIDATION`, `LORA_RESULT_TOO_LARGE` |
 | `500 Internal Server Error` | `LORA_IO`, `LORA_WAL_CORRUPTION`, `LORA_SNAPSHOT_CODEC`, `LORA_SNAPSHOT_CRYPTO`, `LORA_INTERNAL` |
 | `503 Service Unavailable` | `LORA_CONNECTION`, `LORA_WAL_POISONED` |
 

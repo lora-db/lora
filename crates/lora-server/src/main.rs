@@ -55,6 +55,8 @@ async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
             .then(|| std::time::Duration::from_millis(cfg.query_timeout_ms)),
         max_concurrent: (cfg.max_concurrent_queries > 0).then_some(cfg.max_concurrent_queries),
         max_body_bytes: cfg.max_body_bytes,
+        max_result_rows: (cfg.max_result_rows > 0).then_some(cfg.max_result_rows),
+        max_response_bytes: (cfg.max_response_bytes > 0).then_some(cfg.max_response_bytes),
         header_read_timeout: (cfg.header_read_timeout_ms > 0)
             .then(|| std::time::Duration::from_millis(cfg.header_read_timeout_ms)),
     };

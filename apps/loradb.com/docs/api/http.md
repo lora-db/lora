@@ -112,8 +112,9 @@ Non-2xx responses use the same structured error body:
 reworded. `category` is `"client"` for caller errors and `"server"` for engine
 or durability failures. Parse/semantic/read-only/config errors return 400,
 timeouts (including `--query-timeout-ms`) return 408, bodies over
-`--max-body-bytes` return 413, not-found errors return 404, invalid params/vectors return
-422, constraint violations return 409, WAL-poisoned errors return 503, and
+`--max-body-bytes` return 413, not-found errors return 404, invalid params/vectors and
+results over `--max-result-rows` or `--max-response-bytes` (`LORA_RESULT_TOO_LARGE`)
+return 422, constraint violations return 409, WAL-poisoned errors return 503, and
 server/storage failures return 500.
 
 ## `POST /explain`
@@ -542,6 +543,14 @@ Query limits:
   (default twice the CPU count, `0` means unlimited).
 - `--max-body-bytes <BYTES>` / `LORA_SERVER_MAX_BODY_BYTES` (default
   `2097152`).
+- `--max-result-rows <N>` / `LORA_SERVER_MAX_RESULT_ROWS` (default
+  `1000000`, `0` disables). A `/query` result with more rows stops
+  there, rolls back any write, and is answered with
+  `422 LORA_RESULT_TOO_LARGE`. See
+  [Result size limits](../getting-started/server#result-size-limits).
+- `--max-response-bytes <BYTES>` / `LORA_SERVER_MAX_RESPONSE_BYTES`
+  (default `268435456`, `0` disables). A larger `/query` response body
+  is answered with `422 LORA_RESULT_TOO_LARGE`.
 - `--header-read-timeout-ms <MS>` / `LORA_SERVER_HEADER_READ_TIMEOUT_MS`
   (default `10000`, `0` disables). A connection that has not sent a
   complete request head in time is closed.

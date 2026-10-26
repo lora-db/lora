@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use axum::{
     extract::{rejection::JsonRejection, State},
-    http::StatusCode,
+    http::{header, StatusCode},
     response::IntoResponse,
     Json,
 };
@@ -25,6 +25,8 @@ pub(crate) struct QueryState<R> {
     db: Arc<R>,
     timeout: Option<Duration>,
     slots: Option<Arc<Semaphore>>,
+    max_result_rows: Option<usize>,
+    max_response_bytes: Option<usize>,
 }
 
 impl<R> Clone for QueryState<R> {
@@ -33,6 +35,8 @@ impl<R> Clone for QueryState<R> {
             db: Arc::clone(&self.db),
             timeout: self.timeout,
             slots: self.slots.clone(),
+            max_result_rows: self.max_result_rows,
+            max_response_bytes: self.max_response_bytes,
         }
     }
 }
@@ -46,6 +50,8 @@ impl<R> QueryState<R> {
                 .max_concurrent
                 .filter(|n| *n > 0)
                 .map(|n| Arc::new(Semaphore::new(n))),
+            max_result_rows: limits.max_result_rows,
+            max_response_bytes: limits.max_response_bytes,
         }
     }
 }
@@ -156,13 +162,78 @@ where
     });
 
     let query = req.query;
+    let max_rows = state.max_result_rows;
+    let max_bytes = state.max_response_bytes;
+    // The response is encoded on the blocking pool too, against its byte
+    // cap, so a large one neither holds up the async workers nor grows
+    // past the cap.
     let outcome = run_engine(&state, move |db, deadline| {
-        db.execute_with_params_deadline(&query, options, params.unwrap_or_default(), deadline)
+        let params = params.unwrap_or_default();
+        let result = match max_rows {
+            Some(max_rows) => db
+                .execute_with_params_deadline_max_rows(&query, options, params, deadline, max_rows),
+            None => db.execute_with_params_deadline(&query, options, params, deadline),
+        }?;
+        encode_json(&result, max_bytes)
     })
     .await;
     match outcome {
-        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Ok(body) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            body,
+        )
+            .into_response(),
         Err(err) => lora_error_response(err),
+    }
+}
+
+/// Encode `value` as JSON, failing with `LORA_RESULT_TOO_LARGE` as soon as
+/// the encoding passes `max_bytes` (`None`: no cap).
+fn encode_json<T: serde::Serialize>(
+    value: &T,
+    max_bytes: Option<usize>,
+) -> Result<Vec<u8>, LoraError> {
+    let mut out = CappedWriter {
+        buf: Vec::new(),
+        max: max_bytes.unwrap_or(usize::MAX),
+        over: false,
+    };
+    match serde_json::to_writer(&mut out, value) {
+        Ok(()) => Ok(out.buf),
+        Err(_) if out.over => Err(LoraError::new(
+            LoraErrorCode::ResultTooLarge,
+            format!(
+                "query response is larger than {} bytes; return fewer or smaller values, or page through the result with SKIP and LIMIT",
+                out.max
+            ),
+        )),
+        Err(err) => Err(LoraError::new(
+            LoraErrorCode::Internal,
+            format!("failed to encode the query result: {err}"),
+        )),
+    }
+}
+
+/// A `Vec<u8>` writer that refuses to grow past `max` bytes.
+struct CappedWriter {
+    buf: Vec<u8>,
+    max: usize,
+    over: bool,
+}
+
+impl std::io::Write for CappedWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if data.len() > self.max - self.buf.len() {
+            self.over = true;
+            return Err(std::io::Error::other("response byte cap reached"));
+        }
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
