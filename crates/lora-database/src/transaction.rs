@@ -378,9 +378,10 @@ impl<'db> Transaction<'db> {
     fn execute_rows_with_params_deadline(
         &mut self,
         query: &str,
-        params: BTreeMap<String, LoraValue>,
+        mut params: BTreeMap<String, LoraValue>,
         deadline: Option<Instant>,
     ) -> Result<Vec<Row>> {
+        crate::database::check_parameter_values(&mut params)?;
         if crate::Database::<InMemoryGraph>::is_schema_command_text(query) {
             let document = parse_query(query)?;
             if let lora_ast::Statement::Schema(command) = &document.statement {
@@ -662,8 +663,10 @@ impl<'db> Transaction<'db> {
         query: &str,
         params: Option<BTreeMap<String, LoraValue>>,
     ) -> Result<QueryPlan, LoraError> {
+        let mut params = params.unwrap_or_default();
+        crate::database::check_parameter_values(&mut params).map_err(LoraError::from_anyhow)?;
         let compiled = self
-            .compile_in_tx(query, &params.unwrap_or_default())
+            .compile_in_tx(query, &params)
             .map_err(LoraError::from_anyhow)?;
         Ok(query_plan_for(query, &compiled))
     }
@@ -680,7 +683,8 @@ impl<'db> Transaction<'db> {
         query: &str,
         params: Option<BTreeMap<String, LoraValue>>,
     ) -> Result<QueryProfile, LoraError> {
-        let params = params.unwrap_or_default();
+        let mut params = params.unwrap_or_default();
+        crate::database::check_parameter_values(&mut params).map_err(LoraError::from_anyhow)?;
         let compiled = self
             .compile_in_tx(query, &params)
             .map_err(LoraError::from_anyhow)?;
@@ -734,8 +738,9 @@ impl<'db> Transaction<'db> {
     pub fn stream_with_params(
         &mut self,
         query: &str,
-        params: BTreeMap<String, LoraValue>,
+        mut params: BTreeMap<String, LoraValue>,
     ) -> Result<QueryStream<'static>, LoraError> {
+        crate::database::check_parameter_values(&mut params)?;
         let compiled = Arc::new(self.compile_in_tx(query, &params)?);
         crate::database::ensure_parameters(&compiled, &params)?;
         let columns = compiled_result_columns(&compiled);

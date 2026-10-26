@@ -1,0 +1,194 @@
+//! Queries that used to overflow the stack (aborting the process) or
+//! exhaust memory now fail with an error. See `lora_ast::limits`.
+
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
+
+use lora_database::{Database, InMemoryGraph, LoraErrorCode, LoraValue, TransactionMode};
+
+/// Run `f` on a thread with the stack an unoptimised build needs at the
+/// limits (release builds need far less).
+fn on_big_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new()
+        .stack_size(64 << 20)
+        .spawn(f)
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+fn db() -> Database<InMemoryGraph> {
+    Database::in_memory()
+}
+
+fn nested(depth: usize) -> LoraValue {
+    let mut v = LoraValue::Int(1);
+    for _ in 0..depth {
+        v = LoraValue::List(vec![v]);
+    }
+    v
+}
+
+fn params(entries: Vec<(&str, LoraValue)>) -> BTreeMap<String, LoraValue> {
+    entries
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect()
+}
+
+/// The error `query` fails with; panics when it succeeds.
+fn error_of(
+    db: &Database<InMemoryGraph>,
+    query: &str,
+    params: BTreeMap<String, LoraValue>,
+) -> (LoraErrorCode, String) {
+    match db.execute_with_params(query, None, params) {
+        Ok(_) => panic!("`{query}` succeeded"),
+        Err(e) => (e.code(), e.message().to_string()),
+    }
+}
+
+#[test]
+fn query_built_values_cannot_nest_past_the_limit() {
+    on_big_stack(|| {
+        let db = db();
+        for query in [
+            "RETURN size(reduce(acc = [], i IN range(1, 10000) | [acc])) AS x",
+            "RETURN size(reduce(acc = {}, i IN range(1, 10000) | {a: acc})) AS x",
+            "RETURN size(reduce(acc = [], i IN range(1, 10000) | [x IN [1] | acc])) AS x",
+            "RETURN size(reduce(acc = [], i IN range(1, 10000) | [1] + {a: acc})) AS x",
+            "RETURN size(reduce(acc = {}, i IN range(1, 10000) | acc {.*, a: acc})) AS x",
+        ] {
+            let (code, message) = error_of(&db, query, BTreeMap::new());
+            assert_eq!(code, LoraErrorCode::Validation, "{query}: {message}");
+            assert!(message.contains("128 levels deep"), "{query}: {message}");
+        }
+        // Exactly at the limit is fine.
+        let rows = db
+            .execute_rows("RETURN reduce(acc = 1, i IN range(1, 128) | [acc]) AS x")
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        // collect() adds a level too.
+        let (_, message) = error_of(
+            &db,
+            "UNWIND [$p] AS x RETURN collect(x) AS c",
+            params(vec![("p", nested(128))]),
+        );
+        assert!(message.contains("levels deep"), "{message}");
+    });
+}
+
+#[test]
+fn deep_parameters_are_refused_on_every_path() {
+    on_big_stack(|| {
+        let db = db();
+        // A million levels: walking or dropping it recursively would
+        // overflow any stack.
+        for depth in [129, 1_000_000] {
+            let deep = || params(vec![("p", nested(depth))]);
+            for query in [
+                "RETURN size($p) AS x",
+                "RETURN $p = $p AS x",
+                "RETURN 1 AS x",
+            ] {
+                let (code, message) = error_of(&db, query, deep());
+                assert_eq!(code, LoraErrorCode::InvalidParams, "{message}");
+                assert!(message.contains("$p"), "{message}");
+            }
+            assert!(db.stream_with_params("RETURN $p AS x", deep()).is_err());
+            assert!(db.explain("RETURN $p AS x", Some(deep())).is_err());
+            assert!(db.profile("RETURN $p AS x", Some(deep())).is_err());
+            let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+            assert!(tx
+                .execute_with_params("RETURN $p AS x", None, deep())
+                .is_err());
+            assert!(tx.stream_with_params("RETURN $p AS x", deep()).is_err());
+            assert!(tx.explain("RETURN $p AS x", Some(deep())).is_err());
+            assert!(tx.profile("RETURN $p AS x", Some(deep())).is_err());
+            tx.rollback().unwrap();
+        }
+        // At the limit a parameter works, and can be stored.
+        let p = || params(vec![("p", nested(128))]);
+        db.execute_with_params("RETURN size($p) AS x", None, p())
+            .unwrap();
+        db.execute_with_params("CREATE (:N {v: $p})", None, p())
+            .unwrap();
+        // One more level, built by the query, is refused before the write.
+        let (code, message) = error_of(&db, "CREATE (:N {v: [$p]})", p());
+        assert_eq!(code, LoraErrorCode::Validation, "{message}");
+        let (_, message) = error_of(&db, "MATCH (n:N) SET n.w = [n.v]", BTreeMap::new());
+        assert!(message.contains("levels deep"), "{message}");
+        let count = db.execute_rows("MATCH (n:N) RETURN n").unwrap().len();
+        assert_eq!(count, 1);
+    });
+}
+
+#[test]
+fn values_cannot_grow_past_the_size_limit() {
+    let db = db();
+    for query in [
+        "RETURN size(reduce(s = 'x', i IN range(1, 40) | s + s)) AS x",
+        "RETURN size(reduce(s = [1], i IN range(1, 40) | s + s)) AS x",
+        "RETURN size(reduce(s = ['xxxxxxxxxxxxxxxx'], i IN range(1, 40) | s + s)) AS x",
+        "RETURN size(reduce(s = 'x', i IN range(1, 40) | [s, s, s])) AS x",
+    ] {
+        let start = Instant::now();
+        let (code, message) = error_of(&db, query, BTreeMap::new());
+        assert_eq!(code, LoraErrorCode::Validation, "{query}: {message}");
+        assert!(message.contains("MiB"), "{query}: {message}");
+        assert!(start.elapsed() < Duration::from_secs(30), "{query}");
+    }
+}
+
+#[test]
+fn oversized_properties_are_refused_before_the_write() {
+    let db = db();
+    let big = "x".repeat(70 << 20);
+    // Each value fits, but one node's properties are written as one record.
+    let (code, message) = error_of(
+        &db,
+        "CREATE (:N {a: $s, b: $s})",
+        params(vec![("s", LoraValue::String(big.clone()))]),
+    );
+    assert_eq!(code, LoraErrorCode::Validation, "{message}");
+    assert!(message.contains("MiB"), "{message}");
+    // A parameter over the limit is refused at the door.
+    let (code, message) = error_of(
+        &db,
+        "CREATE (:N {a: $s})",
+        params(vec![("s", LoraValue::String("x".repeat((128 << 20) + 1)))]),
+    );
+    assert_eq!(code, LoraErrorCode::InvalidParams, "{message}");
+    // A query-built value over the limit fails while it is built.
+    let (_, message) = error_of(
+        &db,
+        "CREATE (:N {a: $s + $s})",
+        params(vec![("s", LoraValue::String(big))]),
+    );
+    assert!(message.contains("MiB"), "{message}");
+    assert!(db.execute_rows("MATCH (n) RETURN n").unwrap().is_empty());
+}
+
+#[test]
+fn query_shape_limits_are_parse_errors() {
+    let db = db();
+    for query in [
+        format!(
+            "RETURN {}1{} AS x",
+            "[".repeat(100_000),
+            "]".repeat(100_000)
+        ),
+        format!("RETURN {} AS x", vec!["1"; 100_000].join(" + ")),
+        format!("RETURN {}true AS x", "NOT ".repeat(100_000)),
+        format!(
+            "WITH 1 AS a {}RETURN a",
+            "WITH a WHERE a = 1 ".repeat(2_000)
+        ),
+        format!("RETURN {}1{} AS x", "(".repeat(100), ")".repeat(100)),
+    ] {
+        let start = Instant::now();
+        let (code, _) = error_of(&db, &query, BTreeMap::new());
+        assert_eq!(code, LoraErrorCode::Parse);
+        assert!(start.elapsed() < Duration::from_secs(30));
+    }
+}

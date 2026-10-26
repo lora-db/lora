@@ -48,7 +48,7 @@ pub fn eval_expr<S: GraphStorage>(
         ResolvedExpr::Literal(lit) => eval_literal(lit),
 
         ResolvedExpr::List(items) => {
-            LoraValue::List(items.iter().map(|e| eval_expr(e, row, ctx)).collect())
+            built_list(items.iter().map(|e| eval_expr(e, row, ctx)).collect())
         }
 
         ResolvedExpr::Map(items) => {
@@ -56,7 +56,7 @@ pub fn eval_expr<S: GraphStorage>(
             for (k, v) in items {
                 map.insert(k.clone(), eval_expr(v, row, ctx));
             }
-            LoraValue::Map(map)
+            built_map(map)
         }
 
         ResolvedExpr::Property { expr, property } => {
@@ -206,7 +206,7 @@ pub fn eval_expr<S: GraphStorage>(
                         };
                         result.push(val);
                     }
-                    LoraValue::List(result)
+                    built_list(result)
                 }
                 ListItems::Null | ListItems::NotAList => LoraValue::Null,
             }
@@ -349,7 +349,7 @@ pub fn eval_expr<S: GraphStorage>(
                 }
             }
 
-            LoraValue::Map(result)
+            built_map(result)
         }
 
         ResolvedExpr::Case {
@@ -382,6 +382,31 @@ pub fn eval_expr<S: GraphStorage>(
             seeks,
         } => {
             eval_pattern_comprehension(pattern, where_.as_deref(), map_expr, reads, seeks, row, ctx)
+        }
+    }
+}
+
+/// `items` as a new list value, or null with an error when the list would
+/// break a value limit (see [`crate::limits`]).
+#[inline]
+pub(super) fn built_list(items: Vec<LoraValue>) -> LoraValue {
+    match crate::limits::check_built_list(&items) {
+        Ok(()) => LoraValue::List(items),
+        Err(message) => {
+            super::errors::set_eval_error(message);
+            LoraValue::Null
+        }
+    }
+}
+
+/// [`built_list`] for a map.
+#[inline]
+pub(super) fn built_map(map: BTreeMap<String, LoraValue>) -> LoraValue {
+    match crate::limits::check_built(map.values()) {
+        Ok(()) => LoraValue::Map(map),
+        Err(message) => {
+            super::errors::set_eval_error(message);
+            LoraValue::Null
         }
     }
 }
@@ -738,7 +763,7 @@ fn eval_pattern_comprehension<S: GraphStorage>(
         }
         out.push(eval_expr(map_expr, r, ctx));
     }
-    LoraValue::List(out)
+    built_list(out)
 }
 
 /// A copy of `row` holding only `reads`, the variables a pattern subquery

@@ -2,6 +2,7 @@ pub mod cancel;
 mod errors;
 mod eval;
 mod executor;
+pub mod limits;
 pub mod profile;
 mod pull;
 mod value;

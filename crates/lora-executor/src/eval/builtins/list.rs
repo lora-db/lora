@@ -975,7 +975,7 @@ fn range(args: &[LoraValue]) -> LoraValue {
         span.abs() / abs_step + 1
     };
     if expected_len > MAX_RANGE_LEN as i128 {
-        return LoraValue::Null;
+        return super::fail(crate::limits::too_large_message());
     }
     let mut result = Vec::with_capacity(expected_len as usize);
     let mut i = start;

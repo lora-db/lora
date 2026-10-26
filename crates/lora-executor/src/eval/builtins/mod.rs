@@ -47,6 +47,12 @@ mod uuid_ns;
 mod value;
 mod vector_ns;
 
+/// Fail the current call with `message`: the query errors with it.
+pub(super) fn fail(message: String) -> LoraValue {
+    super::errors::set_eval_error(message);
+    LoraValue::Null
+}
+
 /// Dispatch a `<namespace>.<operation>` call.
 ///
 /// Returns `None` for any name that doesn't belong to a known namespace —

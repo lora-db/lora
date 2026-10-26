@@ -15,7 +15,8 @@
 /// Deepest a list or map value may nest, counting the outermost container
 /// as depth 1. Parameters, query-built lists and maps, and the WAL /
 /// snapshot / store codecs all enforce the same number, so anything a query
-/// can build can be persisted and read back.
+/// can build can be persisted and read back. Must equal
+/// `lora_store::codec::MAX_VALUE_NESTING`.
 pub const MAX_VALUE_NESTING: usize = 128;
 
 /// Deepest that brackets, parentheses, braces and `CASE` expressions may

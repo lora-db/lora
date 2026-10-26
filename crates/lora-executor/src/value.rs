@@ -319,6 +319,9 @@ pub enum PropertyConversionError {
     /// property values, so they are rejected instead of being stored as a
     /// `"node:<id>"` string (or, for a path, as null).
     UnsupportedKind(&'static str),
+    /// Nested past `MAX_VALUE_NESTING` or larger than `MAX_VALUE_BYTES`
+    /// (see [`crate::limits`]).
+    Limit(String),
 }
 
 impl std::fmt::Display for PropertyConversionError {
@@ -329,6 +332,9 @@ impl std::fmt::Display for PropertyConversionError {
             }
             PropertyConversionError::UnsupportedKind(kind) => {
                 write!(f, "cannot store {kind} as a property")
+            }
+            PropertyConversionError::Limit(message) => {
+                write!(f, "cannot store the property: {message}")
             }
         }
     }
@@ -375,6 +381,7 @@ pub fn lora_value_to_property(value: LoraValue) -> Result<PropertyValue, Propert
         }
     }
 
+    crate::limits::check_storable(&value).map_err(PropertyConversionError::Limit)?;
     visit(&value, false)?;
     Ok(PropertyValue::from(value))
 }

@@ -938,10 +938,19 @@ pub(super) fn eval_properties_expr<S: GraphStorage>(
     // stored, so `keys(n)` and existence checks do not see it.
     if let ResolvedExpr::Map(items) = expr {
         let mut out = Properties::new();
+        // The properties of one entity are written as one record, so they
+        // share the single-value size limit.
+        let mut bytes = 0usize;
         for (k, v) in items {
             let value = eval_expr_result(v, row, &eval_ctx).map_err(ExecutorError::from_eval)?;
             if matches!(value, LoraValue::Null) {
                 continue;
+            }
+            bytes = bytes.saturating_add(crate::limits::measure(&value).1 + k.len());
+            if bytes > crate::limits::MAX_VALUE_BYTES {
+                return Err(ExecutorError::RuntimeError(
+                    crate::limits::too_large_message(),
+                ));
             }
             let prop = lora_value_to_property(value)
                 .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
@@ -1018,6 +1027,8 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                         values = dedup_values(values);
                     }
 
+                    crate::limits::check_built_nesting(&values)
+                        .map_err(ExecutorError::RuntimeError)?;
                     Ok(LoraValue::List(values))
                 }
 
