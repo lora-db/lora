@@ -39,6 +39,7 @@ const USE: Record<string, string> = {
   sortable: "@sortable",
   limit: "@limit(max: 50)",
   relayId: "@relayId",
+  cacheControl: "@cacheControl(maxAge: 60)",
   fulltext: '@fulltext(indexes: [{ fields: ["key"] }])',
   vector: "@vector(dimensions: 3)",
   subscription: "@subscription",

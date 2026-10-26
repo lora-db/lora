@@ -23,6 +23,7 @@ import {
   type Clause,
   type Expr,
 } from "../cypher.js";
+import { labelRows, perRowCost } from "../cost.js";
 import { compileNodeWhere } from "../filter.js";
 import { collectFields, subSelections } from "../selection.js";
 import type { CompiledRead, Args, Where, RawConnection } from "./types.js";
@@ -127,11 +128,26 @@ export function compileSearch(
     );
     const clauses: Clause[] = [];
     if (index.kind === "fulltext") {
-      const query = args["query"] as string;
+      const query = shortPrefixesWhole(
+        args["query"] as string,
+        index.minPrefixLength,
+      );
       clauses.push({
         kind: "procedure",
         procedure: "db.index.fulltext.queryNodes",
-        args: [bind(c, index.name), bind(c, query)],
+        args: [
+          bind(c, index.name),
+          bind(c, query),
+          // The index ranks only its best `maxMatches`.
+          ...(index.maxMatches !== undefined
+            ? [
+                {
+                  kind: "map" as const,
+                  entries: [{ key: "limit", value: bind(c, index.maxMatches) }],
+                },
+              ]
+            : []),
+        ],
         yields: [{ item: "node", alias: "this" }, { item: "score" }],
         where,
       });
@@ -203,7 +219,7 @@ export function compileSearch(
     : undefined;
   if (sel && !sel.page) {
     // Only `totalCount`: no page is read.
-    return searchCount(ctx, node, matches, (rows) => ({
+    return searchCount(ctx, node, index, args, matches, (rows) => ({
       __rows: [],
       __first: limit,
       __after: cursor !== undefined,
@@ -213,6 +229,7 @@ export function compileSearch(
     }));
   }
   const clauses = matches(ctx, keyset);
+  ctx.cost += searchCandidatesCost(ctx, node, index, args);
   const selections = sel
     ? sel.node
     : searchNodeSelections(ctx, node, fieldNodes);
@@ -254,7 +271,7 @@ export function compileSearch(
   );
   if (sel) {
     const count = sel.totalCount
-      ? searchCount(ctx, node, matches, () => undefined)
+      ? searchCount(ctx, node, index, args, matches, () => undefined)
       : undefined;
     const compiled = finish(
       ctx,
@@ -304,6 +321,8 @@ export function compileSearch(
 function searchCount(
   ctx: CompileContext,
   node: NodeType,
+  index: SearchIndex,
+  args: Args,
   matches: (c: CompileContext, keyset: Expr | undefined) => Clause[],
   shape: (count: number) => RawConnection | undefined,
 ): CompiledRead {
@@ -335,8 +354,43 @@ function searchCount(
     },
     undefined,
   );
-  compiled.cost = 1;
+  compiled.cost = 1 + searchCandidatesCost(ctx, node, index, args);
   return compiled;
+}
+
+/**
+ * The matches a full-text search reads before its page: the index's
+ * `maxMatches`, else every node of the label (statistics; the type's page
+ * size without them), each examined by the `where`. A vector search reads
+ * a fixed candidate pool, counted by its page.
+ */
+function searchCandidatesCost(
+  ctx: CompileContext,
+  node: NodeType,
+  index: SearchIndex,
+  args: Args,
+): number {
+  if (index.kind !== "fulltext") return 0;
+  const rows = Math.min(
+    index.maxMatches ?? Infinity,
+    labelRows(ctx, node, node.limit.default),
+  );
+  return rows * (1 + perRowCost(ctx, node, args["where"] as Where | undefined));
+}
+
+/**
+ * `query` with every `*` word shorter than `min` matched whole: `lo*`
+ * becomes `lo`. Words are the index analyzer's: runs of letters and
+ * digits.
+ */
+export function shortPrefixesWhole(
+  query: string,
+  min: number | undefined,
+): string {
+  if (min === undefined || min <= 1) return query;
+  return query.replace(/([\p{L}\p{N}]+)\*/gu, (whole, word: string) =>
+    [...word].length < min ? word : whole,
+  );
 }
 
 /** The `edges { node }` selections of a search connection. */

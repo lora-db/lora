@@ -59,6 +59,7 @@ export type {
   RelationshipRef,
   WriteChange,
 } from "./execute/changes.js";
+export type { CachePolicy } from "./execute/cache-policy.js";
 export type {
   MutationInfo,
   PopulatedByCallback,

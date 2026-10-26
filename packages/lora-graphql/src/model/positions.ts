@@ -70,14 +70,16 @@ export const DIRECTIVE_POSITIONS: Readonly<
     "uniqueTogether",
     "trigger",
     "outbox",
+    "cacheControl",
   ],
   "relationship properties type": ["relationshipProperties"],
   "@jwt type": ["jwt"],
-  "object type without @node": [],
+  "object type without @node": ["cacheControl"],
   "Query or Mutation type": [],
-  interface: ["query", "plural", "limit"],
-  union: ["query", "plural", "limit"],
+  interface: ["query", "plural", "limit", "cacheControl"],
+  union: ["query", "plural", "limit", "cacheControl"],
   "node field": [
+    "cacheControl",
     "key",
     "unique",
     "private",
@@ -107,6 +109,7 @@ export const DIRECTIVE_POSITIONS: Readonly<
     "relationship",
   ],
   "relationship field": [
+    "cacheControl",
     "relationship",
     "authorization",
     "authentication",
@@ -132,6 +135,7 @@ export const DIRECTIVE_POSITIONS: Readonly<
     "relayId",
   ],
   "@cypher field": [
+    "cacheControl",
     "cypher",
     "authorization",
     "authentication",
@@ -148,6 +152,7 @@ export const DIRECTIVE_POSITIONS: Readonly<
     "groupBy",
   ],
   "Query or Mutation field": [
+    "cacheControl",
     "cypher",
     "authorization",
     "authentication",
@@ -164,6 +169,7 @@ export const DIRECTIVE_POSITIONS: Readonly<
     "groupBy",
   ],
   "@customResolver field": [
+    "cacheControl",
     "customResolver",
     "authentication",
     // Refused with "@x cannot be combined with @customResolver".
@@ -202,6 +208,7 @@ export const DIRECTIVE_POSITIONS: Readonly<
     "groupBy",
   ],
   "interface field": [
+    "cacheControl",
     "filterable",
     "sortable",
     // Refused with a specific message.
@@ -213,7 +220,7 @@ export const DIRECTIVE_POSITIONS: Readonly<
     "groupBy",
   ],
   "interface relationship field": ["declareRelationship"],
-  "field of an object type without @node": [],
+  "field of an object type without @node": ["cacheControl"],
   "@jwt claim": ["jwtClaim", "viewer"],
 };
 

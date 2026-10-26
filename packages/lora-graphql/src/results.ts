@@ -7,6 +7,7 @@ import type { CypherFinding } from "./analyze/cypher-check.js";
 import type { SchemaRequirement } from "./analyze/indexes.js";
 import type { PlanReport } from "./analyze/plans.js";
 import type { ReadSet } from "./compile/read/types.js";
+import type { CachePolicy } from "./execute/cache-policy.js";
 import type { ModelWarning } from "./model/types.js";
 
 /** `extensions.timing` of an `execute()` result (see the `timing` option). */
@@ -23,9 +24,14 @@ export interface ExecutionTiming {
   fields: Record<string, { totalMs: number; databaseMs: number }>;
 }
 
-/** `execute()`'s result; `readSet` is there when `ExecuteArgs.readSet` asked. */
+/**
+ * `execute()`'s result; `readSet` is there when `ExecuteArgs.readSet` asked,
+ * `cacheControl` when the operation's `@cacheControl` hints give it a policy.
+ * Neither is serialized to the client.
+ */
 export type LoraExecutionResult = ExecutionResult & {
   readonly readSet?: ReadSet;
+  readonly cacheControl?: CachePolicy;
 };
 
 export interface SchemaAssertion {

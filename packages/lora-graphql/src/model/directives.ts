@@ -226,6 +226,25 @@ export const directiveTypeDefs = /* GraphQL */ `
   "Expose an opaque global id derived from this @key field."
   directive @relayId on FIELD_DEFINITION
 
+  """
+  How long, in seconds, a result over this type or field may be served from a
+  cache. An operation's policy (\`cacheControl\` on \`execute()\`'s result) is the
+  smallest maxAge of the fields it selects, each field's own hint or else its
+  type's; it has none when it selects a type or a scalar root field without one.
+  """
+  directive @cacheControl(
+    maxAge: Int!
+    scope: CacheScope = PUBLIC
+  ) on OBJECT | INTERFACE | UNION | FIELD_DEFINITION
+
+  "Who may share a cached result."
+  enum CacheScope {
+    "Any reader with the same variables."
+    PUBLIC
+    "Only the reader it was computed for."
+    PRIVATE
+  }
+
   "Full-text search over String fields: a FULLTEXT index and a search root field per entry."
   directive @fulltext(indexes: [FulltextIndex!]!) on OBJECT
 
@@ -243,6 +262,19 @@ export const directiveTypeDefs = /* GraphQL */ `
     analyzer: FulltextAnalyzer = STANDARD
     "Root field name. Default: search<Plural>, or search<Plural>By<Name>."
     queryName: String
+    """
+    A query word shorter than this matches as a whole word even when it ends
+    in \`*\`: \`lo*\` becomes \`lo\`, so a two-letter prefix can't expand to
+    most of the index. Default: every \`*\` word is a prefix.
+    """
+    minPrefixLength: Int
+    """
+    The most matches one query ranks: the index keeps its best \`maxMatches\`
+    (by score) and \`where\`, \`sort\`, pages and \`totalCount\` apply within
+    them. Bounds a broad query's time and memory, and its cost. Default: every
+    match.
+    """
+    maxMatches: Int
   }
 
   enum FulltextAnalyzer {
@@ -487,6 +519,7 @@ export const PRELUDE_TYPES = new Set([
   "OnDelete",
   "FulltextIndex",
   "FulltextAnalyzer",
+  "CacheScope",
   "VectorSimilarity",
   "MutationOperation",
   "TimestampOperation",

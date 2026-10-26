@@ -86,6 +86,9 @@ is an error.
 [`@fulltext`](#fulltext) ·
 [`@vector`](#vector)
 
+**Caching:**
+[`@cacheControl`](#cachecontrol)
+
 **Writing and events:**
 [`@mutation`](#mutation) ·
 [`@subscription`](#subscription) ·
@@ -1490,6 +1493,11 @@ Each entry of `indexes` takes:
 - `analyzer`: `STANDARD` (default) or `SIMPLE`.
 - `queryName`: the root field. Default `search<Plural>` for the first,
   `search<Plural>By<Name>` after.
+- `minPrefixLength`: a `*` word shorter than this matches as a whole word,
+  so `lo*` is searched as `lo`. Without it, every `*` word is a prefix.
+- `maxMatches`: the most matches one query ranks. The index keeps its best
+  `maxMatches` by score, and `where`, `sort`, pages and `totalCount` apply
+  within them. Without it, every match is ranked.
 
 ```graphql
 {
@@ -1506,6 +1514,73 @@ Terms are combined with AND, case and accents are folded, and a trailing
 `*` matches a prefix. A field with a mask, a READ `validate` rule or READ
 `@authentication` cannot be indexed, since searching it would reveal
 which rows contain a hidden word.
+
+#### Bounding a large index
+
+A prefix of one or two letters matches a large share of a big index: `lo*`
+over millions of song titles is hundreds of thousands of matches, each read,
+ranked and counted before the page is cut. `minPrefixLength` and
+`maxMatches` bound that work:
+
+```graphql
+type Track
+  @node
+  @fulltext(
+    indexes: [{ fields: ["title"], minPrefixLength: 3, maxMatches: 1000 }]
+  ) {
+  key: String! @key
+  title: String!
+}
+```
+
+With the tracks `Atlas`, `At the River`, `Atmosphere` and `Glue`, a
+two-letter prefix is searched as a whole word:
+
+```graphql
+{
+  searchTracks(query: "at*") {
+    score
+    node {
+      title
+    }
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "searchTracks": [{ "score": 1, "node": { "title": "At the River" } }]
+  }
+}
+```
+
+and a three-letter one is still a prefix:
+
+```graphql
+{
+  searchTracks(query: "atm*") {
+    score
+    node {
+      title
+    }
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "searchTracks": [{ "score": 1, "node": { "title": "Atmosphere" } }]
+  }
+}
+```
+
+The search's [cost](./api-reference#limits) counts the matches it may rank:
+`maxMatches` when it is set, otherwise every node of the type (from
+[statistics](./api-reference#analyzeoptions)). A search over a large type without
+`maxMatches` can therefore exceed `maxCost`, which is the point: set
+`maxMatches` on it.
 
 ### @vector {#vector}
 
@@ -1538,6 +1613,73 @@ Search from a query vector, or from an existing node with `to`:
   }
 }
 ```
+
+## Caching
+
+### @cacheControl {#cachecontrol}
+
+How long, in seconds, a result over a type or field may be served from a
+cache. The library caches nothing itself: `execute()` reports the
+operation's policy as a non-enumerable
+[`cacheControl`](./api-reference#executeargs) on its result, for a response
+cache or a `Cache-Control` header to use.
+
+```graphql
+type Claims @jwt {
+  sub: String!
+}
+
+type Album @node @cacheControl(maxAge: 600) {
+  key: String! @key
+  title: String!
+  artist: Artist! @relationship(type: "RELEASED", direction: IN)
+}
+
+type Artist @node @cacheControl(maxAge: 300) {
+  key: String! @key
+  name: String!
+  viewerFollows: Boolean!
+    @cacheControl(maxAge: 0, scope: PRIVATE)
+    @cypher(
+      statement: "RETURN EXISTS { (this)<-[:FOLLOWS]-(:Fan {key: $jwt.sub}) } AS f"
+      columnName: "f"
+    )
+}
+
+type Fan @node {
+  key: String! @key
+  follows: [Artist!]! @relationship(type: "FOLLOWS", direction: OUT)
+}
+```
+
+Arguments:
+
+- `maxAge` (required): seconds, 0 or more.
+- `scope`: `PUBLIC` (default) or `PRIVATE`, a result only for the reader it
+  was computed for.
+
+An operation's policy is the smallest `maxAge` among the fields it selects.
+Each field takes its own hint, or else its type's. A generated type such as
+`AlbumConnection`, `AlbumMatch` or `AlbumAggregate` takes its type's, and a
+scalar takes its parent's. One `PRIVATE` hint makes the whole result
+private.
+
+| Operation | `cacheControl` |
+| --- | --- |
+| `{ albums { title } }` | `{ maxAge: 600, scope: "PUBLIC" }` |
+| `{ albums { title artist { name } } }` | `{ maxAge: 300, scope: "PUBLIC" }` |
+| `{ albums { artist { viewerFollows } } }` | `{ maxAge: 0, scope: "PRIVATE" }` |
+
+There is no policy, so nothing may be cached on the strength of a hint,
+when the operation is a mutation or a subscription, selects a type with no
+hint, or has a root field with none (an unhinted scalar `@cypher` field on
+`Query`). It goes on node types, interfaces, unions, object types that
+`@cypher` fields return, and their fields; a relationship properties type
+takes its parent's.
+
+A hint says how stale a result may get, not when it changes. Keep dropping
+cached results on writes with [read-sets](./api-reference#executeargs), and
+use `maxAge` as the most a result lives between them.
 
 ## Writing and events
 

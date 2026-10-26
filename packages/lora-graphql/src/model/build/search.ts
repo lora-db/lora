@@ -24,6 +24,8 @@ export function readSearch(
     fields: string[];
     analyzer: "STANDARD" | "SIMPLE";
     queryName?: string;
+    minPrefixLength?: number | null;
+    maxMatches?: number | null;
   };
   const raws = (fulltext?.["indexes"] as Raw[] | undefined) ?? [];
   raws.forEach((raw, i) => {
@@ -48,11 +50,19 @@ export function readSearch(
       } else fields.push(field);
     }
     if (raw.fields.length === 0) at("@fulltext: an index needs fields");
+    const minPrefixLength = raw.minPrefixLength ?? undefined;
+    if (minPrefixLength !== undefined && minPrefixLength < 1)
+      at(`@fulltext(${name}): minPrefixLength must be at least 1`);
+    const maxMatches = raw.maxMatches ?? undefined;
+    if (maxMatches !== undefined && maxMatches < 1)
+      at(`@fulltext(${name}): maxMatches must be at least 1`);
     out.push({
       kind: "fulltext",
       name,
       fields,
       analyzer: raw.analyzer,
+      minPrefixLength,
+      maxMatches,
       queryName:
         raw.queryName ??
         (i === 0 ? `search${Plural}` : `search${Plural}By${upperFirst(name)}`),

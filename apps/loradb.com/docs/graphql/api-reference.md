@@ -440,7 +440,8 @@ execute(args: {
   operationName?: string;
   context?: unknown;
   readSet?: boolean;
-}): Promise<LoraExecutionResult> // ExecutionResult & { readonly readSet?: ReadSet }
+}): Promise<LoraExecutionResult>
+// ExecutionResult & { readonly readSet?: ReadSet; readonly cacheControl?: CachePolicy }
 ```
 
 Runs a query or mutation. Pass `id` for a persisted operation, or
@@ -467,6 +468,19 @@ lora.onWrite((change) => {
     if (lora.affects(entry.reads, change)) cache.delete(key);
   }
 });
+```
+
+A query whose fields carry [`@cacheControl`](./directives#cachecontrol)
+hints also carries a non-enumerable `cacheControl`,
+`{ maxAge: number; scope: "PUBLIC" | "PRIVATE" }`: how long, in seconds,
+its result may be served from a cache. It is absent when the operation
+selects anything no hint covers.
+
+```ts
+const result = await lora.execute({ id, variables, readSet: true });
+const ttl = result.cacheControl?.scope === "PUBLIC"
+  ? result.cacheControl.maxAge * 1000
+  : defaultTtlMs;
 ```
 
 ### subscribe(args)

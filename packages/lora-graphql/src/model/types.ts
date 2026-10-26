@@ -415,6 +415,10 @@ export type SearchIndex =
       analyzer: "STANDARD" | "SIMPLE";
       /** Root field, e.g. `searchFestivals`. */
       queryName: string;
+      /** `*` words shorter than this match whole (`minPrefixLength:`). */
+      minPrefixLength: number | undefined;
+      /** The most matches a query ranks (`maxMatches:`). */
+      maxMatches: number | undefined;
     }
   | {
       kind: "vector";
@@ -503,6 +507,21 @@ export interface GraphModel {
   cursorSecret: string | undefined;
   /** The global page-size cap (`maxLimit`); also caps `nodes(ids:)`. */
   maxLimit?: number | undefined;
+  /** `@cacheControl` hints, by type and by `Type.field`. */
+  cacheHints?: CacheHints;
+}
+
+/** A `@cacheControl` hint. */
+export interface CacheHint {
+  /** Seconds a result may be served from a cache. */
+  maxAge: number;
+  scope: "PUBLIC" | "PRIVATE";
+}
+
+export interface CacheHints {
+  types: ReadonlyMap<string, CacheHint>;
+  /** By `Type.field`. */
+  fields: ReadonlyMap<string, CacheHint>;
 }
 
 export interface ModelWarning {

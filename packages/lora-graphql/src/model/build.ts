@@ -90,6 +90,7 @@ import {
   abstractsOf,
   type RuleEnds,
 } from "./build/rule-checks.js";
+import { readCacheHints } from "./build/cache-control.js";
 import { readSearch } from "./build/search.js";
 import { readTriggers } from "./build/trigger.js";
 import { readUniqueTogether } from "./build/unique-together.js";
@@ -1363,6 +1364,8 @@ export function buildModel(
     }
   }
 
+  const cacheHints = readCacheHints(userTypes, d("cacheControl"), atType);
+
   if (problems.length > 0) throw new ModelError(dedupeProblems(problems));
   const model: GraphModel = {
     nodes,
@@ -1380,6 +1383,7 @@ export function buildModel(
     bypass: defaults.bypass,
     cursorSecret: options.cursorSecret,
     maxLimit: globalLimit.max,
+    cacheHints,
   };
   // A @cypher mutation's write-set is unknown: @uniqueTogether types it
   // may write are checked by comparing every node of the type.

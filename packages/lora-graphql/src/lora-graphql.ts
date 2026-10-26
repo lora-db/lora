@@ -145,6 +145,10 @@ import type {
 } from "./results.js";
 import { checkCustomRequires } from "./runtime/custom-requires.js";
 import { databaseError } from "./runtime/database-error.js";
+import {
+  operationCachePolicy,
+  type CachePolicy,
+} from "./execute/cache-policy.js";
 import { Documents } from "./runtime/documents.js";
 import { OperationLimits } from "./runtime/limits.js";
 import {
@@ -231,6 +235,11 @@ export class LoraGraphQL {
   readonly #timing: LoraGraphQLOptions["timing"];
   /** Per-request read-set collectors, by GraphQL context. */
   readonly #readSets = new WeakMap<object, ReadCollector>();
+  /** `@cacheControl` policies, by document and operation name. */
+  readonly #cachePolicies = new WeakMap<
+    DocumentNode,
+    Map<string, CachePolicy | null>
+  >();
   /** Per-request timing collectors, by GraphQL context (see `timing`). */
   readonly #timings = new WeakMap<
     object,
@@ -950,6 +959,54 @@ export class LoraGraphQL {
    * returns a `WRONG_OPERATION_TYPE` error.
    */
   async execute(args: ExecuteArgs): Promise<LoraExecutionResult> {
+    const result = await this.#executeReading(args);
+    const policy = this.#cachePolicy(args);
+    if (!policy) return result;
+    const out = { ...result };
+    if (result.readSet) {
+      Object.defineProperty(out, "readSet", {
+        value: result.readSet,
+        enumerable: false,
+      });
+    }
+    return Object.defineProperty(out, "cacheControl", {
+      value: policy,
+      enumerable: false,
+    }) as LoraExecutionResult;
+  }
+
+  /**
+   * The operation's `@cacheControl` policy (see `operationCachePolicy`),
+   * once per document and operation name.
+   */
+  #cachePolicy(args: ExecuteArgs): CachePolicy | undefined {
+    const hints = this.model.cacheHints;
+    if (!hints || (hints.types.size === 0 && hints.fields.size === 0)) {
+      return undefined;
+    }
+    const document = this.#documents.document(args);
+    if (!isDocument(document)) return undefined;
+    let byName = this.#cachePolicies.get(document);
+    if (!byName) {
+      byName = new Map();
+      this.#cachePolicies.set(document, byName);
+    }
+    const key = args.operationName ?? "";
+    if (!byName.has(key)) {
+      byName.set(
+        key,
+        operationCachePolicy(
+          this.getSchema(),
+          this.model,
+          document,
+          args.operationName,
+        ) ?? null,
+      );
+    }
+    return byName.get(key) ?? undefined;
+  }
+
+  async #executeReading(args: ExecuteArgs): Promise<LoraExecutionResult> {
     if (!args.readSet) return this.#execute(args);
     const context = args.context ?? {};
     if (typeof context !== "object" || context === null) {
