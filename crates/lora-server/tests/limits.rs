@@ -313,3 +313,144 @@ fn header_read_timeout_can_be_disabled() {
     let n = slow.read(&mut buf).unwrap();
     assert!(String::from_utf8_lossy(&buf[..n]).contains(" 200 "));
 }
+
+fn query_body(query: &str) -> String {
+    format!(r#"{{"query":"{query}","format":"rows"}}"#)
+}
+
+#[test]
+fn result_over_the_row_cap_stops_early_with_422() {
+    let addr = start_server(
+        seeded_db(),
+        QueryLimits {
+            timeout: Some(Duration::from_secs(120)),
+            max_result_rows: Some(1000),
+            ..QueryLimits::default()
+        },
+    );
+
+    // 2000^3 rows: building them all would run into the timeout.
+    let started = Instant::now();
+    let (status, body) = request(
+        addr,
+        "POST",
+        "/query",
+        &query_body("MATCH (a:N), (b:N), (c:N) RETURN a.i, b.i, c.i"),
+    );
+    assert!(status.contains(" 422 "), "{status}: {body}");
+    assert!(body.contains("LORA_RESULT_TOO_LARGE"), "{body}");
+    assert!(body.contains("more than 1000 rows"), "{body}");
+    assert!(
+        started.elapsed() < Duration::from_secs(60),
+        "the capped query took {:?}",
+        started.elapsed()
+    );
+
+    let (status, body) = request(
+        addr,
+        "POST",
+        "/query",
+        &query_body("UNWIND range(1, 10000000) AS i RETURN i"),
+    );
+    assert!(status.contains(" 422 "), "{status}: {body}");
+
+    // Exactly at the cap is fine, and so is a large intermediate result
+    // that shrinks before it is returned.
+    let (status, body) = request(
+        addr,
+        "POST",
+        "/query",
+        &query_body("UNWIND range(1, 1000) AS i RETURN i"),
+    );
+    assert!(status.contains(" 200 "), "{status}: {body}");
+    let (status, body) = request(
+        addr,
+        "POST",
+        "/query",
+        &query_body("MATCH (a:N), (b:N) WHERE a.i = b.i RETURN count(*) AS c"),
+    );
+    assert!(status.contains(" 200 "), "{status}: {body}");
+    assert!(body.contains(r#""c":2000"#), "{body}");
+}
+
+#[test]
+fn write_over_the_row_cap_rolls_back() {
+    let addr = start_server(
+        seeded_db(),
+        QueryLimits {
+            max_result_rows: Some(1000),
+            ..QueryLimits::default()
+        },
+    );
+    let (status, body) = request(
+        addr,
+        "POST",
+        "/query",
+        &query_body("UNWIND range(1, 5000) AS i CREATE (w:W {i: i}) RETURN w.i"),
+    );
+    assert!(status.contains(" 422 "), "{status}: {body}");
+    assert!(body.contains("LORA_RESULT_TOO_LARGE"), "{body}");
+
+    let (status, body) = request(
+        addr,
+        "POST",
+        "/query",
+        &query_body("MATCH (w:W) RETURN count(w) AS c"),
+    );
+    assert!(status.contains(" 200 "), "{status}: {body}");
+    assert!(body.contains(r#""c":0"#), "{body}");
+
+    // Without RETURN the same write returns no rows and commits.
+    let (status, body) = request(
+        addr,
+        "POST",
+        "/query",
+        &query_body("UNWIND range(1, 5000) AS i CREATE (:W {i: i})"),
+    );
+    assert!(status.contains(" 200 "), "{status}: {body}");
+}
+
+#[test]
+fn response_over_the_byte_cap_answers_422() {
+    let addr = start_server(
+        seeded_db(),
+        QueryLimits {
+            max_response_bytes: Some(10_000),
+            ..QueryLimits::default()
+        },
+    );
+    // One row holding a 20 kB string.
+    let (status, body) = request(
+        addr,
+        "POST",
+        "/query",
+        &query_body("RETURN reduce(s = '', i IN range(1, 2000) | s + '0123456789') AS s"),
+    );
+    assert!(status.contains(" 422 "), "{status}: {body}");
+    assert!(body.contains("LORA_RESULT_TOO_LARGE"), "{body}");
+    assert!(body.contains("larger than 10000 bytes"), "{body}");
+
+    let (status, body) = request(addr, "POST", "/query", &query_body("RETURN 1 AS one"));
+    assert!(status.contains(" 200 "), "{status}: {body}");
+    assert!(body.contains(r#""one":1"#), "{body}");
+}
+
+#[test]
+fn result_caps_can_be_disabled() {
+    let addr = start_server(
+        seeded_db(),
+        QueryLimits {
+            max_result_rows: None,
+            max_response_bytes: None,
+            ..QueryLimits::default()
+        },
+    );
+    let (status, body) = request(
+        addr,
+        "POST",
+        "/query",
+        &query_body("MATCH (a:N), (b:N) WHERE b.i <= 600 RETURN a.i AS x, b.i AS y"),
+    );
+    assert!(status.contains(" 200 "), "{status}: {body}");
+    assert_eq!(body.matches(r#""x":"#).count(), 1_200_000);
+}

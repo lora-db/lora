@@ -46,12 +46,15 @@ pub const WAL_SYNC_MODE_ENV: &str = "LORA_SERVER_WAL_SYNC_MODE";
 pub const QUERY_TIMEOUT_MS_ENV: &str = "LORA_SERVER_QUERY_TIMEOUT_MS";
 pub const MAX_CONCURRENT_QUERIES_ENV: &str = "LORA_SERVER_MAX_CONCURRENT_QUERIES";
 pub const MAX_BODY_BYTES_ENV: &str = "LORA_SERVER_MAX_BODY_BYTES";
+pub const MAX_RESULT_ROWS_ENV: &str = "LORA_SERVER_MAX_RESULT_ROWS";
+pub const MAX_RESPONSE_BYTES_ENV: &str = "LORA_SERVER_MAX_RESPONSE_BYTES";
 pub const ADMIN_PATH_ROOT_ENV: &str = "LORA_SERVER_ADMIN_PATH_ROOT";
 pub const HEADER_READ_TIMEOUT_MS_ENV: &str = "LORA_SERVER_HEADER_READ_TIMEOUT_MS";
 pub const WAL_TRUNCATE_CORRUPT_TAIL_ENV: &str = "LORA_SERVER_WAL_TRUNCATE_CORRUPT_TAIL";
 
 pub use crate::app::{
-    DEFAULT_HEADER_READ_TIMEOUT_MS, DEFAULT_MAX_BODY_BYTES, DEFAULT_QUERY_TIMEOUT_MS,
+    DEFAULT_HEADER_READ_TIMEOUT_MS, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_RESPONSE_BYTES,
+    DEFAULT_MAX_RESULT_ROWS, DEFAULT_QUERY_TIMEOUT_MS,
 };
 
 /// Default segment target for WAL-enabled deployments. Matches the
@@ -92,6 +95,10 @@ pub struct ServerConfig {
     pub max_concurrent_queries: usize,
     /// Largest accepted request body, in bytes.
     pub max_body_bytes: usize,
+    /// Most rows a `/query` result may have. `0` means unlimited.
+    pub max_result_rows: usize,
+    /// Largest `/query` response body, in bytes. `0` means unlimited.
+    pub max_response_bytes: usize,
     /// Time a connection gets to send a request's headers before it is
     /// closed. `0` disables the timeout.
     pub header_read_timeout_ms: u64,
@@ -114,6 +121,8 @@ impl Default for ServerConfig {
             query_timeout_ms: DEFAULT_QUERY_TIMEOUT_MS,
             max_concurrent_queries: crate::app::default_max_concurrent_queries(),
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            max_result_rows: DEFAULT_MAX_RESULT_ROWS,
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
             header_read_timeout_ms: DEFAULT_HEADER_READ_TIMEOUT_MS,
             admin_path_root: None,
         }

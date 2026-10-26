@@ -80,6 +80,7 @@ The transport in `lora-server` maps codes to status as follows:
 | --- | --- | --- |
 | `LORA_PARSE`, `LORA_SEMANTIC`, `LORA_READ_ONLY`, `LORA_TRANSACTION`, `LORA_DATABASE_NAME`, `LORA_CONFIG` | 400 | Caller-fixable mistake |
 | `LORA_INVALID_PARAMS`, `LORA_INVALID_VECTOR`, `LORA_VALIDATION` | 422 | Well-formed request, semantically invalid value |
+| `LORA_RESULT_TOO_LARGE` | 422 | Well-formed query whose result is over `--max-result-rows` or `--max-response-bytes`; not 413, which the server keeps for request bodies over `--max-body-bytes` |
 | `LORA_NOT_FOUND` | 404 | Named entity does not exist |
 | `LORA_CONSTRAINT`, `LORA_UNIQUE_CONSTRAINT`, `LORA_NOT_NULL_CONSTRAINT`, `LORA_FOREIGN_KEY`, `LORA_LOCKED`, `LORA_CHANGES_LAGGED` | 409 | Action conflicts with current state |
 | `LORA_CHANGES_TRUNCATED` | 410 | Requested change-feed history is no longer retained |

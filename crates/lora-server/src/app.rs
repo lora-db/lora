@@ -32,6 +32,12 @@ pub const DEFAULT_QUERY_TIMEOUT_MS: u64 = 30_000;
 /// default so the limit is unchanged unless an operator raises it.
 pub const DEFAULT_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
+/// Default cap on the rows of one `/query` result (`--max-result-rows`).
+pub const DEFAULT_MAX_RESULT_ROWS: usize = 1_000_000;
+
+/// Default cap on one `/query` response body (`--max-response-bytes`).
+pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
+
 /// Default time a client gets to send a request's headers
 /// (`--header-read-timeout-ms`).
 pub const DEFAULT_HEADER_READ_TIMEOUT_MS: u64 = 10_000;
@@ -62,6 +68,16 @@ pub struct QueryLimits {
     pub max_concurrent: Option<usize>,
     /// Largest accepted request body, in bytes.
     pub max_body_bytes: usize,
+    /// Most rows a `/query` result may have. The engine checks the cap as
+    /// it builds the result and stops there, so a huge result is never
+    /// built; the request fails with `LORA_RESULT_TOO_LARGE` and a write
+    /// rolls back. `None` means unlimited.
+    pub max_result_rows: Option<usize>,
+    /// Largest `/query` response body, in bytes. The response is encoded
+    /// against the cap and dropped once it goes over, failing with
+    /// `LORA_RESULT_TOO_LARGE`. The query has finished by then, so a write
+    /// behind it stays committed. `None` means unlimited.
+    pub max_response_bytes: Option<usize>,
     /// How long a connection may take to send a request's headers before
     /// it is closed, so clients that open connections and trickle bytes
     /// (slowloris) cannot hold them. Used by [`serve_with`]; `None`
@@ -75,6 +91,8 @@ impl Default for QueryLimits {
             timeout: Some(Duration::from_millis(DEFAULT_QUERY_TIMEOUT_MS)),
             max_concurrent: Some(default_max_concurrent_queries()),
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            max_result_rows: Some(DEFAULT_MAX_RESULT_ROWS),
+            max_response_bytes: Some(DEFAULT_MAX_RESPONSE_BYTES),
             header_read_timeout: Some(Duration::from_millis(DEFAULT_HEADER_READ_TIMEOUT_MS)),
         }
     }

@@ -16,9 +16,12 @@ use web_time::Instant;
 
 use anyhow::Result;
 use lora_ast::Statement;
+use lora_compiler::CompiledQuery;
+use lora_executor::cancel::{deadline_reached, DeadlineScope};
 use lora_executor::{
-    classify_stream, collect_compiled_with_deadline, project_rows, ExecuteOptions, LoraValue,
-    MutableExecutionContext, MutableExecutor, QueryResult, Row, StreamShape,
+    classify_stream, collect_compiled_with_deadline, project_rows, ExecuteOptions, ExecutorError,
+    LoraValue, MutableExecutionContext, MutableExecutor, PullExecutor, QueryResult, Row,
+    StreamShape,
 };
 use lora_parser::parse_query;
 use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph};
@@ -124,6 +127,25 @@ where
         Ok(project_rows(rows, options.unwrap_or_default()))
     }
 
+    /// [`Self::execute_with_params_deadline`] that refuses a result of more
+    /// than `max_rows` rows.
+    ///
+    /// The query fails with `LORA_RESULT_TOO_LARGE` instead. The cap is
+    /// checked while the executor builds the result, so a result far over
+    /// it stops near `max_rows` rows instead of being built in full. A
+    /// write over the cap rolls back, like a write that runs out of time.
+    pub fn execute_with_params_deadline_max_rows(
+        &self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+        params: BTreeMap<String, LoraValue>,
+        deadline: Instant,
+        max_rows: usize,
+    ) -> Result<QueryResult, LoraError> {
+        let rows = self.execute_rows_limited(query, params, Some(deadline), Some(max_rows))?;
+        Ok(project_rows(rows, options.unwrap_or_default()))
+    }
+
     /// Execute a query and return hydrated rows before final result-format
     /// projection.
     pub fn execute_rows(&self, query: &str) -> Result<Vec<Row>, LoraError> {
@@ -143,8 +165,21 @@ where
     pub(crate) fn execute_rows_with_params_deadline(
         &self,
         query: &str,
+        params: BTreeMap<String, LoraValue>,
+        deadline: Option<Instant>,
+    ) -> Result<Vec<Row>> {
+        self.execute_rows_limited(query, params, deadline, None)
+    }
+
+    /// Run a query, failing with `LORA_RESULT_TOO_LARGE` once it has more
+    /// than `max_rows` rows (see
+    /// [`Self::execute_with_params_deadline_max_rows`]).
+    fn execute_rows_limited(
+        &self,
+        query: &str,
         mut params: BTreeMap<String, LoraValue>,
         deadline: Option<Instant>,
+        max_rows: Option<usize>,
     ) -> Result<Vec<Row>> {
         super::check_parameter_values(&mut params)?;
         // Schema commands (CREATE INDEX, SHOW INDEXES) are catalog-level
@@ -154,7 +189,10 @@ where
         if Self::is_schema_command_text(query) {
             let document = parse_query(query)?;
             if let Statement::Schema(cmd) = &document.statement {
-                return self.execute_schema_command(cmd, params, deadline);
+                return check_row_count(
+                    self.execute_schema_command(cmd, params, deadline)?,
+                    max_rows,
+                );
             }
             // Fall through if the prefix matched but the parser disagreed —
             // shouldn't happen given the grammar, but the regular path
@@ -175,7 +213,7 @@ where
             if let lora_ast::Statement::Query(lora_ast::Query::StandaloneCall(call)) =
                 &document.statement
             {
-                return self.execute_procedure_call(call, params);
+                return check_row_count(self.execute_procedure_call(call, params)?, max_rows);
             }
         }
 
@@ -195,8 +233,13 @@ where
             if should_collect_read_via_pull(&compiled) {
                 // The pull pipeline checks the deadline as rows are pulled,
                 // so a bounded read still stops early at its LIMIT.
-                return collect_compiled_with_deadline(&*store, params, &compiled, deadline)
-                    .map_err(anyhow::Error::from);
+                return match max_rows {
+                    None => collect_compiled_with_deadline(&*store, params, &compiled, deadline)
+                        .map_err(anyhow::Error::from),
+                    Some(max_rows) => {
+                        collect_read_max_rows(&*store, params, &compiled, deadline, max_rows)
+                    }
+                };
             }
             let executor = lora_executor::Executor::with_deadline(
                 lora_executor::ExecutionContext {
@@ -204,7 +247,8 @@ where
                     params,
                 },
                 deadline,
-            );
+            )
+            .with_max_rows(max_rows);
             return executor
                 .execute_compiled_rows_parallel_safe(&compiled)
                 .map_err(anyhow::Error::from);
@@ -219,7 +263,7 @@ where
         debug_assert!(shape.is_mutating());
 
         if std::any::TypeId::of::<S>() == std::any::TypeId::of::<InMemoryGraph>() {
-            return self.execute_mutating_optimistic(params, deadline, &compiled);
+            return self.execute_mutating_optimistic(params, deadline, max_rows, &compiled);
         }
 
         // Backends that aren't `InMemoryGraph` don't support the
@@ -235,9 +279,47 @@ where
                         params,
                     },
                     deadline,
-                );
+                )
+                .with_max_rows(max_rows);
                 Ok(executor.execute_compiled_rows(&compiled)?)
             },
         )
     }
+}
+
+/// Fail with `LORA_RESULT_TOO_LARGE` when `rows` holds more than
+/// `max_rows`: for the few paths (schema commands, procedure calls) whose
+/// results are small and built outside the executor.
+fn check_row_count(rows: Vec<Row>, max_rows: Option<usize>) -> Result<Vec<Row>> {
+    match max_rows {
+        Some(max_rows) if rows.len() > max_rows => {
+            Err(ExecutorError::ResultTooLarge { max_rows }.into())
+        }
+        _ => Ok(rows),
+    }
+}
+
+/// [`collect_compiled_with_deadline`] that stops at row `max_rows + 1`.
+fn collect_read_max_rows<S: GraphStorage>(
+    store: &S,
+    params: BTreeMap<String, LoraValue>,
+    compiled: &CompiledQuery,
+    deadline: Option<Instant>,
+    max_rows: usize,
+) -> Result<Vec<Row>> {
+    let _deadline_scope = DeadlineScope::enter(deadline);
+    if let Some(deadline) = deadline {
+        if deadline_reached(deadline) {
+            return Err(ExecutorError::QueryTimeout.into());
+        }
+    }
+    let mut cursor = PullExecutor::new(store, params).open_compiled(compiled)?;
+    let mut rows = Vec::new();
+    while let Some(row) = cursor.next_row()? {
+        if rows.len() == max_rows {
+            return Err(ExecutorError::ResultTooLarge { max_rows }.into());
+        }
+        rows.push(row);
+    }
+    Ok(rows)
 }

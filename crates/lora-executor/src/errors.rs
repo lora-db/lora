@@ -108,6 +108,12 @@ pub enum ExecutorError {
     #[error("query deadline exceeded waiting for the writer lock: another write or open transaction holds it")]
     WriterLockTimeout,
 
+    /// The query's result has more rows than the caller allowed
+    /// ([`crate::Executor::with_max_rows`]). It stopped there; a write
+    /// rolls back.
+    #[error("query result has more than {max_rows} rows; add a LIMIT or page through it with SKIP and LIMIT")]
+    ResultTooLarge { max_rows: usize },
+
     /// A registered constraint rejected a proposed mutation. The
     /// payload already includes the GQLSTATUS code (22N77/78/79) so the
     /// outer error format is just the inner message.

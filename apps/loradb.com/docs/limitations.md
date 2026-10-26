@@ -212,9 +212,11 @@ value nests lists and maps more than 128 levels deep
   the server runs with `--admin-path-root`, and must then stay inside
   that directory. Do not enable them on a network-reachable host
   without authenticated ingress in front.
-- HTTP results are built in memory before they are sent. Bound large
-  results with `LIMIT`; `--query-timeout-ms` (default 30 s) bounds
-  how long a query can run.
+- HTTP results are built in memory before they are sent.
+  `--max-result-rows` (default 1,000,000) and `--max-response-bytes`
+  (default 256 MiB) cap how large one can get, and `--query-timeout-ms`
+  (default 30 s) bounds how long a query can run. Page through larger
+  results with `SKIP` and `LIMIT`.
 - Multi-query transactions over HTTP — not supported. Each `/query`
   call executes independently.
 - Multi-database — not supported. One process serves exactly one

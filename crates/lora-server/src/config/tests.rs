@@ -289,6 +289,43 @@ fn invalid_query_limit_rejected() {
 }
 
 #[test]
+fn result_cap_flags_parse_from_cli_and_env() {
+    let cfg = run_cfg(resolve(args(&[]), EnvInputs::default()).unwrap());
+    assert_eq!(cfg.max_result_rows, super::DEFAULT_MAX_RESULT_ROWS);
+    assert_eq!(cfg.max_response_bytes, super::DEFAULT_MAX_RESPONSE_BYTES);
+
+    let cfg = run_cfg(
+        resolve(
+            args(&["--max-result-rows", "0", "--max-response-bytes=4096"]),
+            EnvInputs {
+                max_result_rows: Some("10".into()),
+                max_response_bytes: Some("1".into()),
+                ..EnvInputs::default()
+            },
+        )
+        .unwrap(),
+    );
+    assert_eq!(cfg.max_result_rows, 0);
+    assert_eq!(cfg.max_response_bytes, 4096);
+
+    let env = EnvInputs {
+        max_result_rows: Some("500".into()),
+        ..EnvInputs::default()
+    };
+    let cfg = run_cfg(resolve(args(&[]), env).unwrap());
+    assert_eq!(cfg.max_result_rows, 500);
+
+    let err = resolve(args(&["--max-result-rows", "-1"]), EnvInputs::default()).unwrap_err();
+    assert!(matches!(
+        err,
+        ConfigError::InvalidNumber {
+            flag: "--max-result-rows",
+            ..
+        }
+    ));
+}
+
+#[test]
 fn header_read_timeout_parses_from_cli_and_env() {
     let cfg = run_cfg(resolve(args(&[]), EnvInputs::default()).unwrap());
     assert_eq!(

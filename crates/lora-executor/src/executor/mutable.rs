@@ -37,6 +37,7 @@ use super::helpers::{
     scan_node_ids_for_label_groups, unwind_rows, value_matches_property_value,
 };
 use super::optional_match_rows;
+use super::row_cap::{check_row_cap, RowCaps};
 use super::{sort_checked, sort_row_bound, sort_rows_with_top_k};
 
 /// Lightweight target for SET property-mutation paths. Lets the SET logic
@@ -82,6 +83,9 @@ pub struct MutableExecutor<'a, S: GraphStorageMut> {
     defer_existence: bool,
     /// Entities created while `defer_existence` is on, still to check.
     pending_existence: Vec<EntityTarget>,
+    /// Result-row cap; see [`Self::with_max_rows`].
+    max_rows: Option<usize>,
+    caps: RowCaps,
 }
 
 impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
@@ -92,6 +96,8 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             argument_seed: None,
             defer_existence: false,
             pending_existence: Vec::new(),
+            max_rows: None,
+            caps: RowCaps::new(),
         }
     }
 
@@ -102,7 +108,19 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             argument_seed: None,
             defer_existence: false,
             pending_existence: Vec::new(),
+            max_rows: None,
+            caps: RowCaps::new(),
         }
+    }
+
+    /// Fail with [`ExecutorError::ResultTooLarge`] once the result has more
+    /// than `max_rows` rows, checked while operators build their output
+    /// (see [`super::Executor::with_max_rows`]). The writes made so far
+    /// stay in the storage this executor runs on: the caller must discard
+    /// it on error, as for any other failure.
+    pub fn with_max_rows(mut self, max_rows: Option<usize>) -> Self {
+        self.max_rows = max_rows;
+        self
     }
 
     #[inline]
@@ -154,6 +172,13 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     fn execute_plan_rows(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
+        let saved = self.caps.enter_plan(plan, self.max_rows);
+        let rows = self.execute_plan_rows_capped(plan);
+        self.caps.restore(saved);
+        rows
+    }
+
+    fn execute_plan_rows_capped(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
         let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
         self.check_deadline()?;
         // Clear any error residue that a previous query on this thread may have
@@ -201,8 +226,16 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         clear_eval_error();
 
+        // As in the read-only executor: UNION ALL caps each branch, plain
+        // UNION only the combined result.
+        let branch_cap = if compiled.unions.iter().all(|branch| branch.all) {
+            self.max_rows
+        } else {
+            None
+        };
+
         // Execute the head branch.
-        let mut all_rows = self.execute_and_hydrate(&compiled.physical)?;
+        let mut all_rows = self.execute_and_hydrate(&compiled.physical, branch_cap)?;
 
         // Execute each UNION branch and combine.
         // Track whether any branch uses plain UNION (dedup needed).
@@ -210,8 +243,11 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
 
         for branch in &compiled.unions {
             self.check_deadline()?;
-            let branch_rows = self.execute_and_hydrate(&branch.physical)?;
+            let branch_rows = self.execute_and_hydrate(&branch.physical, branch_cap)?;
             all_rows.extend(branch_rows);
+            if let Some(max_rows) = branch_cap {
+                check_row_cap(all_rows.len(), max_rows)?;
+            }
 
             if !branch.all {
                 needs_dedup = true;
@@ -221,12 +257,26 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         if needs_dedup {
             all_rows = dedup_rows(all_rows);
         }
+        if let Some(max_rows) = self.max_rows {
+            check_row_cap(all_rows.len(), max_rows)?;
+        }
 
         self.check_pending_existence()?;
         Ok(all_rows)
     }
 
-    fn execute_and_hydrate(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
+    fn execute_and_hydrate(
+        &mut self,
+        plan: &PhysicalPlan,
+        max_rows: Option<usize>,
+    ) -> ExecResult<Vec<Row>> {
+        let saved = self.caps.enter_plan(plan, max_rows);
+        let rows = self.execute_and_hydrate_capped(plan);
+        self.caps.restore(saved);
+        rows
+    }
+
+    fn execute_and_hydrate_capped(&mut self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
         self.check_deadline()?;
         let rows = self.execute_node(plan, plan.root)?;
         if plan_ends_in_write(plan) {
@@ -257,6 +307,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         node_id: PhysicalNodeId,
     ) -> ExecResult<Vec<Row>> {
         self.check_deadline()?;
+        let saved_caps = self.caps.enter_operator(plan, node_id);
         trace!("mutable execute_node start: node_id={node_id:?}");
 
         let result = match &plan.nodes[node_id] {
@@ -302,6 +353,8 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             Err(err) => error!("mutable execute_node failed: node_id={node_id:?}, error={err}"),
         }
 
+        let result = self.caps.check(result);
+        self.caps.restore(saved_caps);
         result
     }
 
@@ -315,7 +368,13 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             None => vec![Row::new()],
         };
 
-        node_scan_rows(&*self.ctx.storage, base_rows, op, self.deadline)
+        node_scan_rows(
+            &*self.ctx.storage,
+            base_rows,
+            op,
+            self.deadline,
+            self.caps.op_cap(),
+        )
     }
 
     fn exec_node_by_label_scan(
@@ -328,7 +387,13 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             None => vec![Row::new()],
         };
 
-        node_by_label_scan_rows(&*self.ctx.storage, base_rows, op, self.deadline)
+        node_by_label_scan_rows(
+            &*self.ctx.storage,
+            base_rows,
+            op,
+            self.deadline,
+            self.caps.op_cap(),
+        )
     }
 
     fn exec_node_by_property_scan(
@@ -347,6 +412,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             base_rows,
             op,
             self.deadline,
+            self.caps.op_cap(),
         )
     }
 
@@ -497,9 +563,22 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     fn exec_expand(&mut self, plan: &PhysicalPlan, op: &ExpandExec) -> ExecResult<Vec<Row>> {
         let input_rows = self.execute_node(plan, op.input)?;
         if let Some(range) = &op.range {
-            expand_var_len_rows(&*self.ctx.storage, input_rows, op, range, self.deadline)
+            expand_var_len_rows(
+                &*self.ctx.storage,
+                input_rows,
+                op,
+                range,
+                self.deadline,
+                self.caps.op_cap(),
+            )
         } else {
-            expand_rows(&*self.ctx.storage, &self.ctx.params, input_rows, op)
+            expand_rows(
+                &*self.ctx.storage,
+                &self.ctx.params,
+                input_rows,
+                op,
+                self.caps.op_cap(),
+            )
         }
     }
 
@@ -564,7 +643,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             params: &self.ctx.params,
         };
 
-        unwind_rows(input_rows, op, &eval_ctx)
+        unwind_rows(input_rows, op, &eval_ctx, self.caps.op_cap())
     }
 
     fn exec_hash_aggregation(
@@ -626,11 +705,15 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                 op.inner,
                 input_rows,
                 &op.new_vars,
+                self.caps.op_cap(),
             );
         }
 
         // Fallback: execute the inner plan once, uncorrelated, and join.
-        let inner_rows = self.execute_node(plan, op.inner)?;
+        let saved = self.caps.enter_side_input();
+        let inner_rows = self.execute_node(plan, op.inner);
+        self.caps.restore(saved);
+        let inner_rows = inner_rows?;
 
         Ok(optional_match_rows(input_rows, &inner_rows, &op.new_vars))
     }
@@ -767,8 +850,11 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             None => crate::pull::build_streaming(plan, input, storage_ref, params)?,
         };
 
+        // Every input row becomes an output row, so the cap holds here too.
+        let cap = self.caps.op_cap();
         let mut out = Vec::new();
         while let Some(mut row) = upstream.next_row()? {
+            check_row_cap(out.len() + 1, cap)?;
             apply(self, &mut row)?;
             out.push(row);
         }

@@ -78,6 +78,9 @@ pub enum LoraErrorCode {
     /// A change feed subscriber fell further behind than its buffer allows;
     /// resume from the last LSN it processed.
     ChangesLagged,
+    /// A query's result is larger than the caller allowed (rows or
+    /// encoded bytes). Nothing was returned and any write rolled back.
+    ResultTooLarge,
 
     // -------- Server errors --------
     /// I/O failure outside the WAL / snapshot boundaries.
@@ -136,6 +139,7 @@ impl LoraErrorCode {
             Self::Locked => "LORA_LOCKED",
             Self::ChangesTruncated => "LORA_CHANGES_TRUNCATED",
             Self::ChangesLagged => "LORA_CHANGES_LAGGED",
+            Self::ResultTooLarge => "LORA_RESULT_TOO_LARGE",
             Self::Io => "LORA_IO",
             Self::Connection => "LORA_CONNECTION",
             Self::WalCorruption => "LORA_WAL_CORRUPTION",
@@ -166,7 +170,8 @@ impl LoraErrorCode {
             | Self::TransactionFailure
             | Self::Locked
             | Self::ChangesTruncated
-            | Self::ChangesLagged => LoraErrorCategory::Client,
+            | Self::ChangesLagged
+            | Self::ResultTooLarge => LoraErrorCategory::Client,
             Self::Io
             | Self::Connection
             | Self::WalCorruption
@@ -371,6 +376,7 @@ fn executor_code(err: &ExecutorError) -> LoraErrorCode {
         | ExecutorError::ReadOnlyRemove { .. }
         | ExecutorError::ReadOnlyForeach { .. } => LoraErrorCode::ReadOnlyViolation,
         ExecutorError::QueryTimeout | ExecutorError::WriterLockTimeout => LoraErrorCode::Timeout,
+        ExecutorError::ResultTooLarge { .. } => LoraErrorCode::ResultTooLarge,
         ExecutorError::ConstraintViolation(message) => constraint_message_code(message),
         ExecutorError::DeleteNodeWithRelationships { .. } => LoraErrorCode::ForeignKeyViolation,
         ExecutorError::RelationshipCreateFailed { .. } => LoraErrorCode::ForeignKeyViolation,
@@ -766,6 +772,10 @@ mod tests {
             "LORA_CHANGES_TRUNCATED"
         );
         assert_eq!(LoraErrorCode::ChangesLagged.as_str(), "LORA_CHANGES_LAGGED");
+        assert_eq!(
+            LoraErrorCode::ResultTooLarge.as_str(),
+            "LORA_RESULT_TOO_LARGE"
+        );
         assert_eq!(LoraErrorCode::Internal.as_str(), "LORA_INTERNAL");
     }
 

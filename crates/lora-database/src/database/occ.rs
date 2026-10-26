@@ -39,6 +39,7 @@ where
         &self,
         params: BTreeMap<String, LoraValue>,
         deadline: Option<Instant>,
+        max_rows: Option<usize>,
         compiled: &Arc<CompiledQuery>,
     ) -> Result<Vec<Row>> {
         let run = |staged: &mut S| {
@@ -48,7 +49,8 @@ where
                     params,
                 },
                 deadline,
-            );
+            )
+            .with_max_rows(max_rows);
             executor
                 .execute_compiled_rows(compiled)
                 .map_err(anyhow::Error::from)
@@ -60,8 +62,10 @@ where
         // writes take the staged path, where a failure discards every
         // change instead of leaving a partial write behind. So does a write
         // a constraint can reject on a later row (a duplicate key in an
-        // `UNWIND … CREATE`, a `SET` that collides on its second node).
+        // `UNWIND … CREATE`, a `SET` that collides on its second node), and
+        // a write whose result can go over a row cap.
         if deadline.is_none()
+            && max_rows.is_none()
             && live_fast_path_safe(compiled)
             && !constraints_may_reject(&self.store.load_full().list_constraints(), compiled)
         {

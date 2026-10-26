@@ -99,6 +99,8 @@ Most runtime flags also have an env-var equivalent:
 | `--query-timeout-ms <MS>` | `LORA_SERVER_QUERY_TIMEOUT_MS` | `30000` | Time budget for each `/query` and `/profile` request. `0` disables it. |
 | `--max-concurrent-queries <N>` | `LORA_SERVER_MAX_CONCURRENT_QUERIES` | twice the CPU count | How many `/query`, `/explain` and `/profile` requests run at once. `0` means unlimited. |
 | `--max-body-bytes <BYTES>` | `LORA_SERVER_MAX_BODY_BYTES` | `2097152` | Largest accepted request body. Larger bodies get `413`. |
+| `--max-result-rows <N>` | `LORA_SERVER_MAX_RESULT_ROWS` | `1000000` | Most rows a `/query` result may have. Larger results get `422 LORA_RESULT_TOO_LARGE`. `0` means unlimited. |
+| `--max-response-bytes <BYTES>` | `LORA_SERVER_MAX_RESPONSE_BYTES` | `268435456` (256 MiB) | Largest `/query` response body. Larger responses get `422 LORA_RESULT_TOO_LARGE`. `0` means unlimited. |
 | `--header-read-timeout-ms <MS>` | `LORA_SERVER_HEADER_READ_TIMEOUT_MS` | `10000` | Time a connection gets to send a request's headers before it is closed. `0` disables it. |
 | `--admin-path-root <DIR>` | `LORA_SERVER_ADMIN_PATH_ROOT` | unset | Allow admin requests to send a `path` inside this directory. Unset = every `path` override is rejected. |
 
@@ -118,9 +120,23 @@ query does not hold up `/health` or other requests.
 - **`--max-concurrent-queries <N>`** caps how many query requests run
   at once. Further requests wait for a slot (the wait counts toward
   the timeout).
-- **`--max-body-bytes <BYTES>`** caps the request body. Results are
-  not capped: a query that returns a large result is built in memory
-  before it is sent, so bound result size with `LIMIT`.
+- **`--max-body-bytes <BYTES>`** caps the request body.
+- **`--max-result-rows <N>`** caps the rows of a `/query` result
+  (default 1,000,000). The engine counts rows while it builds the
+  result and stops as soon as the result goes over the cap, so a query
+  such as `UNWIND range(1, 10000000) AS i RETURN i` or an accidental
+  cartesian product fails within moments instead of filling memory. Any
+  write the query made is rolled back, as with a timeout. Only the rows
+  the query returns count: a query that reads millions of rows and
+  returns a count or a filtered handful is not affected. Rows built on
+  the way to the result (before a `WHERE`, an aggregation or a `LIMIT`)
+  are bounded only by `--query-timeout-ms`. `0` turns the cap off.
+- **`--max-response-bytes <BYTES>`** caps the size of a `/query`
+  response body (default 256 MiB), for results with few rows that hold
+  very large values. The response is encoded against the cap and
+  dropped once it goes over. The query has already finished by then,
+  so unlike the row cap, a write behind an oversized response stays
+  committed. `0` turns the cap off.
 - **`--header-read-timeout-ms <MS>`** closes a connection that has not
   sent a complete request head (request line and headers) within this
   time, so clients that open connections and send headers a byte at a
@@ -131,6 +147,84 @@ query does not hold up `/health` or other requests.
 ```bash
 lora-server --query-timeout-ms 5000 --max-concurrent-queries 16
 ```
+
+### Result size limits
+
+Start a server with small caps to see them at work:
+
+```bash
+lora-server --max-result-rows 1000 --max-response-bytes 65536
+```
+
+A read that would return ten million rows stops at row 1001:
+
+```bash
+curl -s -i -X POST http://127.0.0.1:4747/query \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"UNWIND range(1, 10000000) AS i RETURN i"}'
+```
+
+```http
+HTTP/1.1 422 Unprocessable Entity
+content-type: application/json
+content-length: 163
+
+{"error":{"code":"LORA_RESULT_TOO_LARGE","message":"query result has more than 1000 rows; add a LIMIT or page through it with SKIP and LIMIT","category":"client"}}
+```
+
+A write whose result goes over the cap is rolled back, so nothing it
+created is left behind:
+
+```bash
+curl -s -X POST http://127.0.0.1:4747/query \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"UNWIND range(1, 5000) AS i CREATE (p:Person {id: i}) RETURN p.id AS id"}'
+# 422, same body as above
+
+curl -s -X POST http://127.0.0.1:4747/query \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"MATCH (p:Person) RETURN count(p) AS people","format":"rows"}'
+```
+
+```json
+{"rows":[{"people":0}]}
+```
+
+Drop the `RETURN` (or return a count) to run the same write: a query
+that returns no rows is not capped, however much it writes.
+
+A single row can still be large. Here one 100 kB string goes over the
+64 kB response cap:
+
+```bash
+curl -s -i -X POST http://127.0.0.1:4747/query \
+  -H 'Content-Type: application/json' \
+  -d "{\"query\":\"RETURN reduce(s = '', i IN range(1, 10000) | s + '0123456789') AS big\",\"format\":\"rows\"}"
+```
+
+```http
+HTTP/1.1 422 Unprocessable Entity
+content-type: application/json
+content-length: 196
+
+{"error":{"code":"LORA_RESULT_TOO_LARGE","message":"query response is larger than 65536 bytes; return fewer or smaller values, or page through the result with SKIP and LIMIT","category":"client"}}
+```
+
+Read a large result in pages instead, with a stable `ORDER BY`:
+
+```bash
+curl -s -X POST http://127.0.0.1:4747/query \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"UNWIND range(1, 2000) AS i RETURN i ORDER BY i SKIP 0 LIMIT 3","format":"rows"}'
+```
+
+```json
+{"rows":[{"i":1},{"i":2},{"i":3}]}
+```
+
+`/explain` returns no rows, and `/profile` returns metrics instead of
+rows, so neither is capped; `/profile` still builds the result in
+memory and is bounded by `--query-timeout-ms`.
 
 ### Snapshots, WAL, and restore
 

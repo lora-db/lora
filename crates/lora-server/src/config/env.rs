@@ -6,9 +6,11 @@ use super::errors::ConfigError;
 use super::help::{help_text, version_text};
 use super::{
     ConfigOutcome, ServerConfig, ADMIN_PATH_ROOT_ENV, DEFAULT_HEADER_READ_TIMEOUT_MS, DEFAULT_HOST,
-    DEFAULT_MAX_BODY_BYTES, DEFAULT_PORT, DEFAULT_QUERY_TIMEOUT_MS, HEADER_READ_TIMEOUT_MS_ENV,
-    HOST_ENV, MAX_BODY_BYTES_ENV, MAX_CONCURRENT_QUERIES_ENV, PORT_ENV, QUERY_TIMEOUT_MS_ENV,
-    SNAPSHOT_PATH_ENV, WAL_DIR_ENV, WAL_SYNC_MODE_ENV, WAL_TRUNCATE_CORRUPT_TAIL_ENV,
+    DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_RESULT_ROWS, DEFAULT_PORT,
+    DEFAULT_QUERY_TIMEOUT_MS, HEADER_READ_TIMEOUT_MS_ENV, HOST_ENV, MAX_BODY_BYTES_ENV,
+    MAX_CONCURRENT_QUERIES_ENV, MAX_RESPONSE_BYTES_ENV, MAX_RESULT_ROWS_ENV, PORT_ENV,
+    QUERY_TIMEOUT_MS_ENV, SNAPSHOT_PATH_ENV, WAL_DIR_ENV, WAL_SYNC_MODE_ENV,
+    WAL_TRUNCATE_CORRUPT_TAIL_ENV,
 };
 
 /// Inputs to [`resolve`]. Wrapping the env values in a struct keeps the
@@ -23,6 +25,8 @@ pub struct EnvInputs {
     pub query_timeout_ms: Option<String>,
     pub max_concurrent_queries: Option<String>,
     pub max_body_bytes: Option<String>,
+    pub max_result_rows: Option<String>,
+    pub max_response_bytes: Option<String>,
     pub admin_path_root: Option<String>,
     pub header_read_timeout_ms: Option<String>,
     pub wal_truncate_corrupt_tail: Option<String>,
@@ -39,6 +43,8 @@ struct CliInputs {
     query_timeout_ms: Option<String>,
     max_concurrent_queries: Option<String>,
     max_body_bytes: Option<String>,
+    max_result_rows: Option<String>,
+    max_response_bytes: Option<String>,
     admin_path_root: Option<String>,
     header_read_timeout_ms: Option<String>,
     wal_truncate_corrupt_tail: Option<String>,
@@ -56,6 +62,8 @@ impl CliInputs {
             CliField::QueryTimeoutMs => self.query_timeout_ms = Some(value),
             CliField::MaxConcurrentQueries => self.max_concurrent_queries = Some(value),
             CliField::MaxBodyBytes => self.max_body_bytes = Some(value),
+            CliField::MaxResultRows => self.max_result_rows = Some(value),
+            CliField::MaxResponseBytes => self.max_response_bytes = Some(value),
             CliField::AdminPathRoot => self.admin_path_root = Some(value),
             CliField::HeaderReadTimeoutMs => self.header_read_timeout_ms = Some(value),
             CliField::WalTruncateCorruptTail => self.wal_truncate_corrupt_tail = Some(value),
@@ -74,6 +82,8 @@ enum CliField {
     QueryTimeoutMs,
     MaxConcurrentQueries,
     MaxBodyBytes,
+    MaxResultRows,
+    MaxResponseBytes,
     AdminPathRoot,
     HeaderReadTimeoutMs,
     /// A switch: given bare it means `true`; `--flag=<bool>` also works.
@@ -147,6 +157,14 @@ where
         Some(raw) => parse_number("--max-body-bytes", &raw)?,
         None => DEFAULT_MAX_BODY_BYTES,
     };
+    let max_result_rows = match cli.max_result_rows.or(env.max_result_rows) {
+        Some(raw) => parse_number("--max-result-rows", &raw)?,
+        None => DEFAULT_MAX_RESULT_ROWS,
+    };
+    let max_response_bytes = match cli.max_response_bytes.or(env.max_response_bytes) {
+        Some(raw) => parse_number("--max-response-bytes", &raw)?,
+        None => DEFAULT_MAX_RESPONSE_BYTES,
+    };
     let admin_path_root = cli
         .admin_path_root
         .or(env.admin_path_root)
@@ -167,6 +185,8 @@ where
         query_timeout_ms,
         max_concurrent_queries,
         max_body_bytes,
+        max_result_rows,
+        max_response_bytes,
         header_read_timeout_ms,
         admin_path_root,
     }))
@@ -226,6 +246,8 @@ fn cli_field_for_flag(arg: &str) -> Option<(CliField, &'static str)> {
             Some((CliField::MaxConcurrentQueries, "--max-concurrent-queries"))
         }
         "--max-body-bytes" => Some((CliField::MaxBodyBytes, "--max-body-bytes")),
+        "--max-result-rows" => Some((CliField::MaxResultRows, "--max-result-rows")),
+        "--max-response-bytes" => Some((CliField::MaxResponseBytes, "--max-response-bytes")),
         "--admin-path-root" => Some((CliField::AdminPathRoot, "--admin-path-root")),
         "--header-read-timeout-ms" => {
             Some((CliField::HeaderReadTimeoutMs, "--header-read-timeout-ms"))
@@ -257,6 +279,8 @@ pub fn resolve_from_process() -> Result<ConfigOutcome, ConfigError> {
             query_timeout_ms: std::env::var(QUERY_TIMEOUT_MS_ENV).ok(),
             max_concurrent_queries: std::env::var(MAX_CONCURRENT_QUERIES_ENV).ok(),
             max_body_bytes: std::env::var(MAX_BODY_BYTES_ENV).ok(),
+            max_result_rows: std::env::var(MAX_RESULT_ROWS_ENV).ok(),
+            max_response_bytes: std::env::var(MAX_RESPONSE_BYTES_ENV).ok(),
             admin_path_root: std::env::var(ADMIN_PATH_ROOT_ENV).ok(),
             header_read_timeout_ms: std::env::var(HEADER_READ_TIMEOUT_MS_ENV).ok(),
             wal_truncate_corrupt_tail: std::env::var(WAL_TRUNCATE_CORRUPT_TAIL_ENV).ok(),

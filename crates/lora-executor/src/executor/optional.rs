@@ -33,10 +33,13 @@ pub(crate) fn correlated_optional_match_rows<S: GraphStorage>(
     inner: PhysicalNodeId,
     input_rows: Vec<Row>,
     new_vars: &[VarId],
+    cap: usize,
 ) -> ExecResult<Vec<Row>> {
     let params = Arc::new(params.clone());
     let mut out = Vec::with_capacity(input_rows.len());
     for input_row in input_rows {
+        // The operator's result-row cap (see `row_cap`), per input row.
+        super::row_cap::check_row_cap(out.len(), cap)?;
         let mut source = crate::pull::build_streaming_seeded(
             plan,
             inner,

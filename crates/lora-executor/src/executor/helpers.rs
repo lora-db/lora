@@ -78,6 +78,26 @@ macro_rules! check_deadline_or_discard {
     };
 }
 
+/// Fail with [`ExecutorError::ResultTooLarge`] once `$out` holds more rows
+/// than the operator's result-row cap `$cap` (see `row_cap`), releasing the
+/// rows built so far.
+macro_rules! check_cap_or_discard {
+    ($cap:expr, $out:ident) => {
+        if $out.len() > $cap {
+            return Err(row_cap_exceeded(&mut $out, $cap));
+        }
+    };
+}
+
+/// The out-of-line failure path of `check_cap_or_discard!`, kept out of
+/// the row loops it guards.
+#[cold]
+#[inline(never)]
+fn row_cap_exceeded(out: &mut Vec<Row>, cap: usize) -> ExecutorError {
+    discard_rows(std::mem::take(out));
+    ExecutorError::ResultTooLarge { max_rows: cap }
+}
+
 /// [`check_deadline_at`] that always reads the clock, for operator
 /// boundaries: an operator can do a lot of work before its first per-row
 /// check (building a cartesian product, for one), so the boundary must not
@@ -301,10 +321,13 @@ pub(crate) fn project_row<S: GraphStorage>(
     }
 }
 
+/// `cap` is the operator's result-row cap (see `row_cap`), checked per
+/// element: one list can hold millions of them.
 pub(super) fn unwind_rows<S: GraphStorage>(
     input_rows: Vec<Row>,
     op: &UnwindExec,
     eval_ctx: &EvalContext<'_, S>,
+    cap: usize,
 ) -> ExecResult<Vec<Row>> {
     let mut out = Vec::with_capacity(input_rows.len());
 
@@ -317,6 +340,7 @@ pub(super) fn unwind_rows<S: GraphStorage>(
                 let mut values = values.into_iter();
                 let last = values.next_back();
                 for value in values {
+                    check_cap_or_discard!(cap, out);
                     let mut new_row = row.clone();
                     new_row.insert(op.alias, value);
                     out.push(new_row);
@@ -335,6 +359,7 @@ pub(super) fn unwind_rows<S: GraphStorage>(
                 out.push(new_row);
             }
         }
+        check_cap_or_discard!(cap, out);
     }
 
     Ok(out)
@@ -443,17 +468,22 @@ pub(crate) fn bound_relationship_id_for_expand(
     }
 }
 
+/// Scan helpers check `cap`, the operator's result-row cap (see
+/// `row_cap`), once per input row: a scan with an input row per row of a
+/// cartesian product multiplies them.
 pub(super) fn node_scan_rows<S: GraphStorage>(
     storage: &S,
     base_rows: Vec<Row>,
     op: &NodeScanExec,
     deadline: Option<Instant>,
+    cap: usize,
 ) -> ExecResult<Vec<Row>> {
     let node_ids = storage.all_node_ids();
     let mut out = Vec::with_capacity(scan_output_capacity(base_rows.len(), node_ids.len()));
 
     if deadline.is_none() {
         for row in base_rows {
+            check_cap_or_discard!(cap, out);
             if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
                 if storage.has_node(existing_id) {
                     out.push(row);
@@ -472,6 +502,7 @@ pub(super) fn node_scan_rows<S: GraphStorage>(
 
     for row in base_rows {
         check_deadline_or_discard!(deadline, out);
+        check_cap_or_discard!(cap, out);
         if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
             if storage.has_node(existing_id) {
                 out.push(row);
@@ -495,6 +526,7 @@ pub(super) fn node_by_label_scan_rows<S: GraphStorage>(
     base_rows: Vec<Row>,
     op: &NodeByLabelScanExec,
     deadline: Option<Instant>,
+    cap: usize,
 ) -> ExecResult<Vec<Row>> {
     let candidate_ids = scan_node_ids_for_label_groups(storage, &op.labels);
     let candidates_prefiltered = label_group_candidates_prefiltered(&op.labels);
@@ -502,6 +534,7 @@ pub(super) fn node_by_label_scan_rows<S: GraphStorage>(
 
     if deadline.is_none() {
         for row in base_rows {
+            check_cap_or_discard!(cap, out);
             if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
                 let labels_ok = storage
                     .with_node(existing_id, |n| {
@@ -533,6 +566,7 @@ pub(super) fn node_by_label_scan_rows<S: GraphStorage>(
 
     for row in base_rows {
         check_deadline_or_discard!(deadline, out);
+        check_cap_or_discard!(cap, out);
         if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
             let labels_ok = storage
                 .with_node(existing_id, |n| {
@@ -570,12 +604,14 @@ pub(super) fn node_by_property_scan_rows<S: GraphStorage>(
     base_rows: Vec<Row>,
     op: &NodeByPropertyScanExec,
     deadline: Option<Instant>,
+    cap: usize,
 ) -> ExecResult<Vec<Row>> {
     let eval_ctx = EvalContext { storage, params };
     let mut out = Vec::new();
 
     for row in base_rows {
         check_deadline_or_discard!(deadline, out);
+        check_cap_or_discard!(cap, out);
         let expected = eval_expr(&op.value, &row, &eval_ctx);
 
         if let Some(existing_id) = bound_node_id_for_expand(&row, op.var)? {
@@ -831,6 +867,7 @@ pub(super) fn expand_rows<S: GraphStorage>(
     params: &BTreeMap<String, LoraValue>,
     input_rows: Vec<Row>,
     op: &ExpandExec,
+    cap: usize,
 ) -> ExecResult<Vec<Row>> {
     let eval_ctx = EvalContext { storage, params };
     // Most expansions emit at least one row per input; sizing up front
@@ -843,6 +880,8 @@ pub(super) fn expand_rows<S: GraphStorage>(
     let mut matches: Vec<(u64, u64)> = Vec::new();
 
     for row in input_rows {
+        // Per input row: one row adds at most its node's degree.
+        check_cap_or_discard!(cap, out);
         let Some(src_node_id) = expand_source_id(&row, op.src)? else {
             continue;
         };
@@ -937,12 +976,15 @@ pub(super) fn expand_var_len_rows<S: GraphStorage>(
     op: &ExpandExec,
     range: &RangeLiteral,
     deadline: Option<Instant>,
+    cap: usize,
 ) -> ExecResult<Vec<Row>> {
     let (min_hops, max_hops) = resolve_range(range);
     let bind_relationships = op.rel.is_some();
     let mut out = Vec::new();
 
     for row in input_rows {
+        // Per input row: one row adds at most `VAR_LENGTH_PATH_BUDGET` paths.
+        check_cap_or_discard!(cap, out);
         let Some(src_node_id) = expand_source_id(&row, op.src)? else {
             continue;
         };

@@ -87,6 +87,8 @@ pub(crate) fn json_rejection_response(rejection: JsonRejection) -> Response {
 /// * `NotFound` → 404 (named entity does not exist)
 /// * `InvalidParams` / `InvalidVector` → 422 (well-formed request,
 ///   semantically invalid value)
+/// * `ResultTooLarge` → 422 (well-formed query whose result is over the
+///   server's caps)
 /// * constraint/transaction failures → 409 (action conflicts with current state)
 fn status_for(err: &LoraError) -> StatusCode {
     match err.code() {
@@ -101,9 +103,13 @@ fn status_for(err: &LoraError) -> StatusCode {
         LoraErrorCode::Timeout => StatusCode::REQUEST_TIMEOUT,
         LoraErrorCode::NotFound => StatusCode::NOT_FOUND,
         LoraErrorCode::ChangesTruncated => StatusCode::GONE,
-        LoraErrorCode::InvalidParams | LoraErrorCode::InvalidVector | LoraErrorCode::Validation => {
-            StatusCode::UNPROCESSABLE_ENTITY
-        }
+        // A result over `--max-result-rows` / `--max-response-bytes`: the
+        // request is well formed but asks for more than the server returns.
+        // Not 413, which is about the request body (`--max-body-bytes`).
+        LoraErrorCode::InvalidParams
+        | LoraErrorCode::InvalidVector
+        | LoraErrorCode::Validation
+        | LoraErrorCode::ResultTooLarge => StatusCode::UNPROCESSABLE_ENTITY,
         LoraErrorCode::ConstraintViolation
         | LoraErrorCode::Locked
         | LoraErrorCode::ChangesLagged
