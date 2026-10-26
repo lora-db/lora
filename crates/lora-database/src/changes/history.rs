@@ -13,11 +13,11 @@
 use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use anyhow::{anyhow, Result};
 use lora_store::InMemoryGraph;
-use lora_wal::{oldest_retained_lsn, CommittedTxReader, Lsn};
+use lora_wal::{oldest_retained_lsn, CommittedTxReader, Lsn, Wal};
 
 use super::build::{build_changes, PreImages};
 use super::ChangeBatch;
@@ -53,6 +53,10 @@ impl HistoryBase {
 /// Inputs for choosing a base.
 pub(crate) struct HistorySources {
     pub wal_dir: PathBuf,
+    /// The live WAL, to make the replayed range durable before it is
+    /// handed out. Weak, so a lingering feed does not keep the database's
+    /// WAL (and its directory lock) open.
+    pub wal: Weak<Wal>,
     pub snapshots: Option<Arc<ManagedSnapshotStore>>,
     /// The container's snapshot file, when the database is a `.loradb`
     /// container that holds one.
@@ -62,6 +66,7 @@ pub(crate) struct HistorySources {
 /// A planned replay of `(after, upto]` from the WAL.
 pub(crate) struct HistoryReplay {
     wal_dir: PathBuf,
+    wal: Weak<Wal>,
     base: Option<HistoryBase>,
     after: Lsn,
     upto: Lsn,
@@ -129,6 +134,7 @@ impl HistoryReplay {
         let base = best.ok_or_else(|| truncated(after))?;
         Ok(Self {
             wal_dir: sources.wal_dir,
+            wal: sources.wal,
             base: Some(base),
             after: Lsn::new(after),
             upto: Lsn::new(upto),
@@ -142,6 +148,13 @@ impl HistoryReplay {
             .take()
             .ok_or_else(|| anyhow!("change feed history already started"))?;
         let base_lsn = base.lsn();
+        // Commits made just before the first feed opened can still be
+        // waiting for their `fsync`; a feed only hands out durable ones.
+        if let Some(wal) = self.wal.upgrade() {
+            if wal.durable_lsn() < self.upto {
+                wal.force_fsync()?;
+            }
+        }
         let mut graph = InMemoryGraph::new();
         match base {
             HistoryBase::Empty => {}

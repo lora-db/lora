@@ -43,6 +43,40 @@ the OS before the call returns; `fsync` runs on the background flusher
 (`src/wal/group_flusher.rs`), on explicit sync, on checkpoint, and on clean
 drop. `lora-server` only accepts `group-sync` (`config/env.rs`).
 
+### Change feeds wait for durability
+
+`Database::changes` on a WAL-backed database tags each batch with the LSN
+of its `TxCommit` record. That record is in the OS page cache when the
+commit returns, but only durable after the next `fsync`; a power loss or
+kernel crash before then loses it, and the reopened WAL hands the same LSN
+to the next transaction (`next_lsn` is the highest LSN replay found, plus
+one). A consumer that had seen the lost batch would then skip the new one
+or attribute it to the old one.
+
+So a feed only hands out durable commits. The commit path builds the batch
+under the writer lock as before and parks it in the `ChangeHub`
+(`crates/lora-database/src/changes/mod.rs`) with the LSN it waits for. The
+first `changes()` call installs a durable listener on the WAL
+(`Wal::set_durable_listener`), which `flush_inner` calls after every `fsync`
+that advances `durable_lsn`; the listener releases the parked batches it
+covers, on the thread that ran the `fsync`. Parking a batch also calls
+`Wal::request_fsync`, which wakes the GroupSync flusher early. The flusher
+still keeps one interval between two `fsync`s: a request right after one
+waits for the rest of the interval, so a busy writer sees the usual cadence
+and only the first commit after a quiet spell is made durable at once.
+Serving every request at once cut commit throughput to about a seventh in
+measurements with `lora-database/examples/wal_write_probe.rs`, because the disk flush
+competes with the writes. A feed resuming from history that reaches past
+the durable LSN (commits made just before the first `changes()` call)
+forces an `fsync` before it replays. Snapshot-restore `Reset` batches wait
+only for the commits before them; the restore itself is checkpointed.
+
+The regression test is
+`lora-database/tests/change_feed.rs::feed_never_shows_a_commit_a_crash_can_lose`:
+it holds the WAL's `fsync` (`Wal::hold_fsync_for_tests`), cuts the active
+segment back to its last durable length to simulate the crash, and checks
+that every LSN the consumer saw names the same transaction after recovery.
+
 ### GroupSync failure latching
 
 If the background flusher's `fsync` fails (full disk, hardware error,

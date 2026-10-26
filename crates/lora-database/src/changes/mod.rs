@@ -12,6 +12,19 @@
 //! so tokens stay valid across restarts. In-memory databases use a
 //! per-process commit counter.
 //!
+//! # Durability
+//!
+//! On a WAL-backed database a batch reaches feeds only once its commit is
+//! durable (fsynced). A commit the disk has not confirmed can be lost by a
+//! crash, and the restarted database then hands its LSN to a different
+//! transaction; a consumer that had seen the lost one would skip or
+//! misattribute the new one. Holding batches back until the `fsync` means
+//! every LSN a consumer sees names the same transaction forever. Writers do
+//! not wait: the batch is built under the writer lock as before and parked,
+//! the GroupSync flusher is asked to `fsync` early, and the batch is handed
+//! out by whichever thread completes the `fsync`. Feeds therefore trail
+//! commits by about one `fsync`.
+//!
 //! # Capture cost
 //!
 //! Capture is off until the first feed opens. From then on every write
@@ -222,9 +235,29 @@ impl Subscriber {
     }
 }
 
+/// A built batch waiting for its commit to become durable.
+struct Parked {
+    /// The batch is handed out once the durable LSN reaches this.
+    needs: u64,
+    batch: Arc<ChangeBatch>,
+    bytes: usize,
+}
+
+type Nudge = Arc<dyn Fn() + Send + Sync>;
+
 struct HubState {
     /// LSN of the newest published batch (or the capture start point).
     last_lsn: u64,
+    /// LSN of the newest batch, parked or published.
+    last_assigned: u64,
+    /// Whether batches wait for durability (WAL-backed databases).
+    deferred: bool,
+    /// Newest durable LSN reported by the WAL.
+    durable: u64,
+    /// Batches whose commit is not durable yet, in commit order.
+    parked: VecDeque<Parked>,
+    /// Asks the WAL to `fsync` soon; called after a batch is parked.
+    nudge: Option<Nudge>,
     /// Recent batches, oldest first.
     ring: VecDeque<Arc<ChangeBatch>>,
     /// Approximate heap bytes of each batch in `ring`, in the same order.
@@ -252,6 +285,11 @@ impl Default for ChangeHub {
             active: AtomicBool::new(false),
             state: Mutex::new(HubState {
                 last_lsn: 0,
+                last_assigned: 0,
+                deferred: false,
+                durable: 0,
+                parked: VecDeque::new(),
+                nudge: None,
                 ring: VecDeque::new(),
                 ring_sizes: VecDeque::new(),
                 ring_bytes: 0,
@@ -286,8 +324,34 @@ impl ChangeHub {
         }
         let head = head.unwrap_or(state.last_lsn).max(state.last_lsn);
         state.last_lsn = head;
+        state.last_assigned = head;
         state.ring_floor = head;
         self.active.store(true, Ordering::Release);
+    }
+
+    /// Hold batches back until their commit is durable. Called once, before
+    /// [`Self::activate`], on a WAL-backed database: `durable` is the WAL's
+    /// durable LSN and `nudge` asks it to `fsync` soon. The WAL reports each
+    /// later advance through [`Self::on_durable`].
+    pub(crate) fn defer_until_durable(&self, durable: u64, nudge: Nudge) {
+        let mut state = self.lock();
+        state.deferred = true;
+        state.durable = state.durable.max(durable);
+        state.nudge = Some(nudge);
+    }
+
+    /// The WAL made every LSN up to `durable` durable: hand out the parked
+    /// batches it covers.
+    pub(crate) fn on_durable(&self, durable: u64) {
+        let mut state = self.lock();
+        if durable <= state.durable {
+            return;
+        }
+        state.durable = durable;
+        while state.parked.front().is_some_and(|p| p.needs <= durable) {
+            let parked = state.parked.pop_front().expect("front checked");
+            release(&mut state, parked.batch, parked.bytes);
+        }
     }
 
     pub(crate) fn set_retention(&self, batches: usize) {
@@ -308,42 +372,69 @@ impl ChangeHub {
 
     /// Publish one committed write. `lsn` is the WAL commit LSN; `None`
     /// allocates the next in-memory counter value. Empty batches (reads,
-    /// catalog-only writes) are dropped.
+    /// catalog-only writes) are dropped. On a WAL-backed database the
+    /// batch waits until its LSN is durable.
     pub(crate) fn publish(&self, lsn: Option<u64>, changes: Vec<Change>) {
+        self.publish_when_durable(lsn, changes, |lsn| lsn);
+    }
+
+    /// [`Self::publish`], parking the batch until the durable LSN reaches
+    /// `needs(lsn)`.
+    fn publish_when_durable(
+        &self,
+        lsn: Option<u64>,
+        changes: Vec<Change>,
+        needs: impl FnOnce(u64) -> u64,
+    ) {
         if changes.is_empty() {
             return;
         }
-        let mut state = self.lock();
-        if state.closed {
-            return;
+        let nudge = {
+            let mut state = self.lock();
+            if state.closed {
+                return;
+            }
+            let lsn = lsn
+                .unwrap_or(state.last_assigned + 1)
+                .max(state.last_assigned + 1);
+            state.last_assigned = lsn;
+            let bytes = changes.iter().map(change_bytes).sum::<usize>();
+            let batch = Arc::new(ChangeBatch { lsn, changes });
+            let needs = needs(lsn);
+            if !state.deferred || (state.parked.is_empty() && needs <= state.durable) {
+                release(&mut state, batch, bytes);
+                return;
+            }
+            state.parked.push_back(Parked {
+                needs,
+                batch,
+                bytes,
+            });
+            state.nudge.clone()
+        };
+        if let Some(nudge) = nudge {
+            nudge();
         }
-        let lsn = lsn.unwrap_or(state.last_lsn + 1).max(state.last_lsn + 1);
-        state.last_lsn = lsn;
-        let bytes = changes.iter().map(change_bytes).sum::<usize>();
-        let batch = Arc::new(ChangeBatch { lsn, changes });
-        state.ring.push_back(batch.clone());
-        state.ring_sizes.push_back(bytes);
-        state.ring_bytes += bytes;
-        trim_ring(&mut state);
-        state.subscribers.retain(|sub| {
-            sub.push(&batch);
-            sub.is_open()
-        });
     }
 
     /// Publish a `Reset` for a graph replacement that has no WAL record
     /// (snapshot restore). On a WAL-backed database the batch takes an LSN
     /// between the last commit and the next one; when two resets arrive
     /// without a commit between them the second is folded into the first.
+    ///
+    /// The restore it announces is already durable (it was checkpointed),
+    /// so the batch waits only for the commits before it.
     pub(crate) fn publish_reset(&self, wal_next_lsn: Option<u64>) {
         match wal_next_lsn {
             None => self.publish(None, vec![Change::Reset]),
             Some(next) => {
-                let last = self.lock().last_lsn;
+                let last = self.lock().last_assigned;
                 let lsn = next.max(last + 1);
                 // The next WAL commit record takes `next + 2`.
                 if lsn <= next.saturating_add(1) {
-                    self.publish(Some(lsn), vec![Change::Reset]);
+                    self.publish_when_durable(Some(lsn), vec![Change::Reset], |_| {
+                        next.saturating_sub(1)
+                    });
                 }
             }
         }
@@ -354,12 +445,27 @@ impl ChangeHub {
         let subscribers = {
             let mut state = self.lock();
             state.closed = true;
+            state.parked.clear();
+            state.nudge = None;
             std::mem::take(&mut state.subscribers)
         };
         for sub in subscribers {
             sub.close();
         }
     }
+}
+
+/// Hand a batch to the retention ring and every open feed.
+fn release(state: &mut HubState, batch: Arc<ChangeBatch>, bytes: usize) {
+    state.last_lsn = batch.lsn;
+    state.ring.push_back(batch.clone());
+    state.ring_sizes.push_back(bytes);
+    state.ring_bytes += bytes;
+    trim_ring(state);
+    state.subscribers.retain(|sub| {
+        sub.push(&batch);
+        sub.is_open()
+    });
 }
 
 fn trim_ring(state: &mut HubState) {
@@ -582,9 +688,10 @@ impl ChangeFeed {
     }
 
     /// Install a callback that fires when the feed goes from empty to
-    /// non-empty, lags, or closes. It runs on the writing thread while the
-    /// writer lock is held, so it must be quick and must not call back into
-    /// the database.
+    /// non-empty, lags, or closes. It runs on the thread that published the
+    /// batch: the writing thread under the writer lock, or on a WAL-backed
+    /// database usually the thread whose `fsync` made it durable. It must be
+    /// quick and must not call back into the database.
     pub fn set_waker(&self, waker: impl Fn() + Send + Sync + 'static) {
         let notify_now = {
             let mut state = self.sub.lock();

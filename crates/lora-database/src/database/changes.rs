@@ -1,6 +1,7 @@
 //! Change-feed entry points on [`Database<InMemoryGraph>`].
 
 use std::any::Any;
+use std::sync::Arc;
 
 use lora_store::{GraphStorage, GraphStorageMut, InMemoryGraph, MutationEvent};
 use lora_wal::Lsn;
@@ -52,10 +53,27 @@ impl Database<InMemoryGraph> {
 
     /// Caller holds the writer lock.
     fn activate_changes(&self) {
-        let head = self
-            .wal
-            .as_ref()
-            .map(|rec| rec.wal().next_lsn().raw().saturating_sub(1));
+        let head = self.wal.as_ref().map(|rec| {
+            let wal = rec.wal();
+            // Batches wait for their commit to be durable. The listener goes
+            // in before the durable LSN is read, so no advance is missed.
+            let hub = Arc::downgrade(&self.changes);
+            wal.set_durable_listener(Some(Arc::new(move |lsn: Lsn| {
+                if let Some(hub) = hub.upgrade() {
+                    hub.on_durable(lsn.raw());
+                }
+            })));
+            let weak_wal = Arc::downgrade(wal);
+            self.changes.defer_until_durable(
+                wal.durable_lsn().raw(),
+                Arc::new(move || {
+                    if let Some(wal) = weak_wal.upgrade() {
+                        wal.request_fsync();
+                    }
+                }),
+            );
+            wal.next_lsn().raw().saturating_sub(1)
+        });
         self.changes.activate(head);
     }
 
@@ -77,6 +95,7 @@ impl Database<InMemoryGraph> {
                     .and_then(|archive| archive.snapshot_path());
                 let sources = HistorySources {
                     wal_dir: rec.wal().dir().to_path_buf(),
+                    wal: Arc::downgrade(rec.wal()),
                     snapshots: self.snapshots.clone(),
                     container,
                 };
@@ -100,8 +119,9 @@ impl Database<InMemoryGraph> {
         self.changes.set_retention_bytes(bytes);
     }
 
-    /// LSN of the newest captured batch, or `None` while no feed has been
-    /// opened on this database.
+    /// LSN of the newest batch handed to feeds, or `None` while no feed has
+    /// been opened on this database. On a WAL-backed database a commit
+    /// counts once it is durable.
     pub fn changes_head(&self) -> Option<u64> {
         self.changes.head()
     }

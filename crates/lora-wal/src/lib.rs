@@ -55,4 +55,4 @@ pub use recorder::{
 pub use replay::{
     newest_checkpoint_marker, replay_dir, CorruptCut, ReplayOutcome, ReplaySink, TornTailInfo,
 };
-pub use wal::Wal;
+pub use wal::{DurableListener, Wal};

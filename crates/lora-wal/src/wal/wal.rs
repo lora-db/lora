@@ -28,7 +28,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
@@ -76,6 +76,12 @@ struct WalState {
 /// restart from the last consistent snapshot + WAL.
 type BgFailure = Mutex<Option<String>>;
 
+/// Called with the new durable LSN each time an `fsync` advances it, on
+/// the thread that ran the `fsync` (the GroupSync flusher, or a caller of
+/// `force_fsync`, a checkpoint or drop). No WAL lock is held during the
+/// call, but it must be quick and must not call back into the WAL.
+pub type DurableListener = Arc<dyn Fn(Lsn) + Send + Sync>;
+
 /// Selects the durability work that [`Wal::flush_inner`] actually does.
 /// Centralising the normal write-only path and the forced fsync path keeps
 /// the call sites from duplicating durable-LSN rules.
@@ -116,6 +122,16 @@ pub struct Wal {
     batch_target_bytes: AtomicUsize,
     /// Number of `fsync`s issued by [`Self::flush_inner`]. Diagnostic.
     fsyncs: AtomicU64,
+    /// See [`Self::set_durable_listener`].
+    durable_listener: Mutex<Option<DurableListener>>,
+    /// Bytes of transactions appended since open. With `checkpoint_mark`
+    /// it gives [`Self::bytes_since_checkpoint`].
+    appended_bytes: AtomicU64,
+    /// `appended_bytes` at the last [`Self::mark_checkpoint`].
+    checkpoint_mark: AtomicU64,
+    /// Test hook: while set, `fsync`s are skipped and `durable_lsn` stays
+    /// put, as if the disk had not confirmed anything since.
+    fsync_held: AtomicBool,
     /// Where this open cut a corrupt log, when it was opened with
     /// `truncate_corrupt_tail` and needed to.
     corrupt_cut: Option<CorruptCut>,
@@ -244,6 +260,10 @@ impl Wal {
             flusher: Mutex::new(None),
             batch_target_bytes: AtomicUsize::new(BATCH_TARGET_BYTES),
             fsyncs: AtomicU64::new(0),
+            durable_listener: Mutex::new(None),
+            appended_bytes: AtomicU64::new(0),
+            checkpoint_mark: AtomicU64::new(0),
+            fsync_held: AtomicBool::new(false),
             corrupt_cut,
             _dir_lock: dir_lock,
         });
@@ -599,8 +619,12 @@ impl Wal {
             let first_lsn = state.next_lsn;
             let pending_mark = state.active_writer.pending_len();
             let file_mark = state.active_writer.flushed_len();
+            let start_bytes = state.active_writer.bytes_written();
             let result = Self::append_tx(&mut state, events, &batches);
-            if result.is_err() {
+            if result.is_ok() {
+                let appended = state.active_writer.bytes_written() - start_bytes;
+                self.appended_bytes.fetch_add(appended, Ordering::Relaxed);
+            } else {
                 if state.active_writer.flushed_len() == file_mark {
                     // Nothing of this transaction reached the file:
                     // forget it entirely, LSNs included.
@@ -676,6 +700,57 @@ impl Wal {
         self.batch_target_bytes.store(bytes, Ordering::Relaxed);
     }
 
+    /// Bytes of transactions appended since the last checkpoint
+    /// ([`Self::mark_checkpoint`], which [`Self::truncate_up_to`] calls) or
+    /// since open. Hosts use it to checkpoint by WAL growth.
+    pub fn bytes_since_checkpoint(&self) -> u64 {
+        self.appended_bytes
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.checkpoint_mark.load(Ordering::Relaxed))
+    }
+
+    /// Start counting [`Self::bytes_since_checkpoint`] from zero again.
+    pub fn mark_checkpoint(&self) {
+        self.checkpoint_mark.store(
+            self.appended_bytes.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// Install (or with `None` remove) the callback told about each advance
+    /// of the durable LSN. A change feed uses it to hand out commits only
+    /// once they are durable.
+    pub fn set_durable_listener(&self, listener: Option<DurableListener>) {
+        *self
+            .durable_listener
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = listener;
+    }
+
+    /// Ask the GroupSync flusher to `fsync` now instead of at the end of
+    /// its interval. Returns at once; the listener set with
+    /// [`Self::set_durable_listener`] hears when the `fsync` is done.
+    pub fn request_fsync(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(flusher) = self
+            .flusher
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            flusher.request_fsync();
+        }
+    }
+
+    /// Test hook for crash simulations: while `held`, every `fsync` is
+    /// skipped and the durable LSN does not move, so the bytes written
+    /// meanwhile are the ones a power loss could take. Not for production
+    /// use.
+    #[doc(hidden)]
+    pub fn hold_fsync_for_tests(&self, held: bool) {
+        self.fsync_held.store(held, Ordering::SeqCst);
+    }
+
     /// Number of `fsync`s the WAL has issued for its log since open.
     /// Diagnostic; an idle WAL does not grow it.
     pub fn fsync_count(&self) -> u64 {
@@ -749,7 +824,7 @@ impl Wal {
                 return Ok(());
             }
             let written_lsn = Lsn::new(state.next_lsn.raw().saturating_sub(1));
-            if state.durable_lsn >= written_lsn {
+            if state.durable_lsn >= written_lsn || self.fsync_held.load(Ordering::SeqCst) {
                 return Ok(());
             }
             // If the segment rotates before the `fsync` below runs, the
@@ -759,9 +834,21 @@ impl Wal {
         };
         sync_file(&file)?;
         self.fsyncs.fetch_add(1, Ordering::Relaxed);
-        let mut state = self.lock_state()?;
-        if written_lsn > state.durable_lsn {
+        let durable = {
+            let mut state = self.lock_state()?;
+            if written_lsn <= state.durable_lsn {
+                return Ok(());
+            }
             state.durable_lsn = written_lsn;
+            written_lsn
+        };
+        let listener = self
+            .durable_listener
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(listener) = listener {
+            listener(durable);
         }
         Ok(())
     }
@@ -774,7 +861,11 @@ impl Wal {
     /// new appends. The segment immediately before the active one
     /// is also kept as a tombstone so a subsequent crash before the
     /// next checkpoint still finds a self-describing log start.
+    ///
+    /// Also restarts [`Self::bytes_since_checkpoint`]: every checkpoint
+    /// ends here.
     pub fn truncate_up_to(&self, fence_lsn: Lsn) -> Result<(), WalError> {
+        self.mark_checkpoint();
         let mut state = self.lock_state()?;
         let active_id = state.active_segment_id;
         let entries = self.segments.list()?;

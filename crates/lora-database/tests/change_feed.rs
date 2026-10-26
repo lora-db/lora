@@ -599,3 +599,110 @@ fn concurrent_writers_arrive_in_commit_order_without_gaps() {
         "in-memory LSNs are dense"
     );
 }
+
+/// Newest WAL segment file in `dir`.
+fn active_segment(dir: &Path) -> PathBuf {
+    let mut segments: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "wal"))
+        .collect();
+    segments.sort();
+    segments.pop().unwrap()
+}
+
+/// Copy the WAL files of `from` into `to`, as a crash would leave them on
+/// disk: the active segment cut at `durable_len`, the bytes the disk had
+/// confirmed.
+fn crash_copy(from: &Path, to: &Path, durable_len: u64) {
+    std::fs::create_dir_all(to).unwrap();
+    let active = active_segment(from);
+    for entry in std::fs::read_dir(from).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "wal") {
+            let target = to.join(path.file_name().unwrap());
+            std::fs::copy(&path, &target).unwrap();
+            if path == active {
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&target)
+                    .unwrap();
+                file.set_len(durable_len).unwrap();
+            }
+        }
+    }
+}
+
+/// A crash can lose a commit the disk had not confirmed, and the restarted
+/// database hands its LSN to the next transaction. A consumer that saw the
+/// lost commit would then skip the new one or attribute it to the old one,
+/// so a feed hands out only durable commits.
+#[test]
+fn feed_never_shows_a_commit_a_crash_can_lose() {
+    let dir = TmpDir::new("crash-lsn");
+    let wal_dir = dir.path().join("wal");
+    let crashed_dir = dir.path().join("crashed");
+    let config = |dir: &Path| WalConfig::Enabled {
+        dir: dir.to_path_buf(),
+        // No periodic fsync during the test: only what the feed asks for.
+        sync_mode: SyncMode::GroupSync {
+            interval_ms: 600_000,
+        },
+        segment_target_bytes: 8 * 1024 * 1024,
+        truncate_corrupt_tail: false,
+    };
+
+    let db = Database::open_with_wal(config(&wal_dir)).unwrap();
+    let wal = db.wal().unwrap().wal().clone();
+    let mut feed = open(&db);
+    exec(&db, "CREATE (:Doc {slug: 'durable'})");
+    db.sync().unwrap();
+    let durable = next(&mut feed);
+    assert!(wal.durable_lsn().raw() >= durable.lsn);
+    let durable_len = std::fs::metadata(active_segment(&wal_dir)).unwrap().len();
+
+    // The disk confirms nothing from here on.
+    wal.hold_fsync_for_tests(true);
+    exec(&db, "CREATE (:Doc {slug: 'lost'})");
+    let mut seen = vec![durable.clone()];
+    match feed.next_timeout(Duration::from_millis(500)).unwrap() {
+        ChangePoll::Pending => {}
+        ChangePoll::Batch(batch) => seen.push(batch),
+        ChangePoll::Closed => panic!("feed closed"),
+    }
+
+    // Crash: the unconfirmed commit is gone; the restarted database takes
+    // its LSN for another transaction.
+    crash_copy(&wal_dir, &crashed_dir, durable_len);
+    let restarted = Database::open_with_wal(config(&crashed_dir)).unwrap();
+    exec(&restarted, "CREATE (:Doc {slug: 'after-crash'})");
+    let mut history = open_from(&restarted, 0);
+    let mut recovered = BTreeMap::new();
+    while let ChangePoll::Batch(batch) = history.next_timeout(Duration::from_secs(5)).unwrap() {
+        recovered.insert(batch.lsn, batch);
+        if recovered.len() == 2 {
+            break;
+        }
+    }
+    assert_eq!(recovered.len(), 2);
+
+    // Every LSN the consumer saw still names the same transaction.
+    for batch in &seen {
+        assert_eq!(
+            recovered.get(&batch.lsn).map(|b| &b.changes),
+            Some(&batch.changes),
+            "the feed showed LSN {} before it was durable",
+            batch.lsn
+        );
+    }
+
+    // Once the disk confirms it, the held-back commit is delivered.
+    wal.hold_fsync_for_tests(false);
+    db.sync().unwrap();
+    let lost = next(&mut feed);
+    assert!(lost.lsn > durable.lsn);
+    assert!(matches!(
+        &lost.changes[..],
+        [Change::NodeCreated { properties, .. }] if properties.get("slug") == Some(&prop("lost"))
+    ));
+}

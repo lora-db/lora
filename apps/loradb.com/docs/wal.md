@@ -330,6 +330,12 @@ every 50 ms, so a power loss or kernel crash can lose up to that much
 acknowledged work. A process crash alone loses nothing that was already
 written to the OS.
 
+A change feed on a WAL-backed database only delivers a commit once it is
+fsynced, because a commit lost in a crash would have its LSN reused by the
+next write after the restart. The feed asks for the fsync straight away, so
+an occasional write reaches the feed after one fsync; under a steady stream
+of writes batches trail the commit by up to the group interval.
+
 For checkpointed deployments, call `sync()` when you need an immediate
 durability point. On a named `.loradb` database `sync()` is also the
 checkpoint: it writes the graph as the archive's base snapshot, streamed so it
