@@ -70,24 +70,25 @@ thread_local! {
 }
 
 /// RAII guard. While alive, the thread-local current collector is set
-/// to the supplied collector; on drop it is cleared.
+/// to the supplied collector; on drop the one installed before it (if any)
+/// is restored, so a profiled query nested in another keeps the outer
+/// one's metering.
 pub struct CollectorGuard {
-    _private: (),
+    prev: Option<Arc<MetricsCollector>>,
 }
 
 impl CollectorGuard {
     pub fn install(collector: Arc<MetricsCollector>) -> Self {
-        CURRENT.with(|cell| {
-            *cell.borrow_mut() = Some(collector);
-        });
-        Self { _private: () }
+        let prev = CURRENT.with(|cell| cell.borrow_mut().replace(collector));
+        Self { prev }
     }
 }
 
 impl Drop for CollectorGuard {
     fn drop(&mut self) {
+        let prev = self.prev.take();
         CURRENT.with(|cell| {
-            *cell.borrow_mut() = None;
+            *cell.borrow_mut() = prev;
         });
     }
 }
@@ -123,5 +124,28 @@ impl<'a> RowSource for MeteredSource<'a> {
         let produced = matches!(&result, Ok(Some(_)));
         self.collector.record(self.op_id, elapsed_ns, produced);
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn current() -> Option<Arc<MetricsCollector>> {
+        CURRENT.with(|cell| cell.borrow().clone())
+    }
+
+    #[test]
+    fn nested_guards_restore_the_outer_collector() {
+        let outer = Arc::new(MetricsCollector::default());
+        let inner = Arc::new(MetricsCollector::default());
+        let outer_guard = CollectorGuard::install(outer.clone());
+        {
+            let _inner_guard = CollectorGuard::install(inner.clone());
+            assert!(Arc::ptr_eq(&current().unwrap(), &inner));
+        }
+        assert!(Arc::ptr_eq(&current().unwrap(), &outer));
+        drop(outer_guard);
+        assert!(current().is_none());
     }
 }

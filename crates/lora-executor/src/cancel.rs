@@ -13,7 +13,7 @@
 //! The set is only consulted while at least one cancellation is pending,
 //! so queries that never use cancellation pay one relaxed atomic load.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -28,9 +28,12 @@ const NO_TIMEOUT: Duration = Duration::from_secs(60 * 60 * 24 * 365);
 static PENDING: AtomicUsize = AtomicUsize::new(0);
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
-fn cancelled() -> &'static Mutex<HashSet<Instant>> {
-    static SET: OnceLock<Mutex<HashSet<Instant>>> = OnceLock::new();
-    SET.get_or_init(|| Mutex::new(HashSet::new()))
+/// Cancelled deadlines, each with the number of handles that cancelled
+/// it: two handles can share a deadline value, and one dropping must not
+/// forget the other's cancellation.
+fn cancelled() -> &'static Mutex<HashMap<Instant, usize>> {
+    static SET: OnceLock<Mutex<HashMap<Instant, usize>>> = OnceLock::new();
+    SET.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// A deadline that can also be cancelled before it expires.
@@ -71,9 +74,11 @@ impl CancellableDeadline {
             return;
         }
         let mut set = cancelled().lock().unwrap_or_else(|p| p.into_inner());
-        if set.insert(self.deadline) {
+        let handles = set.entry(self.deadline).or_insert(0);
+        if *handles == 0 {
             PENDING.fetch_add(1, Ordering::Release);
         }
+        *handles += 1;
         self.registered = true;
     }
 
@@ -88,8 +93,12 @@ impl Drop for CancellableDeadline {
             return;
         }
         let mut set = cancelled().lock().unwrap_or_else(|p| p.into_inner());
-        if set.remove(&self.deadline) {
-            PENDING.fetch_sub(1, Ordering::Release);
+        if let Some(handles) = set.get_mut(&self.deadline) {
+            *handles -= 1;
+            if *handles == 0 {
+                set.remove(&self.deadline);
+                PENDING.fetch_sub(1, Ordering::Release);
+            }
         }
     }
 }
@@ -103,7 +112,7 @@ pub(crate) fn is_cancelled(deadline: Instant) -> bool {
     cancelled()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .contains(&deadline)
+        .contains_key(&deadline)
 }
 
 thread_local! {
@@ -114,6 +123,25 @@ thread_local! {
     /// (or its query cancelled). Sticky for the rest of the query on this
     /// thread so every enclosing loop unwinds at its next iteration.
     static EVAL_TRIPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Per-row deadline checks since the query started on this thread.
+    static ROW_TICK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Per-row deadline checks between two clock reads. A clock read costs
+/// about as much as producing a cheap row, so reading it on every row of a
+/// scan cost 7-20%; every 64th row costs well under 1% and still notices a
+/// deadline within microseconds.
+const ROW_CHECK_STRIDE: u32 = 64;
+
+/// Whether a per-row deadline check should read the clock now: on the
+/// first check of a query and then every [`ROW_CHECK_STRIDE`] checks.
+#[inline]
+pub(crate) fn row_check_due() -> bool {
+    ROW_TICK.with(|t| {
+        let n = t.get();
+        t.set(n.wrapping_add(1));
+        n.is_multiple_of(ROW_CHECK_STRIDE)
+    })
 }
 
 /// Expression-level loop iterations between two clock reads. One
@@ -136,8 +164,11 @@ impl DeadlineScope {
     pub(crate) fn enter(deadline: Option<Instant>) -> Self {
         let prev = ACTIVE.with(|a| a.get());
         if prev.is_none() {
-            // A new query on this thread: forget a trip left by the last.
+            // A new query on this thread: forget a trip left by the last,
+            // and read the clock at its first check.
             EVAL_TRIPPED.with(|t| t.set(false));
+            ROW_TICK.with(|t| t.set(0));
+            EVAL_TICK.with(|t| t.set(0));
         }
         ACTIVE.with(|a| a.set(deadline.or(prev)));
         Self { prev }
@@ -214,6 +245,22 @@ mod tests {
         a.cancel();
         assert!(deadline_reached(a.deadline()));
         assert!(!deadline_reached(b.deadline()));
+        let d = a.deadline();
+        drop(a);
+        assert!(!is_cancelled(d));
+    }
+
+    #[test]
+    fn handles_sharing_a_deadline_keep_each_others_cancellation() {
+        let mut a = CancellableDeadline::new(None);
+        let mut b = CancellableDeadline {
+            deadline: a.deadline(),
+            registered: false,
+        };
+        a.cancel();
+        b.cancel();
+        drop(b);
+        assert!(deadline_reached(a.deadline()));
         let d = a.deadline();
         drop(a);
         assert!(!is_cancelled(d));
