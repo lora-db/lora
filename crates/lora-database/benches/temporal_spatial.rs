@@ -253,6 +253,23 @@ fn bench_temporal_filtering(c: &mut Criterion) {
         });
     });
 
+    // A constructor call on a constant: built once at plan time, not per row.
+    group.bench_function("datetime_constructor_filter_500", |b| {
+        b.iter(|| {
+            black_box(
+                db_500
+                    .service
+                    .execute(
+                        "MATCH (e:Event) \
+                         WHERE e.created_at > datetime('2024-06-01T00:00:00Z') \
+                         RETURN count(e)",
+                        opts(),
+                    )
+                    .unwrap(),
+            );
+        });
+    });
+
     group.bench_function("date_equality_500", |b| {
         b.iter(|| {
             black_box(
