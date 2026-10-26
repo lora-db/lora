@@ -35,6 +35,7 @@ mod point;
 mod regex;
 mod vector;
 
+pub(crate) use binops::compare_values;
 pub use builtins::FulltextPage;
 pub use errors::clear_eval_error;
 pub(crate) use errors::take_eval_error;

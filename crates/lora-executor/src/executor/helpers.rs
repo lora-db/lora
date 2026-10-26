@@ -2005,6 +2005,9 @@ fn range_comparison(actual: &LoraValue, bound: &LoraValue) -> Option<Ordering> {
         (LoraValue::Duration(a), LoraValue::Duration(b)) => a
             .total_seconds_approx()
             .partial_cmp(&b.total_seconds_approx()),
+        // Lists compare element by element and booleans `false < true`,
+        // as the comparison operators do; a RANGE index seeks both.
+        (LoraValue::List(_) | LoraValue::Bool(_), _) => crate::eval::compare_values(actual, bound),
         _ => actual.as_f64()?.partial_cmp(&bound.as_f64()?),
     }
 }
