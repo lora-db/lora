@@ -1,8 +1,8 @@
 //! JSON-array codec: `[ {...}, {...}, ... ]`.
 //!
-//! Both an eager [`JsonArrayDecoder`] (one-shot, loads the whole
-//! document) and a push-based [`StreamingJsonArrayDecoder`] are
-//! available. The streaming variant walks the byte stream with a
+//! Both a pull-based [`JsonArrayDecoder`] over a reader and a
+//! push-based [`StreamingJsonArrayDecoder`] are available; the first
+//! drives the second. The streaming variant walks the byte stream with a
 //! depth-and-string-state tokenizer and emits a record each time
 //! the brace nesting returns to zero inside the top-level array.
 
@@ -98,37 +98,25 @@ impl<W: Write> RowEncoder for JsonArrayEncoder<W> {
     }
 }
 
-/// Decoder that parses the entire array up-front, then yields one
-/// element per `next_row` call. Not streaming — use [`super::JsonlDecoder`]
-/// for that.
+/// Pull-based JSON-array decoder over a [`BufRead`]. Feeds the reader's
+/// buffered chunks to a [`StreamingJsonArrayDecoder`], so memory stays at
+/// one record plus one read buffer however large the array is. Rows before
+/// a malformed record are returned before its error.
 pub struct JsonArrayDecoder<R: BufRead> {
-    state: State<R>,
-}
-
-enum State<R: BufRead> {
-    Pending(Option<R>),
-    Loaded(std::vec::IntoIter<J>),
+    reader: R,
+    decoder: StreamingJsonArrayDecoder,
+    ready: std::collections::VecDeque<Vec<(String, LoraValue)>>,
+    finished: bool,
 }
 
 impl<R: BufRead> JsonArrayDecoder<R> {
     pub fn new(reader: R) -> Self {
         Self {
-            state: State::Pending(Some(reader)),
+            reader,
+            decoder: StreamingJsonArrayDecoder::new(),
+            ready: std::collections::VecDeque::new(),
+            finished: false,
         }
-    }
-
-    fn ensure_loaded(&mut self) -> std::io::Result<()> {
-        if let State::Pending(slot) = &mut self.state {
-            let reader = slot
-                .take()
-                .ok_or_else(|| invalid_data("JSON array reader was already consumed"))?;
-            let value: J = serde_json::from_reader(reader).map_err(invalid_data)?;
-            let J::Array(items) = value else {
-                return Err(invalid_data("expected a JSON array at the top level"));
-            };
-            self.state = State::Loaded(items.into_iter());
-        }
-        Ok(())
     }
 }
 
@@ -138,30 +126,24 @@ impl<R: BufRead> RowDecoder for JsonArrayDecoder<R> {
     }
 
     fn next_row(&mut self) -> std::io::Result<Option<Vec<(String, LoraValue)>>> {
-        self.ensure_loaded()?;
-        // Belt-and-braces: `ensure_loaded` is what advances `Pending`
-        // into `Loaded`, but treating the invariant as an error rather
-        // than `unreachable!()` means a future code change that doesn't
-        // perform the transition surfaces as an io error on untrusted
-        // input instead of a panic.
-        let State::Loaded(iter) = &mut self.state else {
-            return Err(invalid_data(
-                "JSON array decoder state was not loaded after ensure_loaded",
-            ));
-        };
-        let Some(v) = iter.next() else {
-            return Ok(None);
-        };
-        let J::Object(obj) = v else {
-            return Err(invalid_data(
-                "expected JSON object per array element".to_string(),
-            ));
-        };
-        let mut out = Vec::with_capacity(obj.len());
-        for (k, raw) in obj {
-            out.push((k, lora_value_from_json(raw).map_err(invalid_data)?));
+        loop {
+            if let Some(row) = self.ready.pop_front() {
+                return Ok(Some(row));
+            }
+            if self.finished {
+                return Ok(None);
+            }
+            let chunk = self.reader.fill_buf()?;
+            if chunk.is_empty() {
+                self.finished = true;
+                self.ready.extend(self.decoder.finish()?);
+                continue;
+            }
+            let len = chunk.len();
+            self.decoder.feed(chunk)?;
+            self.reader.consume(len);
+            self.ready.extend(self.decoder.drain()?);
         }
-        Ok(Some(out))
     }
 }
 
@@ -441,6 +423,48 @@ mod tests {
         let mut dec = JsonArrayDecoder::new(Cursor::new("[1, 2]"));
         let err = dec.next_row().unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn decoder_returns_rows_before_reading_the_whole_array() {
+        /// Yields `data`, then fails: rows already in `data` must come
+        /// out before the failure.
+        struct FailAfter(Cursor<&'static [u8]>);
+        impl std::io::Read for FailAfter {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                match self.0.read(buf)? {
+                    0 => Err(std::io::Error::other("connection lost")),
+                    n => Ok(n),
+                }
+            }
+        }
+        let reader =
+            std::io::BufReader::with_capacity(4, FailAfter(Cursor::new(br#"[{"a":1},{"b":2},"#)));
+        let mut dec = JsonArrayDecoder::new(reader);
+        assert_eq!(
+            dec.next_row().unwrap().unwrap()[0],
+            ("a".into(), LoraValue::Int(1))
+        );
+        assert_eq!(
+            dec.next_row().unwrap().unwrap()[0],
+            ("b".into(), LoraValue::Int(2))
+        );
+        assert_eq!(dec.next_row().unwrap_err().to_string(), "connection lost");
+    }
+
+    #[test]
+    fn decoder_rejects_truncated_and_trailing_input() {
+        for input in ["", "[", r#"[{"a":1}"#, r#"[{"a":1}] x"#, r#"{"a":1}"#] {
+            let mut dec = JsonArrayDecoder::new(Cursor::new(input));
+            let err = loop {
+                match dec.next_row() {
+                    Ok(Some(_)) => continue,
+                    Ok(None) => panic!("{input:?} decoded without error"),
+                    Err(err) => break err,
+                }
+            };
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{input:?}");
+        }
     }
 
     #[test]
