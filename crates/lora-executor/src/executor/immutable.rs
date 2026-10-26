@@ -25,10 +25,10 @@ use web_time::Instant;
 
 use super::aggregate_rows;
 use super::helpers::{
-    build_path_value, check_deadline_at, dedup_rows, expand_rows, expand_var_len_rows,
-    filter_rows_checked, filter_shortest_paths, hydrate_node_record, hydrate_relationship_record,
-    limit_rows, node_by_label_scan_rows, node_by_property_scan_rows, node_scan_rows,
-    plan_may_need_hydration, project_rows_checked, unwind_rows,
+    build_path_value, check_deadline_at, check_deadline_now, dedup_rows, expand_rows,
+    expand_var_len_rows, filter_rows_checked, filter_shortest_paths, hydrate_node_record,
+    hydrate_relationship_record, limit_rows, node_by_label_scan_rows, node_by_property_scan_rows,
+    node_scan_rows, plan_may_need_hydration, project_rows_checked, unwind_rows,
 };
 #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
 use super::helpers::{
@@ -68,7 +68,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
     #[inline]
     fn check_deadline(&self) -> ExecResult<()> {
         if let Some(deadline) = self.deadline {
-            super::helpers::check_deadline_now(deadline)
+            check_deadline_now(deadline)
         } else {
             Ok(())
         }
@@ -340,8 +340,10 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         let chunks: Vec<ExecResult<Vec<Row>>> = base_rows
             .into_par_iter()
             .map(|row| {
+                // One base row expands into a whole scan: read the clock every
+                // time, or each row left after a timeout builds up to a stride.
                 if let Some(deadline) = self.deadline {
-                    check_deadline_at(deadline)?;
+                    check_deadline_now(deadline)?;
                 }
                 if let Some(existing_id) = super::helpers::bound_node_id_for_expand(&row, op.var)? {
                     return Ok(if self.ctx.storage.has_node(existing_id) {
@@ -431,8 +433,10 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         let chunks: Vec<ExecResult<Vec<Row>>> = base_rows
             .into_par_iter()
             .map(|row| {
+                // One base row expands into a whole scan: read the clock every
+                // time, or each row left after a timeout builds up to a stride.
                 if let Some(deadline) = self.deadline {
-                    check_deadline_at(deadline)?;
+                    check_deadline_now(deadline)?;
                 }
                 if let Some(existing_id) = super::helpers::bound_node_id_for_expand(&row, op.var)? {
                     let labels_ok = self
@@ -589,8 +593,10 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         let chunks: Vec<ExecResult<Vec<Row>>> = base_rows
             .into_par_iter()
             .map(|row| {
+                // One base row expands into a whole scan: read the clock every
+                // time, or each row left after a timeout builds up to a stride.
                 if let Some(deadline) = self.deadline {
-                    check_deadline_at(deadline)?;
+                    check_deadline_now(deadline)?;
                 }
                 let expected = eval_expr(&op.value, &row, &eval_ctx);
 
