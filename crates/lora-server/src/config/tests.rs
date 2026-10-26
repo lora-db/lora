@@ -287,3 +287,59 @@ fn invalid_query_limit_rejected() {
     let err = resolve(args(&["--max-body-bytes", " "]), EnvInputs::default()).unwrap_err();
     assert_eq!(err, ConfigError::EmptyValue("--max-body-bytes"));
 }
+
+#[test]
+fn header_read_timeout_parses_from_cli_and_env() {
+    let cfg = run_cfg(resolve(args(&[]), EnvInputs::default()).unwrap());
+    assert_eq!(
+        cfg.header_read_timeout_ms,
+        super::DEFAULT_HEADER_READ_TIMEOUT_MS
+    );
+
+    let env = EnvInputs {
+        header_read_timeout_ms: Some("2500".into()),
+        ..EnvInputs::default()
+    };
+    let cfg = run_cfg(resolve(args(&[]), env.clone()).unwrap());
+    assert_eq!(cfg.header_read_timeout_ms, 2500);
+    let cfg = run_cfg(resolve(args(&["--header-read-timeout-ms", "0"]), env).unwrap());
+    assert_eq!(cfg.header_read_timeout_ms, 0);
+}
+
+#[test]
+fn wal_truncate_corrupt_tail_is_a_switch() {
+    let cfg = run_cfg(resolve(args(&[]), EnvInputs::default()).unwrap());
+    assert!(!cfg.wal_truncate_corrupt_tail);
+
+    // Bare, it does not take the next argument as its value.
+    let cfg = run_cfg(
+        resolve(
+            args(&["--wal-truncate-corrupt-tail", "--wal-dir", "/w"]),
+            EnvInputs::default(),
+        )
+        .unwrap(),
+    );
+    assert!(cfg.wal_truncate_corrupt_tail);
+    assert_eq!(cfg.wal_dir, Some(std::path::PathBuf::from("/w")));
+
+    let env = EnvInputs {
+        wal_truncate_corrupt_tail: Some("true".into()),
+        ..EnvInputs::default()
+    };
+    assert!(run_cfg(resolve(args(&[]), env.clone()).unwrap()).wal_truncate_corrupt_tail);
+    let cfg = run_cfg(resolve(args(&["--wal-truncate-corrupt-tail=false"]), env).unwrap());
+    assert!(!cfg.wal_truncate_corrupt_tail);
+
+    let err = resolve(
+        args(&["--wal-truncate-corrupt-tail=maybe"]),
+        EnvInputs::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        ConfigError::InvalidBool {
+            flag: "--wal-truncate-corrupt-tail",
+            ..
+        }
+    ));
+}

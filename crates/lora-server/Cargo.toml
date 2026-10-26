@@ -15,6 +15,7 @@ autobenches = false
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+hyper-util = { workspace = true, features = ["http1", "server", "service", "tokio"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
 web-time.workspace = true
 serde.workspace = true

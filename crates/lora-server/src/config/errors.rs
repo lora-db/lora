@@ -18,6 +18,10 @@ pub enum ConfigError {
         value: String,
         reason: String,
     },
+    InvalidBool {
+        flag: &'static str,
+        value: String,
+    },
     UnexpectedPositional(String),
 }
 
@@ -41,6 +45,9 @@ impl fmt::Display for ConfigError {
                 value,
                 reason,
             } => write!(f, "invalid `{flag}` `{value}`: {reason}"),
+            ConfigError::InvalidBool { flag, value } => {
+                write!(f, "invalid `{flag}` `{value}`: expected `true` or `false`")
+            }
             ConfigError::UnexpectedPositional(a) => {
                 write!(f, "unexpected positional argument `{a}`")
             }

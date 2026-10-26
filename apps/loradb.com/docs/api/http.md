@@ -529,6 +529,8 @@ Relevant durability flags:
 - `--restore-from <PATH>`
 - `--wal-dir <DIR>` / `LORA_SERVER_WAL_DIR`
 - `--wal-sync-mode <MODE>` / `LORA_SERVER_WAL_SYNC_MODE`
+- `--wal-truncate-corrupt-tail` / `LORA_SERVER_WAL_TRUNCATE_CORRUPT_TAIL`
+  (incident recovery only, see [Corrupt WAL](../wal#corrupt-wal-incident-procedure))
 - `--admin-path-root <DIR>` / `LORA_SERVER_ADMIN_PATH_ROOT`
 
 Query limits:
@@ -540,6 +542,9 @@ Query limits:
   (default twice the CPU count, `0` means unlimited).
 - `--max-body-bytes <BYTES>` / `LORA_SERVER_MAX_BODY_BYTES` (default
   `2097152`).
+- `--header-read-timeout-ms <MS>` / `LORA_SERVER_HEADER_READ_TIMEOUT_MS`
+  (default `10000`, `0` disables). A connection that has not sent a
+  complete request head in time is closed.
 
 ## What isn't here
 

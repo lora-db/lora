@@ -47,8 +47,12 @@ pub const QUERY_TIMEOUT_MS_ENV: &str = "LORA_SERVER_QUERY_TIMEOUT_MS";
 pub const MAX_CONCURRENT_QUERIES_ENV: &str = "LORA_SERVER_MAX_CONCURRENT_QUERIES";
 pub const MAX_BODY_BYTES_ENV: &str = "LORA_SERVER_MAX_BODY_BYTES";
 pub const ADMIN_PATH_ROOT_ENV: &str = "LORA_SERVER_ADMIN_PATH_ROOT";
+pub const HEADER_READ_TIMEOUT_MS_ENV: &str = "LORA_SERVER_HEADER_READ_TIMEOUT_MS";
+pub const WAL_TRUNCATE_CORRUPT_TAIL_ENV: &str = "LORA_SERVER_WAL_TRUNCATE_CORRUPT_TAIL";
 
-pub use crate::app::{DEFAULT_MAX_BODY_BYTES, DEFAULT_QUERY_TIMEOUT_MS};
+pub use crate::app::{
+    DEFAULT_HEADER_READ_TIMEOUT_MS, DEFAULT_MAX_BODY_BYTES, DEFAULT_QUERY_TIMEOUT_MS,
+};
 
 /// Default segment target for WAL-enabled deployments. Matches the
 /// in-tree `WalConfig::enabled` constructor.
@@ -76,6 +80,10 @@ pub struct ServerConfig {
     pub wal_dir: Option<std::path::PathBuf>,
     /// Durability cadence for the WAL. Ignored when `wal_dir` is `None`.
     pub wal_sync_mode: SyncMode,
+    /// Incident recovery: open a WAL that is corrupt mid-log by cutting it
+    /// at the first corrupt record (cut data is kept beside the log)
+    /// instead of refusing to start. Off by default.
+    pub wal_truncate_corrupt_tail: bool,
     /// Per-request budget for `/query` and `/profile`, including the time
     /// spent waiting for a free query slot. `0` disables the timeout.
     pub query_timeout_ms: u64,
@@ -84,6 +92,9 @@ pub struct ServerConfig {
     pub max_concurrent_queries: usize,
     /// Largest accepted request body, in bytes.
     pub max_body_bytes: usize,
+    /// Time a connection gets to send a request's headers before it is
+    /// closed. `0` disables the timeout.
+    pub header_read_timeout_ms: u64,
     /// Directory that admin request-body `path` overrides must stay
     /// inside. `None` rejects every override, so the admin routes only
     /// touch the configured `--snapshot-path`.
@@ -99,9 +110,11 @@ impl Default for ServerConfig {
             restore_from: None,
             wal_dir: None,
             wal_sync_mode: SyncMode::default(),
+            wal_truncate_corrupt_tail: false,
             query_timeout_ms: DEFAULT_QUERY_TIMEOUT_MS,
             max_concurrent_queries: crate::app::default_max_concurrent_queries(),
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            header_read_timeout_ms: DEFAULT_HEADER_READ_TIMEOUT_MS,
             admin_path_root: None,
         }
     }

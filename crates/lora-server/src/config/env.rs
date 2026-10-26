@@ -5,10 +5,10 @@ use lora_database::SyncMode;
 use super::errors::ConfigError;
 use super::help::{help_text, version_text};
 use super::{
-    ConfigOutcome, ServerConfig, ADMIN_PATH_ROOT_ENV, DEFAULT_HOST, DEFAULT_MAX_BODY_BYTES,
-    DEFAULT_PORT, DEFAULT_QUERY_TIMEOUT_MS, HOST_ENV, MAX_BODY_BYTES_ENV,
-    MAX_CONCURRENT_QUERIES_ENV, PORT_ENV, QUERY_TIMEOUT_MS_ENV, SNAPSHOT_PATH_ENV, WAL_DIR_ENV,
-    WAL_SYNC_MODE_ENV,
+    ConfigOutcome, ServerConfig, ADMIN_PATH_ROOT_ENV, DEFAULT_HEADER_READ_TIMEOUT_MS, DEFAULT_HOST,
+    DEFAULT_MAX_BODY_BYTES, DEFAULT_PORT, DEFAULT_QUERY_TIMEOUT_MS, HEADER_READ_TIMEOUT_MS_ENV,
+    HOST_ENV, MAX_BODY_BYTES_ENV, MAX_CONCURRENT_QUERIES_ENV, PORT_ENV, QUERY_TIMEOUT_MS_ENV,
+    SNAPSHOT_PATH_ENV, WAL_DIR_ENV, WAL_SYNC_MODE_ENV, WAL_TRUNCATE_CORRUPT_TAIL_ENV,
 };
 
 /// Inputs to [`resolve`]. Wrapping the env values in a struct keeps the
@@ -24,6 +24,8 @@ pub struct EnvInputs {
     pub max_concurrent_queries: Option<String>,
     pub max_body_bytes: Option<String>,
     pub admin_path_root: Option<String>,
+    pub header_read_timeout_ms: Option<String>,
+    pub wal_truncate_corrupt_tail: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -38,6 +40,8 @@ struct CliInputs {
     max_concurrent_queries: Option<String>,
     max_body_bytes: Option<String>,
     admin_path_root: Option<String>,
+    header_read_timeout_ms: Option<String>,
+    wal_truncate_corrupt_tail: Option<String>,
 }
 
 impl CliInputs {
@@ -53,6 +57,8 @@ impl CliInputs {
             CliField::MaxConcurrentQueries => self.max_concurrent_queries = Some(value),
             CliField::MaxBodyBytes => self.max_body_bytes = Some(value),
             CliField::AdminPathRoot => self.admin_path_root = Some(value),
+            CliField::HeaderReadTimeoutMs => self.header_read_timeout_ms = Some(value),
+            CliField::WalTruncateCorruptTail => self.wal_truncate_corrupt_tail = Some(value),
         }
     }
 }
@@ -69,6 +75,15 @@ enum CliField {
     MaxConcurrentQueries,
     MaxBodyBytes,
     AdminPathRoot,
+    HeaderReadTimeoutMs,
+    /// A switch: given bare it means `true`; `--flag=<bool>` also works.
+    WalTruncateCorruptTail,
+}
+
+impl CliField {
+    fn is_switch(self) -> bool {
+        matches!(self, CliField::WalTruncateCorruptTail)
+    }
 }
 
 enum ParsedCli {
@@ -112,6 +127,13 @@ where
         Some(raw) => parse_sync_mode(&raw)?,
         None => SyncMode::default(),
     };
+    let wal_truncate_corrupt_tail = match cli
+        .wal_truncate_corrupt_tail
+        .or(env.wal_truncate_corrupt_tail)
+    {
+        Some(raw) => parse_bool("--wal-truncate-corrupt-tail", &raw)?,
+        None => false,
+    };
 
     let query_timeout_ms = match cli.query_timeout_ms.or(env.query_timeout_ms) {
         Some(raw) => parse_number("--query-timeout-ms", &raw)?,
@@ -129,6 +151,10 @@ where
         .admin_path_root
         .or(env.admin_path_root)
         .and_then(non_empty_path);
+    let header_read_timeout_ms = match cli.header_read_timeout_ms.or(env.header_read_timeout_ms) {
+        Some(raw) => parse_number("--header-read-timeout-ms", &raw)?,
+        None => DEFAULT_HEADER_READ_TIMEOUT_MS,
+    };
 
     Ok(ConfigOutcome::Run(ServerConfig {
         host,
@@ -137,9 +163,11 @@ where
         restore_from,
         wal_dir,
         wal_sync_mode,
+        wal_truncate_corrupt_tail,
         query_timeout_ms,
         max_concurrent_queries,
         max_body_bytes,
+        header_read_timeout_ms,
         admin_path_root,
     }))
 }
@@ -162,6 +190,10 @@ where
         }
 
         if let Some((field, flag)) = cli_field_for_flag(&arg) {
+            if field.is_switch() {
+                cli.set(field, "true".to_string());
+                continue;
+            }
             let value = iter.next().ok_or(ConfigError::MissingValue(flag))?;
             cli.set(field, value);
             continue;
@@ -195,6 +227,13 @@ fn cli_field_for_flag(arg: &str) -> Option<(CliField, &'static str)> {
         }
         "--max-body-bytes" => Some((CliField::MaxBodyBytes, "--max-body-bytes")),
         "--admin-path-root" => Some((CliField::AdminPathRoot, "--admin-path-root")),
+        "--header-read-timeout-ms" => {
+            Some((CliField::HeaderReadTimeoutMs, "--header-read-timeout-ms"))
+        }
+        "--wal-truncate-corrupt-tail" => Some((
+            CliField::WalTruncateCorruptTail,
+            "--wal-truncate-corrupt-tail",
+        )),
         _ => None,
     }
 }
@@ -219,6 +258,8 @@ pub fn resolve_from_process() -> Result<ConfigOutcome, ConfigError> {
             max_concurrent_queries: std::env::var(MAX_CONCURRENT_QUERIES_ENV).ok(),
             max_body_bytes: std::env::var(MAX_BODY_BYTES_ENV).ok(),
             admin_path_root: std::env::var(ADMIN_PATH_ROOT_ENV).ok(),
+            header_read_timeout_ms: std::env::var(HEADER_READ_TIMEOUT_MS_ENV).ok(),
+            wal_truncate_corrupt_tail: std::env::var(WAL_TRUNCATE_CORRUPT_TAIL_ENV).ok(),
         },
     )
 }
@@ -260,6 +301,18 @@ where
             value: raw.to_string(),
             reason: e.to_string(),
         })
+}
+
+fn parse_bool(flag: &'static str, raw: &str) -> Result<bool, ConfigError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        "" => Err(ConfigError::EmptyValue(flag)),
+        _ => Err(ConfigError::InvalidBool {
+            flag,
+            value: raw.to_string(),
+        }),
+    }
 }
 
 fn parse_sync_mode(raw: &str) -> Result<SyncMode, ConfigError> {

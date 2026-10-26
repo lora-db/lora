@@ -55,6 +55,8 @@ async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
             .then(|| std::time::Duration::from_millis(cfg.query_timeout_ms)),
         max_concurrent: (cfg.max_concurrent_queries > 0).then_some(cfg.max_concurrent_queries),
         max_body_bytes: cfg.max_body_bytes,
+        header_read_timeout: (cfg.header_read_timeout_ms > 0)
+            .then(|| std::time::Duration::from_millis(cfg.header_read_timeout_ms)),
     };
 
     let addr = cfg.bind_addr();
@@ -89,6 +91,7 @@ fn open_snapshot_database(path: &Path) -> anyhow::Result<Database<InMemoryGraph>
 
 fn open_wal_database(cfg: &ServerConfig, dir: &Path) -> anyhow::Result<Database<InMemoryGraph>> {
     let db = Database::open_with_wal(wal_config(cfg, dir))?;
+    report_corrupt_cut(&db);
     println!(
         "WAL attached at {} (sync-mode = {:?})",
         dir.display(),
@@ -103,6 +106,7 @@ fn recover_wal_database(
     snapshot: &Path,
 ) -> anyhow::Result<Database<InMemoryGraph>> {
     let db = Database::recover(snapshot, wal_config(cfg, dir))?;
+    report_corrupt_cut(&db);
     println!(
         "Recovered from {} + WAL {} (sync-mode = {:?})",
         snapshot.display(),
@@ -112,12 +116,40 @@ fn recover_wal_database(
     Ok(db)
 }
 
+/// Say on stderr where `--wal-truncate-corrupt-tail` cut the WAL, if it
+/// had to: the server has no log subscriber, so the WAL's own warning is
+/// not printed.
+fn report_corrupt_cut(db: &Database<InMemoryGraph>) {
+    let Some(cut) = db.wal().and_then(|recorder| recorder.wal().corrupt_cut()) else {
+        return;
+    };
+    eprintln!(
+        "WARNING: the WAL was corrupt: {} at byte {}: {}",
+        cut.segment_path.display(),
+        cut.offset,
+        cut.reason
+    );
+    eprintln!(
+        "WARNING: --wal-truncate-corrupt-tail cut the log there; writes after that point were not recovered."
+    );
+    if let Some(kept) = &cut.kept_tail {
+        eprintln!("WARNING: the cut bytes were kept in {}", kept.display());
+    }
+    for (from, to) in &cut.moved_segments {
+        eprintln!(
+            "WARNING: later segment {} was moved to {}",
+            from.display(),
+            to.display()
+        );
+    }
+}
+
 fn wal_config(cfg: &ServerConfig, dir: &Path) -> WalConfig {
     WalConfig::Enabled {
         dir: dir.to_path_buf(),
         sync_mode: cfg.wal_sync_mode,
         segment_target_bytes: DEFAULT_WAL_SEGMENT_TARGET_BYTES,
-        truncate_corrupt_tail: false,
+        truncate_corrupt_tail: cfg.wal_truncate_corrupt_tail,
     }
 }
 

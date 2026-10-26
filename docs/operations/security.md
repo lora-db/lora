@@ -29,6 +29,8 @@ Anyone who can reach the server's bind address (default `127.0.0.1:4747`) can:
 
 The server only binds to localhost by default, which limits exposure, but any local process can access it.
 
+Slow clients are bounded at the connection level only: a connection that has not sent a complete request head within `--header-read-timeout-ms` (default 10 s) is closed, so a client cannot hold connections by sending headers a byte at a time. Request bodies have no read timeout, and there is no limit on the number of open connections; put a reverse proxy in front for those.
+
 ### No input size limits
 
 There is no maximum query length or result size. An attacker or accidental user can:
