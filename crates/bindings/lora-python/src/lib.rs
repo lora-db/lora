@@ -18,7 +18,7 @@
 //! natives; graph, temporal and spatial values are returned as tagged
 //! `dict`s with a `kind` discriminator.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use pyo3::exceptions::PyTypeError;
@@ -39,7 +39,7 @@ mod to_python;
 
 use gil::without_gil;
 use lora_binding_buffer::stream::{OpeningStream, ShapeCache};
-use stream::NativeStream;
+use stream::{NativeStream, PullError};
 
 use errors::{lora_query_err_from_anyhow, InvalidParamsError, LoraError, LoraQueryError};
 use from_python::{
@@ -48,8 +48,8 @@ use from_python::{
     py_statements_to_transaction, PyDatabaseOpenOptions,
 };
 use to_python::{
-    lora_value_to_py, query_plan_to_py, query_profile_to_py, row_arrays_to_py, row_to_py_dict,
-    snapshot_info_to_meta, snapshot_meta_to_py,
+    query_plan_to_py, query_profile_to_py, row_to_py_dict, rows_to_py, snapshot_info_to_meta,
+    snapshot_meta_to_py,
 };
 
 // ============================================================================
@@ -162,37 +162,20 @@ impl Database {
 
         let db = self.inner()?;
         // Release the GIL for the duration of engine work.
+        // `Rows` hands back the engine's rows without the per-cell clones
+        // of the `RowArrays` projection (see `rows_to_py`).
         let exec_result = without_gil(py, move || {
             let options = ExecuteOptions {
-                format: ResultFormat::RowArrays,
+                format: ResultFormat::Rows,
             };
             db.execute_with_params(&query, Some(options), params_map)
         });
 
-        let row_arrays = match exec_result {
-            Ok(QueryResult::RowArrays(r)) => r,
-            Ok(_) => {
-                return Err(LoraQueryError::new_err(
-                    "expected RowArrays result".to_string(),
-                ));
-            }
-            Err(e) => return Err(lora_query_err_from_anyhow(e)),
-        };
-
-        let out = PyDict::new_bound(py);
-        let columns = PyList::new_bound(py, row_arrays.columns.iter().map(|c| c.as_str()));
-        out.set_item("columns", columns)?;
-
-        let rows = PyList::empty_bound(py);
-        for row in &row_arrays.rows {
-            let py_row = PyDict::new_bound(py);
-            for (col, val) in row_arrays.columns.iter().zip(row.iter()) {
-                py_row.set_item(col, lora_value_to_py(py, val)?)?;
-            }
-            rows.append(py_row)?;
+        match exec_result {
+            Ok(QueryResult::Rows(r)) => rows_to_py(py, &r.rows),
+            Ok(_) => Err(LoraQueryError::new_err("expected Rows result".to_string())),
+            Err(e) => Err(lora_query_err_from_anyhow(e)),
         }
-        out.set_item("rows", rows)?;
-        Ok(out)
     }
 
     /// Compile a query and return its plan as a `dict` without
@@ -258,9 +241,7 @@ impl Database {
         let db = self.inner()?;
         let stream = NativeStream::open(py, db, &self.shapes, query, params_map)
             .map_err(lora_query_err_from_anyhow)?;
-        Ok(PyQueryStream {
-            stream: Some(stream),
-        })
+        Ok(PyQueryStream::new(stream))
     }
 
     /// `stream(query)` for `AsyncDatabase.stream`: returns a `QueryStream`,
@@ -282,10 +263,7 @@ impl Database {
         match NativeStream::open_nowait(py, db, &self.shapes, query, params_map)
             .map_err(lora_query_err_from_anyhow)?
         {
-            Ok(stream) => Ok(PyQueryStream {
-                stream: Some(stream),
-            }
-            .into_py(py)),
+            Ok(stream) => Ok(PyQueryStream::new(stream).into_py(py)),
             Err(opening) => Ok(PyOpeningStream {
                 opening: Some(opening),
             }
@@ -314,7 +292,7 @@ impl Database {
             let mut results = Vec::with_capacity(parsed_statements.len());
             for statement in parsed_statements {
                 let options = ExecuteOptions {
-                    format: ResultFormat::RowArrays,
+                    format: ResultFormat::Rows,
                 };
                 let result =
                     tx.execute_with_params(&statement.query, Some(options), statement.params)?;
@@ -327,12 +305,10 @@ impl Database {
         let exec_results = exec_results.map_err(lora_query_err_from_anyhow)?;
         let out = PyList::empty_bound(py);
         for result in exec_results {
-            let QueryResult::RowArrays(row_arrays) = result else {
-                return Err(LoraQueryError::new_err(
-                    "expected RowArrays result".to_string(),
-                ));
+            let QueryResult::Rows(rows) = result else {
+                return Err(LoraQueryError::new_err("expected Rows result".to_string()));
             };
-            out.append(row_arrays_to_py(py, &row_arrays.columns, &row_arrays.rows)?)?;
+            out.append(rows_to_py(py, &rows.rows)?)?;
         }
         Ok(out)
     }
@@ -509,13 +485,68 @@ impl Database {
     }
 }
 
+/// Rows one native pull fetches (with the GIL released) for `__next__`.
+const STREAM_BATCH_ROWS: usize = 256;
+
 /// A row stream. A mutating stream runs on its own thread (see
 /// `stream.rs`), so `next()`, `close()` and the final drop may happen on
-/// any Python thread, before or after the `Database` is closed. Every
-/// method runs with the GIL held throughout, which serializes them.
+/// any Python thread, before or after the `Database` is closed.
+///
+/// Rows are pulled in batches with the GIL released, so a slow pull (the
+/// first row of a sort or an aggregation does all the work) does not stall
+/// other Python threads, while each row is then handed out under the GIL
+/// without a release per row. A mutating stream's batch never reaches past
+/// the rows its actor has produced, so it still commits only on the pull
+/// past its last row. Calls on one stream must not overlap: one made while
+/// another thread is inside a pull raises `RuntimeError` (already
+/// borrowed).
 #[pyclass(name = "QueryStream", module = "lora_python._native")]
 pub struct PyQueryStream {
     stream: Option<NativeStream>,
+    /// Pulled rows not yet handed out.
+    buffered: VecDeque<Row>,
+    /// An error that ended the stream after rows still in `buffered`.
+    pending: Option<PullError>,
+    mutating: bool,
+}
+
+impl PyQueryStream {
+    fn new(stream: NativeStream) -> Self {
+        Self {
+            mutating: stream.is_mutating(),
+            stream: Some(stream),
+            buffered: VecDeque::new(),
+            pending: None,
+        }
+    }
+
+    /// Pull the next batch into `buffered`, GIL released. Afterwards
+    /// `buffered` is empty only at the end of the stream; an error with no
+    /// rows before it is returned at once.
+    fn refill(&mut self, py: Python<'_>, max_rows: usize) -> PyResult<()> {
+        if let Some(e) = self.pending.take() {
+            return Err(lora_query_err_from_anyhow(e));
+        }
+        let Some(stream) = self.stream.as_mut() else {
+            return Ok(());
+        };
+        let (rows, ended) = without_gil(py, move || {
+            let mut rows = Vec::new();
+            let ended = stream.pull_batch(&mut rows, max_rows);
+            (rows, ended)
+        });
+        if let Some(end) = ended {
+            self.stream.take();
+            if let Err(e) = end {
+                if rows.is_empty() {
+                    return Err(lora_query_err_from_anyhow(e));
+                }
+                self.pending = Some(e);
+            }
+        }
+        self.buffered.extend(rows);
+        Ok(())
+    }
 }
 
 #[pymethods]
@@ -531,6 +562,32 @@ impl PyQueryStream {
     /// releases the writer lock before this returns.
     fn close(&mut self) {
         self.stream.take();
+        self.buffered.clear();
+        self.pending.take();
+    }
+
+    /// Whether this stream runs a mutating query (for `AsyncDatabase`).
+    #[getter]
+    fn _mutating(&self) -> bool {
+        self.mutating
+    }
+
+    /// Pull up to `max_rows` rows as a list of dicts, GIL released while
+    /// pulling. An empty list means the stream is exhausted (a mutating
+    /// stream has then committed). For `AsyncDatabase.stream`.
+    fn _next_batch<'py>(
+        &mut self,
+        py: Python<'py>,
+        max_rows: usize,
+    ) -> PyResult<Bound<'py, PyList>> {
+        if self.buffered.is_empty() {
+            self.refill(py, max_rows)?;
+        }
+        let out = PyList::empty_bound(py);
+        while let Some(row) = self.buffered.pop_front() {
+            out.append(row_to_py_dict(py, &row)?)?;
+        }
+        Ok(out)
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -538,23 +595,12 @@ impl PyQueryStream {
     }
 
     fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
-        let Some(stream) = self.stream.as_mut() else {
-            return Ok(None);
-        };
-        // Pulling keeps the GIL: it never waits for a lock (a mutating
-        // stream's actor took the writer lock when it opened and needs no
-        // GIL to answer), and releasing the GIL per row would make every
-        // row queue for it behind busy Python threads.
-        match stream.next_row() {
-            Ok(Some(row)) => Ok(Some(row_to_py_dict(py, &row)?)),
-            Ok(None) => {
-                self.stream.take();
-                Ok(None)
-            }
-            Err(e) => {
-                self.stream.take();
-                Err(lora_query_err_from_anyhow(e))
-            }
+        if self.buffered.is_empty() {
+            self.refill(py, STREAM_BATCH_ROWS)?;
+        }
+        match self.buffered.pop_front() {
+            Some(row) => Ok(Some(row_to_py_dict(py, &row)?)),
+            None => Ok(None),
         }
     }
 }
@@ -576,9 +622,7 @@ impl PyOpeningStream {
             .take()
             .ok_or_else(|| LoraQueryError::new_err("query stream is closed"))?;
         let stream = without_gil(py, move || opening.wait()).map_err(lora_query_err_from_anyhow)?;
-        Ok(PyQueryStream {
-            stream: Some(NativeStream::Actor(stream)),
-        })
+        Ok(PyQueryStream::new(NativeStream::Actor(stream)))
     }
 }
 

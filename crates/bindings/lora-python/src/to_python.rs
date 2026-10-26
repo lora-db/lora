@@ -6,7 +6,7 @@
 //! that the pure-Python wrapper layer can decode.
 
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList};
+use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 
 use lora_database::{
     LoraValue, PlanTreeNode, QueryPlan, QueryProfile, Row, SnapshotInfo, SnapshotMeta,
@@ -37,20 +37,26 @@ pub(crate) fn snapshot_meta_to_py<'py>(
     Ok(out)
 }
 
-pub(crate) fn row_arrays_to_py<'py>(
-    py: Python<'py>,
-    columns: &[String],
-    rows: &[Vec<LoraValue>],
-) -> PyResult<Bound<'py, PyDict>> {
+/// `{"columns": [...], "rows": [...]}` from the engine's rows. The columns
+/// are the first row's names, exactly as the `RowArrays` projection infers
+/// them, so the output is unchanged without cloning every cell.
+pub(crate) fn rows_to_py<'py>(py: Python<'py>, rows: &[Row]) -> PyResult<Bound<'py, PyDict>> {
     let out = PyDict::new_bound(py);
-    let columns_py = PyList::new_bound(py, columns.iter().map(|c| c.as_str()));
-    out.set_item("columns", columns_py)?;
+    let columns: Vec<Bound<'py, PyString>> = rows
+        .first()
+        .map(|row| {
+            row.iter_named()
+                .map(|(_, name, _)| PyString::new_bound(py, &name))
+                .collect()
+        })
+        .unwrap_or_default();
+    out.set_item("columns", PyList::new_bound(py, &columns))?;
 
     let rows_py = PyList::empty_bound(py);
     for row in rows {
         let py_row = PyDict::new_bound(py);
-        for (col, val) in columns.iter().zip(row.iter()) {
-            py_row.set_item(col, lora_value_to_py(py, val)?)?;
+        for (name, (_, val)) in columns.iter().zip(row.iter()) {
+            py_row.set_item(name, lora_value_to_py(py, val)?)?;
         }
         rows_py.append(py_row)?;
     }

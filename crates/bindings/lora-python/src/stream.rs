@@ -130,6 +130,44 @@ impl NativeStream {
         }
     }
 
+    /// Whether this is a mutating stream (pulled from its actor).
+    pub(crate) fn is_mutating(&self) -> bool {
+        matches!(self, NativeStream::Actor(_))
+    }
+
+    /// Whether the next pull is answered without waiting for the actor:
+    /// always for a read-only stream. A batch of a mutating stream stops
+    /// where this turns false, so the pull that commits (the one past the
+    /// last row) is always a call of its own.
+    pub(crate) fn has_buffered_row(&self) -> bool {
+        match self {
+            NativeStream::Local(_) => true,
+            NativeStream::Actor(actor) => actor.has_buffered_row(),
+        }
+    }
+
+    /// Pull up to `max_rows` rows (at least one) into `rows`, stopping
+    /// early at a mutating stream's received rows. Returns how the stream
+    /// ended, if it did: `Ok(())` at its end, the error otherwise.
+    pub(crate) fn pull_batch(
+        &mut self,
+        rows: &mut Vec<Row>,
+        max_rows: usize,
+    ) -> Option<Result<(), PullError>> {
+        let start = rows.len();
+        while rows.len() - start < max_rows.max(1) {
+            if rows.len() > start && !self.has_buffered_row() {
+                return None;
+            }
+            match self.next_row() {
+                Ok(Some(row)) => rows.push(row),
+                Ok(None) => return Some(Ok(())),
+                Err(e) => return Some(Err(e)),
+            }
+        }
+        None
+    }
+
     /// Pull the next row. Never waits for a lock: a mutating stream's actor
     /// already holds the writer lock and needs nothing else to answer.
     #[inline]
