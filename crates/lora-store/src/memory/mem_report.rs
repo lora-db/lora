@@ -303,7 +303,13 @@ fn chunked_outer_bytes<T>(v: &ChunkedVec<T>) -> usize {
 /// Both directions share one slot tree and one allocation per node: the
 /// tree is charged half to each, and see `Adjacency::heap_bytes_by_side`.
 fn adjacency_bytes(adj: &ChunkedVec<super::adjacency::Adjacency>) -> (usize, usize) {
-    let tree = chunked_outer_bytes(adj);
+    // Leaves of deleted ranges all share one static leaf: not graph memory.
+    let shared = adj.leaves_sharing(super::adjacency::empty_leaf());
+    let tree = chunked_outer_bytes(adj)
+        - shared
+            * (super::chunked_vec::CHUNK * size_of::<super::adjacency::Adjacency>()
+                + ARC_HEADER
+                + size_of::<Vec<super::adjacency::Adjacency>>());
     let (mut out, mut inc) = (tree / 2, tree - tree / 2);
     for lists in adj.iter() {
         let (o, i) = lists.heap_bytes_by_side();

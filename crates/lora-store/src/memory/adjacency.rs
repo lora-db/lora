@@ -560,6 +560,19 @@ impl std::fmt::Debug for Adjacency {
     }
 }
 
+/// A leaf of [`super::chunked_vec::ChunkedVec`] slots with no lists,
+/// shared by every range of deleted nodes (see `InMemoryGraph::take_node`).
+pub(super) fn empty_leaf() -> &'static std::sync::Arc<Vec<Adjacency>> {
+    static EMPTY: std::sync::OnceLock<std::sync::Arc<Vec<Adjacency>>> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(|| {
+        std::sync::Arc::new(
+            (0..super::chunked_vec::CHUNK)
+                .map(|_| Adjacency::default())
+                .collect(),
+        )
+    })
+}
+
 /// One direction of a node's adjacency.
 #[derive(Clone, Copy)]
 pub(super) struct AdjSide<'a> {

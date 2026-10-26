@@ -1336,3 +1336,43 @@ fn uncovered_vector_write_keeps_vector_indexes_shared() {
     };
     assert_eq!(staged.vector_search("doc_emb", &query, 10, None).len(), 2);
 }
+
+#[test]
+fn nodes_without_relationships_share_one_empty_adjacency_leaf() {
+    use super::adjacency::empty_leaf;
+    let mut g = InMemoryGraph::new();
+    let ids: Vec<_> = (0..2_000)
+        .map(|_| g.create_node(vec!["N".into()], Properties::new()).id)
+        .collect();
+    // Four leaves of slots, none written yet.
+    assert_eq!(g.adjacency.leaves_sharing(empty_leaf()), 4);
+    let report = super::mem_report::estimate(&g);
+    assert!(report.outgoing_bytes + report.incoming_bytes < 512);
+    let before = g.clone();
+    // Relationships among ids 100..200 give the first leaf its own copy.
+    for w in ids[100..200].windows(2) {
+        g.create_relationship(w[0], w[1], "R", Properties::new())
+            .unwrap();
+    }
+    assert_eq!(g.adjacency.leaves_sharing(empty_leaf()), 3);
+    assert_eq!(before.adjacency.leaves_sharing(empty_leaf()), 4);
+    assert_eq!(
+        g.outgoing_at(ids[150]).map(|side| side.iter().count()),
+        Some(1)
+    );
+    assert_eq!(
+        before.outgoing_at(ids[150]).map(|side| side.iter().count()),
+        Some(0)
+    );
+    // The last, partly used leaf fills as ids grow and can be written.
+    let a = g.create_node(vec!["N".into()], Properties::new()).id;
+    g.create_relationship(ids[1_999], a, "R", Properties::new())
+        .unwrap();
+    assert_eq!(g.adjacency.leaves_sharing(empty_leaf()), 2);
+    assert_eq!(g.incoming_at(a).map(|side| side.iter().count()), Some(1));
+    for &id in &ids {
+        assert!(g.detach_delete_node(id));
+    }
+    assert!(g.detach_delete_node(a));
+    assert_eq!(g.relationship_count(), 0);
+}

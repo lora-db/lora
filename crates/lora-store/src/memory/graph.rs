@@ -13,7 +13,7 @@ use crate::{
     Properties, PropertyValue, RelationshipId, RelationshipRecord,
 };
 
-use super::adjacency::{AdjEntry, AdjSide, Adjacency, Side, TypeFilter};
+use super::adjacency::{self, AdjEntry, AdjSide, Adjacency, Side, TypeFilter};
 use super::chunked_vec::ChunkedVec;
 use super::constraint_catalog::{
     ConstraintCatalog, ConstraintRequest, CreateConstraintError, CreateConstraintOutcome,
@@ -395,7 +395,7 @@ impl InMemoryGraph {
                 )
             })?;
             self.nodes.grow_to(target);
-            self.adjacency.resize_with(target, Adjacency::default);
+            self.adjacency.grow_shared(target, adjacency::empty_leaf());
         }
         Ok(target - 1)
     }
@@ -462,13 +462,8 @@ impl InMemoryGraph {
         // on the typical "delete every node" pattern. We deliberately do not
         // shrink the slots — leaving the slot lets new ids reuse the same
         // index without growth churn (and `next_node_id` is monotonic
-        // anyway, so no immediate reuse). An empty list needs no clearing,
-        // and reaching it mutably would copy its shared leaf for nothing.
-        if self.adjacency.get(idx).is_some_and(|adj| !adj.is_empty()) {
-            if let Some(adj) = self.adjacency.get_mut(idx) {
-                adj.clear();
-            }
-        }
+        // anyway, so no immediate reuse).
+        self.clear_adjacency(id);
         Some(removed)
     }
 
@@ -617,8 +612,15 @@ impl InMemoryGraph {
     /// instead of scanning and compacting the node's own list once per
     /// relationship (quadratic in its degree).
     pub(super) fn clear_adjacency(&mut self, node_id: NodeId) {
-        if let Some(adj) = Self::slot_index(node_id).and_then(|idx| self.adjacency.get_mut(idx)) {
-            adj.clear();
+        let Some(idx) = Self::slot_index(node_id) else {
+            return;
+        };
+        // An empty list needs no clearing, and reaching it mutably would
+        // copy its shared leaf for nothing.
+        if self.adjacency.get(idx).is_some_and(|adj| !adj.is_empty()) {
+            if let Some(adj) = self.adjacency.get_mut(idx) {
+                adj.clear();
+            }
         }
     }
 
