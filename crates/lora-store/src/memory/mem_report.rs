@@ -84,9 +84,9 @@ pub struct MemoryReport {
     /// Incoming adjacency, charged the same way.
     pub incoming_bytes: usize,
 
-    /// `nodes_by_label: BTreeMap<String, IdBitmap>`.
+    /// `nodes_by_label: BTreeMap<Arc<str>, IdBitmap>`.
     pub label_index_bytes: usize,
-    /// `relationships_by_type: BTreeMap<String, IdBitmap>`.
+    /// `relationships_by_type: BTreeMap<Arc<str>, IdBitmap>`.
     pub type_index_bytes: usize,
 
     /// Hash-bucket property registry (`find_*_by_property`).
@@ -303,7 +303,13 @@ fn chunked_outer_bytes<T>(v: &ChunkedVec<T>) -> usize {
 /// Both directions share one slot tree and one allocation per node: the
 /// tree is charged half to each, and see `Adjacency::heap_bytes_by_side`.
 fn adjacency_bytes(adj: &ChunkedVec<super::adjacency::Adjacency>) -> (usize, usize) {
-    let tree = chunked_outer_bytes(adj);
+    // Leaves of deleted ranges all share one static leaf: not graph memory.
+    let shared = adj.leaves_sharing(super::adjacency::empty_leaf());
+    let tree = chunked_outer_bytes(adj)
+        - shared
+            * (super::chunked_vec::CHUNK * size_of::<super::adjacency::Adjacency>()
+                + ARC_HEADER
+                + size_of::<Vec<super::adjacency::Adjacency>>());
     let (mut out, mut inc) = (tree / 2, tree - tree / 2);
     for lists in adj.iter() {
         let (o, i) = lists.heap_bytes_by_side();
@@ -313,12 +319,13 @@ fn adjacency_bytes(adj: &ChunkedVec<super::adjacency::Adjacency>) -> (usize, usi
     (out, inc)
 }
 
-fn label_or_type_bytes(map: &BTreeMap<String, super::id_bitmap::IdBitmap>) -> usize {
+fn label_or_type_bytes(map: &BTreeMap<std::sync::Arc<str>, super::id_bitmap::IdBitmap>) -> usize {
     let mut total = 0;
     for (key, ids) in map {
         total += BTREE_PER_ENTRY
-            + size_of::<String>()
-            + key.capacity()
+            + size_of::<std::sync::Arc<str>>()
+            + super::ARC_HEADER
+            + key.len()
             + size_of::<super::id_bitmap::IdBitmap>()
             + ids.heap_bytes();
     }
@@ -584,24 +591,22 @@ fn vector_one(registry: &VectorIndexRegistry) -> usize {
 }
 
 fn flat_backend_bytes(b: &FlatBackend) -> usize {
-    let mut total = 0;
-    for v in b.items.values() {
-        total +=
-            BTREE_PER_ENTRY + size_of::<u64>() + size_of::<LoraVector>() + vector_heap_bytes(v);
+    let mut total = b.items.heap_bytes();
+    for (_, v) in b.items.iter() {
+        total += ARC_HEADER + size_of::<LoraVector>() + vector_heap_bytes(v);
     }
     total
 }
 
 fn hnsw_backend_bytes(b: &HnswBackend) -> usize {
-    let mut total = 0;
-    for node in b.nodes.values() {
-        total += BTREE_PER_ENTRY
-            + size_of::<u64>()
+    let mut total = b.nodes.heap_bytes();
+    for (_, node) in b.nodes.iter() {
+        total += ARC_HEADER
             + size_of::<LoraVector>()
             + vector_heap_bytes(&node.vector)
-            + size_of::<usize>() // level
-            + node.neighbors.capacity() * size_of::<Vec<u64>>();
-        for layer in &node.neighbors {
+            + ARC_HEADER
+            + node.neighbors.len() * size_of::<Vec<u64>>();
+        for layer in node.neighbors.iter() {
             total += layer.capacity() * size_of::<u64>();
         }
     }

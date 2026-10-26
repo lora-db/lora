@@ -88,6 +88,7 @@ fn appended<X: Clone>(slice: &[X], last: X) -> Arc<[X]> {
 }
 
 /// `slice` without its last entry, as a new allocation sharing the rest.
+#[cfg(test)]
 fn truncated<X: Clone>(slice: &[X]) -> Arc<[X]> {
     slice[..slice.len() - 1].iter().cloned().collect()
 }
@@ -154,8 +155,10 @@ impl<T> ChunkedVec<T> {
             .map(|leaf| &**leaf)
     }
 
-    pub(super) fn iter(&self) -> impl DoubleEndedIterator<Item = &T> + '_ {
-        self.leaves().flat_map(|leaf| leaf.iter())
+    pub(super) fn iter(&self) -> impl Iterator<Item = &T> + '_ {
+        // The last leaf may hold spare entries past `len` (see
+        // [`Self::grow_shared`]).
+        self.leaves().flat_map(|leaf| leaf.iter()).take(self.len)
     }
 
     /// The elements as one `Vec`, copied a chunk at a time into an exact
@@ -171,6 +174,7 @@ impl<T> ChunkedVec<T> {
         for leaf in self.leaves() {
             out.extend_from_slice(leaf);
         }
+        out.truncate(self.len);
         out
     }
 
@@ -227,6 +231,15 @@ impl<T: Clone> ChunkedVec<T> {
         Some(&mut Arc::make_mut(leaf)[i & MASK])
     }
 
+    /// Number of leaves that are `leaf`, for the memory estimator.
+    pub(super) fn leaves_sharing(&self, leaf: &Arc<Vec<T>>) -> usize {
+        self.root
+            .iter()
+            .flat_map(|node| node.iter())
+            .filter(|l| Arc::ptr_eq(l, leaf))
+            .count()
+    }
+
     pub(super) fn push(&mut self, value: T) {
         let len = self.len;
         if len & MASK == 0 {
@@ -245,10 +258,55 @@ impl<T: Clone> ChunkedVec<T> {
         }
         let root = Arc::make_mut(&mut self.root);
         let node = Arc::make_mut(root.last_mut().expect("node exists"));
-        Arc::make_mut(node.last_mut().expect("leaf exists")).push(value);
+        let leaf = Arc::make_mut(node.last_mut().expect("leaf exists"));
+        let at = len & MASK;
+        if at < leaf.len() {
+            // A spare entry left by `grow_shared`.
+            leaf[at] = value;
+        } else {
+            leaf.push(value);
+        }
         self.len += 1;
     }
 
+    /// Grow to `new_len` with copies of `shared`'s entries, where
+    /// `shared` is a full leaf ([`CHUNK`] entries) of one value, such as
+    /// one static leaf of empty adjacency lists. Each new leaf is
+    /// `shared` itself until something writes to it, so a range of slots
+    /// nothing writes (nodes without relationships) allocates nothing.
+    /// The last leaf may then hold entries past `len`; they are copies of
+    /// the fill and are overwritten as the vector grows.
+    pub(super) fn grow_shared(&mut self, new_len: usize, shared: &Arc<Vec<T>>) {
+        debug_assert_eq!(shared.len(), CHUNK);
+        while self.len < new_len {
+            let at = self.len & MASK;
+            if at == 0 {
+                let leaf = Arc::clone(shared);
+                if self.len & SPAN_MASK == 0 {
+                    self.root = appended(&self.root, Arc::new([leaf]));
+                } else {
+                    let root = Arc::make_mut(&mut self.root);
+                    let node = root.last_mut().expect("len > 0");
+                    *node = appended(node, leaf);
+                }
+                self.len = new_len.min(self.len + CHUNK);
+                continue;
+            }
+            let spare = self.leaf_len(self.len - 1) - at;
+            if spare > 0 {
+                self.len = new_len.min(self.len + spare);
+            } else {
+                self.push(shared[0].clone());
+            }
+        }
+    }
+
+    /// Entries held by the leaf holding `i`, spares included.
+    fn leaf_len(&self, i: usize) -> usize {
+        self.root[i >> SPAN_SHIFT][(i >> SHIFT) & FAN_MASK].len()
+    }
+
+    #[cfg(test)]
     pub(super) fn pop(&mut self) -> Option<T> {
         if self.len == 0 {
             return None;
@@ -256,7 +314,10 @@ impl<T: Clone> ChunkedVec<T> {
         let root = Arc::make_mut(&mut self.root);
         let node = root.last_mut().expect("len > 0");
         let leaf = Arc::make_mut(node).last_mut().expect("len > 0");
-        let value = Arc::make_mut(leaf).pop();
+        let leaf_mut = Arc::make_mut(leaf);
+        // Drop spare entries past the last one first.
+        leaf_mut.truncate(((self.len - 1) & MASK) + 1);
+        let value = leaf_mut.pop();
         if leaf.is_empty() {
             if node.len() == 1 {
                 self.root = truncated(&self.root);
@@ -269,6 +330,7 @@ impl<T: Clone> ChunkedVec<T> {
     }
 
     /// Grow to `new_len` with `fill`, or shrink to it.
+    #[cfg(test)]
     pub(super) fn resize_with(&mut self, new_len: usize, mut fill: impl FnMut() -> T) {
         while self.len > new_len {
             self.pop();
@@ -367,7 +429,12 @@ mod tests {
         assert_eq!(v.len(), n);
         assert_eq!(v.chunk_count(), n.div_ceil(CHUNK));
         assert!(v.iter().eq(reference.iter()));
-        assert!(v.iter().rev().eq(reference.iter().rev()));
+        assert!(v
+            .iter()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .eq(reference.iter().rev()));
         for i in [
             0,
             CHUNK - 1,
@@ -493,5 +560,40 @@ mod tests {
         assert!(v.try_reserve_exact(usize::MAX).is_err());
         assert!(v.try_reserve_exact(SPAN * 3).is_ok());
         assert!(v.is_empty());
+    }
+
+    #[test]
+    fn grow_shared_matches_a_vec_and_copies_leaves_only_when_written() {
+        let shared: Arc<Vec<u32>> = Arc::new(vec![0; CHUNK]);
+        let mut v: ChunkedVec<u32> = ChunkedVec::new();
+        let mut model: Vec<u32> = Vec::new();
+        let mut seed = 7u64;
+        let step = |v: &mut ChunkedVec<u32>, model: &mut Vec<u32>, n: usize| {
+            v.grow_shared(model.len() + n, &shared);
+            model.resize(model.len() + n, 0);
+        };
+        for n in [3, 1, CHUNK - 4, 1, 2 * CHUNK + 5, CHUNK, SPAN + 7] {
+            step(&mut v, &mut model, n);
+            assert_eq!(v.len(), model.len());
+            for _ in 0..20 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let i = (seed >> 33) as usize % model.len();
+                *v.get_mut(i).unwrap() = i as u32 + 1;
+                model[i] = i as u32 + 1;
+            }
+            let snap = v.clone();
+            v.push(9);
+            model.push(9);
+            assert!(v.iter().eq(model.iter()));
+            assert_eq!(v.to_vec(), model);
+            assert_eq!(snap.len() + 1, v.len());
+            assert!(snap.iter().eq(model[..snap.len()].iter()));
+        }
+        // Untouched whole leaves are still the shared one.
+        assert!(v.leaves_sharing(&shared) > 0);
+        while let Some(x) = v.pop() {
+            assert_eq!(Some(x), model.pop());
+        }
+        assert!(model.is_empty() && v.is_empty());
     }
 }

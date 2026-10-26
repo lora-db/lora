@@ -15,6 +15,7 @@
 //! (e.g. one cosine, one euclidean), each owning its own backend.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +24,7 @@ use crate::{
 };
 
 use super::hnsw::{seed_from_name, HnswBackend, HnswParams, HnswSnapshot};
+use super::id_map::CowIdMap;
 use super::index_catalog::{IndexConfigValue, StoredIndexEntity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,17 +83,21 @@ impl VectorSimilarity {
 }
 
 /// Brute-force backend: store every vector, score them all per query.
-/// `BTreeMap` keying gives deterministic iteration order, which keeps
+/// Ascending id order gives deterministic iteration, which keeps
 /// score-tie ordering stable across runs (matches the legacy
 /// `score_entities` contract).
+///
+/// Copy-on-write like the other indexes: a staged write clones the
+/// graph, and its first change here copies one chunk of `Arc` pointers
+/// (see [`CowIdMap`]) instead of every vector.
 #[derive(Debug, Default, Clone)]
 pub(super) struct FlatBackend {
-    pub(super) items: BTreeMap<u64, LoraVector>,
+    pub(super) items: CowIdMap<Arc<LoraVector>>,
 }
 
 impl FlatBackend {
     fn insert(&mut self, id: u64, vector: LoraVector) {
-        self.items.insert(id, vector);
+        self.items.insert(id, Arc::new(vector));
     }
 
     fn remove(&mut self, id: u64) {
@@ -105,7 +111,7 @@ impl FlatBackend {
         restrict_to: Option<&BTreeSet<u64>>,
     ) -> Vec<(u64, f64)> {
         let mut out = Vec::with_capacity(self.items.len());
-        for (&id, v) in &self.items {
+        for (&id, v) in self.items.iter() {
             if let Some(set) = restrict_to {
                 if !set.contains(&id) {
                     continue;
@@ -473,6 +479,50 @@ mod tests {
         // Distinct metrics → distinct second backends populated.
         for entry in reg.by_name.values() {
             assert_eq!(entry.backend.len(), 2);
+        }
+    }
+
+    #[test]
+    fn a_registry_clone_shares_vectors_and_diverges_on_write() {
+        for provider in [VectorIndexProvider::Flat, VectorIndexProvider::Hnsw] {
+            let mut reg = VectorIndexRegistry::default();
+            reg.register(
+                "v".into(),
+                "V".into(),
+                "e".into(),
+                VectorSimilarity::Cosine,
+                provider,
+                HnswParams::default(),
+            );
+            for i in 0..300u64 {
+                let x = i as f32 / 300.0;
+                reg.insert_for("V", "e", i, &vec(&[x, 1.0 - x, 0.5]));
+            }
+            let q = vec(&[1.0, 0.0, 0.5]);
+            // Flat returns every match unsorted; rank as the caller does.
+            let top = |r: &VectorIndexRegistry| {
+                let mut hits = r.query("v", &q, 10, None).unwrap();
+                hits.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+                hits.truncate(10);
+                hits
+            };
+            let before = top(&reg);
+
+            let mut staged = reg.clone();
+            staged.insert_for("V", "e", 1_000, &vec(&[1.0, 0.0, 0.5]));
+            staged.remove_for("V", "e", 299);
+            let after = top(&staged);
+            assert_eq!(after[0].0, 1_000, "{provider:?}");
+            assert!(after.iter().all(|(id, _)| *id != 299), "{provider:?}");
+            assert_eq!(top(&reg), before, "{provider:?}");
+            assert_eq!(before[0].0, 299, "{provider:?}");
+
+            // Untouched vectors are shared between the two, not copied.
+            let shared = |r: &VectorIndexRegistry| match &r.by_name["v"].backend {
+                VectorBackend::Flat(b) => Arc::clone(b.items.get(&3).unwrap()),
+                VectorBackend::Hnsw(b) => Arc::clone(&b.nodes.get(&3).unwrap().vector),
+            };
+            assert!(Arc::ptr_eq(&shared(&reg), &shared(&staged)), "{provider:?}");
         }
     }
 

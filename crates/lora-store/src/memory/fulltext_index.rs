@@ -40,6 +40,13 @@ use super::id_map::CowIdMap;
 
 use super::StoredIndexEntity;
 
+/// Partition size of the term postings and leaf size of the per-entity
+/// term lists. Reindexing an entity touches one partition per term and a
+/// staged write copies each: a quarter of the defaults cut that copying
+/// (and the old copies' drop) without slowing queries.
+const TERM_PART: usize = 64;
+const ENTITY_LEAF: usize = 112;
+
 pub(super) type TermCounts = BTreeMap<String, u32>;
 pub(super) type PropertyTermCounts = BTreeMap<String, TermCounts>;
 
@@ -197,10 +204,10 @@ pub(super) struct FulltextIndex {
     /// Keys are `Arc<str>` shared with `entity_terms`, so copying a
     /// partition for a write bumps refcounts instead of reallocating term
     /// strings.
-    pub(super) postings: CowOrdMap<Arc<str>, CowIdMap<u32>>,
+    pub(super) postings: CowOrdMap<Arc<str>, CowIdMap<u32>, TERM_PART>,
     /// `entity → set<term>` reverse map so re-indexing can remove the
     /// stale contribution before adding the new one.
-    pub(super) entity_terms: CowMap<u64, Arc<[Arc<str>]>>,
+    pub(super) entity_terms: CowMap<u64, Arc<[Arc<str>]>, ENTITY_LEAF>,
 }
 
 impl FulltextIndex {

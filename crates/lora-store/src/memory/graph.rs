@@ -13,7 +13,7 @@ use crate::{
     Properties, PropertyValue, RelationshipId, RelationshipRecord,
 };
 
-use super::adjacency::{AdjEntry, AdjSide, Adjacency, Side, TypeFilter};
+use super::adjacency::{self, AdjEntry, AdjSide, Adjacency, Side, TypeFilter};
 use super::chunked_vec::ChunkedVec;
 use super::constraint_catalog::{
     ConstraintCatalog, ConstraintRequest, CreateConstraintError, CreateConstraintOutcome,
@@ -85,8 +85,11 @@ pub struct InMemoryGraph {
     /// [`IdBitmap`] holds an id in two bytes or less (an eighth of a byte
     /// for a label most nodes carry), where a list held eight, and
     /// removes one by binary search.
-    pub(super) nodes_by_label: BTreeMap<String, IdBitmap>,
-    pub(super) relationships_by_type: BTreeMap<String, IdBitmap>,
+    ///
+    /// Keyed by `Arc<str>`: every staged write clones the graph, and with
+    /// `String` keys that cloned (allocated) every label and type name.
+    pub(super) nodes_by_label: BTreeMap<Arc<str>, IdBitmap>,
+    pub(super) relationships_by_type: BTreeMap<Arc<str>, IdBitmap>,
 
     /// All index machinery — the declared-index catalog, hash-bucket
     /// property registry, and the per-entity-kind secondary index
@@ -392,7 +395,7 @@ impl InMemoryGraph {
                 )
             })?;
             self.nodes.grow_to(target);
-            self.adjacency.resize_with(target, Adjacency::default);
+            self.adjacency.grow_shared(target, adjacency::empty_leaf());
         }
         Ok(target - 1)
     }
@@ -460,9 +463,7 @@ impl InMemoryGraph {
         // shrink the slots — leaving the slot lets new ids reuse the same
         // index without growth churn (and `next_node_id` is monotonic
         // anyway, so no immediate reuse).
-        if let Some(adj) = self.adjacency.get_mut(idx) {
-            adj.clear();
-        }
+        self.clear_adjacency(id);
         Some(removed)
     }
 
@@ -611,8 +612,15 @@ impl InMemoryGraph {
     /// instead of scanning and compacting the node's own list once per
     /// relationship (quadratic in its degree).
     pub(super) fn clear_adjacency(&mut self, node_id: NodeId) {
-        if let Some(adj) = Self::slot_index(node_id).and_then(|idx| self.adjacency.get_mut(idx)) {
-            adj.clear();
+        let Some(idx) = Self::slot_index(node_id) else {
+            return;
+        };
+        // An empty list needs no clearing, and reaching it mutably would
+        // copy its shared leaf for nothing.
+        if self.adjacency.get(idx).is_some_and(|adj| !adj.is_empty()) {
+            if let Some(adj) = self.adjacency.get_mut(idx) {
+                adj.clear();
+            }
         }
     }
 
@@ -642,7 +650,7 @@ impl InMemoryGraph {
             bucket.insert(node_id);
         } else {
             self.nodes_by_label
-                .insert(label.to_string(), std::iter::once(node_id).collect());
+                .insert(Arc::from(label), std::iter::once(node_id).collect());
         }
     }
 
@@ -661,7 +669,7 @@ impl InMemoryGraph {
             bucket.insert(rel_id);
         } else {
             self.relationships_by_type
-                .insert(rel_type.to_string(), std::iter::once(rel_id).collect());
+                .insert(Arc::from(rel_type), std::iter::once(rel_id).collect());
         }
     }
 
@@ -1690,14 +1698,18 @@ impl InMemoryGraph {
             relationship_count: self.live_rel_count,
             ..Default::default()
         };
-        for (label, ids) in &self.nodes_by_label {
-            stats.nodes_by_label.insert(label.clone(), ids.len());
-        }
-        for (rel_type, ids) in &self.relationships_by_type {
-            stats
-                .relationships_by_type
-                .insert(rel_type.clone(), ids.len());
-        }
+        // Collected from ascending keys, the maps are built in one pass
+        // instead of searched and grown per insert.
+        stats.nodes_by_label = self
+            .nodes_by_label
+            .iter()
+            .map(|(label, ids)| (label.to_string(), ids.len()))
+            .collect();
+        stats.relationships_by_type = self
+            .relationships_by_type
+            .iter()
+            .map(|(rel_type, ids)| (rel_type.to_string(), ids.len()))
+            .collect();
         // Distinct values per (label / type, property): estimated from
         // the distinct-value sketches, which exist for every key and are
         // a function of the live data alone. Deliberately *not* the

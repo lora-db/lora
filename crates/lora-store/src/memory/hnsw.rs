@@ -24,13 +24,15 @@
 //! returns (id, similarity) pairs.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
+use std::collections::{BTreeSet, BinaryHeap, HashSet};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use crate::types::vector::RawCoordinate;
 use crate::{LoraVector, VectorCoordinateType};
 
+use super::id_map::CowIdMap;
 use super::index_catalog::IndexConfigValue;
 use super::vector_index::VectorSimilarity;
 
@@ -173,14 +175,17 @@ fn quantize_to_int8(input: &LoraVector) -> Option<LoraVector> {
     LoraVector::try_new(coords, dim, VectorCoordinateType::Integer8).ok()
 }
 
+/// One graph node. The vector and the neighbor lists are behind `Arc`,
+/// so copying a node (a chunk of [`CowIdMap`] after a graph clone) bumps
+/// two counts, and changing its links copies only the lists.
 #[derive(Debug, Clone)]
 pub(super) struct HnswNode {
-    pub(super) vector: LoraVector,
+    pub(super) vector: Arc<LoraVector>,
     pub(super) level: usize,
     /// One neighbor list per layer 0..=level. Each is a `Vec<u64>` so
     /// graph traversal stays cache-friendly; the list length is
     /// bounded by `m_max(layer)` (2·m at layer 0, m above).
-    pub(super) neighbors: Vec<Vec<u64>>,
+    pub(super) neighbors: Arc<[Vec<u64>]>,
 }
 
 /// Wrapper that turns f64 into a totally-ordered type for heap use.
@@ -226,7 +231,9 @@ impl PartialOrd for Candidate {
 pub(super) struct HnswBackend {
     params: HnswParams,
     similarity: VectorSimilarity,
-    pub(super) nodes: BTreeMap<u64, HnswNode>,
+    /// Copy-on-write by id: a staged write that inserts one vector copies
+    /// the chunks of the nodes it links, not the whole graph.
+    pub(super) nodes: CowIdMap<HnswNode>,
     entry_point: Option<u64>,
     max_level: usize,
     /// `1 / ln(M)` precomputed for layer sampling.
@@ -241,7 +248,7 @@ impl HnswBackend {
         Self {
             params: HnswParams { m, ..params },
             similarity,
-            nodes: BTreeMap::new(),
+            nodes: CowIdMap::default(),
             entry_point: None,
             max_level: 0,
             ml: 1.0 / (m as f64).ln(),
@@ -274,9 +281,9 @@ impl HnswBackend {
 
         let level = self.sample_level();
         let node = HnswNode {
-            vector,
+            vector: Arc::new(vector),
             level,
-            neighbors: vec![Vec::new(); level + 1],
+            neighbors: vec![Vec::new(); level + 1].into(),
         };
         self.nodes.insert(id, node);
 
@@ -313,7 +320,7 @@ impl HnswBackend {
 
             // Forward links: id -> selected.
             if let Some(node) = self.nodes.get_mut(&id) {
-                node.neighbors[l] = selected.iter().map(|c| c.id).collect();
+                Arc::make_mut(&mut node.neighbors)[l] = selected.iter().map(|c| c.id).collect();
             }
 
             // Back links: each selected -> id. Prune the back-side
@@ -340,8 +347,17 @@ impl HnswBackend {
         // removed id at any layer up to `node.level`.
         for (layer, neighbors) in node.neighbors.iter().enumerate() {
             for &nid in neighbors {
+                // Links need not be mutual: only copy a node that has one.
+                let links_back = self
+                    .nodes
+                    .get(&nid)
+                    .and_then(|other| other.neighbors.get(layer))
+                    .is_some_and(|list| list.contains(&id));
+                if !links_back {
+                    continue;
+                }
                 if let Some(other) = self.nodes.get_mut(&nid) {
-                    if let Some(list) = other.neighbors.get_mut(layer) {
+                    if let Some(list) = Arc::make_mut(&mut other.neighbors).get_mut(layer) {
                         list.retain(|&x| x != id);
                     }
                 }
@@ -473,7 +489,7 @@ impl HnswBackend {
         ef: usize,
     ) -> Vec<Candidate> {
         let query_vec = match self.nodes.get(&query_id) {
-            Some(n) => &n.vector,
+            Some(n) => &*n.vector,
             None => return Vec::new(),
         };
         self.greedy_search_layer_against(query_vec, entry, layer, ef)
@@ -570,7 +586,7 @@ impl HnswBackend {
         // Pull the target's neighbor list at this layer, push the new
         // source, prune if oversized by selecting the closest m_max.
         let target_vec = match self.nodes.get(&target) {
-            Some(n) if layer <= n.level => n.vector.clone(),
+            Some(n) if layer <= n.level => Arc::clone(&n.vector),
             _ => return,
         };
         // Gather candidate distances for prune-by-closest.
@@ -606,7 +622,7 @@ impl HnswBackend {
         if let Some(list) = self
             .nodes
             .get_mut(&target)
-            .and_then(|target_node| target_node.neighbors.get_mut(layer))
+            .and_then(|target_node| Arc::make_mut(&mut target_node.neighbors).get_mut(layer))
         {
             *list = current.into_iter().map(|c| c.id).collect();
         }
@@ -633,8 +649,8 @@ impl HnswBackend {
             .map(|(&id, n)| HnswNodeSnapshot {
                 id,
                 level: n.level,
-                vector: n.vector.clone(),
-                neighbors: n.neighbors.clone(),
+                vector: LoraVector::clone(&n.vector),
+                neighbors: n.neighbors.to_vec(),
             })
             .collect();
         HnswSnapshot {
@@ -652,14 +668,14 @@ impl HnswBackend {
     /// the slab with their neighbor lists already wired.
     pub(super) fn from_snapshot(snap: HnswSnapshot) -> Self {
         let m = snap.params.m.max(2);
-        let mut nodes = BTreeMap::new();
+        let mut nodes = CowIdMap::default();
         for n in snap.nodes {
             nodes.insert(
                 n.id,
                 HnswNode {
-                    vector: n.vector,
+                    vector: Arc::new(n.vector),
                     level: n.level,
-                    neighbors: n.neighbors,
+                    neighbors: n.neighbors.into(),
                 },
             );
         }

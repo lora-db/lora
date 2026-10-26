@@ -258,6 +258,26 @@ impl<V: Clone> CowIdMap<V> {
         replaced
     }
 
+    /// Mutable access to `id`'s value, copying the tables and the chunk on
+    /// its path first if a clone still shares them. A miss copies nothing.
+    pub(super) fn get_mut(&mut self, id: &u64) -> Option<&mut V> {
+        match &mut self.repr {
+            Repr::Empty => None,
+            Repr::Small(chunk) => {
+                let at = chunk.binary_search_by_key(id, |(k, _)| *k).ok()?;
+                Some(&mut Arc::make_mut(chunk)[at].1)
+            }
+            Repr::Large(root) => {
+                let g = slot_for(root, *id);
+                let c = slot_for(&root[g].1, *id);
+                let at = root[g].1[c].1.binary_search_by_key(id, |(k, _)| *k).ok()?;
+                let group = &mut Arc::make_mut(root)[g].1;
+                let chunk = &mut Arc::make_mut(group)[c].1;
+                Some(&mut Arc::make_mut(chunk)[at].1)
+            }
+        }
+    }
+
     fn insert_large(root: &mut Root<V>, id: u64, value: V, cap: usize) -> Option<V> {
         let (last_max, last_chunks, tail_len) = {
             let (max, group) = root.last().expect("non-empty root");
@@ -427,6 +447,16 @@ mod tests {
             if step < 100_000 {
                 let id = model.last_key_value().map_or(0, |(k, _)| k + 1 + roll % 3);
                 assert_eq!(m.insert(id, step as u32), model.insert(id, step as u32));
+            } else if step < 200_000 && roll < 20 {
+                let id = rng(&mut seed) % 400_000;
+                match (m.get_mut(&id), model.get_mut(&id)) {
+                    (Some(got), Some(want)) => {
+                        *got += 1;
+                        *want += 1;
+                    }
+                    (None, None) => {}
+                    (got, want) => panic!("get_mut({id}): {got:?} vs {want:?}"),
+                }
             } else if step < 200_000 {
                 let id = rng(&mut seed) % 400_000;
                 assert_eq!(m.insert(id, step as u32), model.insert(id, step as u32));
@@ -461,6 +491,23 @@ mod tests {
         }
         assert!(m.is_empty() && matches!(m.repr, Repr::Empty));
         assert_eq!(m.heap_bytes(), 0);
+    }
+
+    #[test]
+    fn get_mut_copies_only_a_shared_path_and_only_on_a_hit() {
+        for n in [10u64, 5_000] {
+            let mut m: CowIdMap<u32> = CowIdMap::default();
+            for id in 0..n {
+                m.insert(id * 2, 0);
+            }
+            let snap = m.clone();
+            assert!(m.get_mut(&1).is_none());
+            *m.get_mut(&8).unwrap() = 5;
+            assert_eq!(m.get(&8), Some(&5));
+            assert_eq!(snap.get(&8), Some(&0), "the clone keeps its value");
+            check(&m);
+            check(&snap);
+        }
     }
 
     #[test]
