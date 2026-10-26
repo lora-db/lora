@@ -82,6 +82,32 @@ pub trait QueryRunner: Send + Sync + 'static {
         query: &str,
         params: Option<BTreeMap<String, LoraValue>>,
     ) -> Result<QueryProfile, LoraError>;
+
+    /// [`Self::execute_with_params`] bounded by an absolute `deadline`
+    /// (pair it with [`lora_executor::CancellableDeadline`] to cancel from
+    /// another thread). Runners without deadline support ignore it.
+    fn execute_with_params_deadline(
+        &self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+        params: BTreeMap<String, LoraValue>,
+        deadline: web_time::Instant,
+    ) -> Result<QueryResult, LoraError> {
+        let _ = deadline;
+        self.execute_with_params(query, options, params)
+    }
+
+    /// [`Self::profile`] bounded by an absolute `deadline`. Runners without
+    /// deadline support ignore it.
+    fn profile_deadline(
+        &self,
+        query: &str,
+        params: Option<BTreeMap<String, LoraValue>>,
+        deadline: web_time::Instant,
+    ) -> Result<QueryProfile, LoraError> {
+        let _ = deadline;
+        self.profile(query, params)
+    }
 }
 
 /// Owns the graph store and orchestrates parse → analyze → compile → execute.
@@ -362,5 +388,24 @@ where
         params: Option<BTreeMap<String, LoraValue>>,
     ) -> Result<QueryProfile, LoraError> {
         Database::profile(self, query, params)
+    }
+
+    fn execute_with_params_deadline(
+        &self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+        params: BTreeMap<String, LoraValue>,
+        deadline: web_time::Instant,
+    ) -> Result<QueryResult, LoraError> {
+        Database::execute_with_params_deadline(self, query, options, params, deadline)
+    }
+
+    fn profile_deadline(
+        &self,
+        query: &str,
+        params: Option<BTreeMap<String, LoraValue>>,
+        deadline: web_time::Instant,
+    ) -> Result<QueryProfile, LoraError> {
+        Database::profile_with_deadline(self, query, params, Some(deadline))
     }
 }
