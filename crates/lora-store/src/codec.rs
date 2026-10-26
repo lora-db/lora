@@ -18,6 +18,18 @@ use crate::{
 
 type Result<T> = std::result::Result<T, StoreCodecError>;
 
+/// The most lists and maps a property or index-config value may nest.
+/// Decoding recurses once per level, so a crafted value nested a hundred
+/// thousand deep would overflow the stack; encoding refuses the same
+/// depth so nothing written becomes unreadable.
+pub const MAX_VALUE_NESTING: usize = 128;
+
+fn nesting_error(kind: fn(String) -> StoreCodecError) -> StoreCodecError {
+    kind(format!(
+        "value nests lists and maps more than {MAX_VALUE_NESTING} deep"
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreCodecError {
     Encode(String),
@@ -37,12 +49,32 @@ impl std::error::Error for StoreCodecError {}
 
 pub fn encode_property_value(value: &PropertyValue) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    write_property_value(&mut out, value)?;
+    write_property_value(&mut out, value, 0, MAX_VALUE_NESTING)?;
     Ok(out)
 }
 
 pub fn decode_property_value(bytes: &[u8]) -> Result<PropertyValue> {
     let mut reader = Reader::new(bytes);
+    let value = reader.read_property_value()?;
+    reader.finish()?;
+    Ok(value)
+}
+
+/// [`encode_property_value`] without the nesting limit, for the in-memory
+/// record encoding: a value the graph accepted is stored however deep it
+/// is, as it was before the limit, and read back with
+/// [`decode_stored_property_value`].
+pub(crate) fn encode_stored_property_value(value: &PropertyValue) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    write_property_value(&mut out, value, 0, usize::MAX)?;
+    Ok(out)
+}
+
+/// [`decode_property_value`] without the nesting limit, for bytes this
+/// process encoded with [`encode_stored_property_value`].
+pub(crate) fn decode_stored_property_value(bytes: &[u8]) -> Result<PropertyValue> {
+    let mut reader = Reader::new(bytes);
+    reader.max_depth = usize::MAX;
     let value = reader.read_property_value()?;
     reader.finish()?;
     Ok(value)
@@ -330,15 +362,29 @@ fn vector_coord_tag(c: StoredVectorCoordType) -> u8 {
 }
 
 fn write_config_map(out: &mut Vec<u8>, values: &BTreeMap<String, IndexConfigValue>) -> Result<()> {
+    write_config_map_at(out, values, 0)
+}
+
+fn write_config_map_at(
+    out: &mut Vec<u8>,
+    values: &BTreeMap<String, IndexConfigValue>,
+    depth: usize,
+) -> Result<()> {
     write_len(out, values.len())?;
     for (key, value) in values {
         write_string(out, key)?;
-        write_config_value(out, value)?;
+        write_config_value(out, value, depth)?;
     }
     Ok(())
 }
 
-fn write_config_value(out: &mut Vec<u8>, value: &IndexConfigValue) -> Result<()> {
+/// `depth`: lists and maps around `value`.
+fn write_config_value(out: &mut Vec<u8>, value: &IndexConfigValue, depth: usize) -> Result<()> {
+    if matches!(value, IndexConfigValue::List(_) | IndexConfigValue::Map(_))
+        && depth >= MAX_VALUE_NESTING
+    {
+        return Err(nesting_error(StoreCodecError::Encode));
+    }
     match value {
         IndexConfigValue::Number(value) => {
             out.push(CONFIG_NUMBER);
@@ -360,19 +406,28 @@ fn write_config_value(out: &mut Vec<u8>, value: &IndexConfigValue) -> Result<()>
             out.push(CONFIG_LIST);
             write_len(out, values.len())?;
             for value in values {
-                write_config_value(out, value)?;
+                write_config_value(out, value, depth + 1)?;
             }
         }
         IndexConfigValue::Map(values) => {
             out.push(CONFIG_MAP);
-            write_config_map(out, values)?;
+            write_config_map_at(out, values, depth + 1)?;
         }
         IndexConfigValue::Null => out.push(CONFIG_NULL),
     }
     Ok(())
 }
 
-fn write_property_value(out: &mut Vec<u8>, value: &PropertyValue) -> Result<()> {
+/// `depth`: lists and maps around `value`; at most `max_depth`.
+fn write_property_value(
+    out: &mut Vec<u8>,
+    value: &PropertyValue,
+    depth: usize,
+    max_depth: usize,
+) -> Result<()> {
+    if matches!(value, PropertyValue::List(_) | PropertyValue::Map(_)) && depth >= max_depth {
+        return Err(nesting_error(StoreCodecError::Encode));
+    }
     match value {
         PropertyValue::Null => out.push(VALUE_NULL),
         PropertyValue::Bool(value) => {
@@ -395,7 +450,7 @@ fn write_property_value(out: &mut Vec<u8>, value: &PropertyValue) -> Result<()> 
             out.push(VALUE_LIST);
             write_len(out, values.len())?;
             for value in values {
-                write_property_value(out, value)?;
+                write_property_value(out, value, depth + 1, max_depth)?;
             }
         }
         PropertyValue::Map(values) => {
@@ -403,7 +458,7 @@ fn write_property_value(out: &mut Vec<u8>, value: &PropertyValue) -> Result<()> 
             write_len(out, values.len())?;
             for (key, value) in values {
                 write_string(out, key)?;
-                write_property_value(out, value)?;
+                write_property_value(out, value, depth + 1, max_depth)?;
             }
         }
         PropertyValue::Date(value) => {
@@ -512,7 +567,10 @@ fn write_time_fields(out: &mut Vec<u8>, hour: u32, minute: u32, second: u32, nan
 }
 
 fn write_vector(out: &mut Vec<u8>, vector: &LoraVector) -> Result<()> {
-    write_len(out, vector.dimension)?;
+    // The coordinates decide the dimension. A vector built with another
+    // `dimension` (its fields are public) would otherwise encode bytes the
+    // decoder rejects, and a stored record would fail on every read.
+    write_len(out, vector.values.len())?;
     match &vector.values {
         VectorValues::Float64(values) => {
             out.push(VECTOR_FLOAT64);
@@ -629,11 +687,29 @@ fn write_f64(out: &mut Vec<u8>, value: f64) {
 struct Reader<'a> {
     bytes: &'a [u8],
     offset: usize,
+    /// Lists and maps open around the value being read.
+    depth: usize,
+    /// The most `depth` may reach.
+    max_depth: usize,
 }
 
 impl<'a> Reader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+        Self {
+            bytes,
+            offset: 0,
+            depth: 0,
+            max_depth: MAX_VALUE_NESTING,
+        }
+    }
+
+    /// Open a list or map; [`MAX_VALUE_NESTING`] bounds the recursion.
+    fn enter(&mut self) -> Result<()> {
+        if self.depth >= self.max_depth {
+            return Err(nesting_error(StoreCodecError::Decode));
+        }
+        self.depth += 1;
+        Ok(())
     }
 
     fn finish(&self) -> Result<()> {
@@ -936,14 +1012,21 @@ impl<'a> Reader<'a> {
             CONFIG_STRING => IndexConfigValue::String(self.read_string()?),
             CONFIG_BOOL => IndexConfigValue::Bool(self.read_u8()? != 0),
             CONFIG_LIST => {
+                self.enter()?;
                 let len = self.read_len_bounded("index config list value")?;
                 let mut values = self.vec_with_capacity(len, "index config list value")?;
                 for _ in 0..len {
                     values.push(self.read_config_value()?);
                 }
+                self.depth -= 1;
                 IndexConfigValue::List(values)
             }
-            CONFIG_MAP => IndexConfigValue::Map(self.read_config_map()?),
+            CONFIG_MAP => {
+                self.enter()?;
+                let values = self.read_config_map()?;
+                self.depth -= 1;
+                IndexConfigValue::Map(values)
+            }
             CONFIG_NULL => IndexConfigValue::Null,
             tag => {
                 return Err(StoreCodecError::Decode(format!(
@@ -961,19 +1044,23 @@ impl<'a> Reader<'a> {
             VALUE_FLOAT => PropertyValue::Float(self.read_f64()?),
             VALUE_STRING => PropertyValue::String(self.read_string()?),
             VALUE_LIST => {
+                self.enter()?;
                 let len = self.read_len_bounded("property list value")?;
                 let mut values = self.vec_with_capacity(len, "property list value")?;
                 for _ in 0..len {
                     values.push(self.read_property_value()?);
                 }
+                self.depth -= 1;
                 PropertyValue::List(values)
             }
             VALUE_MAP => {
+                self.enter()?;
                 let len = self.read_len_bounded("property map entry")?;
                 let mut values = BTreeMap::new();
                 for _ in 0..len {
                     values.insert(self.read_string()?, self.read_property_value()?);
                 }
+                self.depth -= 1;
                 PropertyValue::Map(values)
             }
             VALUE_DATE => PropertyValue::Date(LoraDate {
@@ -1125,6 +1212,88 @@ fn read_vec<T>(
 mod tests {
     use super::*;
     use crate::{IndexConfigValue, StoredIndexEntity, StoredIndexKind};
+
+    fn nested_list(depth: usize) -> PropertyValue {
+        (0..depth).fold(PropertyValue::Null, |inner, _| {
+            PropertyValue::List(vec![inner])
+        })
+    }
+
+    /// Bytes for `depth` one-element containers around a null, written
+    /// directly so they can exceed what the encoder accepts.
+    fn nested_bytes(depth: usize, tag: u8, null: u8, map: bool) -> Vec<u8> {
+        let mut out = Vec::new();
+        for _ in 0..depth {
+            out.push(tag);
+            write_len(&mut out, 1).unwrap();
+            if map {
+                write_string(&mut out, "k").unwrap();
+            }
+        }
+        out.push(null);
+        out
+    }
+
+    /// A crafted value nested far past the limit fails to decode instead
+    /// of overflowing the stack; the limit itself round-trips, and the
+    /// encoder refuses one level more.
+    #[test]
+    fn nesting_is_bounded_on_decode_and_encode() {
+        for map in [false, true] {
+            let tag = if map { VALUE_MAP } else { VALUE_LIST };
+            let err =
+                decode_property_value(&nested_bytes(100_000, tag, VALUE_NULL, map)).unwrap_err();
+            assert!(err.to_string().contains("more than 128 deep"), "{err}");
+            assert!(
+                decode_property_value(&nested_bytes(MAX_VALUE_NESTING, tag, VALUE_NULL, map))
+                    .is_ok()
+            );
+            assert!(decode_property_value(&nested_bytes(
+                MAX_VALUE_NESTING + 1,
+                tag,
+                VALUE_NULL,
+                map
+            ))
+            .is_err());
+        }
+        let deepest = nested_list(MAX_VALUE_NESTING);
+        let bytes = encode_property_value(&deepest).unwrap();
+        assert_eq!(decode_property_value(&bytes).unwrap(), deepest);
+        let err = encode_property_value(&nested_list(MAX_VALUE_NESTING + 1)).unwrap_err();
+        assert!(matches!(err, StoreCodecError::Encode(_)), "{err}");
+
+        for map in [false, true] {
+            let tag = if map { CONFIG_MAP } else { CONFIG_LIST };
+            let mut reader = Reader::new(&[]);
+            let bytes = nested_bytes(100_000, tag, CONFIG_NULL, map);
+            reader.bytes = &bytes;
+            assert!(reader.read_config_value().is_err());
+        }
+        let config = (0..MAX_VALUE_NESTING + 1).fold(IndexConfigValue::Null, |inner, _| {
+            IndexConfigValue::List(vec![inner])
+        });
+        let mut out = Vec::new();
+        assert!(write_config_value(&mut out, &config, 0).is_err());
+    }
+
+    /// The in-memory record encoding keeps no limit: a deep value the
+    /// graph accepted stays readable instead of failing (or panicking) on
+    /// its way in or out.
+    #[test]
+    fn stored_values_nest_without_a_limit() {
+        let deep = nested_list(MAX_VALUE_NESTING + 50);
+        let bytes = encode_stored_property_value(&deep).unwrap();
+        assert_eq!(decode_stored_property_value(&bytes).unwrap(), deep);
+
+        let mut g = crate::InMemoryGraph::new();
+        let mut props = crate::Properties::new();
+        props.insert(crate::intern("deep"), deep.clone());
+        let id = crate::GraphStorageMut::create_node(&mut g, vec!["N".into()], props).id;
+        assert_eq!(
+            crate::GraphStorage::node_property(&g, id, "deep"),
+            Some(deep)
+        );
+    }
 
     #[test]
     fn property_value_roundtrips_nested_values() {

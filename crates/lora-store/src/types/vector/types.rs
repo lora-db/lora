@@ -204,11 +204,39 @@ impl VectorValues {
     }
 }
 
-/// A first-class VECTOR value.
+/// A first-class VECTOR value. `dimension` must equal `values.len()`:
+/// deserializing rejects a mismatch, and the store records the length of
+/// `values` whatever `dimension` says.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "UncheckedVector")]
 pub struct LoraVector {
     pub dimension: usize,
     pub values: VectorValues,
+}
+
+/// [`LoraVector`]'s serialized shape, checked by `TryFrom`.
+#[derive(serde::Deserialize)]
+struct UncheckedVector {
+    dimension: usize,
+    values: VectorValues,
+}
+
+impl TryFrom<UncheckedVector> for LoraVector {
+    type Error = String;
+
+    fn try_from(raw: UncheckedVector) -> Result<Self, String> {
+        if raw.dimension != raw.values.len() {
+            return Err(format!(
+                "vector dimension {} does not match its {} coordinates",
+                raw.dimension,
+                raw.values.len()
+            ));
+        }
+        Ok(Self {
+            dimension: raw.dimension,
+            values: raw.values,
+        })
+    }
 }
 
 impl LoraVector {

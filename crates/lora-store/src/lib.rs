@@ -8,7 +8,6 @@ pub mod codec;
 mod dict;
 mod encoded;
 pub mod intern;
-mod lock_table;
 mod memory;
 mod mutation;
 mod snapshot;
@@ -74,13 +73,8 @@ pub use memory::{
     StoredVectorCoordType,
 };
 
-// ---------- Mutation stream + write-set vocabulary ----------
-pub use mutation::{
-    ClosureRecorder, DeletedRecordSink, MutationEvent, MutationRecorder, MutationWriteSet,
-};
-
-// ---------- Concurrency primitives ----------
-pub use lock_table::{LockTable, WriteSetLocks, LOCK_TABLE_SHARDS};
+// ---------- Mutation stream vocabulary ----------
+pub use mutation::{ClosureRecorder, DeletedRecordSink, MutationEvent, MutationRecorder};
 
 // ---------- Snapshot vocabulary (codec lives in `lora-snapshot`) ----------
 pub use snapshot::{SnapshotError, SnapshotMeta, SnapshotPayload};

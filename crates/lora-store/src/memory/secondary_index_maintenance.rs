@@ -372,9 +372,9 @@ impl InMemoryGraph {
     /// contribution to every backend whose `(label, property)` matches
     /// `(scope, key)`.
     ///
-    /// Bails out without taking the registry lock if neither the old
-    /// nor the new value is a vector — the common case for non-vector
-    /// property mutations.
+    /// Bails out without taking the registry write lock if neither the
+    /// old nor the new value is a vector (the common case for non-vector
+    /// property mutations) or no index covers `(scope, key)`.
     fn update_vector_property<'a>(
         &self,
         entity: StoredIndexEntity,
@@ -396,9 +396,15 @@ impl InMemoryGraph {
             return;
         }
 
-        // Cheap empty-registry early-out: vector indexes are rare today,
-        // so most updates skip the per-scope insert/remove work entirely.
-        if self.vector_indexes_read(entity).is_empty() {
+        // Check coverage through the read guard: the write guard copies
+        // every vector index when the graph is shared with a reader, so a
+        // vector written under a label or key no index covers must not
+        // take it.
+        let scopes: Vec<&str> = scopes.into_iter().collect();
+        if !self
+            .vector_indexes_read(entity)
+            .covers_any(scopes.iter().copied(), key)
+        {
             return;
         }
 

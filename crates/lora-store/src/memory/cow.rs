@@ -40,15 +40,24 @@ use std::sync::Arc;
 /// `std::sync::Arc<T>`: strong + weak refcount header before the value.
 use super::ARC_HEADER;
 
-/// The hasher for every key here: deterministic, and cheap for the short
-/// keys indexes hold (integers, grid cells, trigrams, short strings).
-/// Byte strings go through FNV-1a; integers (an `Int` key, an enum
-/// discriminant, a length prefix) are mixed in a word at a time instead of
-/// eight FNV rounds, and `finish` avalanches the state (murmur3's
-/// finalizer) so the low bits a hash table indexes by depend on every
-/// input bit: a `Float` key's bits differ only at the top.
-#[derive(Default)]
+/// The hasher for every key here: cheap for the short keys indexes hold
+/// (integers, grid cells, trigrams, short strings). Byte strings go
+/// through FNV-1a; integers (an `Int` key, an enum discriminant, a length
+/// prefix) are mixed in a word at a time instead of eight FNV rounds, and
+/// `finish` avalanches the state (murmur3's finalizer) so the low bits a
+/// hash table indexes by depend on every input bit: a `Float` key's bits
+/// differ only at the top. The state starts from a per-process random
+/// seed ([`crate::dict::process_hash_seed`]), so indexed values chosen to
+/// collide (and pile into one leaf past [`MAX_DEPTH`]) cannot be
+/// precomputed; routes and iteration order differ between processes.
 pub(super) struct KeyHasher(u64);
+
+impl Default for KeyHasher {
+    #[inline]
+    fn default() -> Self {
+        Self(crate::dict::process_hash_seed())
+    }
+}
 
 impl Hasher for KeyHasher {
     #[inline]
@@ -63,9 +72,6 @@ impl Hasher for KeyHasher {
 
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
-        if self.0 == 0 {
-            self.0 = 0xcbf2_9ce4_8422_2325;
-        }
         for b in bytes {
             self.0 ^= u64::from(*b);
             self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
@@ -638,6 +644,17 @@ impl<K: Ord, V> SortedPart<K, V> {
         self.position(key).ok().map(|i| &self.entries[i].1)
     }
 
+    fn get_key_value<Q>(&self, key: &Q) -> Option<(&K, &V)>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.position(key).ok().map(|i| {
+            let (k, v) = &self.entries[i];
+            (k, v)
+        })
+    }
+
     fn get_mut<Q>(&mut self, key: &Q) -> Option<&mut V>
     where
         K: Borrow<Q>,
@@ -846,6 +863,20 @@ impl<K: Ord + Clone, V: Clone> CowOrdMap<K, V> {
         }
         let (g, p) = self.locate(key);
         self.groups[g].1[p].1.get(key)
+    }
+
+    /// The stored key and its value, so a caller can share the stored key
+    /// (an `Arc`, say) instead of keeping a copy of its own.
+    pub(super) fn get_key_value<Q>(&self, key: &Q) -> Option<(&K, &V)>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        if self.groups.is_empty() {
+            return None;
+        }
+        let (g, p) = self.locate(key);
+        self.groups[g].1[p].1.get_key_value(key)
     }
 
     pub(super) fn contains_key<Q>(&self, key: &Q) -> bool

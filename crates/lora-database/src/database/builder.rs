@@ -253,7 +253,6 @@ impl Database<InMemoryGraph> {
         Self {
             store: Arc::new(LiveStore::new(Arc::new(graph))),
             writer: Arc::new(Mutex::new(())),
-            lock_table: Arc::new(lora_store::LockTable::new()),
             wal: Some(recorder),
             snapshots,
             named_archive,
@@ -272,7 +271,6 @@ where
         Self {
             store,
             writer: Arc::new(Mutex::new(())),
-            lock_table: Arc::new(lora_store::LockTable::new()),
             wal: None,
             snapshots: None,
             named_archive: None,

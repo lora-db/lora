@@ -9,8 +9,8 @@
 //! persisted: snapshots and the WAL write names.
 
 use std::collections::HashMap;
-use std::hash::{BuildHasherDefault, Hasher};
-use std::sync::Arc;
+use std::hash::{BuildHasher, Hasher};
+use std::sync::{Arc, OnceLock};
 
 use crate::Name;
 
@@ -18,17 +18,46 @@ use crate::Name;
 /// handful of short names beats hashing one.
 const LINEAR_LOOKUP_MAX: usize = 8;
 
-/// FNV-1a. A property read hashes its key, so the hash has to be cheap.
-/// It is not collision-resistant: someone who can write arbitrary
-/// property keys can pile names into one bucket and slow lookups down.
-/// They can already do more harm with the same access, and the names
-/// are few in any schema worth the word.
+/// A random value per process, mixed into the starting state of the
+/// store's fast hashers ([`NameHasher`] and the index `KeyHasher`). They
+/// hash attacker-chosen strings (property keys, indexed values) with
+/// cheap non-cryptographic functions; with a fixed start, colliding
+/// inputs could be computed once and replayed against every process.
+/// Nothing hashed with it is persisted or ordered by its hash.
+#[inline]
+pub(crate) fn process_hash_seed() -> u64 {
+    static SEED: OnceLock<u64> = OnceLock::new();
+    *SEED.get_or_init(|| {
+        // `RandomState` draws its keys from the OS once per thread.
+        std::collections::hash_map::RandomState::new().hash_one(0x5eed_u64) | 1
+    })
+}
+
+/// FNV-1a from a per-process random basis. A property read hashes its
+/// key, so the hash has to be cheap. It is not collision-resistant, but
+/// the seed keeps collisions from being precomputed: someone who can
+/// write arbitrary property keys would have to find them per process.
 #[derive(Clone, Copy)]
 pub(crate) struct NameHasher(u64);
 
-impl Default for NameHasher {
+/// Builds [`NameHasher`]s from the seeded basis, read once per table
+/// rather than once per hash.
+#[derive(Clone, Copy)]
+pub(crate) struct NameState(u64);
+
+impl Default for NameState {
+    #[inline]
     fn default() -> Self {
-        Self(0xcbf2_9ce4_8422_2325)
+        Self(0xcbf2_9ce4_8422_2325 ^ process_hash_seed())
+    }
+}
+
+impl BuildHasher for NameState {
+    type Hasher = NameHasher;
+
+    #[inline]
+    fn build_hasher(&self) -> NameHasher {
+        NameHasher(self.0)
     }
 }
 
@@ -58,7 +87,7 @@ pub(crate) struct NameDict {
 #[derive(Clone, Default)]
 struct Inner {
     names: Vec<Name>,
-    ids: HashMap<Name, u32, BuildHasherDefault<NameHasher>>,
+    ids: HashMap<Name, u32, NameState>,
 }
 
 impl NameDict {
@@ -174,5 +203,26 @@ mod tests {
         assert_eq!(dict.id_or_insert_str("C"), 1);
         assert_eq!(copy.name(1).as_str(), "B");
         assert_eq!(dict.name(1).as_str(), "C");
+    }
+
+    /// The name hasher starts from the per-process seed, not a
+    /// fixed basis, so colliding names cannot be precomputed.
+    #[test]
+    fn hashers_are_seeded_per_process() {
+        use std::hash::BuildHasher;
+        let unseeded = {
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            for &b in b"name" {
+                h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            h
+        };
+        let mut hasher = NameState::default().build_hasher();
+        hasher.write(b"name");
+        assert_ne!(hasher.finish(), unseeded);
+        assert_eq!(
+            NameState::default().hash_one("name"),
+            NameState::default().hash_one("name")
+        );
     }
 }

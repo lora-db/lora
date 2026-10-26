@@ -627,3 +627,38 @@ fn hamming_on_float_vectors_uses_f32_comparison() {
     .unwrap();
     assert!((hamming_distance(&a, &c).unwrap() - 1.0).abs() < 1e-9);
 }
+
+/// A vector whose `dimension` disagrees with its coordinates is rejected
+/// on deserialize, and one built directly is stored by its coordinates
+/// instead of becoming a record that panics on every read.
+#[test]
+fn mismatched_dimension_is_rejected_or_normalised() {
+    let json = serde_json::to_string(&LoraVector {
+        dimension: 3,
+        values: VectorValues::Float32(vec![1.0, 2.0]),
+    })
+    .unwrap();
+    let err = serde_json::from_str::<LoraVector>(&json).unwrap_err();
+    assert!(err.to_string().contains("dimension 3"), "{err}");
+    let ok = LoraVector {
+        dimension: 2,
+        values: VectorValues::Float32(vec![1.0, 2.0]),
+    };
+    let json = serde_json::to_string(&ok).unwrap();
+    assert_eq!(serde_json::from_str::<LoraVector>(&json).unwrap(), ok);
+
+    let mut g = crate::InMemoryGraph::new();
+    let mut props = crate::Properties::new();
+    props.insert(
+        crate::intern("v"),
+        crate::PropertyValue::Vector(LoraVector {
+            dimension: 5,
+            values: VectorValues::Float32(vec![1.0, 2.0]),
+        }),
+    );
+    let id = crate::GraphStorageMut::create_node(&mut g, vec!["N".into()], props).id;
+    assert_eq!(
+        crate::GraphStorage::node_property(&g, id, "v"),
+        Some(crate::PropertyValue::Vector(ok))
+    );
+}

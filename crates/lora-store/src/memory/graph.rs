@@ -606,6 +606,16 @@ impl InMemoryGraph {
         }
     }
 
+    /// Drop both of `node_id`'s lists at once. A detach delete does this
+    /// first, so removing each relationship touches only the far end's list
+    /// instead of scanning and compacting the node's own list once per
+    /// relationship (quadratic in its degree).
+    pub(super) fn clear_adjacency(&mut self, node_id: NodeId) {
+        if let Some(adj) = Self::slot_index(node_id).and_then(|idx| self.adjacency.get_mut(idx)) {
+            adj.clear();
+        }
+    }
+
     fn adjacency_remove(&mut self, node_id: NodeId, side: Side, rel_id: RelationshipId) {
         if let Some(adj) = Self::slot_index(node_id).and_then(|idx| self.adjacency.get_mut(idx)) {
             adj.remove(side, rel_id);
