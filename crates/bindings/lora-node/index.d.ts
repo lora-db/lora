@@ -173,6 +173,20 @@ export declare class Database {
   /** Force pending WAL bytes and the portable container mirror to disk. */
   sync(): Promise<void>
   /**
+   * Write a self-contained copy of this named database into
+   * `target_dir` (missing or empty) while queries keep running: the
+   * graph as of one committed transaction, as a `.loradb` that opens
+   * with `createDatabase(name, { databaseDir: target_dir })`. Off the JS
+   * thread; writers wait only while the graph is taken.
+   */
+  snapshot(targetDir: string): Promise<{ path: string; bytes: number; lsn: number; nodeCount: number; relationshipCount: number }>
+  /**
+   * Checkpoint now: for a named database what `sync()` does, reporting
+   * the snapshot it wrote; with `walDir` + `snapshotDir`, a managed
+   * checkpoint.
+   */
+  checkpoint(): Promise<{ formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }>
+  /**
    * Drop every node and relationship, returning the database to an empty
    * state.
    */
