@@ -17,7 +17,8 @@ use self::platform::replace_file_atomic;
 use self::platform::sync_dir;
 use self::worker::spawn_archive_worker;
 use self::workspace::{
-    cleanup_stale_temp_paths, make_work_dir, prepare_work_dir, remove_work_dir, sorted_wal_files,
+    cleanup_stale_temp_paths, make_archive_tmp_path, make_work_dir, prepare_work_dir,
+    remove_work_dir, sorted_wal_files,
 };
 
 /// Container-backed `.loradb` database file.
@@ -32,6 +33,9 @@ use self::workspace::{
 /// persist streams it into the container.
 pub(crate) struct WalArchive {
     archive_path: PathBuf,
+    /// `archive_path` under the database directory, as
+    /// [`crate::DatabaseName::relative_path`] gives it.
+    relative_path: PathBuf,
     work_dir: PathBuf,
     max_archive_bytes: u64,
     state: Arc<(Mutex<ArchiveState>, Condvar)>,
@@ -63,7 +67,11 @@ fn archive_writer_failure(failure: &str) -> WalError {
 }
 
 impl WalArchive {
-    pub fn open(archive_path: PathBuf, max_archive_bytes: u64) -> Result<Self, WalError> {
+    pub fn open(
+        archive_path: PathBuf,
+        relative_path: PathBuf,
+        max_archive_bytes: u64,
+    ) -> Result<Self, WalError> {
         if archive_path.is_dir() {
             return Err(WalError::Malformed(format!(
                 "database container path is a directory: {}",
@@ -91,6 +99,7 @@ impl WalArchive {
 
         Ok(Self {
             archive_path,
+            relative_path,
             work_dir,
             max_archive_bytes,
             state,
@@ -103,6 +112,16 @@ impl WalArchive {
 
     pub fn work_dir(&self) -> &Path {
         &self.work_dir
+    }
+
+    /// The container's path under its database directory.
+    pub fn relative_path(&self) -> &Path {
+        &self.relative_path
+    }
+
+    /// The configured ceiling for one container.
+    pub fn max_archive_bytes(&self) -> u64 {
+        self.max_archive_bytes
     }
 
     /// The base snapshot's file, when the database has one.
@@ -261,4 +280,27 @@ impl Drop for WalArchive {
         // a reader still holds it, its graph.
         crate::release_memory::release_free_memory();
     }
+}
+
+/// A scratch directory beside the container `target` would be, named as
+/// the temporary files an open of `target` removes, so one left by a crash
+/// does not outlive the next open.
+pub(crate) fn staging_dir_for(target: &Path) -> PathBuf {
+    make_archive_tmp_path(target)
+}
+
+/// Where [`write_snapshot_container`] reads the snapshot in `staging_dir`.
+pub(crate) fn staged_snapshot_in(staging_dir: &Path) -> PathBuf {
+    staging_dir.join(SNAPSHOT_FILE_NAME)
+}
+
+/// Write the container `target` holding only the snapshot in
+/// `staging_dir`: to a temporary file, fsynced, then renamed into place,
+/// so `target` either does not exist or is complete.
+pub(crate) fn write_snapshot_container(
+    staging_dir: &Path,
+    target: &Path,
+    max_archive_bytes: u64,
+) -> Result<(), WalError> {
+    write_archive_atomic(staging_dir, target, max_archive_bytes)
 }

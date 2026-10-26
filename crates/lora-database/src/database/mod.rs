@@ -222,32 +222,42 @@ impl Database<InMemoryGraph> {
     pub fn sync(&self) -> Result<(), LoraError> {
         if let Some(wal) = &self.wal {
             if let Some(archive) = &self.named_archive {
-                let _checkpoint = archive.checkpoint_lock()?;
-                let (graph, snapshot_lsn) = {
-                    let _commit_lock = self
-                        .writer
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    wal.force_fsync_wal_only()?;
-                    (self.store.load_full(), wal.wal().durable_lsn())
-                };
-                let staged = archive.staged_snapshot_path();
-                let staged_guard = crate::snapshot::TempFileGuard::new(staged.clone());
-                crate::snapshot::write_graph_snapshot_file(
-                    &staged,
-                    &graph,
-                    Some(snapshot_lsn.raw()),
-                    &lora_snapshot::SnapshotOptions::default(),
-                )?;
-                drop(graph);
-                archive.install_snapshot(|| wal.truncate_covered_by_mirror(snapshot_lsn))?;
-                staged_guard.commit();
-                crate::release_memory::release_free_memory();
+                self.checkpoint_named(wal, archive)?;
             } else {
                 wal.force_fsync()?;
             }
         }
         Ok(())
+    }
+
+    /// The checkpoint [`Self::sync`] takes on a named database.
+    pub(crate) fn checkpoint_named(
+        &self,
+        wal: &WalRecorder,
+        archive: &WalArchive,
+    ) -> Result<lora_snapshot::SnapshotInfo, LoraError> {
+        let _checkpoint = archive.checkpoint_lock()?;
+        let (graph, snapshot_lsn) = {
+            let _commit_lock = self
+                .writer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            wal.force_fsync_wal_only()?;
+            (self.store.load_full(), wal.wal().durable_lsn())
+        };
+        let staged = archive.staged_snapshot_path();
+        let staged_guard = crate::snapshot::TempFileGuard::new(staged.clone());
+        let info = crate::snapshot::write_graph_snapshot_file(
+            &staged,
+            &graph,
+            Some(snapshot_lsn.raw()),
+            &lora_snapshot::SnapshotOptions::default(),
+        )?;
+        drop(graph);
+        archive.install_snapshot(|| wal.truncate_covered_by_mirror(snapshot_lsn))?;
+        staged_guard.commit();
+        crate::release_memory::release_free_memory();
+        Ok(info)
     }
 }
 
