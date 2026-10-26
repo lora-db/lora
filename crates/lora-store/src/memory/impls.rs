@@ -316,6 +316,10 @@ impl GraphStorage for InMemoryGraph {
         InMemoryGraph::graph_stats(self)
     }
 
+    fn plan_signature(&self) -> u64 {
+        InMemoryGraph::plan_signature(self)
+    }
+
     fn node_text_candidates(
         &self,
         label: &str,

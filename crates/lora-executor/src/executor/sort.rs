@@ -12,7 +12,10 @@
 //! mixed types by [`compare_values_total`]) and ties keep arrival order,
 //! enforced by comparing arrival sequence numbers last.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
+
+use smallvec::SmallVec;
 
 use lora_analyzer::ResolvedSortItem;
 use lora_ast::SortDirection;
@@ -20,7 +23,7 @@ use lora_compiler::SortLimit;
 use lora_store::GraphStorage;
 
 use crate::errors::{ExecResult, ExecutorError};
-use crate::eval::{clear_eval_error, eval_expr, take_eval_error, EvalContext};
+use crate::eval::{clear_eval_error, eval_expr, eval_ref, take_eval_error, EvalContext};
 use crate::value::{LoraValue, Row};
 
 use super::helpers::compare_values_total;
@@ -35,7 +38,19 @@ pub(crate) fn sort_rows_with_top_k<S: GraphStorage>(
         return;
     }
     let taken = std::mem::take(rows);
-    *rows = SortBuffer::from_rows(items, top_k, taken, eval_ctx).finish();
+    *rows = match top_k {
+        // Under a bound, stream the rows through the buffer: a row that
+        // does not beat the cutoff is dropped after one borrowed key
+        // comparison instead of having its keys cloned and kept.
+        Some(_) => {
+            let mut buffer = SortBuffer::new(items, top_k);
+            for row in taken {
+                buffer.push(row, eval_ctx);
+            }
+            buffer.finish()
+        }
+        None => SortBuffer::from_rows(items, top_k, taken, eval_ctx).finish(),
+    };
 }
 
 /// Run `f`, which evaluates sort keys, and fail if one of them raised: a
@@ -92,7 +107,6 @@ pub(crate) struct SortBuffer<'i> {
     /// can never be in the result.
     cutoff: Option<Vec<LoraValue>>,
     next_seq: u64,
-    scratch: Vec<LoraValue>,
 }
 
 impl<'i> SortBuffer<'i> {
@@ -105,11 +119,11 @@ impl<'i> SortBuffer<'i> {
             seqs: Vec::new(),
             cutoff: None,
             next_seq: 0,
-            scratch: Vec::with_capacity(items.len()),
         }
     }
 
-    /// A buffer over rows already collected, keeping them in place.
+    /// A buffer over rows already collected, keeping them in place. Only
+    /// for an unbounded sort, which keeps every row anyway.
     fn from_rows<S: GraphStorage>(
         items: &'i [ResolvedSortItem],
         bound: Option<usize>,
@@ -136,7 +150,6 @@ impl<'i> SortBuffer<'i> {
             seqs,
             cutoff: None,
             next_seq,
-            scratch: Vec::new(),
         }
     }
 
@@ -153,17 +166,20 @@ impl<'i> SortBuffer<'i> {
         }
         let seq = self.next_seq;
         self.next_seq += 1;
-        self.scratch.clear();
+        // Keys borrowed from the row where they are its values (a sort
+        // key on a projected column): a row the cutoff rejects is never
+        // copied from.
+        let mut keys: SmallVec<Cow<'_, LoraValue>, 4> = SmallVec::new();
         for item in self.items {
-            self.scratch.push(eval_expr(&item.expr, &row, eval_ctx));
+            keys.push(eval_ref(&item.expr, &row, eval_ctx));
         }
         // A later row loses every tie, so equal to the cutoff is out too.
         if let Some(cutoff) = &self.cutoff {
-            if compare_keys(self.items, &self.scratch, cutoff) != Ordering::Less {
+            if compare_keys(self.items, keys.iter().map(|k| &**k), cutoff) != Ordering::Less {
                 return;
             }
         }
-        self.keys.append(&mut self.scratch);
+        self.keys.extend(keys.into_iter().map(Cow::into_owned));
         self.rows.push(row);
         self.seqs.push(seq);
         // Cut back to `bound` once twice that many are held: amortized
@@ -249,7 +265,11 @@ impl<'i> SortBuffer<'i> {
     }
 }
 
-fn compare_keys(items: &[ResolvedSortItem], a: &[LoraValue], b: &[LoraValue]) -> Ordering {
+fn compare_keys<'a>(
+    items: &[ResolvedSortItem],
+    a: impl IntoIterator<Item = &'a LoraValue>,
+    b: impl IntoIterator<Item = &'a LoraValue>,
+) -> Ordering {
     for ((item, av), bv) in items.iter().zip(a).zip(b) {
         let ord = compare_values_for_sort(av, bv, matches!(item.direction, SortDirection::Asc));
         if ord != Ordering::Equal {

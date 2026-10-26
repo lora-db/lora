@@ -44,7 +44,7 @@ fn from_string(args: &[LoraValue]) -> LoraValue {
         return LoraValue::Null;
     };
     // Encoding arg accepted for forward compat; UTF-8 is the only supported encoding.
-    LoraValue::Binary(LoraBinary::from_bytes(s.as_bytes().to_vec()))
+    LoraValue::Binary(Box::new(LoraBinary::from_bytes(s.as_bytes().to_vec())))
 }
 
 fn to_string_op(args: &[LoraValue]) -> LoraValue {
@@ -69,7 +69,7 @@ fn base64_decode(args: &[LoraValue]) -> LoraValue {
         return LoraValue::Null;
     };
     match base64_decode_str(s) {
-        Some(bytes) => LoraValue::Binary(LoraBinary::from_bytes(bytes)),
+        Some(bytes) => LoraValue::Binary(Box::new(LoraBinary::from_bytes(bytes))),
         None => LoraValue::Null,
     }
 }
@@ -102,7 +102,7 @@ fn hex_decode(args: &[LoraValue]) -> LoraValue {
             _ => return LoraValue::Null,
         }
     }
-    LoraValue::Binary(LoraBinary::from_bytes(out))
+    LoraValue::Binary(Box::new(LoraBinary::from_bytes(out)))
 }
 
 fn hex_digit(b: u8) -> Option<u8> {
@@ -148,7 +148,7 @@ fn compress_with(bytes: &[u8], algo_arg: Option<&LoraValue>) -> LoraValue {
         _ => return LoraValue::Null,
     };
     match result {
-        Ok(v) => LoraValue::Binary(LoraBinary::from_bytes(v)),
+        Ok(v) => LoraValue::Binary(Box::new(LoraBinary::from_bytes(v))),
         Err(_) => LoraValue::Null,
     }
 }
@@ -170,7 +170,7 @@ fn decompress(args: &[LoraValue]) -> LoraValue {
     if result.is_err() {
         return LoraValue::Null;
     }
-    LoraValue::Binary(LoraBinary::from_bytes(out))
+    LoraValue::Binary(Box::new(LoraBinary::from_bytes(out)))
 }
 
 const BASE64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

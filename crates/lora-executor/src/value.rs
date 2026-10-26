@@ -16,6 +16,10 @@ use serde::{Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// A query value. Four words: every row slot holds one, so the payloads
+/// larger than a `String` (binary, path, datetime, local datetime,
+/// duration, point, vector) are boxed. Build those from the plain value
+/// with `LoraValue::from`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoraValue {
     Null,
@@ -23,20 +27,20 @@ pub enum LoraValue {
     Int(i64),
     Float(f64),
     String(String),
-    Binary(LoraBinary),
+    Binary(Box<LoraBinary>),
     List(Vec<LoraValue>),
     Map(BTreeMap<String, LoraValue>),
     Node(NodeId),
     Relationship(RelationshipId),
-    Path(LoraPath),
+    Path(Box<LoraPath>),
     Date(LoraDate),
     Time(LoraTime),
     LocalTime(LoraLocalTime),
-    DateTime(LoraDateTime),
-    LocalDateTime(LoraLocalDateTime),
-    Duration(LoraDuration),
-    Point(LoraPoint),
-    Vector(LoraVector),
+    DateTime(Box<LoraDateTime>),
+    LocalDateTime(Box<LoraLocalDateTime>),
+    Duration(Box<LoraDuration>),
+    Point(Box<LoraPoint>),
+    Vector(Box<LoraVector>),
 }
 
 impl LoraValue {
@@ -196,6 +200,32 @@ fn serialize_vector<S: Serializer>(serializer: S, v: &LoraVector) -> Result<S::O
     m.end()
 }
 
+/// The variants whose payload would make every `LoraValue` (and with it
+/// every row slot) larger are boxed; these build them from the plain
+/// value.
+macro_rules! boxed_from {
+    ($($variant:ident($ty:ty)),* $(,)?) => {
+        $(
+            impl From<$ty> for LoraValue {
+                #[inline]
+                fn from(value: $ty) -> Self {
+                    LoraValue::$variant(Box::new(value))
+                }
+            }
+        )*
+    };
+}
+
+boxed_from!(
+    Binary(LoraBinary),
+    Path(LoraPath),
+    DateTime(LoraDateTime),
+    LocalDateTime(LoraLocalDateTime),
+    Duration(LoraDuration),
+    Point(LoraPoint),
+    Vector(LoraVector),
+);
+
 impl From<PropertyValue> for LoraValue {
     fn from(value: PropertyValue) -> Self {
         match value {
@@ -204,7 +234,7 @@ impl From<PropertyValue> for LoraValue {
             PropertyValue::Int(v) => LoraValue::Int(v),
             PropertyValue::Float(v) => LoraValue::Float(v),
             PropertyValue::String(v) => LoraValue::String(v),
-            PropertyValue::Binary(v) => LoraValue::Binary(v),
+            PropertyValue::Binary(v) => LoraValue::Binary(Box::new(v)),
             PropertyValue::List(values) => {
                 LoraValue::List(values.into_iter().map(LoraValue::from).collect())
             }
@@ -216,11 +246,11 @@ impl From<PropertyValue> for LoraValue {
             PropertyValue::Date(d) => LoraValue::Date(d),
             PropertyValue::Time(t) => LoraValue::Time(t),
             PropertyValue::LocalTime(t) => LoraValue::LocalTime(t),
-            PropertyValue::DateTime(dt) => LoraValue::DateTime(dt),
-            PropertyValue::LocalDateTime(dt) => LoraValue::LocalDateTime(dt),
-            PropertyValue::Duration(dur) => LoraValue::Duration(dur),
-            PropertyValue::Point(p) => LoraValue::Point(p),
-            PropertyValue::Vector(v) => LoraValue::Vector(v),
+            PropertyValue::DateTime(dt) => LoraValue::DateTime(Box::new(dt)),
+            PropertyValue::LocalDateTime(dt) => LoraValue::LocalDateTime(Box::new(dt)),
+            PropertyValue::Duration(dur) => LoraValue::Duration(Box::new(dur)),
+            PropertyValue::Point(p) => LoraValue::Point(Box::new(p)),
+            PropertyValue::Vector(v) => LoraValue::Vector(Box::new(v)),
         }
     }
 }
@@ -255,7 +285,7 @@ impl From<&PropertyValue> for LoraValue {
             PropertyValue::Int(v) => LoraValue::Int(*v),
             PropertyValue::Float(v) => LoraValue::Float(*v),
             PropertyValue::String(v) => LoraValue::String(v.clone()),
-            PropertyValue::Binary(v) => LoraValue::Binary(v.clone()),
+            PropertyValue::Binary(v) => LoraValue::Binary(Box::new(v.clone())),
             PropertyValue::List(values) => {
                 LoraValue::List(values.iter().map(LoraValue::from).collect())
             }
@@ -267,11 +297,11 @@ impl From<&PropertyValue> for LoraValue {
             PropertyValue::Date(d) => LoraValue::Date(d.clone()),
             PropertyValue::Time(t) => LoraValue::Time(t.clone()),
             PropertyValue::LocalTime(t) => LoraValue::LocalTime(t.clone()),
-            PropertyValue::DateTime(dt) => LoraValue::DateTime(dt.clone()),
-            PropertyValue::LocalDateTime(dt) => LoraValue::LocalDateTime(dt.clone()),
-            PropertyValue::Duration(dur) => LoraValue::Duration(dur.clone()),
-            PropertyValue::Point(p) => LoraValue::Point(p.clone()),
-            PropertyValue::Vector(v) => LoraValue::Vector(v.clone()),
+            PropertyValue::DateTime(dt) => LoraValue::DateTime(Box::new(dt.clone())),
+            PropertyValue::LocalDateTime(dt) => LoraValue::LocalDateTime(Box::new(dt.clone())),
+            PropertyValue::Duration(dur) => LoraValue::Duration(Box::new(dur.clone())),
+            PropertyValue::Point(p) => LoraValue::Point(Box::new(p.clone())),
+            PropertyValue::Vector(v) => LoraValue::Vector(Box::new(v.clone())),
         }
     }
 }
@@ -284,7 +314,7 @@ impl From<LoraValue> for PropertyValue {
             LoraValue::Int(v) => PropertyValue::Int(v),
             LoraValue::Float(v) => PropertyValue::Float(v),
             LoraValue::String(v) => PropertyValue::String(v),
-            LoraValue::Binary(v) => PropertyValue::Binary(v),
+            LoraValue::Binary(v) => PropertyValue::Binary(*v),
             LoraValue::List(values) => {
                 PropertyValue::List(values.into_iter().map(PropertyValue::from).collect())
             }
@@ -299,11 +329,11 @@ impl From<LoraValue> for PropertyValue {
             LoraValue::Date(d) => PropertyValue::Date(d),
             LoraValue::Time(t) => PropertyValue::Time(t),
             LoraValue::LocalTime(t) => PropertyValue::LocalTime(t),
-            LoraValue::DateTime(dt) => PropertyValue::DateTime(dt),
-            LoraValue::LocalDateTime(dt) => PropertyValue::LocalDateTime(dt),
-            LoraValue::Duration(dur) => PropertyValue::Duration(dur),
-            LoraValue::Point(p) => PropertyValue::Point(p),
-            LoraValue::Vector(v) => PropertyValue::Vector(v),
+            LoraValue::DateTime(dt) => PropertyValue::DateTime(*dt),
+            LoraValue::LocalDateTime(dt) => PropertyValue::LocalDateTime(*dt),
+            LoraValue::Duration(dur) => PropertyValue::Duration(*dur),
+            LoraValue::Point(p) => PropertyValue::Point(*p),
+            LoraValue::Vector(v) => PropertyValue::Vector(*v),
         }
     }
 }
@@ -464,10 +494,7 @@ fn is_large(value: &LoraValue) -> bool {
 
 #[derive(Debug, Clone, PartialEq)]
 struct RowEntry {
-    /// Stored alongside the value so iterators can hand back `&VarId` while
-    /// the slot's position in `entries` remains the source of truth for
-    /// lookups.
-    var: VarId,
+    // No `VarId`: an entry's position in `Row::entries` is its variable.
     /// `None` means "use the fallback `_{key}` lazily". This avoids allocating
     /// a String for every anonymous variable on the insert hot path.
     ///
@@ -504,11 +531,11 @@ impl Serialize for Row {
         S: Serializer,
     {
         let mut ser_map = serializer.serialize_map(Some(self.len()))?;
-        for entry in self.entries.iter().flatten() {
+        for (var, entry) in self.set_entries() {
             match &entry.name {
                 Some(name) => ser_map.serialize_entry(&**name, entry.value.get())?,
                 None => {
-                    let fallback = format!("_{}", entry.var);
+                    let fallback = format!("_{var}");
                     ser_map.serialize_entry(fallback.as_str(), entry.value.get())?;
                 }
             }
@@ -535,7 +562,7 @@ impl Row {
             .and_then(|slot| slot.as_ref())
             .map(|entry| match &entry.name {
                 Some(n) => n.to_string(),
-                None => format!("_{}", entry.var),
+                None => format!("_{key}"),
             })
     }
 
@@ -621,11 +648,7 @@ impl Row {
         match &mut self.entries[idx] {
             Some(existing) => existing.value = value,
             slot @ None => {
-                *slot = Some(RowEntry {
-                    var: key,
-                    name: None,
-                    value,
-                });
+                *slot = Some(RowEntry { name: None, value });
                 self.len_set += 1;
             }
         }
@@ -636,7 +659,6 @@ impl Row {
         let idx = self.ensure_slot(key);
         let was_set = self.entries[idx].is_some();
         self.entries[idx] = Some(RowEntry {
-            var: key,
             name: Some(name),
             value,
         });
@@ -648,8 +670,8 @@ impl Row {
     pub fn extend_from(&mut self, other: &Row) {
         // Mirrors the previous `BTreeMap::insert` semantics: every set entry
         // in `other` overwrites the slot wholesale (name and value), no merge.
-        for entry in other.entries.iter().flatten() {
-            let idx = self.ensure_slot(entry.var);
+        for (var, entry) in other.set_entries() {
+            let idx = self.ensure_slot(var);
             let was_set = self.entries[idx].is_some();
             self.entries[idx] = Some(entry.clone());
             if !was_set {
@@ -662,8 +684,8 @@ impl Row {
     /// keeping its name as stored (shared `Arc`, or none for anonymous
     /// variables) rather than materializing the `_{key}` fallback.
     pub fn fill_missing_from(&mut self, other: &Row) {
-        for entry in other.entries.iter().flatten() {
-            let idx = self.ensure_slot(entry.var);
+        for (var, entry) in other.set_entries() {
+            let idx = self.ensure_slot(var);
             if self.entries[idx].is_none() {
                 self.entries[idx] = Some(entry.clone());
                 self.len_set += 1;
@@ -671,11 +693,17 @@ impl Row {
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&VarId, &LoraValue)> {
+    /// The set entries with their variables, in variable order.
+    fn set_entries(&self) -> impl Iterator<Item = (VarId, &RowEntry)> {
         self.entries
             .iter()
-            .flatten()
-            .map(|entry| (&entry.var, entry.value.get()))
+            .enumerate()
+            .filter_map(|(i, slot)| slot.as_ref().map(|entry| (VarId(i as u32), entry)))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (VarId, &LoraValue)> {
+        self.set_entries()
+            .map(|(var, entry)| (var, entry.value.get()))
     }
 
     /// Iterate `(key, name, value)`. The name is a `Cow`: borrowed when an
@@ -683,13 +711,13 @@ impl Row {
     /// entries inserted via the anonymous `insert()` path.
     pub fn iter_named(
         &self,
-    ) -> impl Iterator<Item = (&VarId, std::borrow::Cow<'_, str>, &LoraValue)> {
-        self.entries.iter().flatten().map(|entry| {
+    ) -> impl Iterator<Item = (VarId, std::borrow::Cow<'_, str>, &LoraValue)> {
+        self.set_entries().map(|(var, entry)| {
             let name: std::borrow::Cow<'_, str> = match &entry.name {
                 Some(n) => std::borrow::Cow::Borrowed(&**n),
-                None => std::borrow::Cow::Owned(format!("_{}", entry.var)),
+                None => std::borrow::Cow::Owned(format!("_{var}")),
             };
-            (&entry.var, name, entry.value.get())
+            (var, name, entry.value.get())
         })
     }
 
@@ -698,14 +726,18 @@ impl Row {
     /// names come back as the shared `Arc<str>` so re-inserting them into a
     /// new row costs a refcount, not an allocation.
     pub fn into_iter_named(self) -> impl Iterator<Item = (VarId, Arc<str>, LoraValue)> {
-        self.entries.into_iter().flatten().map(|entry| {
-            let RowEntry { var, name, value } = entry;
-            (
-                var,
-                name.unwrap_or_else(|| Arc::from(format!("_{var}"))),
-                value.into_value(),
-            )
-        })
+        self.entries
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, slot)| slot.map(|entry| (VarId(i as u32), entry)))
+            .map(|(var, entry)| {
+                let RowEntry { name, value } = entry;
+                (
+                    var,
+                    name.unwrap_or_else(|| Arc::from(format!("_{var}"))),
+                    value.into_value(),
+                )
+            })
     }
 
     pub fn len(&self) -> usize {
@@ -822,7 +854,10 @@ pub fn project_rows(rows: Vec<Row>, options: ExecuteOptions) -> QueryResult {
 
         ResultFormat::RowArrays => {
             let columns = infer_columns(&rows);
-            let projected_rows = rows.iter().map(|row| row_to_array(row, &columns)).collect();
+            let projected_rows = rows
+                .into_iter()
+                .map(|row| row_into_array(row, &columns))
+                .collect();
 
             QueryResult::RowArrays(RowArraysResult {
                 columns,
@@ -874,6 +909,40 @@ fn row_to_array(row: &Row, columns: &[String]) -> Vec<LoraValue> {
                 .unwrap_or(LoraValue::Null)
         })
         .collect()
+}
+
+/// [`row_to_array`] for a row we own: values are moved out, not cloned.
+fn row_into_array(row: Row, columns: &[String]) -> Vec<LoraValue> {
+    // (name, value not yet moved out, output position it was moved to)
+    let mut entries: Vec<(Arc<str>, Option<LoraValue>, usize)> = row
+        .into_iter_named()
+        .map(|(_, name, value)| (name, Some(value), 0))
+        .collect();
+    let mut out: Vec<LoraValue> = Vec::with_capacity(columns.len());
+    for (i, col) in columns.iter().enumerate() {
+        // Columns come from the first row's names, so a row usually holds
+        // the column at the same position.
+        let found = match entries.get(i) {
+            Some((name, _, _)) if **name == **col => Some(i),
+            _ => entries.iter().position(|(name, _, _)| **name == **col),
+        };
+        let value = match found {
+            Some(at) => {
+                let (_, slot, placed) = &mut entries[at];
+                match slot.take() {
+                    Some(value) => {
+                        *placed = i;
+                        value
+                    }
+                    // A column named twice reads the same value twice.
+                    None => out[*placed].clone(),
+                }
+            }
+            None => LoraValue::Null,
+        };
+        out.push(value);
+    }
+    out
 }
 
 fn collect_hydrated_graph(rows: &[Row]) -> HydratedGraph {
@@ -1012,6 +1081,15 @@ mod tests {
     }
 
     #[test]
+    fn a_value_is_four_words() {
+        // Every row slot holds one: the large temporal, spatial, vector,
+        // binary and path payloads are boxed to keep rows small.
+        assert_eq!(std::mem::size_of::<LoraValue>(), 32);
+        // A slot is its name and its value; the variable is its position.
+        assert_eq!(std::mem::size_of::<Option<RowEntry>>(), 48);
+    }
+
+    #[test]
     fn a_cloned_row_shares_a_large_value_and_copies_a_small_one() {
         let mut row = Row::new();
         row.insert(VarId(0), big());
@@ -1045,5 +1123,40 @@ mod tests {
         assert_eq!(value, big());
         // The original still holds its own copy.
         assert_eq!(row.get(VarId(0)), Some(&big()));
+    }
+
+    #[test]
+    fn row_arrays_move_values_into_column_order() {
+        let mut first = Row::new();
+        first.insert_named(VarId(0), "a", LoraValue::Int(1));
+        first.insert_named(VarId(1), "b", LoraValue::String("x".into()));
+        // Same names, other positions, one missing.
+        let mut second = Row::new();
+        second.insert_named(VarId(3), "b", LoraValue::String("y".into()));
+        second.insert_named(VarId(4), "c", LoraValue::Int(9));
+        let QueryResult::RowArrays(result) = project_rows(
+            vec![first, second],
+            ExecuteOptions {
+                format: ResultFormat::RowArrays,
+            },
+        ) else {
+            panic!("row arrays");
+        };
+        assert_eq!(result.columns, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![LoraValue::Int(1), LoraValue::String("x".into())],
+                vec![LoraValue::Null, LoraValue::String("y".into())],
+            ]
+        );
+        // A column named twice reads the same value twice.
+        let mut row = Row::new();
+        row.insert_named(VarId(0), "a", LoraValue::Int(5));
+        let columns = vec!["a".to_string(), "a".to_string()];
+        assert_eq!(
+            row_into_array(row, &columns),
+            vec![LoraValue::Int(5), LoraValue::Int(5)]
+        );
     }
 }

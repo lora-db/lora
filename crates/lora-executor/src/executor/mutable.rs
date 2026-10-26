@@ -240,6 +240,9 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     pub(crate) fn hydrate_row(&self, row: Row) -> Row {
+        if !crate::pull::row_holds_entity(&row) {
+            return row;
+        }
         let mut out = Row::new();
 
         for (var, name, value) in row.into_iter_named() {
@@ -994,7 +997,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     fn match_merge_pattern(&self, row: &mut Row, part: &ResolvedPatternPart) -> ExecResult<bool> {
         if self.pattern_part_is_bound(row, part)? {
             if let (Some(var), Some(path)) = (part.binding, bound_pattern_path(row, part)) {
-                row.insert(var, LoraValue::Path(path));
+                row.insert(var, LoraValue::Path(Box::new(path)));
             }
             return Ok(true);
         }
@@ -1032,7 +1035,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                         nodes: vec![id],
                         rels: Vec::new(),
                     };
-                    row.insert(path_var, LoraValue::Path(path));
+                    row.insert(path_var, LoraValue::Path(Box::new(path)));
                 }
                 Ok(true)
             }
@@ -1070,7 +1073,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
                                     .collect(),
                                 rels: walked.iter().map(|&(rel, _)| rel).collect(),
                             };
-                            trial.insert(path_var, LoraValue::Path(path));
+                            trial.insert(path_var, LoraValue::Path(Box::new(path)));
                         }
                         *row = trial;
                         return Ok(true);
@@ -1848,7 +1851,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     ) -> ExecResult<()> {
         let path = self.apply_create_pattern_element(row, &part.element)?;
         if let (Some(var), Some(path)) = (part.binding, path) {
-            row.insert(var, LoraValue::Path(path));
+            row.insert(var, LoraValue::Path(Box::new(path)));
         }
         Ok(())
     }
@@ -2235,7 +2238,7 @@ fn merge_candidates_from_index<S: lora_store::GraphStorage>(
 /// The user-facing name of `var` in `row`, for error messages.
 fn bound_var_name(row: &Row, var: VarId) -> String {
     row.iter_named()
-        .find(|(key, _, _)| **key == var)
+        .find(|(key, _, _)| *key == var)
         .map(|(_, name, _)| name.into_owned())
         .unwrap_or_else(|| format!("{var:?}"))
 }

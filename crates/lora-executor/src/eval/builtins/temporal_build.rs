@@ -275,7 +275,7 @@ impl Parts {
             }
             Kind::DateTime => {
                 let d = date()?;
-                LoraValue::DateTime(match self.zone {
+                LoraValue::from(match self.zone {
                     Some(zone) => LoraDateTime::in_zone(
                         &d,
                         hour,
@@ -293,7 +293,7 @@ impl Parts {
             Kind::LocalDateTime => {
                 let d = date()?;
                 LoraLocalTime::new(hour, minute, second, nanosecond)?;
-                LoraValue::LocalDateTime(LoraLocalDateTime {
+                LoraValue::from(LoraLocalDateTime {
                     year: d.year,
                     month: d.month,
                     day: d.day,
@@ -545,7 +545,7 @@ fn from_epoch_map(given: &Given<'_>, epoch: Field) -> Result<LoraValue, String> 
         Some(Zone::Offset(offset)) => utc.to_offset(offset).ok_or("datetime out of range")?,
         Some(Zone::Named(zone)) => utc.to_zone(zone).ok_or("datetime out of range")?,
     };
-    Ok(LoraValue::DateTime(dt))
+    Ok(LoraValue::DateTime(Box::new(dt)))
 }
 
 /// Resolve the map's components over `base` and build `kind`.
@@ -914,12 +914,12 @@ fn datetime_from_instant(nanos: i128, offset: i32) -> Result<LoraDateTime, Strin
 /// `datetime.fromepoch(seconds, nanoseconds)`, in UTC.
 pub(super) fn from_epoch(seconds: i64, nanoseconds: i64) -> Result<LoraValue, String> {
     datetime_from_instant(seconds as i128 * NANOS_PER_SECOND + nanoseconds as i128, 0)
-        .map(LoraValue::DateTime)
+        .map(LoraValue::from)
 }
 
 /// `datetime.fromepochmillis(milliseconds)`, in UTC.
 pub(super) fn from_epoch_millis(millis: i64) -> Result<LoraValue, String> {
-    datetime_from_instant(millis as i128 * 1_000_000, 0).map(LoraValue::DateTime)
+    datetime_from_instant(millis as i128 * 1_000_000, 0).map(LoraValue::from)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

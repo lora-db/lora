@@ -35,7 +35,7 @@ fn posts(n: usize, indexed: bool) -> TestDb {
 fn at(s: &str) -> BTreeMap<String, LoraValue> {
     BTreeMap::from([(
         "t".to_string(),
-        LoraValue::DateTime(LoraDateTime::parse(s).unwrap()),
+        LoraValue::DateTime(Box::new(LoraDateTime::parse(s).unwrap())),
     )])
 }
 

@@ -61,8 +61,9 @@ pub use intern::{intern, intern_owned};
 // ---------- Index catalog (CREATE INDEX surface) ----------
 pub use memory::{
     CreateIndexError, CreateIndexOutcome, DistinctValues, DropIndexError, DropIndexOutcome,
-    GraphStats, IndexCatalog, IndexConfigValue, IndexDefinition, IndexRequest, StoredIndexEntity,
-    StoredIndexKind, StoredIndexState, VectorBackendSnapshot, VectorIndexSnapshot,
+    GraphStats, IndexCatalog, IndexConfigValue, IndexDefinition, IndexRequest, PlanSignature,
+    StoredIndexEntity, StoredIndexKind, StoredIndexState, VectorBackendSnapshot,
+    VectorIndexSnapshot,
 };
 
 // ---------- Constraint catalog (CREATE CONSTRAINT surface) ----------

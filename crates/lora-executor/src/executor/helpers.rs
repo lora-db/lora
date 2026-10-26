@@ -1299,7 +1299,7 @@ pub fn value_matches_property_value<'a>(
 /// elements of a list or map, which come back through it.
 fn owned_value_matches(expected: &LoraValue, actual: &PropertyValue) -> bool {
     match (expected, actual) {
-        (LoraValue::Binary(a), PropertyValue::Binary(b)) => a == b,
+        (LoraValue::Binary(a), PropertyValue::Binary(b)) => **a == *b,
 
         (LoraValue::List(xs), PropertyValue::List(ys)) => {
             xs.len() == ys.len()
@@ -1316,13 +1316,13 @@ fn owned_value_matches(expected: &LoraValue, actual: &PropertyValue) -> bool {
         }),
 
         (LoraValue::Date(a), PropertyValue::Date(b)) => a == b,
-        (LoraValue::DateTime(a), PropertyValue::DateTime(b)) => a == b,
-        (LoraValue::LocalDateTime(a), PropertyValue::LocalDateTime(b)) => a == b,
+        (LoraValue::DateTime(a), PropertyValue::DateTime(b)) => **a == *b,
+        (LoraValue::LocalDateTime(a), PropertyValue::LocalDateTime(b)) => **a == *b,
         (LoraValue::Time(a), PropertyValue::Time(b)) => a == b,
         (LoraValue::LocalTime(a), PropertyValue::LocalTime(b)) => a == b,
-        (LoraValue::Duration(a), PropertyValue::Duration(b)) => a == b,
-        (LoraValue::Point(a), PropertyValue::Point(b)) => a == b,
-        (LoraValue::Vector(a), PropertyValue::Vector(b)) => a == b,
+        (LoraValue::Duration(a), PropertyValue::Duration(b)) => **a == *b,
+        (LoraValue::Point(a), PropertyValue::Point(b)) => **a == *b,
+        (LoraValue::Vector(a), PropertyValue::Vector(b)) => **a == *b,
 
         _ => false,
     }
@@ -1913,7 +1913,7 @@ pub(crate) fn node_by_point_scan_rows<S: GraphStorage>(
                 let ur = eval_expr(upper_right, &row, &eval_ctx);
                 match (ll, ur) {
                     (LoraValue::Point(a), LoraValue::Point(b)) => {
-                        Probe::WithinBBox { ll: a, ur: b }
+                        Probe::WithinBBox { ll: *a, ur: *b }
                     }
                     _ => continue,
                 }
@@ -1927,12 +1927,12 @@ pub(crate) fn node_by_point_scan_rows<S: GraphStorage>(
                 let d = eval_expr(max_distance, &row, &eval_ctx);
                 match (c, d) {
                     (LoraValue::Point(c), LoraValue::Float(d)) => Probe::WithinDistance {
-                        center: c,
+                        center: *c,
                         max: d,
                         inclusive: *inclusive,
                     },
                     (LoraValue::Point(c), LoraValue::Int(d)) => Probe::WithinDistance {
-                        center: c,
+                        center: *c,
                         max: d as f64,
                         inclusive: *inclusive,
                     },
@@ -2186,7 +2186,7 @@ pub(crate) fn build_path_value<S: GraphStorage>(
         raw_nodes
     };
 
-    LoraValue::Path(LoraPath { nodes, rels })
+    LoraValue::Path(Box::new(LoraPath { nodes, rels }))
 }
 
 #[inline]
@@ -2515,7 +2515,7 @@ impl RowKeyBuilder {
     pub(crate) fn row_key(&mut self, row: &Row) -> Vec<RowKeyPart> {
         row.iter()
             .enumerate()
-            .map(|(column, (var, value))| self.part(column, row, *var, value))
+            .map(|(column, (var, value))| self.part(column, row, var, value))
             .collect()
     }
 
@@ -2525,7 +2525,7 @@ impl RowKeyBuilder {
         row.iter_named()
             .enumerate()
             .map(|(column, (var, name, value))| {
-                (name.into_owned(), self.part(column, row, *var, value))
+                (name.into_owned(), self.part(column, row, var, value))
             })
             .collect()
     }
@@ -2971,7 +2971,7 @@ pub(crate) fn rel_by_point_scan_rows<S: GraphStorage>(
                 let ur = eval_expr(upper_right, &row, &eval_ctx);
                 match (ll, ur) {
                     (LoraValue::Point(a), LoraValue::Point(b)) => {
-                        Probe::WithinBBox { ll: a, ur: b }
+                        Probe::WithinBBox { ll: *a, ur: *b }
                     }
                     _ => continue,
                 }
@@ -2985,12 +2985,12 @@ pub(crate) fn rel_by_point_scan_rows<S: GraphStorage>(
                 let d = eval_expr(max_distance, &row, &eval_ctx);
                 match (c, d) {
                     (LoraValue::Point(c), LoraValue::Float(d)) => Probe::WithinDistance {
-                        center: c,
+                        center: *c,
                         max: d,
                         inclusive: *inclusive,
                     },
                     (LoraValue::Point(c), LoraValue::Int(d)) => Probe::WithinDistance {
-                        center: c,
+                        center: *c,
                         max: d as f64,
                         inclusive: *inclusive,
                     },

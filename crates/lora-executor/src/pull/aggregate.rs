@@ -98,7 +98,7 @@ impl Total {
             }
             LoraValue::Duration(d) => {
                 let sum = match &self.duration {
-                    None => Some(d),
+                    None => Some(*d),
                     Some(cur) => cur.try_add(&d),
                 };
                 match sum {
@@ -125,7 +125,7 @@ impl Total {
             None => Ok(LoraValue::Null),
             Some(LoraValue::Duration(d)) => d
                 .try_div_int(self.durations as i64)
-                .map(LoraValue::Duration)
+                .map(LoraValue::from)
                 .ok_or_else(|| ExecutorError::RuntimeError("avg() overflowed".into())),
             Some(LoraValue::Int(i)) => Ok(LoraValue::Float(i as f64 / numbers as f64)),
             Some(LoraValue::Float(f)) => Ok(LoraValue::Float(f / numbers as f64)),
@@ -142,7 +142,7 @@ impl Total {
             (Some(_), n) if n > 0 => Err(ExecutorError::RuntimeError(format!(
                 "{name}() can't add durations and numbers"
             ))),
-            (Some(d), _) => Ok(Some(LoraValue::Duration(d.clone()))),
+            (Some(d), _) => Ok(Some(LoraValue::Duration(Box::new(d.clone())))),
             (None, 0) => Ok(None),
             (None, _) if self.floats == 0 => Ok(Some(LoraValue::Int(self.int))),
             (None, _) => Ok(Some(LoraValue::Float(self.int as f64 + self.float))),
@@ -327,9 +327,15 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
             groups.insert(Vec::new(), input_rows);
         } else {
             let mut keys = RowKeyBuilder::default();
+            let mut key = Vec::with_capacity(group_by.len());
             for row in input_rows {
-                let key = group_key(&mut keys, group_by, &row, &eval_ctx)?;
-                groups.entry(key).or_default().push(row);
+                group_key(&mut keys, &mut key, group_by, &row, &eval_ctx)?;
+                match groups.get_mut(key.as_slice()) {
+                    Some(rows) => rows.push(row),
+                    None => {
+                        groups.insert(std::mem::take(&mut key), vec![row]);
+                    }
+                }
             }
         }
 
@@ -388,16 +394,20 @@ impl<'a, S: GraphStorage> HashAggregationSource<'a, S> {
 
         let mut groups: BTreeMap<Vec<RowKeyPart>, StreamingGroup> = BTreeMap::new();
         let mut keys = RowKeyBuilder::default();
+        let mut key = Vec::with_capacity(group_by.len());
 
         while let Some(row) = upstream.next_row()? {
-            let key = group_key(&mut keys, group_by, &row, &eval_ctx)?;
+            group_key(&mut keys, &mut key, group_by, &row, &eval_ctx)?;
 
             // First time we see this key, capture the row as the
             // representative for group_by output evaluation. Subsequent
             // rows in the same group only feed the aggregates.
-            let entry = groups
-                .entry(key)
-                .or_insert_with(|| StreamingGroup::new(specs, row.clone()));
+            let entry = match groups.get_mut(key.as_slice()) {
+                Some(entry) => entry,
+                None => groups
+                    .entry(std::mem::take(&mut key))
+                    .or_insert_with(|| StreamingGroup::new(specs, row.clone())),
+            };
 
             for (i, spec) in specs.iter().enumerate() {
                 let value = match &spec.arg {

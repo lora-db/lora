@@ -379,7 +379,7 @@ fn exhaustive_knn_ranking() {
     let mut params = BTreeMap::new();
     params.insert(
         "query".into(),
-        LoraValue::Vector(
+        LoraValue::from(
             LoraVector::try_new(
                 vec![
                     RawCoordinate::Float(1.0),
@@ -782,7 +782,7 @@ fn bulk_insert_via_unwind_of_parameter_list_of_maps() {
     // satisfied.
     let db = TestDb::new();
     let make_vec = |vals: &[i64]| {
-        LoraValue::Vector(
+        LoraValue::from(
             LoraVector::try_new(
                 vals.iter().map(|v| RawCoordinate::Int(*v)).collect(),
                 vals.len() as i64,
@@ -867,7 +867,7 @@ fn vector_parameter_stored_as_node_property() {
     let mut params = BTreeMap::new();
     params.insert(
         "embedding".into(),
-        LoraValue::Vector(
+        LoraValue::from(
             LoraVector::try_new(
                 vec![RawCoordinate::Float(0.5), RawCoordinate::Float(0.25)],
                 2,
@@ -887,7 +887,7 @@ fn map_parameter_with_vector_value_is_stored() {
     // A map param that holds a vector directly (not in a list) is
     // allowed as a property value — mirrors the in-query behaviour.
     let db = TestDb::new();
-    let vec_val = LoraValue::Vector(
+    let vec_val = LoraValue::from(
         LoraVector::try_new(
             vec![RawCoordinate::Int(1), RawCoordinate::Int(2)],
             2,
@@ -907,7 +907,7 @@ fn map_parameter_with_vector_value_is_stored() {
 #[test]
 fn list_parameter_containing_vector_is_rejected_on_write() {
     let db = TestDb::new();
-    let vec_val = LoraValue::Vector(
+    let vec_val = LoraValue::from(
         LoraVector::try_new(
             vec![RawCoordinate::Int(1)],
             1,

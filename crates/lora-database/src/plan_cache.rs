@@ -1,4 +1,4 @@
-//! Compiled-plan cache keyed by raw query text plus live-store epoch.
+//! Compiled-plan cache keyed by raw query text plus plan epoch.
 //!
 //! Parse + analyze + compile costs the same handful of microseconds for every
 //! `Database::execute_with_params` call, even when the query text is reused
@@ -9,42 +9,55 @@
 //! # Why this is safe
 //!
 //! The compiled plan is a pure function of the parsed `Document` plus the
-//! graph/catalog snapshot read at compile time:
-//! - The analyzer reads the store only to validate that label /
-//!   relationship-type / property-key names exist (analyzer.rs:1110–1170);
-//!   it does not embed any store-derived data into the resolved query.
-//! - The optimizer reads `GraphStats` for cost-based selection between
-//!   competing index rewrites (`use_indexed_node_scans` in
-//!   `lora-compiler/src/optimizer.rs`). The cache key includes the
-//!   live-store epoch, which bumps after every write, so cardinality shifts
-//!   and catalog changes compile into a fresh entry instead of reusing stale
-//!   operator choices.
-//! - The storage layer still has the final say on index contents at
-//!   execution time; the cache only avoids redoing analysis and planning
-//!   while the graph/catalog epoch remains unchanged.
+//! stats snapshot read at compile time:
+//! - The analyzer does not read the store at all (see
+//!   `lora-analyzer/src/analyzer/state.rs`): whether a query is valid does
+//!   not depend on which labels, types or keys exist.
+//! - The planner and optimizer read only [`lora_store::GraphStats`]: counts
+//!   per label / type, distinct-value estimates per counted key, and the
+//!   online range / text / point / vector index scopes. They use them for
+//!   cost alone (anchor choice, index rewrites, index-backed ordering);
+//!   every index operator re-checks at execution time and falls back to a
+//!   label scan when its index is gone, and the predicate it replaced is
+//!   still evaluated. So any plan is correct against any graph; stats only
+//!   decide how fast it runs.
 //!
-//! # Write-heavy workloads
+//! # Plan epochs
 //!
-//! Every write bumps the epoch, so a mutating query never hits a plan
-//! compiled for an earlier epoch. Two things keep that cheap:
-//! - The parsed [`Document`] is a pure function of the query text, so it
-//!   is kept per query across epochs and a recompile skips the parser
-//!   (the parser is the largest share of compile time).
-//! - Only the [`EPOCHS_PER_QUERY`] newest plans are kept per query.
-//!   Epochs only move forward, so older plans can never hit again once a
-//!   newer epoch is live; keeping them would fill the cache with dead
-//!   entries and push out plans for other queries.
+//! Plans are keyed on a *plan epoch* rather than on the live store's write
+//! epoch. The plan epoch advances only when the store's
+//! [`plan_signature`](lora_store::GraphStorage::plan_signature) changes:
+//! an online index appears or goes (CREATE / DROP INDEX, a constraint's
+//! backing index), a label, type or counted property key appears or goes,
+//! or a count crosses a power of two. Ordinary writes leave it alone, so a
+//! repeated `CREATE` or `SET` reuses its plan instead of re-analyzing,
+//! re-planning and rebuilding the stats on every call. The signature is
+//! computed at most once per store write epoch, by the first query that
+//! sees it.
+//!
+//! Because a cached plan may be reused while counts drift within their
+//! buckets, a plan's operator choice can lag the exact stats by up to a
+//! factor of two in any count. That changes cost, never results (see
+//! above), with one visible effect: the row order of a query without
+//! `ORDER BY` follows the chosen operators, as it always has.
+//!
+//! The parsed [`Document`] is a pure function of the query text, so it is
+//! kept per query across plan epochs and a recompile skips the parser.
+//! Only the [`EPOCHS_PER_QUERY`] newest plans are kept per query. Epochs
+//! only move forward, so older plans can never hit again once a newer epoch
+//! is live; keeping them would fill the cache with dead entries.
 //!
 //! # Eviction
 //!
 //! A small bounded LRU over query texts keeps the working set hot without
 //! unbounded growth. On overflow we evict the query with the oldest access
-//! counter. The eviction scan is `O(capacity)` with `capacity = 256` and
+//! stamp. The eviction scan is `O(capacity)` with `capacity = 256` and
 //! allocates nothing; it is paid only when a new query text is admitted.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use lora_ast::Document;
 use lora_compiler::CompiledQuery;
@@ -58,26 +71,46 @@ const DEFAULT_CAPACITY: usize = 256;
 /// the epoch just before a concurrent write landed.
 const EPOCHS_PER_QUERY: usize = 2;
 
-/// Content-addressed cache mapping `(query text, live-store epoch)` →
+/// Content-addressed cache mapping `(query text, plan epoch)` →
 /// compiled plan, plus query text → parsed document.
 ///
 /// Cloning a `PlanCache` is meaningful: callers wrap it in `Arc` so all
 /// `Database` clones (and the read/write phases of a single `execute`) share
 /// the same map.
+///
+/// # Concurrency
+///
+/// Hits take only the read lock, so concurrent readers of cached plans
+/// never wait on each other. The LRU stamp of a hit is an atomic that is
+/// written only when it changes: the stamp is the miss clock, which moves
+/// once per insert, so a hot query hit over and over writes nothing
+/// shared beyond the plan's refcount.
 pub(crate) struct PlanCache {
-    inner: Mutex<Inner>,
+    inner: RwLock<Inner>,
+    /// Logical clock for LRU stamps; advances once per insert. Hits stamp
+    /// their slot with the current value, so slots hit since the last
+    /// insert tie, and everything older sorts below them.
+    clock: AtomicU64,
 }
 
 struct Inner {
     entries: HashMap<String, Slot>,
-    /// Monotonic counter used as the "last accessed" stamp for LRU eviction.
-    /// Wrapping at u64 takes longer than any reasonable process lifetime, so
-    /// we don't worry about overflow.
-    counter: u64,
+    /// Which plan epoch the newest resolved store write epoch maps to.
+    resolved: Resolved,
     /// Maximum number of cached plans across all queries.
     capacity: usize,
     /// Number of cached plans across all queries.
     len: usize,
+}
+
+/// The store write epoch → plan epoch mapping, for the newest store
+/// epoch seen.
+#[derive(Default)]
+struct Resolved {
+    store_epoch: u64,
+    /// Plan signature of that store epoch; `None` before the first.
+    signature: Option<u64>,
+    plan_epoch: u64,
 }
 
 struct Slot {
@@ -87,11 +120,21 @@ struct Slot {
     document: Option<Arc<Document>>,
     /// At most [`EPOCHS_PER_QUERY`] plans, one per epoch.
     plans: Vec<Entry>,
-    last_used: u64,
+    last_used: AtomicU64,
+}
+
+impl Slot {
+    fn touch(&self, now: u64) {
+        // Load first: a hit on a slot already stamped `now` stays a pure
+        // read, so readers on different cores don't bounce its line.
+        if self.last_used.load(Ordering::Relaxed) != now {
+            self.last_used.store(now, Ordering::Relaxed);
+        }
+    }
 }
 
 struct Entry {
-    store_epoch: u64,
+    epoch: u64,
     plan: Arc<CompiledQuery>,
 }
 
@@ -108,44 +151,90 @@ impl PlanCache {
 
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
-            inner: Mutex::new(Inner {
+            inner: RwLock::new(Inner {
                 entries: HashMap::with_capacity(capacity),
-                counter: 0,
+                resolved: Resolved::default(),
                 capacity,
                 len: 0,
             }),
+            clock: AtomicU64::new(0),
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+    fn read(&self) -> RwLockReadGuard<'_, Inner> {
         self.inner
-            .lock()
+            .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Look up a cached plan for `query` under a live-store epoch.
-    /// Returns `None` on miss.
+    fn write(&self) -> RwLockWriteGuard<'_, Inner> {
+        self.inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The plan epoch of store write epoch `store_epoch` if it is the
+    /// newest resolved one, together with the cached plan for `query`
+    /// under it. `(None, None)` means the caller must
+    /// [`resolve`](Self::resolve) the store epoch first.
+    pub(crate) fn lookup(
+        &self,
+        query: &str,
+        store_epoch: u64,
+    ) -> (Option<u64>, Option<Arc<CompiledQuery>>) {
+        let guard = self.read();
+        if guard.resolved.signature.is_none() || guard.resolved.store_epoch != store_epoch {
+            return (None, None);
+        }
+        let epoch = guard.resolved.plan_epoch;
+        (Some(epoch), self.get_locked(&guard, query, epoch))
+    }
+
+    /// Map store write epoch `store_epoch`, whose snapshot has plan
+    /// signature `signature`, to a plan epoch. The plan epoch advances
+    /// when a newer store epoch brings a new signature. `None` for an
+    /// older snapshot whose signature differs from the newest one: plans
+    /// for it are not cached.
+    pub(crate) fn resolve(&self, store_epoch: u64, signature: u64) -> Option<u64> {
+        let mut guard = self.write();
+        let resolved = &mut guard.resolved;
+        if resolved.signature == Some(signature) {
+            resolved.store_epoch = resolved.store_epoch.max(store_epoch);
+            return Some(resolved.plan_epoch);
+        }
+        if resolved.signature.is_some() && store_epoch <= resolved.store_epoch {
+            return None;
+        }
+        resolved.store_epoch = store_epoch;
+        resolved.signature = Some(signature);
+        resolved.plan_epoch += 1;
+        Some(resolved.plan_epoch)
+    }
+
+    /// Look up a cached plan for `query` under a plan epoch. Returns
+    /// `None` on miss.
     ///
-    /// On hit, the entry's last-used timestamp is bumped so it survives
+    /// On hit, the entry's last-used stamp is bumped so it survives
     /// eviction longer.
-    pub(crate) fn get(&self, query: &str, store_epoch: u64) -> Option<Arc<CompiledQuery>> {
-        let mut guard = self.lock();
-        let counter = guard.counter.wrapping_add(1);
-        guard.counter = counter;
-        let slot = guard.entries.get_mut(query)?;
+    pub(crate) fn get(&self, query: &str, epoch: u64) -> Option<Arc<CompiledQuery>> {
+        self.get_locked(&self.read(), query, epoch)
+    }
+
+    fn get_locked(&self, guard: &Inner, query: &str, epoch: u64) -> Option<Arc<CompiledQuery>> {
+        let slot = guard.entries.get(query)?;
         let plan = slot
             .plans
             .iter()
-            .find(|entry| entry.store_epoch == store_epoch)?
+            .find(|entry| entry.epoch == epoch)?
             .plan
             .clone();
-        slot.last_used = counter;
+        slot.touch(self.clock.load(Ordering::Relaxed));
         Some(plan)
     }
 
     /// The cached parse of `query`, if any epoch of it has been compiled.
     pub(crate) fn document(&self, query: &str) -> Option<Arc<Document>> {
-        self.lock()
+        self.read()
             .entries
             .get(query)
             .and_then(|slot| slot.document.clone())
@@ -153,34 +242,31 @@ impl PlanCache {
 
     /// Insert a freshly-compiled plan. If the cache is at capacity, evict
     /// the least recently used query.
-    pub(crate) fn insert(&self, query: &str, store_epoch: u64, plan: Arc<CompiledQuery>) {
-        self.insert_with_document(query, store_epoch, None, plan);
+    pub(crate) fn insert(&self, query: &str, epoch: u64, plan: Arc<CompiledQuery>) {
+        self.insert_with_document(query, epoch, None, plan);
     }
 
     pub(crate) fn insert_with_document(
         &self,
         query: &str,
-        store_epoch: u64,
+        epoch: u64,
         document: Option<Arc<Document>>,
         plan: Arc<CompiledQuery>,
     ) {
-        let mut guard = self.lock();
+        let mut guard = self.write();
         if guard.capacity == 0 {
             return;
         }
-        let counter = guard.counter.wrapping_add(1);
-        guard.counter = counter;
+        // Stamp with the current tick, then advance it: hits from now on
+        // rank above this insert.
+        let now = self.clock.fetch_add(1, Ordering::Relaxed);
 
         if let Some(slot) = guard.entries.get_mut(query) {
-            slot.last_used = counter;
+            *slot.last_used.get_mut() = now;
             if slot.document.is_none() {
                 slot.document = document;
             }
-            if let Some(entry) = slot
-                .plans
-                .iter_mut()
-                .find(|entry| entry.store_epoch == store_epoch)
-            {
+            if let Some(entry) = slot.plans.iter_mut().find(|entry| entry.epoch == epoch) {
                 entry.plan = plan;
                 return;
             }
@@ -192,15 +278,15 @@ impl PlanCache {
                     .plans
                     .iter()
                     .enumerate()
-                    .map(|(idx, entry)| (idx, entry.store_epoch))
+                    .map(|(idx, entry)| (idx, entry.epoch))
                     .min_by_key(|&(_, epoch)| epoch)
                     .expect("slot holds plans");
-                if store_epoch > oldest_epoch {
-                    slot.plans[oldest_idx] = Entry { store_epoch, plan };
+                if epoch > oldest_epoch {
+                    slot.plans[oldest_idx] = Entry { epoch, plan };
                 }
                 return;
             }
-            slot.plans.push(Entry { store_epoch, plan });
+            slot.plans.push(Entry { epoch, plan });
             guard.len += 1;
             while guard.len > guard.capacity {
                 if !evict_oldest(&mut guard, Some(query)) {
@@ -219,8 +305,8 @@ impl PlanCache {
             query.to_owned(),
             Slot {
                 document,
-                plans: vec![Entry { store_epoch, plan }],
-                last_used: counter,
+                plans: vec![Entry { epoch, plan }],
+                last_used: AtomicU64::new(now),
             },
         );
         guard.len += 1;
@@ -228,7 +314,7 @@ impl PlanCache {
 
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.lock().len
+        self.read().len
     }
 }
 
@@ -239,7 +325,7 @@ fn evict_oldest(guard: &mut Inner, keep: Option<&str>) -> bool {
         .entries
         .iter()
         .filter(|(query, _)| Some(query.as_str()) != keep)
-        .min_by_key(|(_, slot)| slot.last_used)
+        .min_by_key(|(_, slot)| slot.last_used.load(Ordering::Relaxed))
         .map(|(query, _)| query.clone());
     let Some(query) = oldest else {
         return false;

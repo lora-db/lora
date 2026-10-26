@@ -13,6 +13,8 @@ use std::collections::{hash_map::DefaultHasher, BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use super::index_catalog::{StoredIndexEntity, StoredIndexKind};
+
 /// `(label or relationship type, property key) → estimated distinct
 /// values`.
 pub type DistinctValues = BTreeMap<(String, String), usize>;
@@ -56,6 +58,73 @@ pub struct GraphStats {
     /// through a flat per-query scan rather than a dedicated structure.
     pub node_vector_indexes: BTreeSet<(String, String)>,
     pub relationship_vector_indexes: BTreeSet<(String, String)>,
+}
+
+/// Builds a [`GraphStats::plan_signature`]: a hash of every input the
+/// planner reads from the stats, with cardinalities coarsened to
+/// power-of-two buckets. Backends feed it the same items `GraphStats`
+/// holds, in a deterministic order, without building the maps.
+pub struct PlanSignature {
+    hasher: DefaultHasher,
+}
+
+impl Default for PlanSignature {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PlanSignature {
+    pub fn new() -> Self {
+        Self {
+            hasher: DefaultHasher::new(),
+        }
+    }
+
+    /// Bucket of a cardinality: 0 for 0, else its bit length (1, 2-3,
+    /// 4-7, ...). Cost estimates within one bucket are within a factor
+    /// of two of each other.
+    pub fn bucket(count: usize) -> u32 {
+        usize::BITS - count.leading_zeros()
+    }
+
+    pub fn totals(&mut self, nodes: usize, relationships: usize) {
+        (0u8, Self::bucket(nodes), Self::bucket(relationships)).hash(&mut self.hasher);
+    }
+
+    /// A label present in the stats (even with no nodes left: an absent
+    /// label and an empty one estimate differently).
+    pub fn label(&mut self, label: &str, nodes: usize) {
+        (1u8, label, Self::bucket(nodes)).hash(&mut self.hasher);
+    }
+
+    pub fn relationship_type(&mut self, rel_type: &str, relationships: usize) {
+        (2u8, rel_type, Self::bucket(relationships)).hash(&mut self.hasher);
+    }
+
+    pub fn node_distinct(&mut self, label: &str, property: &str, distinct: usize) {
+        (3u8, label, property, Self::bucket(distinct)).hash(&mut self.hasher);
+    }
+
+    pub fn relationship_distinct(&mut self, rel_type: &str, property: &str, distinct: usize) {
+        (4u8, rel_type, property, Self::bucket(distinct)).hash(&mut self.hasher);
+    }
+
+    /// An online range / text / point / vector index scope, as the
+    /// `*_indexes` sets of [`GraphStats`] hold them.
+    pub fn index(
+        &mut self,
+        entity: StoredIndexEntity,
+        kind: StoredIndexKind,
+        label: &str,
+        property: &str,
+    ) {
+        (5u8, entity, kind.as_str(), label, property).hash(&mut self.hasher);
+    }
+
+    pub fn finish(&self) -> u64 {
+        self.hasher.finish()
+    }
 }
 
 impl GraphStats {
@@ -103,6 +172,78 @@ impl GraphStats {
         self.node_vector_indexes.hash(&mut hasher);
         self.relationship_vector_indexes.hash(&mut hasher);
         hasher.finish()
+    }
+
+    /// Hash of what the planner reads from these stats, with every
+    /// cardinality coarsened to a power-of-two bucket (see
+    /// [`PlanSignature`]). Two stats with the same signature have the
+    /// same labels, types, counted keys and online index scopes, and
+    /// counts within a factor of two: a plan made for one is a sound
+    /// and reasonable plan for the other. Plans never depend on stats
+    /// for correctness, only for cost.
+    pub fn plan_signature(&self) -> u64 {
+        let mut sig = PlanSignature::new();
+        sig.totals(self.node_count, self.relationship_count);
+        for (label, count) in &self.nodes_by_label {
+            sig.label(label, *count);
+        }
+        for (rel_type, count) in &self.relationships_by_type {
+            sig.relationship_type(rel_type, *count);
+        }
+        for ((label, property), distinct) in self.node_distinct_values.iter() {
+            sig.node_distinct(label, property, *distinct);
+        }
+        for ((rel_type, property), distinct) in self.relationship_distinct_values.iter() {
+            sig.relationship_distinct(rel_type, property, *distinct);
+        }
+        let scopes = [
+            (
+                StoredIndexEntity::Node,
+                StoredIndexKind::Range,
+                &self.node_range_indexes,
+            ),
+            (
+                StoredIndexEntity::Node,
+                StoredIndexKind::Text,
+                &self.node_text_indexes,
+            ),
+            (
+                StoredIndexEntity::Node,
+                StoredIndexKind::Point,
+                &self.node_point_indexes,
+            ),
+            (
+                StoredIndexEntity::Node,
+                StoredIndexKind::Vector,
+                &self.node_vector_indexes,
+            ),
+            (
+                StoredIndexEntity::Relationship,
+                StoredIndexKind::Range,
+                &self.relationship_range_indexes,
+            ),
+            (
+                StoredIndexEntity::Relationship,
+                StoredIndexKind::Text,
+                &self.relationship_text_indexes,
+            ),
+            (
+                StoredIndexEntity::Relationship,
+                StoredIndexKind::Point,
+                &self.relationship_point_indexes,
+            ),
+            (
+                StoredIndexEntity::Relationship,
+                StoredIndexKind::Vector,
+                &self.relationship_vector_indexes,
+            ),
+        ];
+        for (entity, kind, set) in scopes {
+            for (label, property) in set {
+                sig.index(entity, kind, label, property);
+            }
+        }
+        sig.finish()
     }
 
     pub fn has_node_range_index(&self, label: &str, property: &str) -> bool {

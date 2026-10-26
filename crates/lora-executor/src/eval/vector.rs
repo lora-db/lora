@@ -50,7 +50,7 @@ fn coerce_list_to_raw_coords(items: &[LoraValue]) -> Result<Vec<RawCoordinate>, 
 fn coerce_similarity_input(value: &LoraValue) -> Result<Option<LoraVector>, String> {
     match value {
         LoraValue::Null => Ok(None),
-        LoraValue::Vector(v) => Ok(Some(v.clone())),
+        LoraValue::Vector(v) => Ok(Some((**v).clone())),
         LoraValue::List(items) => {
             let raw = coerce_list_to_raw_coords(items)?;
             let dim = raw.len() as i64;

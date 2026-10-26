@@ -1760,6 +1760,44 @@ impl InMemoryGraph {
         stats
     }
 
+    /// [`GraphStats::plan_signature`] of [`Self::graph_stats`], computed
+    /// without building the stats: one pass over the label / type maps,
+    /// the distinct-value estimates and the index catalog. Plan caches
+    /// call it after every write, so it must stay allocation-free.
+    pub fn plan_signature(&self) -> u64 {
+        let mut sig = super::PlanSignature::new();
+        sig.totals(self.live_node_count, self.live_rel_count);
+        for (label, ids) in &self.nodes_by_label {
+            sig.label(label, ids.len());
+        }
+        for (rel_type, ids) in &self.relationships_by_type {
+            sig.relationship_type(rel_type, ids.len());
+        }
+        for (label, property, distinct) in self.distinct_stats.nodes.estimates() {
+            sig.node_distinct(label, property, distinct);
+        }
+        for (rel_type, property, distinct) in self.distinct_stats.relationships.estimates() {
+            sig.relationship_distinct(rel_type, property, distinct);
+        }
+        for def in self.index_catalog_read().iter() {
+            if def.state != StoredIndexState::Online
+                || matches!(
+                    def.kind,
+                    StoredIndexKind::Lookup | StoredIndexKind::Fulltext
+                )
+            {
+                continue;
+            }
+            let Some(label) = &def.label else {
+                continue;
+            };
+            for property in &def.properties {
+                sig.index(def.entity, def.kind, label, property);
+            }
+        }
+        sig.finish()
+    }
+
     /// Approximate retained-heap breakdown of this graph. See
     /// [`super::MemoryReport`] for the methodology and per-component
     /// fields. Intended for benches and the `mem_probe*` examples;

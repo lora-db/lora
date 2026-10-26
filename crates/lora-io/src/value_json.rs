@@ -166,24 +166,26 @@ pub fn lora_value_from_json(value: J) -> Result<LoraValue, String> {
                         )?))
                     }
                     "datetime" => {
-                        return Ok(LoraValue::DateTime(parse_iso::<LoraDateTime>(
+                        return Ok(LoraValue::from(parse_iso::<LoraDateTime>(
                             &obj, "datetime",
                         )?))
                     }
                     "localdatetime" => {
-                        return Ok(LoraValue::LocalDateTime(parse_iso::<LoraLocalDateTime>(
+                        return Ok(LoraValue::from(parse_iso::<LoraLocalDateTime>(
                             &obj,
                             "localdatetime",
                         )?))
                     }
                     "duration" => {
-                        return Ok(LoraValue::Duration(parse_iso::<LoraDuration>(
+                        return Ok(LoraValue::from(parse_iso::<LoraDuration>(
                             &obj, "duration",
                         )?))
                     }
-                    "point" => return Ok(LoraValue::Point(point_from_obj(&obj)?)),
-                    "vector" => return Ok(LoraValue::Vector(vector_from_obj(&obj)?)),
-                    "binary" | "blob" => return Ok(LoraValue::Binary(binary_from_obj(&obj)?)),
+                    "point" => return Ok(LoraValue::Point(Box::new(point_from_obj(&obj)?))),
+                    "vector" => return Ok(LoraValue::Vector(Box::new(vector_from_obj(&obj)?))),
+                    "binary" | "blob" => {
+                        return Ok(LoraValue::Binary(Box::new(binary_from_obj(&obj)?)))
+                    }
                     "node" | "relationship" | "path" => {
                         // Hydrated entity envelopes round-trip only as
                         // their id payload — semantic re-creation is

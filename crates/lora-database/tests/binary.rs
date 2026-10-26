@@ -10,7 +10,7 @@ use serde_json::json;
 use test_helpers::TestDb;
 
 fn blob_value() -> LoraValue {
-    LoraValue::Binary(LoraBinary::from_segments(vec![
+    LoraValue::from(LoraBinary::from_segments(vec![
         vec![0, 1, 2, 3],
         vec![250, 251, 252, 253, 254, 255],
     ]))

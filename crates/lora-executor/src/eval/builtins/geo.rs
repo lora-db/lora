@@ -29,7 +29,7 @@ fn point(args: &[LoraValue]) -> LoraValue {
         // Already a point — pass-through so `point(p)` is idempotent.
         LoraValue::Point(p) => LoraValue::Point(p.clone()),
         LoraValue::Map(m) => match build_point_from_map(m) {
-            Ok(Some(p)) => LoraValue::Point(p),
+            Ok(Some(p)) => LoraValue::Point(Box::new(p)),
             Ok(None) => LoraValue::Null,
             Err(msg) => {
                 set_eval_error(msg);

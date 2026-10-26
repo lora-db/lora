@@ -133,17 +133,17 @@ pub(crate) fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue
                     "datetime" => {
                         let iso = require_iso(&obj, "datetime")?;
                         let dt = LoraDateTime::parse(iso).map_err(invalid_param)?;
-                        return Ok(LoraValue::DateTime(dt));
+                        return Ok(LoraValue::DateTime(Box::new(dt)));
                     }
                     "localdatetime" => {
                         let iso = require_iso(&obj, "localdatetime")?;
                         let dt = LoraLocalDateTime::parse(iso).map_err(invalid_param)?;
-                        return Ok(LoraValue::LocalDateTime(dt));
+                        return Ok(LoraValue::LocalDateTime(Box::new(dt)));
                     }
                     "duration" => {
                         let iso = require_iso(&obj, "duration")?;
                         let d = LoraDuration::parse(iso).map_err(invalid_param)?;
-                        return Ok(LoraValue::Duration(d));
+                        return Ok(LoraValue::Duration(Box::new(d)));
                     }
                     "point" => {
                         let coords = lora_store::NamedPointCoordinates {
@@ -156,14 +156,14 @@ pub(crate) fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue
                             height: obj.get("height").and_then(|v| v.as_f64()),
                         };
                         let point = coords.resolve().map_err(invalid_param)?;
-                        return Ok(LoraValue::Point(point));
+                        return Ok(LoraValue::Point(Box::new(point)));
                     }
                     "vector" => {
                         let v = vector_from_json_map(&obj).map_err(invalid_param)?;
-                        return Ok(LoraValue::Vector(v));
+                        return Ok(LoraValue::Vector(Box::new(v)));
                     }
                     "binary" | "blob" => {
-                        return Ok(LoraValue::Binary(binary_from_json_map(&obj)?));
+                        return Ok(LoraValue::Binary(Box::new(binary_from_json_map(&obj)?)));
                     }
                     _ => {}
                 }

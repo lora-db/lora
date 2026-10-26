@@ -203,6 +203,11 @@ impl IndexCatalog {
         self.by_name.values().cloned().collect()
     }
 
+    /// Every definition, by name, without cloning.
+    pub fn iter(&self) -> impl Iterator<Item = &IndexDefinition> {
+        self.by_name.values()
+    }
+
     pub fn get(&self, name: &str) -> Option<&IndexDefinition> {
         self.by_name.get(name)
     }

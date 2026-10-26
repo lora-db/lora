@@ -420,19 +420,19 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue, JsError> 
                         let iso = require_iso(&obj, "datetime")?;
                         let dt = LoraDateTime::parse(iso)
                             .map_err(|e| js_error(INVALID_PARAMS_CODE, &e))?;
-                        return Ok(LoraValue::DateTime(dt));
+                        return Ok(LoraValue::DateTime(Box::new(dt)));
                     }
                     "localdatetime" => {
                         let iso = require_iso(&obj, "localdatetime")?;
                         let dt = LoraLocalDateTime::parse(iso)
                             .map_err(|e| js_error(INVALID_PARAMS_CODE, &e))?;
-                        return Ok(LoraValue::LocalDateTime(dt));
+                        return Ok(LoraValue::LocalDateTime(Box::new(dt)));
                     }
                     "duration" => {
                         let iso = require_iso(&obj, "duration")?;
                         let d = LoraDuration::parse(iso)
                             .map_err(|e| js_error(INVALID_PARAMS_CODE, &e))?;
-                        return Ok(LoraValue::Duration(d));
+                        return Ok(LoraValue::Duration(Box::new(d)));
                     }
                     "point" => {
                         let coords = lora_store::NamedPointCoordinates {
@@ -447,17 +447,17 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue, JsError> 
                         let point = coords
                             .resolve()
                             .map_err(|e| js_error(INVALID_PARAMS_CODE, &e))?;
-                        return Ok(LoraValue::Point(point));
+                        return Ok(LoraValue::Point(Box::new(point)));
                     }
                     "vector" => {
                         let v = vector_from_json_map(&obj)
                             .map_err(|e| js_error(INVALID_PARAMS_CODE, &e))?;
-                        return Ok(LoraValue::Vector(v));
+                        return Ok(LoraValue::Vector(Box::new(v)));
                     }
                     "binary" | "blob" => {
                         let v = binary_from_json_map(&obj)
                             .map_err(|e| js_error(INVALID_PARAMS_CODE, &e))?;
-                        return Ok(LoraValue::Binary(v));
+                        return Ok(LoraValue::Binary(Box::new(v)));
                     }
                     _ => {}
                 }
