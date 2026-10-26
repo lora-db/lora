@@ -214,6 +214,20 @@ pub(crate) fn eval_deadline_hit() -> bool {
     }
 }
 
+/// Whether the deadline of the query running on this thread has passed
+/// (or the query was cancelled), reading the clock now. For loops that
+/// keep their own stride counter; marks the query tripped like
+/// [`eval_deadline_hit`].
+pub(crate) fn active_deadline_passed() -> bool {
+    match active_deadline() {
+        Some(deadline) if deadline_reached(deadline) => {
+            EVAL_TRIPPED.with(|t| t.set(true));
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Whether an expression on this thread stopped early because the active
 /// query's deadline passed: its value is incomplete and must not be used.
 #[inline]

@@ -195,9 +195,13 @@ impl Drop for PathSegment {
     fn drop(&mut self) {
         let mut next = self.parent.take();
         while let Some(segment) = next {
+            // Still shared with another path: that path frees it. (Checked
+            // first: a plain release is cheaper than `try_unwrap`.)
+            if Arc::strong_count(&segment) > 1 {
+                break;
+            }
             match Arc::try_unwrap(segment) {
                 Ok(mut segment) => next = segment.parent.take(),
-                // Still shared with another path: that path frees it.
                 Err(_) => break,
             }
         }
@@ -269,6 +273,8 @@ pub struct VariableLengthExpandSource<'a, S: GraphStorage> {
     cur_path: Option<Arc<PathSegment>>,
     cur_edges: Vec<(u64, NodeId)>,
     cur_edge_idx: usize,
+    /// Edges tried, for the deadline check's stride.
+    search_ticks: u32,
 }
 
 impl<'a, S: GraphStorage> VariableLengthExpandSource<'a, S> {
@@ -305,6 +311,7 @@ impl<'a, S: GraphStorage> VariableLengthExpandSource<'a, S> {
             cur_path: None,
             cur_edges: Vec::new(),
             cur_edge_idx: 0,
+            search_ticks: 0,
         }
     }
 
@@ -434,8 +441,11 @@ impl<'a, S: GraphStorage> RowSource for VariableLengthExpandSource<'a, S> {
                     self.cur_edge_idx += 1;
                     // The search can run long without yielding a row (none
                     // of its paths end at the bound node), so it checks the
-                    // deadline itself.
-                    if crate::cancel::eval_deadline_hit() {
+                    // deadline itself, every 256 edges.
+                    self.search_ticks = self.search_ticks.wrapping_add(1);
+                    if self.search_ticks.is_multiple_of(256)
+                        && crate::cancel::active_deadline_passed()
+                    {
                         return Err(ExecutorError::QueryTimeout);
                     }
 

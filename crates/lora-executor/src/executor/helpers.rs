@@ -81,7 +81,6 @@ macro_rules! check_deadline_or_discard {
 /// Fail once `deadline` passed or its query was cancelled. Called per row,
 /// so the clock is read only every few calls (see
 /// [`crate::cancel::row_check_due`]).
-#[inline]
 pub(super) fn check_deadline_at(deadline: Instant) -> ExecResult<()> {
     // Also true when the query was cancelled; see `crate::cancel`.
     // An expression that stopped on the deadline fails its own evaluation,

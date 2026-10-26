@@ -1222,6 +1222,10 @@ fn where_seek_candidates<S: GraphStorage>(
 /// properties, and that ends on a node matching the step's node pattern (and
 /// on the node or relationship list the row already binds, if any). Each
 /// match extends `row` with `r` bound to the path's relationships.
+/// Longest pattern [`VarLengthWalk`] walks by recursion; one hop costs a
+/// few hundred bytes of stack.
+const RECURSIVE_WALK_MAX_HOPS: u64 = 32;
+
 struct VarLengthWalk<'q, 'c, S: GraphStorage> {
     step: &'q WalkStep<'q>,
     row: &'q Row,
@@ -1237,10 +1241,17 @@ impl<S: GraphStorage> VarLengthWalk<'_, '_, S> {
     /// walk keeps its own stack (one frame per hop of the current path)
     /// instead of recursing, so a long path cannot overflow the thread's.
     fn walk(&self, start: lora_store::NodeId, out: &mut Vec<Row>) {
-        let mut path: Vec<lora_store::RelationshipId> = Vec::new();
-        // Per hop of `path`: the node reached and its untried edges.
+        // Short patterns, the common case, recurse: a few frames deep that
+        // is cheaper than keeping a stack. Longer ones keep their own.
+        if self.max_hops <= RECURSIVE_WALK_MAX_HOPS {
+            self.visit(start, &mut Vec::new(), out);
+            return;
+        }
+        let depth = (self.max_hops.min(64) + 1) as usize;
+        let mut path: Vec<lora_store::RelationshipId> = Vec::with_capacity(depth);
+        // Per hop of `path`: the untried edges of the node it reached.
         let mut frames: Vec<(Vec<(lora_store::RelationshipId, lora_store::NodeId)>, usize)> =
-            Vec::new();
+            Vec::with_capacity(depth);
         self.enter(start, &path, &mut frames, out);
         while let Some((edges, next)) = frames.last_mut() {
             let Some(&(rel_id, dst_id)) = edges.get(*next) else {
@@ -1261,6 +1272,43 @@ impl<S: GraphStorage> VarLengthWalk<'_, '_, S> {
             if !self.enter(dst_id, &path, &mut frames, out) {
                 path.pop();
             }
+        }
+    }
+
+    /// The recursive walk, for patterns of at most
+    /// [`RECURSIVE_WALK_MAX_HOPS`] hops.
+    fn visit(
+        &self,
+        node: lora_store::NodeId,
+        path: &mut Vec<lora_store::RelationshipId>,
+        out: &mut Vec<Row>,
+    ) {
+        let hops = path.len() as u64;
+        if hops >= self.min_hops {
+            self.emit(node, path, out);
+        }
+        if hops >= self.max_hops || eval_deadline_hit() {
+            return;
+        }
+        let mut next = Vec::new();
+        let _ = self.ctx.storage.try_for_each_expand_id(
+            node,
+            self.step.direction,
+            &self.step.rel.types,
+            |rel_id, dst_id| {
+                next.push((rel_id, dst_id));
+                Ok::<(), ()>(())
+            },
+        );
+        for (rel_id, dst_id) in next {
+            if path.contains(&rel_id)
+                || !rel_matches_properties(rel_id, &self.step.rel.properties, self.row, self.ctx)
+            {
+                continue;
+            }
+            path.push(rel_id);
+            self.visit(dst_id, path, out);
+            path.pop();
         }
     }
 
