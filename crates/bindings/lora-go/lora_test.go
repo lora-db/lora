@@ -848,3 +848,79 @@ func sliceEqual(a, b []any) bool {
 	}
 	return true
 }
+
+// Streams pull rows in native batches; the batching must be invisible:
+// every row arrives in order across batch boundaries, values decode as in
+// Execute, and a mutating stream closed after its last row (but before the
+// pull past it) still rolls back.
+func TestStreamBatchesAcrossBoundaries(t *testing.T) {
+	db := newDB(t)
+	if _, err := db.Execute("UNWIND range(1, 1000) AS i CREATE (:B {i: i, name: 'b' + toString(i)})", nil); err != nil {
+		t.Fatal(err)
+	}
+	it, err := db.Stream("MATCH (n:B) RETURN n.i AS i, n AS node ORDER BY i", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := db.Execute("MATCH (n:B) RETURN n.i AS i, n AS node ORDER BY i", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for it.Next() {
+		row := it.Row()
+		if got := row["i"]; got != int64(n+1) {
+			t.Fatalf("row %d: i = %#v", n, got)
+		}
+		if fmt.Sprint(row) != fmt.Sprint(want.Rows[n]) {
+			t.Fatalf("row %d: stream %v, execute %v", n, row, want.Rows[n])
+		}
+		n++
+	}
+	if err := it.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1000 {
+		t.Fatalf("streamed %d rows", n)
+	}
+
+	w, err := db.Stream("UNWIND range(1, 5) AS i CREATE (:W {i: i}) RETURN i", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if !w.Next() {
+			t.Fatalf("row %d missing: %v", i, w.Err())
+		}
+	}
+	w.Close()
+	r, err := db.Execute("MATCH (w:W) RETURN count(w) AS c", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Rows[0]["c"]; got != int64(0) {
+		t.Fatalf("closing before the pull past the end committed: %v", got)
+	}
+}
+
+func TestTransactionEmptyAndTypedResults(t *testing.T) {
+	db := newDB(t)
+	results, err := db.Transaction([]lora.TransactionStatement{
+		{Query: "CREATE (:E {f: 1.5, s: 'x', l: [1, 2]})"},
+		{Query: "MATCH (e:E) RETURN e.f AS f, e.s AS s, e.l AS l"},
+		{Query: "MATCH (e:E) WHERE e.f > 10 RETURN e"},
+	}, lora.TransactionReadWrite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 || len(results[0].Rows) != 0 || len(results[2].Rows) != 0 {
+		t.Fatalf("results = %#v", results)
+	}
+	row := results[1].Rows[0]
+	if row["f"] != 1.5 || row["s"] != "x" || fmt.Sprint(row["l"]) != "[1 2]" {
+		t.Fatalf("row = %#v", row)
+	}
+	if fmt.Sprint(results[1].Columns) != "[f s l]" {
+		t.Fatalf("columns = %v", results[1].Columns)
+	}
+}
