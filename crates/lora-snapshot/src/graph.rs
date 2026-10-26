@@ -49,8 +49,8 @@ use crate::envelope::{
 };
 use crate::errors::{Result, SnapshotCodecError};
 use crate::format::{
-    BODY_FORMAT_VERSION, BODY_FORMAT_VERSION_V2, BODY_FORMAT_VERSION_V3, BODY_FORMAT_VERSION_V4,
-    FORMAT_VERSION, HEADER_LEN, MAGIC,
+    nested_decode_depth, nested_encode_depth, BODY_FORMAT_VERSION, BODY_FORMAT_VERSION_V2,
+    BODY_FORMAT_VERSION_V3, BODY_FORMAT_VERSION_V4, FORMAT_VERSION, HEADER_LEN, MAGIC,
 };
 use crate::options::{Compression, SnapshotCredentials, SnapshotOptions};
 
@@ -369,6 +369,11 @@ fn write_trailers(out: &mut impl Write, catalogs: &SnapshotCatalogs) -> Result<(
 
 /// A value as `ValueCell::encode_binary` writes it.
 fn put_value_ref(out: &mut impl Write, value: ValueRef<'_>) -> Result<()> {
+    put_value_ref_at(out, value, 0)
+}
+
+/// [`put_value_ref`] for a value nested `depth` levels deep.
+fn put_value_ref_at(out: &mut impl Write, value: ValueRef<'_>, depth: usize) -> Result<()> {
     match value {
         ValueRef::Null => out.write_all(&[0])?,
         ValueRef::Bool(value) => out.write_all(&[1, u8::from(value)])?,
@@ -384,18 +389,18 @@ fn put_value_ref(out: &mut impl Write, value: ValueRef<'_>) -> Result<()> {
             out.write_all(&[4])?;
             put_bytes(out, value.as_bytes())?;
         }
-        ValueRef::Other(value) => put_value(out, &value.get())?,
+        ValueRef::Other(value) => put_value(out, &value.get(), depth)?,
     }
     Ok(())
 }
 
-fn put_value(out: &mut impl Write, value: &PropertyValue) -> Result<()> {
+fn put_value(out: &mut impl Write, value: &PropertyValue, depth: usize) -> Result<()> {
     match value {
         PropertyValue::Null
         | PropertyValue::Bool(_)
         | PropertyValue::Int(_)
         | PropertyValue::Float(_)
-        | PropertyValue::String(_) => put_value_ref(out, ValueRef::from(value))?,
+        | PropertyValue::String(_) => put_value_ref_at(out, ValueRef::from(value), depth)?,
         PropertyValue::Binary(binary) => {
             out.write_all(&[8])?;
             put_len(out, binary.segments().len())?;
@@ -404,18 +409,20 @@ fn put_value(out: &mut impl Write, value: &PropertyValue) -> Result<()> {
             }
         }
         PropertyValue::List(values) => {
+            let depth = nested_encode_depth(depth)?;
             out.write_all(&[5])?;
             put_len(out, values.len())?;
             for value in values {
-                put_value(out, value)?;
+                put_value(out, value, depth)?;
             }
         }
         PropertyValue::Map(values) => {
+            let depth = nested_encode_depth(depth)?;
             out.write_all(&[6])?;
             put_len(out, values.len())?;
             for (key, value) in values {
                 put_bytes(out, key.as_bytes())?;
-                put_value(out, value)?;
+                put_value(out, value, depth)?;
             }
         }
         other => {
@@ -720,6 +727,11 @@ impl<R: Read> BodyStream<R> {
     }
 
     fn value(&mut self) -> Result<PropertyValue> {
+        self.value_at(0)
+    }
+
+    /// [`Self::value`] for a value nested `depth` levels deep.
+    fn value_at(&mut self, depth: usize) -> Result<PropertyValue> {
         Ok(match self.u8()? {
             0 => PropertyValue::Null,
             1 => PropertyValue::Bool(self.u8()? != 0),
@@ -735,19 +747,21 @@ impl<R: Read> BodyStream<R> {
                 PropertyValue::Binary(lora_store::LoraBinary::from_segments(segments))
             }
             5 => {
+                let depth = nested_decode_depth(depth)?;
                 let len = self.len()?;
                 let mut values = Vec::with_capacity(len.min(MAX_PREALLOC));
                 for _ in 0..len {
-                    values.push(self.value()?);
+                    values.push(self.value_at(depth)?);
                 }
                 PropertyValue::List(values)
             }
             6 => {
+                let depth = nested_decode_depth(depth)?;
                 let len = self.len()?;
                 let mut values = std::collections::BTreeMap::new();
                 for _ in 0..len {
                     let key = self.string()?;
-                    let value = self.value()?;
+                    let value = self.value_at(depth)?;
                     values.insert(key, value);
                 }
                 PropertyValue::Map(values)
@@ -1258,4 +1272,47 @@ fn hold_records<R: Read>(
         builder.push_relationship(rel).map_err(store_error)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::*;
+    use crate::format::MAX_VALUE_DEPTH;
+
+    /// A value `depth` lists deep.
+    fn nested(depth: usize) -> PropertyValue {
+        let mut value = PropertyValue::Int(1);
+        for _ in 0..depth {
+            value = PropertyValue::List(vec![value]);
+        }
+        value
+    }
+
+    /// The encoding of [`nested`] (`depth` one-element lists).
+    fn crafted(depth: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        for _ in 0..depth {
+            out.push(5);
+            out.extend_from_slice(&1u64.to_le_bytes());
+        }
+        out.push(0);
+        out
+    }
+
+    #[test]
+    fn value_decode_rejects_nesting_past_the_cap() {
+        let at_cap = crafted(MAX_VALUE_DEPTH);
+        BodyStream::new(&at_cap[..]).value().unwrap();
+        // Deep enough to overflow the stack without the cap.
+        let deep = crafted(1_000_000);
+        let err = BodyStream::new(&deep[..]).value().unwrap_err();
+        assert!(err.to_string().contains("deeper than 128"), "{err}");
+    }
+
+    #[test]
+    fn value_encode_rejects_nesting_past_the_cap() {
+        put_value(&mut Vec::new(), &nested(MAX_VALUE_DEPTH), 0).unwrap();
+        let err = put_value(&mut Vec::new(), &nested(MAX_VALUE_DEPTH + 1), 0).unwrap_err();
+        assert!(err.to_string().contains("deeper than 128"), "{err}");
+    }
 }
