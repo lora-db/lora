@@ -23,6 +23,7 @@ mod io;
 mod live_store;
 mod named;
 mod plan_cache;
+mod release_memory;
 mod snapshot;
 mod stream;
 mod transaction;

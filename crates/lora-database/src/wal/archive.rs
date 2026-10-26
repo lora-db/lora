@@ -257,5 +257,8 @@ impl Drop for WalArchive {
         if shutdown_cleanly {
             let _ = remove_work_dir(&self.work_dir);
         }
+        // The database owning this container is gone, and with it, unless
+        // a reader still holds it, its graph.
+        crate::release_memory::release_free_memory();
     }
 }

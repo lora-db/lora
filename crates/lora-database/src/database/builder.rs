@@ -174,6 +174,8 @@ impl Database<InMemoryGraph> {
             // on clean database drop.
             recorder.flush()?;
         }
+        // Loading and replaying freed about as much as the graph holds.
+        crate::release_memory::release_free_memory();
         Ok(db)
     }
 

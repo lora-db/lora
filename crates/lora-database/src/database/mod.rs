@@ -242,6 +242,7 @@ impl Database<InMemoryGraph> {
                 drop(graph);
                 archive.install_snapshot(|| wal.truncate_covered_by_mirror(snapshot_lsn))?;
                 staged_guard.commit();
+                crate::release_memory::release_free_memory();
             } else {
                 wal.force_fsync()?;
             }
