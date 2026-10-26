@@ -459,9 +459,12 @@ impl InMemoryGraph {
         // on the typical "delete every node" pattern. We deliberately do not
         // shrink the slots — leaving the slot lets new ids reuse the same
         // index without growth churn (and `next_node_id` is monotonic
-        // anyway, so no immediate reuse).
-        if let Some(adj) = self.adjacency.get_mut(idx) {
-            adj.clear();
+        // anyway, so no immediate reuse). An empty list needs no clearing,
+        // and reaching it mutably would copy its shared leaf for nothing.
+        if self.adjacency.get(idx).is_some_and(|adj| !adj.is_empty()) {
+            if let Some(adj) = self.adjacency.get_mut(idx) {
+                adj.clear();
+            }
         }
         Some(removed)
     }

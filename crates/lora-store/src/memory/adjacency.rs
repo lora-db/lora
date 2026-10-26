@@ -38,6 +38,7 @@
 
 use std::alloc::{self, Layout};
 use std::ptr::NonNull;
+use std::sync::atomic::{fence, AtomicU32, Ordering};
 
 use smallvec::SmallVec;
 
@@ -135,12 +136,14 @@ fn encode(entry: AdjEntry, mirrored: bool, buf: &mut [u8; 21]) -> usize {
 
 #[repr(C)]
 struct Header {
-    /// Bytes of outgoing entries, at the front of the data.
+    /// Bytes of outgoing entries, at the front of the data. Written only
+    /// while the allocation is unshared.
     out_len: u32,
-    /// Bytes of incoming entries, at the end of the data.
+    /// Bytes of incoming entries, at the end of the data. Written only
+    /// while the allocation is unshared.
     in_len: u32,
-    /// Bytes of data after the header.
-    cap: u32,
+    /// Data capacity and reference count in one word: see [`CapRc`].
+    cap_rc: AtomicU32,
 }
 
 const HEADER: usize = std::mem::size_of::<Header>();
@@ -159,21 +162,76 @@ const fn capacity_for(min: usize) -> usize {
 }
 const _: () = assert!(capacity_for(MAX_CAP) == MAX_CAP && MAX_CAP <= u32::MAX as usize);
 
+/// Every capacity is [`capacity_for`] something, so `HEADER + cap` is a
+/// multiple of 16 and `cap % 16` is always this. The low four bits of the
+/// capacity carry no information, and hold the reference count instead.
+const CAP_LOW: usize = (16 - HEADER % 16) % 16;
+const _: () = assert!(capacity_for(1) % 16 == CAP_LOW && MAX_CAP % 16 == CAP_LOW);
+
+/// Count bits of [`Header::cap_rc`].
+const RC_MASK: u32 = 15;
+/// The most handles one allocation can have. Cloning a list held this
+/// many times copies it instead, as every clone did before lists were
+/// shared.
+const RC_MAX: u32 = RC_MASK;
+
+/// Decoding of [`Header::cap_rc`]: `cap - CAP_LOW` (a multiple of 16)
+/// with the count of [`Adjacency`] handles (1..=[`RC_MAX`]) in the low
+/// bits. Packing the count there keeps the header at 12 bytes: a separate
+/// counter would make it 16, and cost every node with a list ~4 bytes.
+struct CapRc;
+
+impl CapRc {
+    #[inline]
+    const fn pack(cap: usize, rc: u32) -> u32 {
+        (cap - CAP_LOW) as u32 | rc
+    }
+
+    #[inline]
+    const fn cap(word: u32) -> usize {
+        (word & !RC_MASK) as usize + CAP_LOW
+    }
+
+    #[inline]
+    const fn rc(word: u32) -> u32 {
+        word & RC_MASK
+    }
+}
+
 /// Both adjacency lists of one node. Empty is a null pointer.
+///
+/// The allocation is shared, like an `Arc`: cloning bumps the count in
+/// its header, and a change to a shared allocation first copies it. A
+/// staged write copies a whole leaf of [`super::chunked_vec::ChunkedVec`]
+/// (512 nodes), which used to mean 512 list copies (and every edge of a
+/// hub in that leaf) to change one node's list; now it is 512 count
+/// bumps, and only the list that changes is copied.
 #[derive(Default)]
 pub(super) struct Adjacency {
     ptr: Option<NonNull<Header>>,
 }
 
-// SAFETY: `Adjacency` owns its allocation exclusively, like a `Box`.
+// SAFETY: an allocation is changed only through the one handle that holds
+// it (`make_unique` checks the count with acquire ordering, as
+// `Arc::get_mut` does), the count is atomic, and the entries are plain
+// bytes, so handles can move and be shared between threads like `Arc<[u8]>`.
 unsafe impl Send for Adjacency {}
 unsafe impl Sync for Adjacency {}
 
 impl Adjacency {
     #[inline]
     fn header(&self) -> Option<&Header> {
-        // SAFETY: a non-null `ptr` points at a live, initialized header.
+        // SAFETY: a non-null `ptr` points at a live, initialized header,
+        // kept alive by this handle's share of the count.
         self.ptr.map(|ptr| unsafe { &*ptr.as_ptr() })
+    }
+
+    /// Data capacity of the allocation at `ptr`.
+    #[inline]
+    fn cap_of(ptr: NonNull<Header>) -> usize {
+        // SAFETY: as for `header`. Relaxed suffices: the capacity bits
+        // only change while the allocation is unshared.
+        CapRc::cap(unsafe { (*ptr.as_ptr()).cap_rc.load(Ordering::Relaxed) })
     }
 
     /// Start of the data area. Only the outgoing bytes at its front and
@@ -189,7 +247,8 @@ impl Adjacency {
     pub(super) fn outgoing(&self) -> AdjSide<'_> {
         let bytes = match self.ptr {
             // SAFETY: the first `out_len` data bytes are written entries,
-            // and `&self` keeps the allocation alive and unchanged.
+            // and `&self` keeps the allocation alive and unchanged (it is
+            // changed only through a sole handle, under `&mut`).
             Some(ptr) => unsafe {
                 let len = (*ptr.as_ptr()).out_len as usize;
                 std::slice::from_raw_parts(Self::data(ptr), len)
@@ -208,9 +267,9 @@ impl Adjacency {
             // SAFETY: the last `in_len` of the `cap` data bytes are written
             // entries.
             Some(ptr) => unsafe {
-                let h = &*ptr.as_ptr();
-                let len = h.in_len as usize;
-                std::slice::from_raw_parts(Self::data(ptr).add(h.cap as usize - len), len)
+                let len = (*ptr.as_ptr()).in_len as usize;
+                let cap = Self::cap_of(ptr);
+                std::slice::from_raw_parts(Self::data(ptr).add(cap - len), len)
             },
             None => &[],
         };
@@ -225,9 +284,10 @@ impl Adjacency {
         Layout::from_size_align(HEADER + cap, ALIGN).expect("adjacency list fits the address space")
     }
 
-    /// A new allocation of `cap` data bytes and empty lists.
+    /// A new, unshared allocation of `cap` data bytes and empty lists.
     fn allocate(cap: usize) -> NonNull<Header> {
-        let cap32 = u32::try_from(cap).expect("adjacency list under 4 GiB");
+        debug_assert_eq!(cap % 16, CAP_LOW);
+        assert!(cap <= MAX_CAP, "adjacency list under 4 GiB");
         let layout = Self::layout(cap);
         // SAFETY: the layout has a non-zero size (it includes the header).
         let raw = unsafe { alloc::alloc(layout) };
@@ -239,26 +299,69 @@ impl Adjacency {
             ptr.as_ptr().write(Header {
                 out_len: 0,
                 in_len: 0,
-                cap: cap32,
+                cap_rc: AtomicU32::new(CapRc::pack(cap, 1)),
             })
         };
         ptr
     }
 
+    /// An unshared copy of both lists in a new allocation of
+    /// `capacity_for(min)` data bytes (at least the bytes in use).
+    fn copy_with_capacity(&self, min: usize) -> Adjacency {
+        let (out, inc) = (self.outgoing().bytes, self.incoming().bytes);
+        let cap = capacity_for(min.max(out.len() + inc.len()));
+        let ptr = Self::allocate(cap);
+        // SAFETY: the new data area holds `cap >= out + inc` bytes, and no
+        // other handle sees it yet.
+        unsafe {
+            let data = Self::data(ptr);
+            std::ptr::copy_nonoverlapping(out.as_ptr(), data, out.len());
+            std::ptr::copy_nonoverlapping(inc.as_ptr(), data.add(cap - inc.len()), inc.len());
+            let header = &mut *ptr.as_ptr();
+            header.out_len = out.len() as u32;
+            header.in_len = inc.len() as u32;
+        }
+        Adjacency { ptr: Some(ptr) }
+    }
+
+    /// Whether this is the only handle on a non-empty allocation, so it
+    /// may change it in place.
+    #[inline]
+    fn is_unique(&self) -> bool {
+        // SAFETY: as for `header`. Acquire pairs with the release in
+        // `free`: whatever another handle did before letting go happens
+        // before our writes.
+        self.ptr.is_some_and(|ptr| unsafe {
+            CapRc::rc((*ptr.as_ptr()).cap_rc.load(Ordering::Acquire)) == 1
+        })
+    }
+
+    /// Make this handle the sole owner of its allocation, copying it
+    /// (with room for `min` data bytes) if another handle shares it.
+    #[inline]
+    fn make_unique(&mut self, min: usize) {
+        if self.ptr.is_some() && !self.is_unique() {
+            *self = self.copy_with_capacity(min);
+        }
+    }
+
     /// Enlarge the data area to `cap` bytes (in place where the allocator
-    /// can) and move the incoming entries to its new end.
+    /// can) and move the incoming entries to its new end. The allocation
+    /// must be unshared.
     fn grow(&mut self, cap: usize) {
         let Some(ptr) = self.ptr else {
             self.ptr = Some(Self::allocate(cap));
             return;
         };
-        let cap32 = u32::try_from(cap).expect("adjacency list under 4 GiB");
+        debug_assert!(self.is_unique());
+        debug_assert_eq!(cap % 16, CAP_LOW);
         let new_layout = Self::layout(cap);
         // SAFETY: `ptr` was allocated with `layout(old_cap)`; `cap > old_cap`.
         // `realloc` keeps the first `HEADER + old_cap` bytes, so the incoming
-        // entries are still at the old end, from where they are moved.
+        // entries are still at the old end, from where they are moved. The
+        // allocation is unshared, so nothing else reads it meanwhile.
         unsafe {
-            let old_cap = (*ptr.as_ptr()).cap as usize;
+            let old_cap = Self::cap_of(ptr);
             let in_len = (*ptr.as_ptr()).in_len as usize;
             let raw = alloc::realloc(
                 ptr.as_ptr().cast(),
@@ -270,17 +373,27 @@ impl Adjacency {
             };
             let data = Self::data(new);
             std::ptr::copy(data.add(old_cap - in_len), data.add(cap - in_len), in_len);
-            (*new.as_ptr()).cap = cap32;
+            (*new.as_ptr())
+                .cap_rc
+                .store(CapRc::pack(cap, 1), Ordering::Relaxed);
             self.ptr = Some(new);
         }
     }
 
+    /// Let go of the allocation: drop this handle's share, and free it if
+    /// that was the last.
     fn free(&mut self) {
         if let Some(ptr) = self.ptr.take() {
-            // SAFETY: allocated with `layout(cap)`.
+            // SAFETY: this handle held a share, so the allocation is live
+            // until the decrement; the last handle frees it with the layout
+            // it was allocated with. Release/acquire as in `Arc::drop`, so
+            // every other handle's use happens before the free.
             unsafe {
-                let cap = (*ptr.as_ptr()).cap as usize;
-                alloc::dealloc(ptr.as_ptr().cast(), Self::layout(cap));
+                let word = (*ptr.as_ptr()).cap_rc.fetch_sub(1, Ordering::Release);
+                if CapRc::rc(word) == 1 {
+                    fence(Ordering::Acquire);
+                    alloc::dealloc(ptr.as_ptr().cast(), Self::layout(CapRc::cap(word)));
+                }
             }
         }
     }
@@ -289,10 +402,10 @@ impl Adjacency {
         self.free();
     }
 
+    /// Whether both lists are empty.
     #[inline]
-    fn used(&self) -> usize {
-        self.header()
-            .map_or(0, |h| h.out_len as usize + h.in_len as usize)
+    pub(super) fn is_empty(&self) -> bool {
+        self.ptr.is_none()
     }
 
     /// One of the two lists.
@@ -308,20 +421,30 @@ impl Adjacency {
     pub(super) fn push(&mut self, side: Side, entry: AdjEntry) {
         let mut buf = [0u8; 21];
         let len = encode(entry, side == Side::In, &mut buf);
-        let (used, cap) = self.header().map_or((0, 0), |h| {
-            (h.out_len as usize + h.in_len as usize, h.cap as usize)
+        let (used, cap) = self.ptr.map_or((0, 0), |ptr| {
+            // SAFETY: as for `header`.
+            let h = unsafe { &*ptr.as_ptr() };
+            (h.out_len as usize + h.in_len as usize, Self::cap_of(ptr))
         });
-        if used + len > cap {
+        let want = if used + len > cap {
             assert!(used + len <= MAX_CAP, "adjacency list over 4 GiB");
             // Growing by half: a quarter saved 2 bytes per element on the
             // benchmark graph but made bulk relationship creation 7% slower.
-            let want = (used + len).max(cap + cap / 2).min(MAX_CAP);
+            (used + len).max(cap + cap / 2).min(MAX_CAP)
+        } else {
+            cap
+        };
+        // A shared list is copied once, straight into the size it needs.
+        self.make_unique(want);
+        if used + len > self.ptr.map_or(0, Self::cap_of) {
             self.grow(capacity_for(want));
         }
         let ptr = self.ptr.expect("allocated above");
         // SAFETY: `used + len <= cap`, so the entry lands in free space,
-        // and `&mut self` makes the write exclusive.
+        // and the allocation is unshared and `&mut self` makes the write
+        // exclusive.
         unsafe {
+            let cap = Self::cap_of(ptr);
             let header = &mut *ptr.as_ptr();
             let at = if side == Side::Out {
                 let at = header.out_len as usize;
@@ -329,7 +452,7 @@ impl Adjacency {
                 at
             } else {
                 header.in_len += len as u32;
-                header.cap as usize - header.in_len as usize
+                cap - header.in_len as usize
             };
             std::ptr::copy_nonoverlapping(buf.as_ptr(), Self::data(ptr).add(at), len);
         }
@@ -348,12 +471,15 @@ impl Adjacency {
                 break (before, iter.pos());
             }
         };
+        // Offsets are relative to the side's bytes, which a copy keeps.
+        self.make_unique(0);
         let Some(ptr) = self.ptr else {
             return false;
         };
-        // SAFETY: the moves stay within the side's written bytes, and
-        // `&mut self` makes them exclusive.
+        // SAFETY: the moves stay within the side's written bytes, and the
+        // allocation is unshared and `&mut self` makes them exclusive.
         unsafe {
+            let cap = Self::cap_of(ptr);
             let header = &mut *ptr.as_ptr();
             let data = Self::data(ptr);
             if side == Side::Out {
@@ -364,20 +490,21 @@ impl Adjacency {
             } else {
                 // Offsets are within the incoming slice and the entry is
                 // `after..before`. Newer entries sit below it: move them up.
-                let base = data.add(header.cap as usize - header.in_len as usize);
+                let base = data.add(cap - header.in_len as usize);
                 std::ptr::copy(base, base.add(before - after), after);
                 header.in_len -= (before - after) as u32;
             }
         }
-        if self.used() == 0 {
+        if self.outgoing().is_empty() && self.incoming().is_empty() {
             self.free();
         }
         true
     }
 
-    /// Heap bytes owned.
+    /// Heap bytes of the allocation, counted in full by every handle that
+    /// shares it.
     pub(super) fn heap_bytes(&self) -> usize {
-        self.header().map_or(0, |h| HEADER + h.cap as usize)
+        self.ptr.map_or(0, |ptr| HEADER + Self::cap_of(ptr))
     }
 
     /// [`Self::heap_bytes`] split between the directions: each side's
@@ -386,31 +513,35 @@ impl Adjacency {
         let Some(h) = self.header() else {
             return (0, 0);
         };
-        let shared = HEADER + h.cap as usize - h.out_len as usize - h.in_len as usize;
+        let total = self.heap_bytes();
+        let shared = total - h.out_len as usize - h.in_len as usize;
         let out = h.out_len as usize + shared / 2;
-        (out, self.heap_bytes() - out)
+        (out, total - out)
     }
 }
 
 impl Clone for Adjacency {
-    /// A copy sized to the entries, without the original's free space.
+    /// Another handle on the same allocation. A list already held
+    /// [`RC_MAX`] times is copied instead, sized to its entries.
     fn clone(&self) -> Self {
-        let (out, inc) = (self.outgoing().bytes, self.incoming().bytes);
-        if out.is_empty() && inc.is_empty() {
+        let Some(ptr) = self.ptr else {
             return Adjacency { ptr: None };
+        };
+        // SAFETY: as for `header`.
+        let count = unsafe { &(*ptr.as_ptr()).cap_rc };
+        // Relaxed as in `Arc::clone`: the new handle comes from an existing
+        // one, which keeps the allocation alive meanwhile.
+        let mut word = count.load(Ordering::Relaxed);
+        loop {
+            if CapRc::rc(word) == RC_MAX {
+                return self.copy_with_capacity(0);
+            }
+            match count.compare_exchange_weak(word, word + 1, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => return Adjacency { ptr: Some(ptr) },
+                Err(now) => word = now,
+            }
         }
-        let cap = capacity_for(out.len() + inc.len());
-        let ptr = Self::allocate(cap);
-        // SAFETY: the new data area holds `cap >= out + inc` bytes.
-        unsafe {
-            let data = Self::data(ptr);
-            std::ptr::copy_nonoverlapping(out.as_ptr(), data, out.len());
-            std::ptr::copy_nonoverlapping(inc.as_ptr(), data.add(cap - inc.len()), inc.len());
-            let header = &mut *ptr.as_ptr();
-            header.out_len = out.len() as u32;
-            header.in_len = inc.len() as u32;
-        }
-        Adjacency { ptr: Some(ptr) }
     }
 }
 
@@ -702,6 +833,159 @@ mod tests {
         }
         assert_eq!(adj.clone().heap_bytes(), 80);
         assert_eq!(std::mem::size_of::<Adjacency>(), 8);
+    }
+
+    fn sample(n: u64) -> Vec<AdjEntry> {
+        (0..n)
+            .map(|i| AdjEntry {
+                type_id: (i % 3) as u32,
+                neighbour: 1000 + i,
+                rel: i,
+            })
+            .collect()
+    }
+
+    fn filled(n: u64) -> Adjacency {
+        let mut adj = Adjacency::default();
+        for e in sample(n) {
+            adj.push(if e.rel % 2 == 0 { Side::Out } else { Side::In }, e);
+        }
+        adj
+    }
+
+    fn lists(adj: &Adjacency) -> (Vec<AdjEntry>, Vec<AdjEntry>) {
+        (
+            adj.outgoing().iter().collect(),
+            adj.incoming().iter().collect(),
+        )
+    }
+
+    #[test]
+    fn a_clone_shares_the_allocation_until_either_side_changes() {
+        let mut a = filled(40);
+        let before = lists(&a);
+        let mut b = a.clone();
+        assert_eq!(a.ptr, b.ptr, "a clone is a second handle, not a copy");
+        let extra = AdjEntry {
+            type_id: 9,
+            neighbour: 5,
+            rel: 500,
+        };
+        b.push(Side::Out, extra);
+        assert_ne!(a.ptr, b.ptr, "pushing to a shared list copies it");
+        assert_eq!(lists(&a), before);
+        assert_eq!(b.outgoing().iter().last(), Some(extra));
+        assert_eq!(b.incoming().iter().collect::<Vec<_>>(), before.1);
+        // Both are sole owners now: further changes stay in place.
+        let (pa, pb) = (a.ptr, b.ptr);
+        assert!(a.remove(Side::In, 1));
+        assert!(b.remove(Side::Out, 500));
+        assert_eq!((a.ptr, b.ptr), (pa, pb));
+        assert_eq!(lists(&b), before);
+        assert_ne!(lists(&a), before);
+    }
+
+    #[test]
+    fn removing_from_a_shared_list_leaves_the_other_handle_intact() {
+        for side in [Side::Out, Side::In] {
+            let a = filled(10);
+            let before = lists(&a);
+            let mut b = a.clone();
+            let rel = if side == Side::Out { 4 } else { 5 };
+            assert!(!b.remove(side, 999), "a miss copies nothing");
+            assert_eq!(a.ptr, b.ptr);
+            assert!(b.remove(side, rel));
+            assert_ne!(a.ptr, b.ptr);
+            assert_eq!(lists(&a), before);
+            assert!(b.side(side).iter().all(|e| e.rel != rel));
+            assert_eq!(b.side(side).count(), 4);
+        }
+        // Emptying a shared list frees only this handle's share.
+        let mut one = Adjacency::default();
+        one.push(Side::In, sample(1)[0]);
+        let mut other = one.clone();
+        assert!(other.remove(Side::In, 0));
+        assert!(other.is_empty() && other.heap_bytes() == 0);
+        assert_eq!(one.incoming().count(), 1);
+    }
+
+    #[test]
+    fn clearing_and_dropping_handles_frees_once() {
+        let a = filled(30);
+        let mut handles: Vec<Adjacency> = (0..5).map(|_| a.clone()).collect();
+        handles[2].clear();
+        assert!(handles[2].is_empty());
+        drop(a);
+        let survivor = handles.pop().unwrap();
+        drop(handles);
+        assert_eq!(
+            survivor.outgoing().count() + survivor.incoming().count(),
+            30
+        );
+    }
+
+    #[test]
+    fn a_list_held_rc_max_times_is_copied_on_clone() {
+        let a = filled(12);
+        let held: Vec<Adjacency> = (1..RC_MAX).map(|_| a.clone()).collect();
+        assert!(held.iter().all(|h| h.ptr == a.ptr));
+        let copy = a.clone();
+        assert_ne!(copy.ptr, a.ptr, "the count is saturated: copy instead");
+        assert_eq!(lists(&copy), lists(&a));
+        // The copy is sized to its entries, like every clone used to be.
+        assert!(copy.heap_bytes() <= a.heap_bytes());
+        drop(held);
+        let shared = a.clone();
+        assert_eq!(shared.ptr, a.ptr, "dropping handles frees count again");
+    }
+
+    #[test]
+    fn growing_a_list_keeps_its_count_bits() {
+        let mut a = Adjacency::default();
+        for e in sample(200) {
+            a.push(Side::In, e);
+            let ptr = a.ptr.unwrap();
+            // SAFETY: test-only read of the live header.
+            let word = unsafe { (*ptr.as_ptr()).cap_rc.load(Ordering::Relaxed) };
+            assert_eq!(CapRc::rc(word), 1);
+            assert_eq!(CapRc::cap(word) % 16, CAP_LOW);
+            assert_eq!(a.heap_bytes() % 16, 0);
+        }
+        assert_eq!(a.incoming().iter().collect::<Vec<_>>(), sample(200));
+    }
+
+    #[test]
+    fn handles_cross_threads() {
+        let a = filled(64);
+        let expected = lists(&a);
+        std::thread::scope(|scope| {
+            for t in 0..4u64 {
+                let mut mine = a.clone();
+                let expected = &expected;
+                scope.spawn(move || {
+                    for i in 0..8 {
+                        let copy = mine.clone();
+                        assert_eq!(lists(&copy), lists(&mine));
+                        if i <= 4 {
+                            assert_eq!(&lists(&copy), expected);
+                        }
+                        drop(copy);
+                        if i == 4 {
+                            mine.push(
+                                Side::Out,
+                                AdjEntry {
+                                    type_id: 1,
+                                    neighbour: t,
+                                    rel: 10_000 + t,
+                                },
+                            );
+                        }
+                    }
+                    assert_eq!(mine.outgoing().count(), expected.0.len() + 1);
+                });
+            }
+        });
+        assert_eq!(lists(&a), expected);
     }
 
     #[test]
