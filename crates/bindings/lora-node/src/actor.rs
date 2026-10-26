@@ -17,7 +17,17 @@
 //!   which is prompt; otherwise the thread is detached and finishes by
 //!   itself (it rolls back as soon as it has the lock or its statement
 //!   ends).
+//!
+//! Each actor is an unpooled OS thread, and queuing actors instead could
+//! deadlock (a transaction waiting in the queue for a thread while the JS
+//! code that would let one go waits for it). So a database caps how many
+//! it runs at once ([`OpenSlots`]) and rejects one past the cap at once
+//! with `LORA_TOO_MANY_OPEN`. An actor's [`Slot`] lives in its
+//! [`Lifecycle`] and is released when the actor ends: before it settles
+//! its last command, or when its thread exits (a panic included), so a
+//! caller that hears the transaction finished can open the next one.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
@@ -69,9 +79,63 @@ enum Phase {
     Ending,
 }
 
+/// Default for `maxOpenTransactions`.
+pub(crate) const DEFAULT_MAX_OPEN: u32 = 1024;
+
+/// Wire code of the error an actor past the cap is rejected with.
+pub(crate) const TOO_MANY_OPEN_CODE: &str = "LORA_TOO_MANY_OPEN";
+
+/// One database's budget of actors (interactive transactions, write
+/// batches and mutating streams on their own thread).
+pub(crate) struct OpenSlots {
+    open: AtomicUsize,
+    max: usize,
+}
+
+impl OpenSlots {
+    pub(crate) fn new(max: u32) -> Arc<Self> {
+        Arc::new(Self {
+            open: AtomicUsize::new(0),
+            max: max as usize,
+        })
+    }
+
+    /// Take a slot, or fail with `LORA_TOO_MANY_OPEN` when all are in use.
+    pub(crate) fn acquire(self: &Arc<Self>) -> Result<Slot, String> {
+        // Taken (and handed back on drop) first, so a full budget is never
+        // overrun; a caller racing a full budget may be refused while
+        // another gives a slot back, never let in past it.
+        let slot = Slot(self.clone());
+        if self.open.fetch_add(1, Ordering::SeqCst) < self.max {
+            return Ok(slot);
+        }
+        drop(slot);
+        Err(format!(
+            "{TOO_MANY_OPEN_CODE}: too many open transactions and write streams on this database (`maxOpenTransactions` is {}); finish or close one first",
+            self.max
+        ))
+    }
+
+    #[cfg(test)]
+    fn open(&self) -> usize {
+        self.open.load(Ordering::SeqCst)
+    }
+}
+
+/// One taken slot of an [`OpenSlots`], given back on drop.
+pub(crate) struct Slot(Arc<OpenSlots>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.open.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 struct State {
     phase: Phase,
     closed: bool,
+    /// The actor's slot, released when it ends.
+    slot: Option<Slot>,
 }
 
 /// Where an actor is in its life, shared between the actor and its handle.
@@ -79,11 +143,19 @@ struct State {
 pub(crate) struct Lifecycle(Arc<Mutex<State>>);
 
 impl Lifecycle {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(slot: Slot) -> Self {
         Self(Arc::new(Mutex::new(State {
             phase: Phase::Opening,
             closed: false,
+            slot: Some(slot),
         })))
+    }
+
+    /// Actor: hold for the thread's whole run. Dropped when the thread
+    /// exits, normally or by a panic, it marks the actor ending and so
+    /// releases its slot even on a path that did not call [`Self::ending`].
+    pub(crate) fn exit_guard(&self) -> ExitGuard {
+        ExitGuard(self.clone())
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -122,9 +194,15 @@ impl Lifecycle {
     }
 
     /// Actor: about to return. Call before settling the last command, so a
-    /// handle dropped in reaction to it joins the thread.
+    /// handle dropped in reaction to it joins the thread, and a new actor
+    /// started in reaction to it finds the slot free.
     pub(crate) fn ending(&self) {
-        self.lock().phase = Phase::Ending;
+        let slot = {
+            let mut state = self.lock();
+            state.phase = Phase::Ending;
+            state.slot.take()
+        };
+        drop(slot);
     }
 
     /// Handle: stop the actor. Returns whether joining it is prompt (it is
@@ -133,6 +211,15 @@ impl Lifecycle {
         let mut state = self.lock();
         state.closed = true;
         matches!(state.phase, Phase::Idle | Phase::Ending)
+    }
+}
+
+/// See [`Lifecycle::exit_guard`].
+pub(crate) struct ExitGuard(Lifecycle);
+
+impl Drop for ExitGuard {
+    fn drop(&mut self) {
+        self.0.ending();
     }
 }
 
@@ -147,5 +234,42 @@ pub(crate) fn finish(lifecycle: &Lifecycle, thread: Option<JoinHandle<()>>) {
         if prompt && thread.thread().id() != std::thread::current().id() {
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slots_are_capped_and_given_back() {
+        let slots = OpenSlots::new(2);
+        let a = slots.acquire().unwrap();
+        let b = slots.acquire().unwrap();
+        let err = slots.acquire().err().unwrap();
+        assert!(err.starts_with("LORA_TOO_MANY_OPEN: "), "{err}");
+        drop(a);
+        let c = slots.acquire().unwrap();
+        drop((b, c));
+        assert_eq!(slots.open(), 0);
+    }
+
+    #[test]
+    fn an_actor_gives_its_slot_back_when_it_ends_or_its_thread_exits() {
+        let slots = OpenSlots::new(1);
+        let lifecycle = Lifecycle::new(slots.acquire().unwrap());
+        lifecycle.ending();
+        assert_eq!(slots.open(), 0);
+
+        let lifecycle = Lifecycle::new(slots.acquire().unwrap());
+        let exit = lifecycle.exit_guard();
+        let thread = std::thread::spawn(move || {
+            let _exit = exit;
+            panic!("actor panicked");
+        });
+        assert!(thread.join().is_err());
+        assert_eq!(slots.open(), 0);
+        // The handle still holds the lifecycle: the slot is free anyway.
+        drop(lifecycle);
     }
 }

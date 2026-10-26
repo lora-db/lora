@@ -54,6 +54,7 @@ on the message.
 | Code | When you'll see it |
 |---|---|
 | `LORA_PANIC` | A Rust panic was caught at a binding boundary. The process keeps running; the call returns this code instead. |
+| `LORA_TOO_MANY_OPEN` | Node only. The database already has `maxOpenTransactions` transactions and write streams open (1024 by default). Finish or close one, or raise the limit. |
 
 ## HTTP transport
 

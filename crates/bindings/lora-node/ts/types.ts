@@ -674,8 +674,8 @@ export interface RowParseError {
 
 /**
  * Error codes emitted by the engine bridges. Mirrors
- * `lora_database::LoraErrorCode::as_str` 1:1, plus two binding-only
- * codes (`WORKER_ERROR`, `UNKNOWN`).
+ * `lora_database::LoraErrorCode::as_str` 1:1, plus three binding-only
+ * codes (`LORA_TOO_MANY_OPEN`, `WORKER_ERROR`, `UNKNOWN`).
  *
  * Client errors (caller's fault):
  * - `LORA_PARSE` — Cypher syntax could not be parsed
@@ -707,6 +707,7 @@ export interface RowParseError {
  * - `LORA_INTERNAL` — last-resort fallback when the engine cannot classify the failure
  *
  * Binding-only:
+ * - `LORA_TOO_MANY_OPEN` — the database has `maxOpenTransactions` transactions and write streams open (lora-node only)
  * - `WORKER_ERROR` — worker transport / lifecycle failure (wasm worker only)
  * - `UNKNOWN` — fall-through for unrecognised error shapes
  */
@@ -736,6 +737,7 @@ export type LoraErrorCode =
   | "LORA_SNAPSHOT_CODEC"
   | "LORA_SNAPSHOT_CRYPTO"
   | "LORA_INTERNAL"
+  | "LORA_TOO_MANY_OPEN"
   | "WORKER_ERROR"
   | "UNKNOWN";
 
@@ -765,6 +767,7 @@ const KNOWN_ERROR_CODES = new Set<LoraErrorCode>([
   "LORA_SNAPSHOT_CODEC",
   "LORA_SNAPSHOT_CRYPTO",
   "LORA_INTERNAL",
+  "LORA_TOO_MANY_OPEN",
   "WORKER_ERROR",
   "UNKNOWN",
 ]);

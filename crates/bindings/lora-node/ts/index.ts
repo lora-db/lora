@@ -140,6 +140,16 @@ export interface CreateDatabaseOptions {
    * rolls back, and releases its locks. Omit or pass 0 for no default.
    */
   queryTimeoutMs?: number;
+  /**
+   * Most transactions and write streams this database keeps open at once.
+   * Each open `begin()` transaction, each read-write `transaction()` batch
+   * still running, and each write stream that waits for the writer lock
+   * (see `stream()`) runs on a thread of its own; past this many, the next
+   * one rejects at once with `LORA_TOO_MANY_OPEN` instead of starting yet
+   * another thread. A slot frees up when its transaction commits or rolls
+   * back, or its stream ends or is closed. Defaults to 1024.
+   */
+  maxOpenTransactions?: number;
 }
 
 /**
@@ -182,6 +192,8 @@ export interface WalDatabaseOptions {
   syncMode?: "groupSync";
   /** Background fsync cadence for `syncMode: "groupSync"`, in milliseconds. */
   groupSyncIntervalMs?: number;
+  /** See `CreateDatabaseOptions.maxOpenTransactions`. Defaults to 1024. */
+  maxOpenTransactions?: number;
 }
 
 export type TransactionMode =
@@ -994,6 +1006,10 @@ class DatabaseImpl {
    * `begin()` rejects with `LORA_TIMEOUT` and nothing is held. Aborting
    * `options.signal` rejects `begin()` at once; a transaction that opens
    * afterwards is rolled back, so it never holds the lock.
+   *
+   * Each open transaction runs on a thread of its own. With
+   * `maxOpenTransactions` (default 1024) transactions and write streams
+   * already open, `begin()` rejects at once with `LORA_TOO_MANY_OPEN`.
    */
   async begin(
     mode: TransactionMode = "read_write",
@@ -1568,6 +1584,7 @@ export async function createDatabase(
         null,
         null,
         options.queryTimeoutMs ?? null,
+        maxOpenTransactions(options.maxOpenTransactions),
       ),
     );
   } catch (err) {
@@ -1610,11 +1627,25 @@ export async function openWalDatabase(
         snapshotEveryCommits,
         snapshotKeepOld,
         options.snapshotOptions ?? null,
+        null,
+        maxOpenTransactions(options.maxOpenTransactions),
       ),
     );
   } catch (err) {
     throw wrapError(err);
   }
+}
+
+/** Validate `maxOpenTransactions`: a whole number of at least 1. */
+function maxOpenTransactions(value: number | undefined): number | null {
+  if (value === undefined) return null;
+  if (!Number.isInteger(value) || value < 1 || value > 0xffffffff) {
+    throw new LoraError(
+      `maxOpenTransactions must be a whole number of at least 1, got ${String(value)}`,
+      "LORA_INVALID_PARAMS",
+    );
+  }
+  return value;
 }
 
 /**

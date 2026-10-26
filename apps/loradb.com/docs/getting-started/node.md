@@ -321,6 +321,42 @@ const results = await Promise.all(
 The event loop stays responsive. Read-only calls can overlap on engine
 snapshots; write commits still serialize.
 
+### Limit on open transactions
+
+Each open `db.begin()` transaction, each read-write `db.transaction()`
+batch still running, and each write `stream()` that has to wait for the
+writer lock runs on a thread of its own. A database keeps at most
+`maxOpenTransactions` of them open at once: 1024 unless you set it.
+Past the limit the call fails at once with `LORA_TOO_MANY_OPEN` instead
+of starting another thread or waiting in a queue.
+
+```ts
+const db = await createDatabase('app', {
+  databaseDir: './data',
+  maxOpenTransactions: 256,
+});
+
+try {
+  const tx = await db.begin();
+  try {
+    await tx.execute("CREATE (:Order {id: $id})", { id: 1 });
+    await tx.commit();
+  } finally {
+    if (tx.isOpen) await tx.rollback();
+  }
+} catch (err) {
+  if (err instanceof LoraError && err.code === 'LORA_TOO_MANY_OPEN') {
+    // Too much in flight: shed load, or retry once others have finished.
+  }
+}
+```
+
+A slot frees up as soon as its transaction commits or rolls back, or its
+stream ends or is closed. A transaction or stream you drop without
+finishing frees its slot once it is garbage-collected, so finish them
+explicitly. `openWalDatabase()` takes the same option, and the limit
+applies per database handle.
+
 ### Persisting your graph
 
 LoraDB has three Node persistence shapes:

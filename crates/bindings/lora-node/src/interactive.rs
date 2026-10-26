@@ -40,7 +40,7 @@ use lora_database::{
     TransactionMode,
 };
 
-use crate::actor::{self, Lifecycle};
+use crate::actor::{self, Lifecycle, Slot};
 use crate::errors::format_lora_error;
 use crate::guard::lock;
 use crate::stream::JsBoundWriter;
@@ -76,6 +76,8 @@ enum Command {
     Rollback {
         done: Done<()>,
     },
+    /// Test hook: panic on the actor thread.
+    Panic,
 }
 
 /// Handle to one open transaction's actor thread.
@@ -107,16 +109,17 @@ impl TxActor {
     /// Spawn the actor, which opens the transaction; returns at once.
     /// `opened` is called when the transaction is open (for a read-write
     /// one, once the writer lock is held), failed to open, or was closed
-    /// before it opened.
+    /// before it opened. The actor holds `slot` until it ends.
     pub(crate) fn spawn(
         db: Arc<InnerDatabase<InMemoryGraph>>,
         mode: TransactionMode,
         deadline: Option<Instant>,
+        slot: Slot,
         opened: Done<()>,
     ) -> Self {
         let (commands, inbox) = mpsc::channel::<Command>();
         let opened = Arc::new(Mutex::new(Some(opened)));
-        let lifecycle = Lifecycle::new();
+        let lifecycle = Lifecycle::new(slot);
         // A read-write transaction needs the JS thread to release the
         // writer lock; registering keeps a mutating stream from waiting for
         // the lock on the JS thread meanwhile (see `crate::stream`).
@@ -124,11 +127,13 @@ impl TxActor {
         let thread = {
             let opened = opened.clone();
             let lifecycle = lifecycle.clone();
+            let exit = lifecycle.exit_guard();
             std::thread::Builder::new()
                 .name("lora-tx".into())
                 .spawn(move || {
                     // Released once `run` has dropped the transaction.
                     let _writer = writer;
+                    let _exit = exit;
                     run(db, mode, deadline, inbox, opened, lifecycle)
                 })
         };
@@ -231,6 +236,12 @@ impl TxActor {
 
     pub(crate) fn rollback(&self, done: Done<()>) {
         self.send(Command::Rollback { done })
+    }
+
+    /// Test hook: make the actor thread panic while it holds the
+    /// transaction.
+    pub(crate) fn panic_for_testing(&self) {
+        self.send(Command::Panic)
     }
 }
 
@@ -378,6 +389,7 @@ fn run(
                 done.call(result);
                 return;
             }
+            Command::Panic => panic!("panic requested by __panicInTransactionForTesting"),
         }
         lifecycle.idle();
     }

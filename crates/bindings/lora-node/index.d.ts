@@ -10,7 +10,7 @@
  * its snapshot and replays its WAL, which for a large graph takes minutes;
  * off the JS thread, the host keeps serving its event loop meanwhile.
  */
-export declare function openDatabase(databaseName?: string | null | undefined, databaseDir?: string | null | undefined, syncMode?: "groupSync" | null | undefined, groupSyncIntervalMs?: number | null | undefined, walDir?: string | null | undefined, snapshotDir?: string | null | undefined, snapshotEveryCommits?: number | null | undefined, snapshotKeepOld?: number | null | undefined, snapshotOptions?: Record<string, any> | null | undefined, queryTimeoutMs?: number | null | undefined): Promise<Database>
+export declare function openDatabase(databaseName?: string | null | undefined, databaseDir?: string | null | undefined, syncMode?: "groupSync" | null | undefined, groupSyncIntervalMs?: number | null | undefined, walDir?: string | null | undefined, snapshotDir?: string | null | undefined, snapshotEveryCommits?: number | null | undefined, snapshotKeepOld?: number | null | undefined, snapshotOptions?: Record<string, any> | null | undefined, queryTimeoutMs?: number | null | undefined, maxOpenTransactions?: number | null | undefined): Promise<Database>
 /**
  * Lora graph database handle exposed to Node.
  *
@@ -35,7 +35,7 @@ export declare class Database {
    *   `.loradb` path under `database_dir`, or the current directory when no
    *   directory is provided.
    */
-  constructor(databaseName?: string | null | undefined, databaseDir?: string | null | undefined, syncMode?: "groupSync" | null | undefined, groupSyncIntervalMs?: number | null | undefined, walDir?: string | null | undefined, snapshotDir?: string | null | undefined, snapshotEveryCommits?: number | null | undefined, snapshotKeepOld?: number | null | undefined, snapshotOptions?: Record<string, any> | null | undefined, queryTimeoutMs?: number | null | undefined)
+  constructor(databaseName?: string | null | undefined, databaseDir?: string | null | undefined, syncMode?: "groupSync" | null | undefined, groupSyncIntervalMs?: number | null | undefined, walDir?: string | null | undefined, snapshotDir?: string | null | undefined, snapshotEveryCommits?: number | null | undefined, snapshotKeepOld?: number | null | undefined, snapshotOptions?: Record<string, any> | null | undefined, queryTimeoutMs?: number | null | undefined, maxOpenTransactions?: number | null | undefined)
   /**
    * Execute a Lora query on the libuv threadpool.
    *
@@ -230,4 +230,10 @@ export declare class Database {
    * on the libuv pool or (`off_pool`) on a lora actor thread.
    */
   __panicInTaskForTesting(offPool: boolean): Promise<void>
+  /**
+   * Test hook, not public API: make the actor thread of interactive
+   * transaction `tx_id` panic. Lets the test suite check that the
+   * transaction's slot (see `maxOpenTransactions`) is given back.
+   */
+  __panicInTransactionForTesting(txId: number): void
 }
