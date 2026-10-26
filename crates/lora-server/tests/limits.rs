@@ -12,7 +12,12 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use lora_database::Database;
+use std::collections::BTreeMap;
+
+use lora_database::{
+    Database, ExecuteOptions, LoraError, LoraValue, QueryPlan, QueryProfile, QueryResult,
+    QueryRunner,
+};
 use lora_server::{serve_with, QueryLimits};
 
 /// A read that takes minutes in a dev build: a three-way cartesian
@@ -26,10 +31,7 @@ fn seeded_db() -> Arc<Database<lora_database::InMemoryGraph>> {
     db
 }
 
-fn start_server(
-    db: Arc<Database<lora_database::InMemoryGraph>>,
-    limits: QueryLimits,
-) -> SocketAddr {
+fn start_server<R: QueryRunner>(db: Arc<R>, limits: QueryLimits) -> SocketAddr {
     let (addr_tx, addr_rx) = mpsc::channel();
     thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -168,4 +170,61 @@ fn oversized_body_is_rejected() {
 
     let (status, _) = request(addr, "POST", "/query", r#"{"query":"RETURN 1 AS one"}"#);
     assert!(status.contains(" 200 "), "{status}");
+}
+
+/// Panics on any query whose text contains `boom`, otherwise delegates.
+struct PanickyDb(Database<lora_database::InMemoryGraph>);
+
+impl QueryRunner for PanickyDb {
+    fn execute(
+        &self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+    ) -> Result<QueryResult, LoraError> {
+        if query.contains("boom") {
+            panic!("engine panic for a test");
+        }
+        self.0.execute(query, options)
+    }
+
+    fn explain(
+        &self,
+        query: &str,
+        params: Option<BTreeMap<String, LoraValue>>,
+    ) -> Result<QueryPlan, LoraError> {
+        self.0.explain(query, params)
+    }
+
+    fn profile(
+        &self,
+        query: &str,
+        params: Option<BTreeMap<String, LoraValue>>,
+    ) -> Result<QueryProfile, LoraError> {
+        self.0.profile(query, params)
+    }
+}
+
+#[test]
+fn engine_panic_answers_500_and_server_keeps_serving() {
+    let addr = start_server(
+        Arc::new(PanickyDb(Database::in_memory())),
+        QueryLimits {
+            max_concurrent: Some(1),
+            ..QueryLimits::default()
+        },
+    );
+    let (status, body) = request(addr, "POST", "/query", r#"{"query":"RETURN 'boom'"}"#);
+    assert!(status.contains(" 500 "), "{status}: {body}");
+    assert!(body.contains("LORA_INTERNAL"), "{body}");
+
+    // The slot was released and the server still answers.
+    let (status, _) = request(addr, "GET", "/health", "");
+    assert!(status.contains(" 200 "), "{status}");
+    let (status, body) = request(
+        addr,
+        "POST",
+        "/query",
+        r#"{"query":"RETURN 1 AS one","format":"rows"}"#,
+    );
+    assert!(status.contains(" 200 "), "{status}: {body}");
 }
