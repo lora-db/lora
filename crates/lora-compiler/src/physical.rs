@@ -26,6 +26,7 @@ pub enum PhysicalOp {
     RelByPropertyRangeScan(RelByPropertyRangeScanExec),
     RelByTextScan(RelByTextScanExec),
     RelByPointScan(RelByPointScanExec),
+    RelByListElementScan(RelByListElementScanExec),
     RelByIdSeek(RelByIdSeekExec),
     Expand(ExpandExec),
     Filter(FilterExec),
@@ -115,9 +116,8 @@ pub struct NodeByPropertyScanExec {
     pub labels: Vec<Vec<String>>,
     pub key: String,
     pub value: ResolvedExpr,
-    /// `true` when `value` is a list and the scan seeks `key IN value`
-    /// (one index lookup per distinct element) instead of `key = value`.
-    pub in_list: bool,
+    /// See [`crate::logical::PropertySeek`].
+    pub seek: crate::logical::PropertySeek,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +185,19 @@ pub struct RelByTextScanExec {
     pub key: String,
     pub predicate: crate::logical::TextPredicate,
     pub query: ResolvedExpr,
+}
+
+/// See [`crate::logical::RelByListElementScan`].
+#[derive(Debug, Clone)]
+pub struct RelByListElementScanExec {
+    pub input: Option<PhysicalNodeId>,
+    pub src: VarId,
+    pub rel: VarId,
+    pub dst: VarId,
+    pub types: Vec<String>,
+    pub direction: Direction,
+    pub key: String,
+    pub value: ResolvedExpr,
 }
 
 #[derive(Debug, Clone)]

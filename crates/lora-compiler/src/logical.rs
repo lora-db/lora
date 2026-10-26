@@ -25,6 +25,7 @@ pub enum LogicalOp {
     RelByPropertyRangeScan(RelByPropertyRangeScan),
     RelByTextScan(RelByTextScan),
     RelByPointScan(RelByPointScan),
+    RelByListElementScan(RelByListElementScan),
     RelByIdSeek(RelByIdSeek),
     Expand(Expand),
     Filter(Filter),
@@ -131,9 +132,20 @@ pub struct NodeByPropertyScan {
     pub labels: Vec<Vec<String>>,
     pub key: String,
     pub value: ResolvedExpr,
-    /// `false`: seek `key = value`. `true`: `value` evaluates to a list and
-    /// the scan seeks `key IN value`, one lookup per distinct element.
-    pub in_list: bool,
+    pub seek: PropertySeek,
+}
+
+/// What a [`NodeByPropertyScan`] seeks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropertySeek {
+    /// `key = value`.
+    Equal,
+    /// `key IN value`: `value` evaluates to a list, one lookup per
+    /// distinct element.
+    In,
+    /// `value IN key`: `key` holds lists, and the scan seeks the elements
+    /// equal to `value` in the RANGE index on `(label, key)`.
+    Element,
 }
 
 /// Range-bounded property scan rewritten from `Filter(NodeScan, var.prop CMP value)`
@@ -253,6 +265,21 @@ pub struct RelByTextScan {
     pub key: String,
     pub predicate: TextPredicate,
     pub query: ResolvedExpr,
+}
+
+/// `value IN r.key` on a relationship type whose `key` has a RANGE
+/// index: a seek of its list elements. Mirror of [`NodeByPropertyScan`]
+/// with [`PropertySeek::Element`].
+#[derive(Debug, Clone)]
+pub struct RelByListElementScan {
+    pub input: Option<PlanNodeId>,
+    pub src: VarId,
+    pub rel: VarId,
+    pub dst: VarId,
+    pub types: Vec<String>,
+    pub direction: Direction,
+    pub key: String,
+    pub value: ResolvedExpr,
 }
 
 /// Spatial-index relationship scan. Mirror of [`NodeByPointScan`].

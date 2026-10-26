@@ -67,9 +67,10 @@ pub(crate) use helpers::{
     indexed_node_property_candidates, label_group_candidates_prefiltered, node_by_id_seek_rows,
     node_by_point_scan_rows, node_by_property_range_scan_rows, node_by_text_scan_rows,
     node_matches_label_groups, node_matches_property_filter, plan_may_need_hydration,
-    property_scan_candidates, property_scan_matches, rel_by_id_seek_rows, rel_by_point_scan_rows,
-    rel_by_property_range_scan_rows, rel_by_text_scan_rows, resolve_range,
-    scan_node_ids_for_label_groups, GroupValueKey, NodePropertyCandidates,
+    property_scan_candidates, property_scan_matches, rel_by_id_seek_rows,
+    rel_by_list_element_scan_rows, rel_by_point_scan_rows, rel_by_property_range_scan_rows,
+    rel_by_text_scan_rows, resolve_range, scan_node_ids_for_label_groups, GroupValueKey,
+    NodePropertyCandidates,
 };
 pub(crate) use helpers::{other_kind_node_ids, OrderedRangeCursor, OtherKindScan, RangeValues};
 pub(crate) use helpers::{project_row, ProjectionNames};

@@ -16,7 +16,7 @@ use crate::value::{LoraValue, Row};
 use crate::{project_rows, ExecuteOptions, QueryResult};
 
 use lora_compiler::physical::*;
-use lora_compiler::CompiledQuery;
+use lora_compiler::{CompiledQuery, PropertySeek};
 use lora_store::GraphStorage;
 
 use std::collections::BTreeMap;
@@ -211,6 +211,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             }
             PhysicalOp::RelByTextScan(op) => self.exec_rel_by_text_scan(plan, op),
             PhysicalOp::RelByPointScan(op) => self.exec_rel_by_point_scan(plan, op),
+            PhysicalOp::RelByListElementScan(op) => self.exec_rel_by_list_element_scan(plan, op),
             PhysicalOp::Expand(op) => self.exec_expand(plan, op),
             PhysicalOp::Filter(op) => self.exec_filter(plan, op),
             PhysicalOp::Projection(op) => self.exec_projection(plan, op),
@@ -487,9 +488,9 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             Some(input) => self.execute_node_parallel_safe(plan, input)?,
             None => vec![Row::new()],
         };
-        if op.in_list {
-            // An IN seek touches one index bucket per element; the
-            // sequential path is already cheap.
+        if op.seek != PropertySeek::Equal {
+            // An IN or element seek touches one index bucket per element;
+            // the sequential path is already cheap.
             return node_by_property_scan_rows(
                 self.ctx.storage,
                 &self.ctx.params,
@@ -904,6 +905,24 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         )
     }
 
+    fn exec_rel_by_list_element_scan(
+        &self,
+        plan: &PhysicalPlan,
+        op: &lora_compiler::RelByListElementScanExec,
+    ) -> ExecResult<Vec<Row>> {
+        let base_rows = match op.input {
+            Some(input) => self.execute_node(plan, input)?,
+            None => vec![Row::new()],
+        };
+        super::helpers::rel_by_list_element_scan_rows(
+            self.ctx.storage,
+            &self.ctx.params,
+            base_rows,
+            op,
+            self.deadline,
+        )
+    }
+
     fn exec_rel_by_point_scan(
         &self,
         plan: &PhysicalPlan,
@@ -1132,7 +1151,8 @@ fn subtree_is_parallel_safe(plan: &PhysicalPlan, node_id: PhysicalNodeId) -> boo
         | PhysicalOp::NodeByPointScan(_)
         | PhysicalOp::RelByPropertyRangeScan(_)
         | PhysicalOp::RelByTextScan(_)
-        | PhysicalOp::RelByPointScan(_) => false,
+        | PhysicalOp::RelByPointScan(_)
+        | PhysicalOp::RelByListElementScan(_) => false,
         PhysicalOp::Expand(_)
         | PhysicalOp::Unwind(_)
         | PhysicalOp::HashAggregation(_)

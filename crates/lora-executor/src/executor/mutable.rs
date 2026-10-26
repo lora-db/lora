@@ -276,6 +276,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             }
             PhysicalOp::RelByTextScan(op) => self.exec_rel_by_text_scan(plan, op),
             PhysicalOp::RelByPointScan(op) => self.exec_rel_by_point_scan(plan, op),
+            PhysicalOp::RelByListElementScan(op) => self.exec_rel_by_list_element_scan(plan, op),
             PhysicalOp::Expand(op) => self.exec_expand(plan, op),
             PhysicalOp::Filter(op) => self.exec_filter(plan, op),
             PhysicalOp::Projection(op) => self.exec_projection(plan, op),
@@ -468,6 +469,24 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             None => vec![Row::new()],
         };
         super::helpers::rel_by_id_seek_rows(
+            &*self.ctx.storage,
+            &self.ctx.params,
+            base_rows,
+            op,
+            self.deadline,
+        )
+    }
+
+    fn exec_rel_by_list_element_scan(
+        &mut self,
+        plan: &PhysicalPlan,
+        op: &lora_compiler::RelByListElementScanExec,
+    ) -> ExecResult<Vec<Row>> {
+        let base_rows = match op.input {
+            Some(input) => self.execute_node(plan, input)?,
+            None => vec![Row::new()],
+        };
+        super::helpers::rel_by_list_element_scan_rows(
             &*self.ctx.storage,
             &self.ctx.params,
             base_rows,

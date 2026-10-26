@@ -15,6 +15,7 @@ use std::fmt::Write as _;
 use lora_analyzer::{PatternSeekKind, ResolvedExpr, ResolvedProjection};
 use lora_ast::Direction;
 
+use crate::logical::PropertySeek;
 use crate::physical::{PhysicalNodeId, PhysicalOp, PhysicalPlan};
 use crate::{CompiledQuery, CompiledUnionBranch};
 
@@ -184,8 +185,14 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
             }
             d.insert("key".to_string(), n.key.clone());
             d.insert("value".to_string(), expr_str(&n.value));
-            if n.in_list {
-                d.insert("mode".to_string(), "in".to_string());
+            match n.seek {
+                PropertySeek::Equal => {}
+                PropertySeek::In => {
+                    d.insert("mode".to_string(), "in".to_string());
+                }
+                PropertySeek::Element => {
+                    d.insert("mode".to_string(), "element".to_string());
+                }
             }
             PlanDescription::with_children("NodeByPropertyScan", d, opt_input(n.input))
         }
@@ -299,6 +306,21 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
             );
             d.insert("query".to_string(), expr_str(&n.query));
             PlanDescription::with_children("RelByTextScan", d, opt_input(n.input))
+        }
+        PhysicalOp::RelByListElementScan(n) => {
+            d.insert("rel".to_string(), var_str(n.rel));
+            d.insert("src".to_string(), var_str(n.src));
+            d.insert("dst".to_string(), var_str(n.dst));
+            if !n.types.is_empty() {
+                d.insert("types".to_string(), n.types.join("|"));
+            }
+            d.insert(
+                "direction".to_string(),
+                direction_str(n.direction).to_string(),
+            );
+            d.insert("key".to_string(), n.key.clone());
+            d.insert("value".to_string(), expr_str(&n.value));
+            PlanDescription::with_children("RelByListElementScan", d, opt_input(n.input))
         }
         PhysicalOp::RelByPointScan(n) => {
             d.insert("rel".to_string(), var_str(n.rel));
