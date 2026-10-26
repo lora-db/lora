@@ -48,7 +48,7 @@ pub use lora_io::{
 };
 pub use named::{
     resolve_database_path, DatabaseName, DatabaseNameError, DatabaseOpenOptions,
-    DEFAULT_DATABASE_MAX_BYTES,
+    DEFAULT_COMPACT_ON_OPEN_WAL_BYTES, DEFAULT_DATABASE_MAX_BYTES,
 };
 pub use snapshot::{
     snapshot_credentials_from_json, snapshot_options_from_json, SnapshotAdmin, SnapshotByteFormat,

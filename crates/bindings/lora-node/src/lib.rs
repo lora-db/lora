@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use napi::bindgen_prelude::*;
-use napi::{Env, Error as NapiError, JsObject, JsUnknown, Status};
+use napi::{Env, Error as NapiError, JsObject, JsUnknown, Status, Task};
 use napi_derive::napi;
 
 use lora_database::{
@@ -117,50 +117,18 @@ impl Database {
         >,
         #[napi(ts_arg_type = "number | null | undefined")] query_timeout_ms: Option<u32>,
     ) -> Result<Self> {
-        let explicit_wal = wal_dir.is_some()
-            || snapshot_dir.is_some()
-            || snapshot_every_commits.is_some()
-            || snapshot_keep_old.is_some()
-            || snapshot_options.is_some();
-        let db = if explicit_wal {
-            if database_name.is_some() || database_dir.is_some() {
-                return Err(NapiError::new(
-                    Status::InvalidArg,
-                    format!(
-                        "{INVALID_PARAMS_CODE}: walDir/snapshotDir cannot be combined with databaseName/databaseDir"
-                    ),
-                ));
-            }
-            open_explicit_wal_database(
-                wal_dir,
-                snapshot_dir,
-                sync_mode,
-                group_sync_interval_ms,
-                snapshot_every_commits,
-                snapshot_keep_old,
-                snapshot_options,
-            )?
-        } else {
-            match database_name {
-                None => Arc::new(InnerDatabase::in_memory()),
-                Some(name) => {
-                    open_persistent_database(name, database_dir, sync_mode, group_sync_interval_ms)?
-                }
-            }
+        let request = OpenRequest {
+            database_name,
+            database_dir,
+            sync_mode,
+            group_sync_interval_ms,
+            wal_dir,
+            snapshot_dir,
+            snapshot_every_commits,
+            snapshot_keep_old,
+            snapshot_options,
         };
-        Ok(Self {
-            db: Mutex::new(Some(db)),
-            streams: Mutex::new(BTreeMap::new()),
-            next_stream_id: AtomicU32::new(1),
-            shapes: Default::default(),
-            default_timeout_ms: query_timeout_ms.filter(|ms| *ms > 0),
-            cancels: Mutex::new(BTreeMap::new()),
-            next_cancel_id: AtomicU32::new(1),
-            txs: Arc::new(Mutex::new(BTreeMap::new())),
-            next_tx_id: AtomicU32::new(1),
-            feeds: Arc::new(Mutex::new(changes::FeedSet::default())),
-            next_feed_id: AtomicU32::new(1),
-        })
+        Ok(Self::from_inner(request.open()?, query_timeout_ms))
     }
 
     /// Execute a Lora query on the libuv threadpool.
@@ -997,6 +965,139 @@ impl Database {
         slot.as_ref()
             .cloned()
             .ok_or_else(|| NapiError::new(Status::GenericFailure, closed_error_message()))
+    }
+}
+
+impl Database {
+    fn from_inner(db: Arc<InnerDatabase<InMemoryGraph>>, query_timeout_ms: Option<u32>) -> Self {
+        Self {
+            db: Mutex::new(Some(db)),
+            streams: Mutex::new(BTreeMap::new()),
+            next_stream_id: AtomicU32::new(1),
+            shapes: Default::default(),
+            default_timeout_ms: query_timeout_ms.filter(|ms| *ms > 0),
+            cancels: Mutex::new(BTreeMap::new()),
+            next_cancel_id: AtomicU32::new(1),
+            txs: Arc::new(Mutex::new(BTreeMap::new())),
+            next_tx_id: AtomicU32::new(1),
+            feeds: Arc::new(Mutex::new(changes::FeedSet::default())),
+            next_feed_id: AtomicU32::new(1),
+        }
+    }
+}
+
+/// Open a database on the libuv threadpool and resolve with its handle.
+///
+/// Takes the constructor's arguments. Opening a persistent database reads
+/// its snapshot and replays its WAL, which for a large graph takes minutes;
+/// off the JS thread, the host keeps serving its event loop meanwhile.
+#[napi(ts_return_type = "Promise<Database>")]
+#[allow(clippy::too_many_arguments)]
+pub fn open_database(
+    #[napi(ts_arg_type = "string | null | undefined")] database_name: Option<String>,
+    #[napi(ts_arg_type = "string | null | undefined")] database_dir: Option<String>,
+    #[napi(ts_arg_type = "\"groupSync\" | null | undefined")] sync_mode: Option<String>,
+    #[napi(ts_arg_type = "number | null | undefined")] group_sync_interval_ms: Option<u32>,
+    #[napi(ts_arg_type = "string | null | undefined")] wal_dir: Option<String>,
+    #[napi(ts_arg_type = "string | null | undefined")] snapshot_dir: Option<String>,
+    #[napi(ts_arg_type = "number | null | undefined")] snapshot_every_commits: Option<u32>,
+    #[napi(ts_arg_type = "number | null | undefined")] snapshot_keep_old: Option<u32>,
+    #[napi(ts_arg_type = "Record<string, any> | null | undefined")] snapshot_options: Option<
+        serde_json::Value,
+    >,
+    #[napi(ts_arg_type = "number | null | undefined")] query_timeout_ms: Option<u32>,
+) -> AsyncTask<OpenTask> {
+    AsyncTask::new(OpenTask {
+        request: Some(OpenRequest {
+            database_name,
+            database_dir,
+            sync_mode,
+            group_sync_interval_ms,
+            wal_dir,
+            snapshot_dir,
+            snapshot_every_commits,
+            snapshot_keep_old,
+            snapshot_options,
+        }),
+        query_timeout_ms,
+    })
+}
+
+/// What to open: the arguments `Database`'s constructor and
+/// [`open_database`] share.
+struct OpenRequest {
+    database_name: Option<String>,
+    database_dir: Option<String>,
+    sync_mode: Option<String>,
+    group_sync_interval_ms: Option<u32>,
+    wal_dir: Option<String>,
+    snapshot_dir: Option<String>,
+    snapshot_every_commits: Option<u32>,
+    snapshot_keep_old: Option<u32>,
+    snapshot_options: Option<serde_json::Value>,
+}
+
+impl OpenRequest {
+    /// Validate the combination and open: in memory without a name or
+    /// WAL directory, a named container with a name, an explicit WAL
+    /// directory with `wal_dir`.
+    fn open(self) -> Result<Arc<InnerDatabase<InMemoryGraph>>> {
+        let explicit_wal = self.wal_dir.is_some()
+            || self.snapshot_dir.is_some()
+            || self.snapshot_every_commits.is_some()
+            || self.snapshot_keep_old.is_some()
+            || self.snapshot_options.is_some();
+        if explicit_wal {
+            if self.database_name.is_some() || self.database_dir.is_some() {
+                return Err(NapiError::new(
+                    Status::InvalidArg,
+                    format!(
+                        "{INVALID_PARAMS_CODE}: walDir/snapshotDir cannot be combined with databaseName/databaseDir"
+                    ),
+                ));
+            }
+            open_explicit_wal_database(
+                self.wal_dir,
+                self.snapshot_dir,
+                self.sync_mode,
+                self.group_sync_interval_ms,
+                self.snapshot_every_commits,
+                self.snapshot_keep_old,
+                self.snapshot_options,
+            )
+        } else {
+            match self.database_name {
+                None => Ok(Arc::new(InnerDatabase::in_memory())),
+                Some(name) => open_persistent_database(
+                    name,
+                    self.database_dir,
+                    self.sync_mode,
+                    self.group_sync_interval_ms,
+                ),
+            }
+        }
+    }
+}
+
+/// Work unit for [`open_database`].
+pub struct OpenTask {
+    request: Option<OpenRequest>,
+    query_timeout_ms: Option<u32>,
+}
+
+impl Task for OpenTask {
+    type Output = Arc<InnerDatabase<InMemoryGraph>>;
+    type JsValue = Database;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        self.request
+            .take()
+            .ok_or_else(|| NapiError::new(Status::GenericFailure, "open task ran twice"))?
+            .open()
+    }
+
+    fn resolve(&mut self, _env: Env, db: Self::Output) -> Result<Self::JsValue> {
+        Ok(Database::from_inner(db, self.query_timeout_ms))
     }
 }
 

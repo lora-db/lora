@@ -42,7 +42,7 @@ use crate::lock::DirLock;
 use crate::lsn::Lsn;
 use crate::record::WalRecord;
 use crate::recorder::WroteCommit;
-use crate::replay::{replay_segments, ReplayOutcome};
+use crate::replay::{replay_segments, ReplayOutcome, ReplaySink};
 use crate::segment::SegmentWriter;
 
 /// State guarded by the inner `Mutex`. Nothing in this struct is
@@ -118,12 +118,40 @@ impl Wal {
     /// Returns `(wal, committed_events)`. The caller is expected to
     /// apply every event in `committed_events` to its in-memory store
     /// in order before issuing any new `begin` / `append` calls.
+    ///
+    /// This holds every replayed event at once; a long log should be
+    /// opened with [`Self::open_replaying`].
     pub fn open(
         dir: impl Into<std::path::PathBuf>,
         sync_mode: SyncMode,
         segment_target_bytes: u64,
         checkpoint_lsn: Lsn,
     ) -> Result<(Arc<Self>, Vec<MutationEvent>), WalError> {
+        let mut events = Vec::new();
+        let wal = Self::open_replaying(
+            dir,
+            sync_mode,
+            segment_target_bytes,
+            checkpoint_lsn,
+            &mut |committed| {
+                events.extend(committed);
+                Ok(())
+            },
+        )?;
+        Ok((wal, events))
+    }
+
+    /// [`Self::open`], handing each committed transaction's events to
+    /// `apply` as replay reads its commit, so memory holds the open
+    /// transactions rather than the whole log. An error from `apply`
+    /// stops the open and is returned.
+    pub fn open_replaying(
+        dir: impl Into<std::path::PathBuf>,
+        sync_mode: SyncMode,
+        segment_target_bytes: u64,
+        checkpoint_lsn: Lsn,
+        apply: &mut ReplaySink<'_>,
+    ) -> Result<Arc<Self>, WalError> {
         let segments = SegmentDir::new(dir);
         fs::create_dir_all(segments.root())?;
         let dir_lock = DirLock::acquire(segments.root())?;
@@ -132,7 +160,7 @@ impl Wal {
         let (active_id, active_writer, replay) = if entries.is_empty() {
             Self::open_fresh(&segments)?
         } else {
-            Self::open_existing(&segments, &entries, checkpoint_lsn)?
+            Self::open_existing(&segments, &entries, checkpoint_lsn, apply)?
         };
 
         let next_lsn = if replay.max_lsn.is_zero() {
@@ -184,7 +212,7 @@ impl Wal {
             *wal.flusher.lock().map_err(|_| WalError::Poisoned)? = Some(handle);
         }
 
-        Ok((wal, replay.committed_events))
+        Ok(wal)
     }
 
     /// Brand-new WAL directory. Create segment 1 with `base_lsn = 1`
@@ -196,7 +224,6 @@ impl Wal {
         let writer = SegmentWriter::create(segments.path_for(id), Lsn::new(1))?;
         segments.sync_dir()?;
         let replay = ReplayOutcome {
-            committed_events: Vec::new(),
             max_lsn: Lsn::ZERO,
             torn_tail: None,
             checkpoint_lsn_observed: None,
@@ -212,9 +239,10 @@ impl Wal {
         segments: &SegmentDir,
         entries: &[crate::dir::SegmentEntry],
         checkpoint_lsn: Lsn,
+        apply: &mut ReplaySink<'_>,
     ) -> Result<(SegmentId, SegmentWriter, ReplayOutcome), WalError> {
         let paths: Vec<_> = entries.iter().map(|e| e.path.clone()).collect();
-        let replay = replay_segments(&paths, checkpoint_lsn)?;
+        let replay = replay_segments(&paths, checkpoint_lsn, apply)?;
 
         // The active segment is whichever file has the highest
         // numeric id — segment file names are self-describing, so

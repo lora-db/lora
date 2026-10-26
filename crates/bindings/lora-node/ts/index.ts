@@ -33,7 +33,9 @@ import { decodeResult } from "./decode.js";
 // @ts-ignore - resolved at runtime via native.js loader
 import native from "./native.js";
 
-const NativeDatabase: typeof import("./native.js").Database = native.Database;
+type NativeDatabase = import("./native.js").Database;
+const openNativeDatabase: typeof import("./native.js").openDatabase =
+  native.openDatabase;
 
 export * from "./types.js";
 
@@ -206,7 +208,7 @@ export interface RowStream<
 class NativeRowStream<
   T extends Record<string, LoraValue> = Record<string, LoraValue>,
 > implements RowStream<T> {
-  readonly #inner: InstanceType<typeof NativeDatabase>;
+  readonly #inner: NativeDatabase;
   readonly #streamId: number;
   readonly #signal: AbortSignal | undefined;
   /**
@@ -218,7 +220,7 @@ class NativeRowStream<
   #closed = false;
 
   constructor(
-    inner: InstanceType<typeof NativeDatabase>,
+    inner: NativeDatabase,
     streamId: number,
     signal?: AbortSignal,
     release?: () => void,
@@ -342,7 +344,7 @@ export interface ChangeFeed extends AsyncIterableIterator<LoraChangeBatch> {
 const CHANGES_POLL_MAX = 256;
 
 class NativeChangeFeed implements ChangeFeed {
-  readonly #inner: InstanceType<typeof NativeDatabase>;
+  readonly #inner: NativeDatabase;
   readonly #signal: AbortSignal | undefined;
   readonly #onDone: (feed: NativeChangeFeed) => void;
   readonly #opened: Promise<number>;
@@ -358,7 +360,7 @@ class NativeChangeFeed implements ChangeFeed {
   #onAbort: (() => void) | undefined;
 
   constructor(
-    inner: InstanceType<typeof NativeDatabase>,
+    inner: NativeDatabase,
     options: ChangesOptions | undefined,
     onDone: (feed: NativeChangeFeed) => void,
   ) {
@@ -458,9 +460,7 @@ class NativeChangeFeed implements ChangeFeed {
       }
       if (this.#done) continue;
       const seq = this.#wakeSeq;
-      let polled: Awaited<
-        ReturnType<InstanceType<typeof NativeDatabase>["changesPoll"]>
-      >;
+      let polled: Awaited<ReturnType<NativeDatabase["changesPoll"]>>;
       try {
         polled = await this.#inner.changesPoll(id, CHANGES_POLL_MAX);
       } catch (err) {
@@ -729,10 +729,10 @@ function normalizeSnapshotLoadOptions(
  * the store read lock; writes serialize without blocking the event loop.
  */
 class DatabaseImpl {
-  readonly #inner: InstanceType<typeof NativeDatabase>;
+  readonly #inner: NativeDatabase;
   readonly #feeds = new Set<NativeChangeFeed>();
 
-  constructor(inner: InstanceType<typeof NativeDatabase>) {
+  constructor(inner: NativeDatabase) {
     this.#inner = inner;
   }
 
@@ -1187,12 +1187,12 @@ export type Database = DatabaseImpl;
  * not a number).
  */
 export class Transaction {
-  readonly #inner: InstanceType<typeof NativeDatabase>;
+  readonly #inner: NativeDatabase;
   readonly #id: number;
   #open = true;
 
   /** @internal */
-  constructor(inner: InstanceType<typeof NativeDatabase>, id: number) {
+  constructor(inner: NativeDatabase, id: number) {
     this.#inner = inner;
     this.#id = id;
   }
@@ -1335,7 +1335,7 @@ export class Transaction {
  * rejects with the signal's reason.
  */
 async function runLimited<R>(
-  inner: InstanceType<typeof NativeDatabase>,
+  inner: NativeDatabase,
   options: QueryOptions | undefined,
   start: (timeoutMs: number | null, token: number | null) => Promise<R>,
 ): Promise<R> {
@@ -1429,32 +1429,21 @@ export async function createDatabase(
     }
     const syncMode = options.syncMode ?? null;
     const groupSyncIntervalMs = options.groupSyncIntervalMs ?? null;
+    // Opening reads the snapshot and replays the WAL on the libuv
+    // threadpool, so a large graph does not hold the event loop.
     return new DatabaseImpl(
-      databaseName == null
-        ? new NativeDatabase(
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            options.queryTimeoutMs ?? null,
-          )
-        : new NativeDatabase(
-            databaseName,
-            options.databaseDir ?? null,
-            syncMode,
-            groupSyncIntervalMs,
-            null,
-            null,
-            null,
-            null,
-            null,
-            options.queryTimeoutMs ?? null,
-          ),
+      await openNativeDatabase(
+        databaseName ?? null,
+        options.databaseDir ?? null,
+        syncMode,
+        groupSyncIntervalMs,
+        null,
+        null,
+        null,
+        null,
+        null,
+        options.queryTimeoutMs ?? null,
+      ),
     );
   } catch (err) {
     throw wrapError(err);
@@ -1486,7 +1475,7 @@ export async function openWalDatabase(
     const snapshotEveryCommits = options.snapshotEveryCommits ?? null;
     const snapshotKeepOld = options.snapshotKeepOld ?? null;
     return new DatabaseImpl(
-      new NativeDatabase(
+      await openNativeDatabase(
         null,
         null,
         syncMode,

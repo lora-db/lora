@@ -4,10 +4,11 @@
 //!
 //! The walk is deliberately a single forward sweep over the segments in
 //! ascending id order. Per-transaction events are buffered in a
-//! `BTreeMap<tx_begin_lsn, Vec<MutationEvent>>` and only released on the
-//! corresponding [`WalRecord::TxCommit`]; an [`WalRecord::TxAbort`] (or
-//! a missing commit at end-of-log) causes the bucket to be dropped
-//! without emission. This is the contract the WAL plan calls
+//! `BTreeMap<tx_begin_lsn, Vec<MutationEvent>>` and handed to the
+//! caller's sink on the corresponding [`WalRecord::TxCommit`], so replay
+//! holds the open transactions, never the whole log; an
+//! [`WalRecord::TxAbort`] (or a missing commit at end-of-log) causes the
+//! bucket to be dropped without emission. This is the contract the WAL plan calls
 //! "per-mutation log, per-query commit": the recorder writes one record
 //! per primitive mutation but replay only ever reapplies whole queries.
 //!
@@ -29,14 +30,10 @@ use crate::lsn::Lsn;
 use crate::record::WalRecord;
 use crate::segment::{SegmentReader, SEGMENT_HEADER_LEN};
 
-/// Outcome of a full replay walk.
+/// Outcome of a full replay walk. The committed transactions went to the
+/// sink as they were read.
 #[derive(Debug)]
 pub struct ReplayOutcome {
-    /// Mutation events from committed transactions, in append order.
-    /// Apply these to a fresh store (or one freshly loaded from a
-    /// snapshot at `checkpoint_lsn`) to reproduce the pre-crash state.
-    pub committed_events: Vec<MutationEvent>,
-
     /// Highest LSN observed in any segment, regardless of whether the
     /// owning transaction committed. Used to seed `next_lsn` for new
     /// appends so we never reuse an already-allocated id.
@@ -80,15 +77,21 @@ pub struct TornTailInfo {
     pub cause: WalError,
 }
 
-/// Walk every segment in `paths` (already in ascending id order).
+/// Receives each committed transaction's events, in commit order. An
+/// error stops the replay and is returned from it.
+pub type ReplaySink<'a> = dyn FnMut(Vec<MutationEvent>) -> Result<(), WalError> + 'a;
+
+/// Walk every segment in `paths` (already in ascending id order), handing
+/// each committed transaction to `sink` as its commit is read.
 ///
 /// Records with `lsn <= checkpoint_lsn` are skipped — they are already
 /// captured in the snapshot the caller is about to restore from.
 pub(crate) fn replay_segments(
     paths: &[PathBuf],
     checkpoint_lsn: Lsn,
+    sink: &mut ReplaySink<'_>,
 ) -> Result<ReplayOutcome, WalError> {
-    let mut state = ReplayState::new();
+    let mut state = ReplayState::new(sink);
     let mut torn_tail: Option<TornTailInfo> = None;
     let mut last_good_offset = SEGMENT_HEADER_LEN as u64;
 
@@ -123,20 +126,20 @@ pub(crate) fn replay_segments(
     Ok(state.finish(torn_tail, last_good_offset))
 }
 
-struct ReplayState {
+struct ReplayState<'s, 'a> {
     pending: BTreeMap<Lsn, Vec<MutationEvent>>,
-    committed: Vec<MutationEvent>,
+    sink: &'s mut ReplaySink<'a>,
     max_lsn: Lsn,
     last_lsn: Lsn,
     last_segment_base: Option<Lsn>,
     checkpoint_lsn_observed: Option<Lsn>,
 }
 
-impl ReplayState {
-    fn new() -> Self {
+impl<'s, 'a> ReplayState<'s, 'a> {
+    fn new(sink: &'s mut ReplaySink<'a>) -> Self {
         Self {
             pending: BTreeMap::new(),
-            committed: Vec::new(),
+            sink,
             max_lsn: Lsn::ZERO,
             last_lsn: Lsn::ZERO,
             last_segment_base: None,
@@ -249,7 +252,7 @@ impl ReplayState {
             WalRecord::TxBegin { lsn } => self.begin_transaction(lsn)?,
             WalRecord::TxCommit { tx_begin_lsn, .. } => {
                 let events = self.take_pending(tx_begin_lsn, lsn, "commit")?;
-                self.committed.extend(events);
+                (self.sink)(events)?;
             }
             WalRecord::TxAbort { tx_begin_lsn, .. } => {
                 let _ = self.take_pending(tx_begin_lsn, lsn, "abort")?;
@@ -321,7 +324,6 @@ impl ReplayState {
         // but never committed (and never explicitly aborted). Treat as
         // crashed mid-query and discard.
         ReplayOutcome {
-            committed_events: self.committed,
             max_lsn: self.max_lsn,
             torn_tail,
             checkpoint_lsn_observed: self.checkpoint_lsn_observed,
@@ -339,7 +341,7 @@ fn missing_tx_begin(kind: &str, record_lsn: Lsn, tx_begin_lsn: Lsn) -> WalError 
 }
 
 /// Convenience: replay every `*.wal` segment in `dir` after sorting by
-/// the numeric prefix encoded in the file name.
+/// the numeric prefix encoded in the file name, dropping the events.
 ///
 /// Used by recovery diagnostics in `lora-database::Database::recover`
 /// to peek at the newest checkpoint marker before opening the live
@@ -347,5 +349,5 @@ fn missing_tx_begin(kind: &str, record_lsn: Lsn, tx_begin_lsn: Lsn) -> WalError 
 pub fn replay_dir(dir: &Path, checkpoint_lsn: Lsn) -> Result<ReplayOutcome, WalError> {
     let entries = SegmentDir::new(dir).list()?;
     let paths: Vec<PathBuf> = entries.into_iter().map(|e| e.path).collect();
-    replay_segments(&paths, checkpoint_lsn)
+    replay_segments(&paths, checkpoint_lsn, &mut |_| Ok(()))
 }

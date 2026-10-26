@@ -172,3 +172,21 @@ export declare class Database {
     options?: NativeSnapshotOptions | null,
   ): NativeSnapshotMeta;
 }
+
+/**
+ * Open a database with the `Database` constructor's arguments on the libuv
+ * threadpool. Reading the snapshot and replaying the WAL stay off the JS
+ * thread.
+ */
+export declare function openDatabase(
+  databaseName?: string | null,
+  databaseDir?: string | null,
+  syncMode?: "groupSync" | null,
+  groupSyncIntervalMs?: number | null,
+  walDir?: string | null,
+  snapshotDir?: string | null,
+  snapshotEveryCommits?: number | null,
+  snapshotKeepOld?: number | null,
+  snapshotOptions?: NativeSnapshotOptions | null,
+  queryTimeoutMs?: number | null,
+): Promise<Database>;

@@ -16,7 +16,9 @@ use self::lock::ArchiveLock;
 use self::platform::replace_file_atomic;
 use self::platform::sync_dir;
 use self::worker::spawn_archive_worker;
-use self::workspace::{cleanup_stale_temp_paths, make_work_dir, prepare_work_dir};
+use self::workspace::{
+    cleanup_stale_temp_paths, make_work_dir, prepare_work_dir, sorted_wal_files,
+};
 
 /// Container-backed `.loradb` database file.
 ///
@@ -107,6 +109,20 @@ impl WalArchive {
     pub fn snapshot_path(&self) -> Option<PathBuf> {
         let path = self.work_dir.join(SNAPSHOT_FILE_NAME);
         path.is_file().then_some(path)
+    }
+
+    /// Size of the base snapshot's file, 0 without one.
+    pub fn snapshot_bytes(&self) -> u64 {
+        fs::metadata(self.work_dir.join(SNAPSHOT_FILE_NAME)).map_or(0, |m| m.len())
+    }
+
+    /// Total size of the WAL segments in the work directory.
+    pub fn wal_bytes(&self) -> Result<u64, WalError> {
+        let mut total = 0;
+        for path in sorted_wal_files(&self.work_dir)? {
+            total += fs::metadata(path)?.len();
+        }
+        Ok(total)
     }
 
     /// Where a checkpoint writes its snapshot before

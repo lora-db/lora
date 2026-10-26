@@ -69,7 +69,8 @@ const walDb = await openWalDatabase({
 The name is validated and resolved under `databaseDir` as a `.loradb`
 archive. Relative paths resolve from the current working directory.
 Reopening the same name and directory replays committed WAL records before
-the handle is returned.
+the handle is returned. The open runs on the libuv threadpool, so the event
+loop keeps serving timers and requests while a large database loads.
 
 Use `openWalDatabase` when you want a raw WAL directory instead of a
 portable `.loradb` archive. Pair it with `snapshotDir` to let the
@@ -247,7 +248,10 @@ For checkpointed deployments, call `sync()` when you need an immediate
 durability point. On a named `.loradb` database `sync()` is also the
 checkpoint: it writes the graph as the archive's base snapshot, streamed so it
 holds no second copy of the graph, and drops the WAL segments that snapshot
-covers. A change feed can then resume only from the last `sync()` on. A checkpoint snapshot is stamped with the WAL's current
+covers. A change feed can then resume only from the last `sync()` on. An open
+that replays more WAL than its snapshot holds, and at least 64 MiB of it,
+takes the same checkpoint before it returns, so the next open loads the
+snapshot instead of replaying the log again. A checkpoint snapshot is stamped with the WAL's current
 `durableLsn`; in `group-sync` mode that fence
 can trail the newest writes until the background fsync catches up.
 

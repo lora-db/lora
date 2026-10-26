@@ -11,6 +11,9 @@ use lora_wal::{SyncMode, WalConfig};
 /// compressed chunks directly into portable files.
 pub const DEFAULT_DATABASE_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
+/// Default for [`DatabaseOpenOptions::compact_on_open_wal_bytes`].
+pub const DEFAULT_COMPACT_ON_OPEN_WAL_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Options for opening a named filesystem-backed database.
 #[derive(Debug, Clone)]
 pub struct DatabaseOpenOptions {
@@ -18,6 +21,12 @@ pub struct DatabaseOpenOptions {
     pub sync_mode: SyncMode,
     pub segment_target_bytes: u64,
     pub max_database_bytes: u64,
+    /// An open that finds at least this much WAL, and more WAL than base
+    /// snapshot, checkpoints before it returns, as [`crate::Database::sync`]
+    /// does: the container is rewritten as the snapshot and the tail of the
+    /// WAL, so the next open loads the snapshot instead of replaying the
+    /// log again. `u64::MAX` turns it off.
+    pub compact_on_open_wal_bytes: u64,
 }
 
 impl Default for DatabaseOpenOptions {
@@ -27,6 +36,7 @@ impl Default for DatabaseOpenOptions {
             sync_mode: SyncMode::GroupSync { interval_ms: 1_000 },
             segment_target_bytes: 8 * 1024 * 1024,
             max_database_bytes: DEFAULT_DATABASE_MAX_BYTES,
+            compact_on_open_wal_bytes: DEFAULT_COMPACT_ON_OPEN_WAL_BYTES,
         }
     }
 }

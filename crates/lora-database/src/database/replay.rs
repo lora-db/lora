@@ -18,6 +18,9 @@ use lora_store::{
     DeletedRecordSink, GraphStorage, GraphStorageMut, InMemoryGraph, MutationEvent,
     MutationRecorder,
 };
+use lora_wal::{Lsn, SyncMode, Wal, WalError};
+
+use crate::error::LoraError;
 
 /// Best-effort: install a mutation recorder on the storage when the
 /// concrete type is `InMemoryGraph`. The WAL's recorder lives on the
@@ -61,7 +64,52 @@ pub(crate) fn install_deleted_sink_if_inmemory<S: GraphStorage + Any + Sized>(
 /// recorder and re-write the same events to the WAL, doubling them on
 /// the next recovery.
 pub(crate) fn replay_into(graph: &mut InMemoryGraph, events: Vec<MutationEvent>) -> Result<()> {
-    for (idx, event) in events.into_iter().enumerate() {
+    replay_from(graph, 0, events)
+}
+
+/// Open a WAL, applying each committed transaction to `graph` as replay
+/// reads it, so the open holds the graph and one transaction rather than
+/// the whole log decoded.
+pub(crate) fn open_wal_into(
+    graph: &mut InMemoryGraph,
+    dir: impl Into<std::path::PathBuf>,
+    sync_mode: SyncMode,
+    segment_target_bytes: u64,
+    checkpoint_lsn: Lsn,
+) -> std::result::Result<Arc<Wal>, LoraError> {
+    let mut applied = 0usize;
+    let mut failure = None;
+    let opened = Wal::open_replaying(
+        dir,
+        sync_mode,
+        segment_target_bytes,
+        checkpoint_lsn,
+        &mut |events| {
+            let count = events.len();
+            replay_from(graph, applied, events).map_err(|err| {
+                let message = err.to_string();
+                failure = Some(err);
+                WalError::Malformed(message)
+            })?;
+            applied += count;
+            Ok(())
+        },
+    );
+    match (opened, failure) {
+        (Ok(wal), _) => Ok(wal),
+        (Err(_), Some(err)) => Err(LoraError::from_anyhow(err)),
+        (Err(err), None) => Err(err.into()),
+    }
+}
+
+/// [`replay_into`] for events that follow `first_idx` already applied,
+/// which numbers the errors.
+fn replay_from(
+    graph: &mut InMemoryGraph,
+    first_idx: usize,
+    events: Vec<MutationEvent>,
+) -> Result<()> {
+    for (idx, event) in (first_idx..).zip(events) {
         match event {
             MutationEvent::CreateNode {
                 id,
