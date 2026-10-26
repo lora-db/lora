@@ -20,6 +20,8 @@
 //! below it.
 
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use lora_store::MutationEvent;
@@ -27,7 +29,7 @@ use lora_store::MutationEvent;
 use crate::dir::SegmentDir;
 use crate::errors::WalError;
 use crate::lsn::Lsn;
-use crate::record::WalRecord;
+use crate::record::{RecordKind, WalRecord, RECORD_HEADER_LEN, RECORD_TRAILER_LEN};
 use crate::segment::{SegmentReader, SEGMENT_HEADER_LEN};
 
 /// Outcome of a full replay walk. The committed transactions went to the
@@ -86,36 +88,74 @@ pub type ReplaySink<'a> = dyn FnMut(Vec<MutationEvent>) -> Result<(), WalError> 
 ///
 /// Records with `lsn <= checkpoint_lsn` are skipped — they are already
 /// captured in the snapshot the caller is about to restore from.
+///
+/// A bad frame is a torn tail only when it is in the newest segment, that
+/// segment is not sealed, and no valid record follows it: that is the
+/// shape an interrupted append leaves. Anything else is corruption and
+/// fails with [`WalError::Corrupt`] rather than being cut off, because
+/// cutting it would silently drop committed transactions. A log whose
+/// oldest segment starts above `checkpoint_lsn + 1`, or that is missing a
+/// segment in the middle, fails with [`WalError::Gap`].
 pub(crate) fn replay_segments(
     paths: &[PathBuf],
     checkpoint_lsn: Lsn,
     sink: &mut ReplaySink<'_>,
 ) -> Result<ReplayOutcome, WalError> {
+    check_segment_ids_contiguous(paths)?;
     let mut state = ReplayState::new(sink);
     let mut torn_tail: Option<TornTailInfo> = None;
     let mut last_good_offset = SEGMENT_HEADER_LEN as u64;
 
-    'outer: for path in paths {
+    'outer: for (index, path) in paths.iter().enumerate() {
         let mut reader = SegmentReader::open(path)?;
         last_good_offset = reader.position();
         let segment_base = reader.header().base_lsn;
+        if index == 0 {
+            check_log_start(segment_base, checkpoint_lsn, path)?;
+        }
         state.validate_segment(segment_base, path)?;
+        let may_have_torn_tail = index + 1 == paths.len() && !reader.header().sealed;
 
         loop {
             // Capture position before the read so we can report the
             // start-of-bad-record offset on torn tail.
             let before = reader.position();
-            match reader.read_record() {
-                Ok(Some(record)) => {
+            match reader.read_frame() {
+                Ok(Some(raw)) => {
+                    // The frame's CRC matched, so these are the bytes that
+                    // were written: a payload that does not decode is never
+                    // a torn tail.
+                    let record = raw
+                        .decode()
+                        .map_err(|err| corrupt(path, before, err.to_string()))?;
                     state.accept_record(record, segment_base, checkpoint_lsn, path)?;
                     last_good_offset = reader.position();
                 }
                 Ok(None) => break,
-                Err(err) => {
+                Err(err @ WalError::Io(_)) => return Err(err),
+                Err(cause) => {
+                    if !may_have_torn_tail {
+                        let place = if reader.header().sealed {
+                            "a sealed segment"
+                        } else {
+                            "a segment that is not the newest"
+                        };
+                        return Err(corrupt(path, before, format!("{cause} in {place}")));
+                    }
+                    if let Some(at) = reader.find_valid_frame_after(before, state.last_lsn)? {
+                        return Err(corrupt(
+                            path,
+                            before,
+                            format!(
+                                "{cause}; a valid record follows at byte {at}, \
+                                 so this is not a torn tail"
+                            ),
+                        ));
+                    }
                     torn_tail = Some(TornTailInfo {
                         segment_path: path.clone(),
                         last_good_offset: before,
-                        cause: err,
+                        cause,
                     });
                     break 'outer;
                 }
@@ -124,6 +164,52 @@ pub(crate) fn replay_segments(
     }
 
     Ok(state.finish(torn_tail, last_good_offset))
+}
+
+fn corrupt(path: &Path, offset: u64, reason: String) -> WalError {
+    WalError::Corrupt {
+        path: path.to_path_buf(),
+        offset,
+        reason,
+    }
+}
+
+/// Segment ids are allocated one at a time and only ever removed from the
+/// front, so a hole between the first and last id means a segment file
+/// was lost.
+fn check_segment_ids_contiguous(paths: &[PathBuf]) -> Result<(), WalError> {
+    for pair in paths.windows(2) {
+        let (Some(prev), Some(next)) = (SegmentDir::id_of(&pair[0]), SegmentDir::id_of(&pair[1]))
+        else {
+            continue;
+        };
+        if prev.checked_next() != Some(next) {
+            return Err(WalError::Gap(format!(
+                "segment `{}` is followed by `{}`; the segments between them are missing",
+                pair[0].display(),
+                pair[1].display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The oldest segment must start at or below `checkpoint_lsn + 1`:
+/// everything before it has to be in the snapshot the caller loaded.
+/// Checkpoints remove only segments whose records are all at or below
+/// their fence, so a later start means the caller is replaying without
+/// the snapshot those segments were folded into.
+fn check_log_start(base: Lsn, checkpoint_lsn: Lsn, path: &Path) -> Result<(), WalError> {
+    if base.raw().saturating_sub(1) > checkpoint_lsn.raw() {
+        return Err(WalError::Gap(format!(
+            "the oldest segment `{}` starts at LSN {} but the snapshot covers only up to \
+             LSN {}; open with the snapshot taken when the older segments were removed",
+            path.display(),
+            base.raw(),
+            checkpoint_lsn.raw()
+        )));
+    }
+    Ok(())
 }
 
 struct ReplayState<'s, 'a> {
@@ -350,4 +436,51 @@ pub fn replay_dir(dir: &Path, checkpoint_lsn: Lsn) -> Result<ReplayOutcome, WalE
     let entries = SegmentDir::new(dir).list()?;
     let paths: Vec<PathBuf> = entries.into_iter().map(|e| e.path).collect();
     replay_segments(&paths, checkpoint_lsn, &mut |_| Ok(()))
+}
+
+/// Newest checkpoint marker in the WAL at `dir`: the `snapshot_lsn` of the
+/// last [`WalRecord::Checkpoint`] record, or `None` when there is none.
+///
+/// A cheap stand-in for `replay_dir(dir, Lsn::ZERO).checkpoint_lsn_observed`
+/// for diagnostics: it reads only each record's fixed header and skips the
+/// payload, and checks the CRC of checkpoint records only. It does not
+/// validate the log; a segment it cannot follow is read up to that point.
+pub fn newest_checkpoint_marker(dir: &Path) -> Result<Option<Lsn>, WalError> {
+    let mut newest = None;
+    for entry in SegmentDir::new(dir).list()? {
+        let file = File::open(&entry.path)?;
+        let len = file.metadata()?.len();
+        let mut reader = BufReader::with_capacity(64 * 1024, file);
+        reader.seek(SeekFrom::Start(SEGMENT_HEADER_LEN as u64))?;
+        let mut position = SEGMENT_HEADER_LEN as u64;
+        let mut header = [0u8; RECORD_HEADER_LEN];
+        while position + RECORD_HEADER_LEN as u64 <= len {
+            reader.read_exact(&mut header)?;
+            let length = u64::from(u32::from_le_bytes([
+                header[0], header[1], header[2], header[3],
+            ]));
+            if length < (RECORD_HEADER_LEN + RECORD_TRAILER_LEN) as u64 || position + length > len {
+                break;
+            }
+            if header[4] == RecordKind::Checkpoint as u8 {
+                if length != (RECORD_HEADER_LEN + RECORD_TRAILER_LEN) as u64 {
+                    break;
+                }
+                let mut crc = [0u8; RECORD_TRAILER_LEN];
+                reader.read_exact(&mut crc)?;
+                if crc32fast::hash(&header) != u32::from_le_bytes(crc) {
+                    break;
+                }
+                let mut snapshot_lsn = [0u8; 8];
+                snapshot_lsn.copy_from_slice(&header[13..21]);
+                newest = Some(Lsn::new(u64::from_le_bytes(snapshot_lsn)));
+            } else {
+                let rest = i64::try_from(length - RECORD_HEADER_LEN as u64)
+                    .map_err(|_| WalError::Decode("record length overflows i64".into()))?;
+                reader.seek_relative(rest)?;
+            }
+            position += length;
+        }
+    }
+    Ok(newest)
 }

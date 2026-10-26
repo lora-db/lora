@@ -167,20 +167,18 @@ impl WalRecorder {
 
     /// Like [`Self::commit`], but also hands back the committed events and
     /// the LSN of the `TxCommit` record. Returns `None` when the query
-    /// fired no mutations. Change feeds use this; it clones the event
-    /// buffer, so the plain [`Self::commit`] stays the default.
+    /// fired no mutations. Change feeds use this.
     pub fn commit_capture(&self) -> Result<Option<(Lsn, Vec<MutationEvent>)>, WalError> {
         let events = self.take_armed_buffer()?;
         if events.is_empty() {
             return Ok(None);
         }
-        let captured = events.clone();
-        let lsn = self.wal.commit_tx_lsn(events).inspect_err(|e| {
+        let lsn = self.wal.commit_tx_events(&events).inspect_err(|e| {
             self.state_lock()
                 .poisoned
                 .get_or_insert_with(|| e.to_string());
         })?;
-        Ok(lsn.map(|lsn| (lsn, captured)))
+        Ok(lsn.map(|lsn| (lsn, events)))
     }
 
     fn take_armed_buffer(&self) -> Result<Vec<MutationEvent>, WalError> {
