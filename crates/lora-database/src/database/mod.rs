@@ -107,6 +107,32 @@ pub trait QueryRunner: Send + Sync + 'static {
         self.execute_with_params(query, options, params)
     }
 
+    /// [`Self::execute_with_params_deadline`] that fails with
+    /// `LORA_RESULT_TOO_LARGE` when the result has more than `max_rows`
+    /// rows, rolling back a write. [`Database`] checks the cap while the
+    /// result is built and stops early; this default can only check the
+    /// finished result, counting entities for the graph format.
+    fn execute_with_params_deadline_max_rows(
+        &self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+        params: BTreeMap<String, LoraValue>,
+        deadline: web_time::Instant,
+        max_rows: usize,
+    ) -> Result<QueryResult, LoraError> {
+        let result = self.execute_with_params_deadline(query, options, params, deadline)?;
+        let rows = match &result {
+            QueryResult::Rows(r) => r.rows.len(),
+            QueryResult::RowArrays(r) => r.rows.len(),
+            QueryResult::Graph(g) => g.graph.nodes.len() + g.graph.relationships.len(),
+            QueryResult::Combined(c) => c.data.len(),
+        };
+        if rows > max_rows {
+            return Err(lora_executor::ExecutorError::ResultTooLarge { max_rows }.into());
+        }
+        Ok(result)
+    }
+
     /// [`Self::profile`] bounded by an absolute `deadline`. Runners without
     /// deadline support ignore it.
     fn profile_deadline(
@@ -397,6 +423,19 @@ where
         deadline: web_time::Instant,
     ) -> Result<QueryResult, LoraError> {
         Database::execute_with_params_deadline(self, query, options, params, deadline)
+    }
+
+    fn execute_with_params_deadline_max_rows(
+        &self,
+        query: &str,
+        options: Option<ExecuteOptions>,
+        params: BTreeMap<String, LoraValue>,
+        deadline: web_time::Instant,
+        max_rows: usize,
+    ) -> Result<QueryResult, LoraError> {
+        Database::execute_with_params_deadline_max_rows(
+            self, query, options, params, deadline, max_rows,
+        )
     }
 
     fn profile_deadline(

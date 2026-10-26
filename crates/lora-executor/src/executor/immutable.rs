@@ -36,6 +36,7 @@ use super::helpers::{
     label_group_candidates_prefiltered, node_matches_label_groups, node_matches_property_filter,
     scan_node_ids_for_label_groups,
 };
+use super::row_cap::{CapGuard, RowCaps, UNCAPPED};
 use super::{merge_optional_rows, optional_match_rows};
 use super::{project_row, ProjectionNames};
 use super::{sort_checked, sort_row_bound, sort_rows_with_top_k};
@@ -51,6 +52,8 @@ pub struct ExecutionContext<'a, S: GraphStorage> {
 pub struct Executor<'a, S: GraphStorage> {
     ctx: ExecutionContext<'a, S>,
     deadline: Option<Instant>,
+    max_rows: Option<usize>,
+    caps: RowCaps,
 }
 
 impl<'a, S: GraphStorage> Executor<'a, S> {
@@ -58,11 +61,27 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         Self {
             ctx,
             deadline: None,
+            max_rows: None,
+            caps: RowCaps::new(),
         }
     }
 
     pub fn with_deadline(ctx: ExecutionContext<'a, S>, deadline: Option<Instant>) -> Self {
-        Self { ctx, deadline }
+        Self {
+            ctx,
+            deadline,
+            max_rows: None,
+            caps: RowCaps::new(),
+        }
+    }
+
+    /// Fail with [`ExecutorError::ResultTooLarge`] once the result has more
+    /// than `max_rows` rows. The cap is checked while operators build
+    /// their output (see `row_cap`), so a result far over it is never
+    /// built in full. `None` (the default) means no cap.
+    pub fn with_max_rows(mut self, max_rows: Option<usize>) -> Self {
+        self.max_rows = max_rows;
+        self
     }
 
     #[inline]
@@ -105,13 +124,24 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
 
         clear_eval_error();
 
-        let mut all_rows = self.execute_rows(&compiled.physical)?;
+        // Under UNION ALL every branch row is a result row, so each branch
+        // is capped as it runs; plain UNION may drop duplicates, so only
+        // the combined result is.
+        let branch_cap = if compiled.unions.iter().all(|branch| branch.all) {
+            self.max_rows
+        } else {
+            None
+        };
+        let mut all_rows = self.execute_rows_capped(&compiled.physical, branch_cap)?;
         let mut needs_dedup = false;
 
         for branch in &compiled.unions {
             self.check_deadline()?;
-            let branch_rows = self.execute_rows(&branch.physical)?;
+            let branch_rows = self.execute_rows_capped(&branch.physical, branch_cap)?;
             all_rows.extend(branch_rows);
+            if let Some(max_rows) = branch_cap {
+                super::row_cap::check_row_cap(all_rows.len(), max_rows)?;
+            }
 
             if !branch.all {
                 needs_dedup = true;
@@ -120,6 +150,9 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
 
         if needs_dedup {
             all_rows = dedup_rows(all_rows);
+        }
+        if let Some(max_rows) = self.max_rows {
+            super::row_cap::check_row_cap(all_rows.len(), max_rows)?;
         }
 
         Ok(all_rows)
@@ -149,7 +182,16 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
     }
 
     pub fn execute_rows(&self, plan: &PhysicalPlan) -> ExecResult<Vec<Row>> {
+        self.execute_rows_capped(plan, self.max_rows)
+    }
+
+    fn execute_rows_capped(
+        &self,
+        plan: &PhysicalPlan,
+        max_rows: Option<usize>,
+    ) -> ExecResult<Vec<Row>> {
         let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
+        let _caps = CapGuard::new(&self.caps, self.caps.enter_plan(plan, max_rows));
         self.check_deadline()?;
         // Clear any error residue that a previous query on this thread may have
         // left in the thread-local eval-error slot.
@@ -187,11 +229,13 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         node_id: PhysicalNodeId,
     ) -> ExecResult<Vec<Row>> {
         let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
+        let _caps = CapGuard::new(&self.caps, self.caps.enter_plan(plan, None));
         self.execute_node(plan, node_id)
     }
 
     fn execute_node(&self, plan: &PhysicalPlan, node_id: PhysicalNodeId) -> ExecResult<Vec<Row>> {
         self.check_deadline()?;
+        let _caps = CapGuard::new(&self.caps, self.caps.enter_operator(plan, node_id));
         trace!("read-only execute_node start: node_id={node_id:?}");
 
         let result = match &plan.nodes[node_id] {
@@ -237,7 +281,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             Err(err) => error!("read-only execute_node failed: node_id={node_id:?}, error={err}"),
         }
 
-        result
+        self.caps.check(result)
     }
 
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
@@ -245,6 +289,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
     where
         S: Sync,
     {
+        let _caps = CapGuard::new(&self.caps, self.caps.enter_plan(plan, self.max_rows));
         self.check_deadline()?;
         clear_eval_error();
 
@@ -276,7 +321,8 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         S: Sync,
     {
         self.check_deadline()?;
-        match &plan.nodes[node_id] {
+        let _caps = CapGuard::new(&self.caps, self.caps.enter_operator(plan, node_id));
+        let result = match &plan.nodes[node_id] {
             PhysicalOp::Argument(op) => self.exec_argument(op),
             PhysicalOp::NodeScan(op) => self.exec_node_scan_parallel_safe(plan, op),
             PhysicalOp::NodeByLabelScan(op) => self.exec_node_by_label_scan_parallel_safe(plan, op),
@@ -288,7 +334,8 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             _ => Err(ExecutorError::RuntimeError(
                 "parallel-safe executor called with unsupported operator".into(),
             )),
-        }
+        };
+        self.caps.check(result)
     }
 
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
@@ -305,8 +352,13 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             None => vec![Row::new()],
         };
         let node_ids = self.ctx.storage.all_node_ids();
-        if base_rows.len().saturating_mul(node_ids.len()) < PARALLEL_ROW_THRESHOLD {
-            return node_scan_rows(self.ctx.storage, base_rows, op, self.deadline);
+        let cap = self.caps.op_cap();
+        // A capped cartesian product runs sequentially, where the cap is
+        // checked as rows are built.
+        if base_rows.len().saturating_mul(node_ids.len()) < PARALLEL_ROW_THRESHOLD
+            || (cap != UNCAPPED && base_rows.len() > 1)
+        {
+            return node_scan_rows(self.ctx.storage, base_rows, op, self.deadline, cap);
         }
 
         use rayon::prelude::*;
@@ -382,8 +434,11 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             None => vec![Row::new()],
         };
         let candidate_ids = scan_node_ids_for_label_groups(self.ctx.storage, &op.labels);
-        if base_rows.len().saturating_mul(candidate_ids.len()) < PARALLEL_ROW_THRESHOLD {
-            return node_by_label_scan_rows(self.ctx.storage, base_rows, op, self.deadline);
+        let cap = self.caps.op_cap();
+        if base_rows.len().saturating_mul(candidate_ids.len()) < PARALLEL_ROW_THRESHOLD
+            || (cap != UNCAPPED && base_rows.len() > 1)
+        {
+            return node_by_label_scan_rows(self.ctx.storage, base_rows, op, self.deadline, cap);
         }
 
         let candidates_prefiltered = label_group_candidates_prefiltered(&op.labels);
@@ -487,15 +542,18 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             Some(input) => self.execute_node_parallel_safe(plan, input)?,
             None => vec![Row::new()],
         };
-        if op.in_list {
+        let cap = self.caps.op_cap();
+        if op.in_list || (cap != UNCAPPED && base_rows.len() > 1) {
             // An IN seek touches one index bucket per element; the
-            // sequential path is already cheap.
+            // sequential path is already cheap. A capped multi-row input
+            // checks the cap as it goes.
             return node_by_property_scan_rows(
                 self.ctx.storage,
                 &self.ctx.params,
                 base_rows,
                 op,
                 self.deadline,
+                cap,
             );
         }
         let eval_ctx = EvalContext {
@@ -587,6 +645,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                 base_rows,
                 op,
                 self.deadline,
+                cap,
             );
         }
 
@@ -743,7 +802,13 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             None => vec![Row::new()],
         };
 
-        node_scan_rows(self.ctx.storage, base_rows, op, self.deadline)
+        node_scan_rows(
+            self.ctx.storage,
+            base_rows,
+            op,
+            self.deadline,
+            self.caps.op_cap(),
+        )
     }
 
     fn exec_node_by_label_scan(
@@ -756,7 +821,13 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             None => vec![Row::new()],
         };
 
-        node_by_label_scan_rows(self.ctx.storage, base_rows, op, self.deadline)
+        node_by_label_scan_rows(
+            self.ctx.storage,
+            base_rows,
+            op,
+            self.deadline,
+            self.caps.op_cap(),
+        )
     }
 
     fn exec_node_by_property_scan(
@@ -775,6 +846,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             base_rows,
             op,
             self.deadline,
+            self.caps.op_cap(),
         )
     }
 
@@ -925,9 +997,22 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
     fn exec_expand(&self, plan: &PhysicalPlan, op: &ExpandExec) -> ExecResult<Vec<Row>> {
         let input_rows = self.execute_node(plan, op.input)?;
         if let Some(range) = &op.range {
-            expand_var_len_rows(self.ctx.storage, input_rows, op, range, self.deadline)
+            expand_var_len_rows(
+                self.ctx.storage,
+                input_rows,
+                op,
+                range,
+                self.deadline,
+                self.caps.op_cap(),
+            )
         } else {
-            expand_rows(self.ctx.storage, &self.ctx.params, input_rows, op)
+            expand_rows(
+                self.ctx.storage,
+                &self.ctx.params,
+                input_rows,
+                op,
+                self.caps.op_cap(),
+            )
         }
     }
 
@@ -988,7 +1073,7 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             params: &self.ctx.params,
         };
 
-        unwind_rows(input_rows, op, &eval_ctx)
+        unwind_rows(input_rows, op, &eval_ctx, self.caps.op_cap())
     }
 
     fn exec_hash_aggregation(
@@ -1073,13 +1158,17 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
                 op.inner,
                 input_rows,
                 &op.new_vars,
+                self.caps.op_cap(),
             );
         }
 
         // Fallback for inner plans the pull pipeline cannot seed: execute
         // the pattern once, uncorrelated, and join it against every input
         // row.
-        let inner_rows = self.execute_node(plan, op.inner)?;
+        let inner_rows = {
+            let _side = CapGuard::new(&self.caps, self.caps.enter_side_input());
+            self.execute_node(plan, op.inner)?
+        };
 
         Ok(optional_match_rows(input_rows, &inner_rows, &op.new_vars))
     }

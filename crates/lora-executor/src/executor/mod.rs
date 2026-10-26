@@ -38,6 +38,8 @@
 //!   the [`GroupValueKey`] dedup-key / aggregate-key wrapper, and
 //!   variable-length range resolution ([`resolve_range`],
 //!   `VarLenResult`).
+//! - `row_cap` — the result-row cap ([`Executor::with_max_rows`]) and
+//!   which operators it applies to.
 //! - `sort` — buffered sort comparison and top-k candidate retention
 //!   shared by buffered execution and `crate::pull::SortSource`.
 
@@ -46,6 +48,7 @@ mod helpers;
 mod immutable;
 mod mutable;
 mod optional;
+mod row_cap;
 mod sort;
 
 pub use helpers::value_matches_property_value;
