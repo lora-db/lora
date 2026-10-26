@@ -296,7 +296,8 @@ impl Database {
         };
         let kind = match local_writer {
             Some(writer) => StreamKind::Local(
-                stream::LocalStream::open(db, &query, params_map, writer).map_err(lora_err)?,
+                stream::LocalStream::open(db, &query, params_map, deadline, writer)
+                    .map_err(lora_err)?,
             ),
             None => StreamKind::Actor(
                 stream::StreamActor::spawn(db, query, params_map, deadline, shape.columns)
@@ -312,7 +313,6 @@ impl Database {
             stream_id,
             NativeQueryStream {
                 kind,
-                deadline,
                 _limit: limit,
             },
         );
@@ -329,7 +329,7 @@ impl Database {
             .get(&stream_id)
             .ok_or_else(|| NapiError::new(Status::GenericFailure, "query stream is closed"))?;
         Ok(match &stream.kind {
-            StreamKind::Local(local) => local.stream.columns().to_vec(),
+            StreamKind::Local(local) => local.columns().to_vec(),
             StreamKind::Actor(actor) => actor.columns.to_vec(),
         })
     }
@@ -395,25 +395,17 @@ impl Database {
                 "LORA_INTERNAL: a mutating stream is pulled with streamNextAsync",
             ));
         };
-        // Rows are pulled one call at a time, so the stream's deadline (or
-        // cancellation) is enforced between rows; closing the stream drops
-        // its read snapshot.
-        if stream.deadline.is_some_and(lora_executor_deadline_reached) {
-            streams.remove(&stream_id);
-            return Err(NapiError::new(Status::GenericFailure, stream::timed_out()));
-        }
-        match local.stream.next_row() {
+        // The stream's deadline (or cancellation) is active inside the
+        // pull; closing the stream drops its read snapshot.
+        match local.next_row() {
             Ok(Some(row)) => Ok(Some(row_to_napi(&env, &row)?.into_unknown())),
             Ok(None) => {
                 streams.remove(&stream_id);
                 Ok(None)
             }
-            Err(e) => {
+            Err(message) => {
                 streams.remove(&stream_id);
-                Err(NapiError::new(
-                    Status::GenericFailure,
-                    format_lora_error(&LoraError::from_anyhow(e)),
-                ))
+                Err(NapiError::new(Status::GenericFailure, message))
             }
         }
     }
@@ -1297,7 +1289,6 @@ pub struct NativeQueryStream {
     // Declared first, so dropped first: the stream borrows from a database
     // `Arc` it holds and must go before anything it depends on.
     kind: StreamKind,
-    deadline: Option<std::time::Instant>,
     /// Keeps a cancellation handle alive for the stream's lifetime.
     _limit: QueryLimit,
 }
@@ -1312,10 +1303,6 @@ enum StreamKind {
 }
 
 type SharedCancel = Arc<Mutex<CancellableDeadline>>;
-
-fn lora_executor_deadline_reached(deadline: std::time::Instant) -> bool {
-    lora_database::deadline_reached(deadline)
-}
 
 /// How long a query may run: nothing, a plain timeout, or a cancellable
 /// deadline shared with JS through a token.

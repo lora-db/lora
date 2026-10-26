@@ -181,6 +181,41 @@ describe("query timeouts and cancellation", () => {
     await expect(stream.next()).rejects.toMatchObject({ name: "AbortError" });
   });
 
+  it("stops a stream inside a long pull at timeoutMs", async () => {
+    // The first pull aggregates the whole 4*10^8-row product. Without
+    // the deadline active inside the pull it ran to the end (seconds,
+    // with the event loop blocked) and only then timed out.
+    const { ms, err } = await elapsed(
+      (async () => db.stream(CARTESIAN, {}, { timeoutMs: 50 }).next())(),
+    );
+    expect((err as LoraError).code).toBe("LORA_TIMEOUT");
+    expect(ms).toBeLessThan(1_000);
+  });
+
+  it("stops a mutating stream inside a long pull and releases the lock", async () => {
+    // A write the engine materializes runs while the stream opens.
+    const { ms, err } = await elapsed(
+      (async () =>
+        db
+          .stream(
+            "MATCH (a:A), (b:B) WHERE b.i + a.i = a.i + 1 CREATE (:StreamPair) RETURN count(*) AS c",
+            {},
+            { timeoutMs: 50 },
+          )
+          .next())(),
+    );
+    expect((err as LoraError).code).toBe("LORA_TIMEOUT");
+    expect(ms).toBeLessThan(1_000);
+    const { err: writeErr } = await elapsed(
+      db.execute("CREATE (:AfterStream)", {}, { timeoutMs: 1_000 }),
+    );
+    expect(writeErr).toBeUndefined();
+    const { rows } = await db.execute(
+      "MATCH (p:StreamPair) RETURN count(p) AS c",
+    );
+    expect(rows[0].c).toBe(0);
+  });
+
   it("applies the database-wide queryTimeoutMs default", async () => {
     const bounded = await createDatabase(undefined, { queryTimeoutMs: 50 });
     await seed(bounded);
