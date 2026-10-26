@@ -7,6 +7,10 @@
 //!
 //! The numbers are private to one graph and its clones, and are not
 //! persisted: snapshots and the WAL write names.
+//!
+//! A fourth dictionary numbers short string *values* of the keys that
+//! repeat a handful of them (a source, a kind, a run id), so a record
+//! holds a number in their place (see [`ValueDict`]).
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
@@ -143,7 +147,6 @@ impl NameDict {
         &self.inner.names[id as usize]
     }
 
-    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.inner.names.len()
     }
@@ -156,23 +159,183 @@ impl NameDict {
     }
 }
 
-/// The three dictionaries of a graph.
+/// The dictionaries of a graph.
 #[derive(Clone, Default)]
 pub(crate) struct Dicts {
     pub(crate) labels: NameDict,
     pub(crate) types: NameDict,
     pub(crate) keys: NameDict,
+    pub(crate) values: ValueDict,
 }
 
 impl Dicts {
     pub(crate) fn heap_bytes(&self) -> usize {
-        self.labels.heap_bytes() + self.types.heap_bytes() + self.keys.heap_bytes()
+        self.labels.heap_bytes()
+            + self.types.heap_bytes()
+            + self.keys.heap_bytes()
+            + self.values.heap_bytes()
+    }
+}
+
+/// Longest string value a record refers to by number. Longer ones are
+/// rarely repeated labels of a category, and a number saves little on
+/// them next to their length.
+const VALUE_MAX_LEN: usize = 32;
+/// String values of a key a record stores in full before the key is
+/// judged: [`ValueDict`] numbers a key's values once this many show at
+/// most [`TRIAL_DISTINCT`] distinct ones.
+const TRIAL_VALUES: u16 = 64;
+const TRIAL_DISTINCT: usize = 8;
+/// New values a numbered key may add before it stops adding them: a key
+/// that kept a few values during its trial and then took many more is
+/// not one whose values repeat.
+const KEY_MISSES: u16 = 64;
+/// Values the dictionary holds at most. Numbers are never reused, so this
+/// bounds what it can keep.
+const VALUES_MAX: usize = 4096;
+
+/// Short string values of the keys that repeat a few of them, numbered
+/// like names so a record holds the number (one or two bytes) instead of
+/// the string. `source: 'musicbrainz'` in every record of a sync tracker
+/// costs a byte where it cost twelve.
+///
+/// Which keys: each key's first [`TRIAL_VALUES`] short string values are
+/// stored in full while their hashes are counted. A key that showed at
+/// most [`TRIAL_DISTINCT`] distinct values has its short values numbered
+/// from then on, up to [`KEY_MISSES`] new ones; every other key is never
+/// numbered. The judgement only changes how a value is stored: a record
+/// reads the same string either way.
+#[derive(Clone, Default)]
+pub(crate) struct ValueDict {
+    strings: NameDict,
+    /// By key id.
+    keys: Arc<Vec<KeyValues>>,
+}
+
+#[derive(Clone)]
+enum KeyValues {
+    /// Hashes of the distinct short values seen, and how many were seen.
+    Trial {
+        seen: u16,
+        distinct: Vec<u64>,
+    },
+    /// Values are numbered; `misses` counts the new ones added.
+    Numbered {
+        misses: u16,
+    },
+    Stored,
+}
+
+impl Default for KeyValues {
+    fn default() -> Self {
+        KeyValues::Trial {
+            seen: 0,
+            distinct: Vec::new(),
+        }
+    }
+}
+
+impl ValueDict {
+    /// The number to store for `value` under key `key`, if it is to be
+    /// stored by number; counts it towards the key's trial otherwise.
+    #[inline]
+    pub(crate) fn number(&mut self, key: u32, value: &str) -> Option<u32> {
+        if value.len() > VALUE_MAX_LEN {
+            return None;
+        }
+        match self.keys.get(key as usize) {
+            Some(KeyValues::Stored) => None,
+            Some(KeyValues::Numbered { misses }) => {
+                if let Some(id) = self.strings.id_of(value) {
+                    return Some(id);
+                }
+                if *misses >= KEY_MISSES || self.strings.len() >= VALUES_MAX {
+                    return None;
+                }
+                let keys = Arc::make_mut(&mut self.keys);
+                if let KeyValues::Numbered { misses } = &mut keys[key as usize] {
+                    *misses += 1;
+                }
+                Some(
+                    self.strings
+                        .id_or_insert_with(value, || crate::Name::from_arc(Arc::from(value))),
+                )
+            }
+            _ => {
+                self.observe(key, value);
+                None
+            }
+        }
+    }
+
+    /// Count `value` towards key `key`'s trial, and judge the key once
+    /// the trial is over.
+    fn observe(&mut self, key: u32, value: &str) {
+        let keys = Arc::make_mut(&mut self.keys);
+        if keys.len() <= key as usize {
+            keys.resize_with(key as usize + 1, KeyValues::default);
+        }
+        let state = &mut keys[key as usize];
+        let KeyValues::Trial { seen, distinct } = state else {
+            return;
+        };
+        let hash = NameState::default().hash_one(value);
+        if !distinct.contains(&hash) {
+            if distinct.len() == TRIAL_DISTINCT {
+                *state = KeyValues::Stored;
+                return;
+            }
+            distinct.push(hash);
+        }
+        *seen += 1;
+        if *seen == TRIAL_VALUES {
+            *state = KeyValues::Numbered { misses: 0 };
+        }
+    }
+
+    /// The string numbered `id`.
+    #[inline]
+    pub(crate) fn string(&self, id: u32) -> &str {
+        self.strings.name(id).as_str()
+    }
+
+    pub(crate) fn heap_bytes(&self) -> usize {
+        // Values are not interned process-wide: count their bytes too.
+        let strings: usize = (0..self.strings.len() as u32)
+            .map(|id| 2 * std::mem::size_of::<usize>() + self.string(id).len())
+            .sum();
+        self.strings.heap_bytes()
+            + strings
+            + self.keys.capacity() * std::mem::size_of::<KeyValues>()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A key that repeats a few values has them numbered after its trial;
+    /// one with many distinct values never does.
+    #[test]
+    fn values_are_numbered_only_for_keys_that_repeat_a_few() {
+        let mut values = ValueDict::default();
+        for i in 0..TRIAL_VALUES {
+            assert_eq!(values.number(0, ["a", "b", "c"][i as usize % 3]), None);
+            assert_eq!(values.number(1, &format!("id-{i}")), None);
+        }
+        let a = values.number(0, "a").expect("key 0 is numbered");
+        assert_eq!(values.string(a), "a");
+        assert_eq!(values.number(0, "a"), Some(a));
+        assert_eq!(values.number(1, "id-1"), None);
+        assert_eq!(values.number(0, &"x".repeat(VALUE_MAX_LEN + 1)), None);
+        // New values stop being added after `KEY_MISSES` of them, "a"
+        // the first.
+        let added = (0..2 * KEY_MISSES)
+            .filter(|i| values.number(0, &format!("new-{i}")).is_some())
+            .count();
+        assert_eq!(added, KEY_MISSES as usize - 1);
+        assert_eq!(values.number(0, "a"), Some(a));
+    }
 
     #[test]
     fn names_are_numbered_once_in_both_lookup_modes() {

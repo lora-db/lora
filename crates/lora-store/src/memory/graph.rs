@@ -352,7 +352,7 @@ impl InMemoryGraph {
             &mut self.nodes,
             idx,
             encoded::RecordKind::Node,
-            &mut self.dicts.keys,
+            &mut self.dicts,
             key,
             edit,
         )
@@ -369,7 +369,7 @@ impl InMemoryGraph {
             &mut self.relationships,
             idx,
             encoded::RecordKind::Relationship,
-            &mut self.dicts.keys,
+            &mut self.dicts,
             key,
             edit,
         )
@@ -2733,13 +2733,13 @@ fn edit_record_property(
     slab: &mut RecordSlab,
     idx: usize,
     kind: encoded::RecordKind,
-    keys: &mut crate::dict::NameDict,
+    dicts: &mut Dicts,
     key: &str,
     edit: encoded::PropEdit<'_>,
 ) -> Option<Option<PropertyValue>> {
     let bytes = slab.get(idx)?;
     let mut out = Scratch::take();
-    let old = encoded::edit_property(bytes, kind, keys, key, edit, &mut out)?;
+    let old = encoded::edit_property(bytes, kind, dicts, key, edit, &mut out)?;
     slab.set(idx, &out);
     Some(old)
 }
