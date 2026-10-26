@@ -94,6 +94,19 @@ pub(super) fn dispatch<S: GraphStorage>(
     }
 }
 
+/// [`dispatch`] for the namespaces that never read the graph, with no
+/// storage to hand: what plan-time folding evaluates through.
+pub(super) fn dispatch_pure(name: &str, args: &[LoraValue]) -> Option<LoraValue> {
+    let (ns, op) = name.split_once('.')?;
+    match ns {
+        "math" => math_ns::dispatch(op, args),
+        "temporal" => temporal::dispatch(op, args),
+        "cast" => cast_ns::dispatch(op, args),
+        "geo" => geo::dispatch(op, args),
+        _ => None,
+    }
+}
+
 /// Pure name lookup — same dispatch tree as [`dispatch`] but no args
 /// and no storage. Used by drift-safety tests to assert every signature
 /// has an executor entry.

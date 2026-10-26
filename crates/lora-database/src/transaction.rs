@@ -552,9 +552,12 @@ impl<'db> Transaction<'db> {
                 (resolved, stats)
             }
         };
-        Ok(Compiler::compile_for(&resolved, &stats, &|name| {
-            crate::database::param_nullness(params, name)
-        }))
+        Ok(Compiler::compile_folding(
+            &resolved,
+            &stats,
+            &|name| crate::database::param_nullness(params, name),
+            &lora_executor::fold_call,
+        ))
     }
 
     /// Materialize `inner.staged` if it doesn't exist yet —

@@ -1460,7 +1460,7 @@ pub fn eval_truthy_result<S: GraphStorage>(
     Ok(eval_expr_result(expr, row, ctx)?.is_truthy())
 }
 
-fn eval_literal(lit: &LiteralValue) -> LoraValue {
+pub(super) fn eval_literal(lit: &LiteralValue) -> LoraValue {
     match lit {
         LiteralValue::Integer(v) => LoraValue::Int(*v),
         LiteralValue::Float(v) => LoraValue::Float(*v),
@@ -1468,6 +1468,7 @@ fn eval_literal(lit: &LiteralValue) -> LoraValue {
         LiteralValue::TypeName(v) => LoraValue::String(v.clone()),
         LiteralValue::Bool(v) => LoraValue::Bool(*v),
         LiteralValue::Null => LoraValue::Null,
+        LiteralValue::Value(v) => LoraValue::from(&**v),
     }
 }
 

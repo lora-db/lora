@@ -191,6 +191,22 @@ keeps the per-row label scan, so its cost grows with the size of the
 label times the number of outer rows. Other predicates, such as
 <CypherCode code="v.verified" /> above, still belong in `WHERE`.
 
+### Constant values in a filter
+
+A temporal or spatial value written with constant arguments, such as
+<CypherCode code="datetime('2024-01-01T00:00:00Z')" />,
+<CypherCode code="date('2024-01-01')" />,
+<CypherCode code="duration('PT1H')" /> or
+<CypherCode code="point({x: 0, y: 0})" />, is built once when the query
+is planned, not again for every row. Casts and `math.*` functions on
+constant arguments are folded the same way. A value built from a
+parameter (<CypherCode code="datetime($since)" />) is still built per
+row, since a plan is reused across parameter values. The clock
+(<CypherCode code="datetime()" />, <CypherCode code="timestamp()" />),
+random values and a `TIME` are never folded, and a call that fails on
+its arguments, such as <CypherCode code="datetime('not a date')" />,
+still fails only when a row reaches it.
+
 ## See Also
 
 - [Queries → Paths](./queries/paths#performance) for path-query cost notes.

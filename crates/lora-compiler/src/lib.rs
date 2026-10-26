@@ -17,7 +17,7 @@ pub use logical::{
     Remove, Set, Sort, SortLimit, TextPredicate, Unwind,
 };
 pub use optimizer::Optimizer;
-pub use param_fold::NullnessOf;
+pub use param_fold::{FoldCall, NullnessOf};
 pub use physical::{
     ArgumentExec, CreateExec, DeleteExec, ExpandExec, FilterExec, ForeachExec, HashAggregationExec,
     LimitExec, MergeExec, NodeByIdSeekExec, NodeByLabelScanExec, NodeByPointScanExec,
@@ -84,8 +84,21 @@ impl Compiler {
         stats: &GraphStats,
         nullness: NullnessOf<'_>,
     ) -> CompiledQuery {
+        Self::compile_folding(query, stats, nullness, &|_, _| None)
+    }
+
+    /// [`Self::compile_for`] that also replaces each builtin call on
+    /// constant arguments with the value `fold` evaluates it to, so the
+    /// call does not run again for every row. `fold` declines what it
+    /// cannot evaluate safely at plan time; see [`FoldCall`].
+    pub fn compile_folding(
+        query: &ResolvedQuery,
+        stats: &GraphStats,
+        nullness: NullnessOf<'_>,
+        fold: FoldCall<'_>,
+    ) -> CompiledQuery {
         let mut null_params = std::collections::BTreeMap::new();
-        let physical = compile_physical(query, stats, nullness, &mut null_params);
+        let physical = compile_physical(query, stats, nullness, fold, &mut null_params);
         let unions = query
             .unions
             .iter()
@@ -97,7 +110,13 @@ impl Compiler {
                 };
                 CompiledUnionBranch {
                     all: union_part.all,
-                    physical: compile_physical(&branch_query, stats, nullness, &mut null_params),
+                    physical: compile_physical(
+                        &branch_query,
+                        stats,
+                        nullness,
+                        fold,
+                        &mut null_params,
+                    ),
                 }
             })
             .collect();
@@ -115,6 +134,7 @@ fn compile_physical(
     query: &ResolvedQuery,
     stats: &GraphStats,
     nullness: NullnessOf<'_>,
+    fold: FoldCall<'_>,
     null_params: &mut std::collections::BTreeMap<String, Option<bool>>,
 ) -> PhysicalPlan {
     let mut planner = Planner::with_stats(stats);
@@ -122,7 +142,8 @@ fn compile_physical(
     param_fold::fold_parameter_null_tests(&mut logical, nullness, null_params);
 
     let mut optimizer = Optimizer::new();
-    let optimized = optimizer.optimize(logical, stats);
+    let mut optimized = optimizer.optimize(logical, stats);
+    param_fold::fold_constant_calls(&mut optimized, fold);
 
     // Lower by moving the logical plan; it is not needed after lowering.
     optimizer.lower_to_physical(optimized)

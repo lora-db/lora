@@ -21,6 +21,9 @@
 //! - `vector` — the `vector()` constructor and the
 //!   `vector.similarity.*` / `vector_distance` / `vector_norm`
 //!   helpers, including the list-and-vector coercions they share.
+//! - `fold` — [`fold_call`], which evaluates a builtin call on constant
+//!   arguments when the plan is built, for the calls whose value cannot
+//!   change between rows or runs.
 //! - `errors` — the thread-local "current eval error" slot exposed
 //!   via `set_eval_error`, [`clear_eval_error`], and `take_eval_error`.
 //!   Used to thread fallible diagnostics out of the otherwise
@@ -30,6 +33,7 @@ mod binops;
 mod builtins;
 mod errors;
 mod expr;
+mod fold;
 mod functions;
 mod point;
 mod regex;
@@ -43,3 +47,4 @@ pub use expr::{
     EvalContext, Projected, DEADLINE_EXCEEDED,
 };
 pub(crate) use expr::{eval_ref, eval_status};
+pub use fold::fold_call;

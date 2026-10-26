@@ -52,7 +52,12 @@ where
         stats: &GraphStats,
         params: &BTreeMap<String, LoraValue>,
     ) -> CompiledQuery {
-        Compiler::compile_for(resolved, stats, &|name| param_nullness(params, name))
+        Compiler::compile_folding(
+            resolved,
+            stats,
+            &|name| param_nullness(params, name),
+            &lora_executor::fold_call,
+        )
     }
 
     /// Return a cached compiled plan for `query`, or compile + cache one
