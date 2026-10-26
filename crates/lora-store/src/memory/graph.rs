@@ -52,6 +52,14 @@ use crate::{NodeRef, RelRef};
 /// database allocates 17 billion ids.
 pub(crate) const MAX_ENTITY_ID: u64 = (1 << 34) - 1;
 
+/// Adjacency entries a batch delete still has to remove: node, side,
+/// relationship. See `InMemoryGraph::flush_adjacency_removals`.
+pub(super) type PendingAdjRemovals = Vec<(NodeId, Side, RelationshipId)>;
+
+/// Lists up to this many bytes (about 32 entries) lose an entry at once
+/// even in a batch delete: scanning them costs less than deferring.
+const DEFER_REMOVAL_MIN_BYTES: usize = 256;
+
 #[derive(Default)]
 pub struct InMemoryGraph {
     pub(super) next_node_id: NodeId,
@@ -637,10 +645,67 @@ impl InMemoryGraph {
         }
     }
 
-    fn adjacency_remove(&mut self, node_id: NodeId, side: Side, rel_id: RelationshipId) {
-        if let Some(adj) = Self::slot_index(node_id).and_then(|idx| self.adjacency.get_mut(idx)) {
-            adj.remove(side, rel_id);
+    /// Remove `rel_id` from `node_id`'s list on `side`. With `pending`, a
+    /// list longer than [`DEFER_REMOVAL_MIN_BYTES`] is left for
+    /// [`Self::flush_adjacency_removals`], which takes all of a list's
+    /// pending entries in one pass: one at a time, each removal scans and
+    /// compacts the list, which is quadratic when a statement deletes
+    /// many relationships of one hub. A short list is edited at once.
+    fn adjacency_remove(
+        &mut self,
+        node_id: NodeId,
+        side: Side,
+        rel_id: RelationshipId,
+        pending: Option<&mut PendingAdjRemovals>,
+    ) {
+        let Some(idx) = Self::slot_index(node_id) else {
+            return;
+        };
+        let len = self
+            .adjacency
+            .get(idx)
+            .map_or(0, |adj| adj.side_bytes(side));
+        // An empty list (a node detach delete already cleared) needs no
+        // edit, and reaching it mutably would copy its shared leaf.
+        if len == 0 {
+            return;
         }
+        match pending {
+            Some(pending) if len > DEFER_REMOVAL_MIN_BYTES => {
+                pending.push((node_id, side, rel_id));
+            }
+            _ => {
+                if let Some(adj) = self.adjacency.get_mut(idx) {
+                    adj.remove(side, rel_id);
+                }
+            }
+        }
+    }
+
+    /// Apply the removals [`Self::adjacency_remove`] deferred: each list
+    /// once, keeping the order of its other entries. Leaves `pending` empty.
+    pub(super) fn flush_adjacency_removals(&mut self, pending: &mut PendingAdjRemovals) {
+        pending.sort_unstable_by_key(|&(node, side, rel)| (node, side == Side::In, rel));
+        let mut rels = Vec::new();
+        for group in pending.chunk_by(|a, b| a.0 == b.0 && a.1 == b.1) {
+            let (node_id, side, _) = group[0];
+            let Some(idx) = Self::slot_index(node_id) else {
+                continue;
+            };
+            if self
+                .adjacency
+                .get(idx)
+                .is_none_or(|adj| adj.side_bytes(side) == 0)
+            {
+                continue;
+            }
+            rels.clear();
+            rels.extend(group.iter().map(|&(_, _, rel)| rel));
+            if let Some(adj) = self.adjacency.get_mut(idx) {
+                adj.remove_all(side, &rels);
+            }
+        }
+        pending.clear();
     }
 
     pub(super) fn normalize_labels(labels: Vec<String>) -> Labels {
@@ -2070,8 +2135,14 @@ impl InMemoryGraph {
         );
     }
 
-    pub(super) fn on_relationship_deleted(&mut self, rel: &RelationshipRecord) {
-        self.detach_relationship_indexes(rel);
+    /// Index upkeep for a deleted relationship. `pending` defers its
+    /// removal from long adjacency lists: see [`Self::adjacency_remove`].
+    pub(super) fn on_relationship_deleted(
+        &mut self,
+        rel: &RelationshipRecord,
+        pending: Option<&mut PendingAdjRemovals>,
+    ) {
+        self.detach_relationship_indexes(rel, pending);
         Self::count_distinct_values(
             &mut self.distinct_stats.relationships,
             [rel.rel_type.as_str()],
@@ -2437,9 +2508,13 @@ impl InMemoryGraph {
         self.insert_relationship_type_index(rel.id, &rel.rel_type);
     }
 
-    fn detach_relationship_indexes(&mut self, rel: &RelationshipRecord) {
-        self.adjacency_remove(rel.src, Side::Out, rel.id);
-        self.adjacency_remove(rel.dst, Side::In, rel.id);
+    fn detach_relationship_indexes(
+        &mut self,
+        rel: &RelationshipRecord,
+        mut pending: Option<&mut PendingAdjRemovals>,
+    ) {
+        self.adjacency_remove(rel.src, Side::Out, rel.id, pending.as_deref_mut());
+        self.adjacency_remove(rel.dst, Side::In, rel.id, pending);
 
         self.remove_relationship_type_index(rel.id, &rel.rel_type);
     }
