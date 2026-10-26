@@ -113,6 +113,11 @@ pub(super) fn make_archive_tmp_path(archive_path: &Path) -> PathBuf {
 }
 
 fn make_extract_tmp_path(work_dir: &Path) -> PathBuf {
+    make_work_dir_sibling(work_dir, "extract")
+}
+
+/// `<work dir name>.<kind>.<pid>.<nanos>.<sequence>` beside `work_dir`.
+fn make_work_dir_sibling(work_dir: &Path, kind: &str) -> PathBuf {
     let dir_name = work_dir
         .file_name()
         .and_then(|name| name.to_str())
@@ -123,12 +128,29 @@ fn make_extract_tmp_path(work_dir: &Path) -> PathBuf {
         .as_nanos();
     let sequence = ARCHIVE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     work_dir.with_file_name(format!(
-        "{}.extract.{}.{}.{}",
+        "{}.{kind}.{}.{}.{}",
         sanitize_for_temp(dir_name),
         std::process::id(),
         nanos,
         sequence
     ))
+}
+
+/// Remove the work directory once the container holds everything in it.
+///
+/// [`prepare_work_dir`] trusts a work directory with WAL segments over the
+/// container, so the directory must never be seen half deleted: it is
+/// first renamed to a trash name the next open ignores and removes, and
+/// only then deleted. A failure leaves the whole directory in place, which
+/// the next open trusts again.
+pub(super) fn remove_work_dir(work_dir: &Path) -> Result<(), WalError> {
+    let trash = make_work_dir_sibling(work_dir, "trash");
+    fs::rename(work_dir, &trash)?;
+    if let Some(parent) = work_dir.parent() {
+        sync_dir(parent)?;
+    }
+    fs::remove_dir_all(&trash)?;
+    Ok(())
 }
 
 pub(super) fn cleanup_stale_temp_paths(archive_path: &Path) -> Result<(), WalError> {
@@ -141,15 +163,14 @@ pub(super) fn cleanup_stale_temp_paths(archive_path: &Path) -> Result<(), WalErr
         .and_then(|name| name.to_str())
         .unwrap_or("database.loradb");
     let archive_tmp_prefix = format!("{}.", sanitize_for_temp(archive_name));
-    let extract_tmp_prefix = format!(
-        "{}.extract.",
-        sanitize_for_temp(
-            make_work_dir(archive_path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("database.loradb.wal")
-        )
+    let work_dir_name = sanitize_for_temp(
+        make_work_dir(archive_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("database.loradb.wal"),
     );
+    let extract_tmp_prefix = format!("{work_dir_name}.extract.");
+    let trash_prefix = format!("{work_dir_name}.trash.");
 
     for entry in fs::read_dir(parent)? {
         let entry = entry?;
@@ -158,7 +179,8 @@ pub(super) fn cleanup_stale_temp_paths(archive_path: &Path) -> Result<(), WalErr
             continue;
         };
         let is_archive_tmp = is_generated_archive_tmp_name(file_name, &archive_tmp_prefix);
-        let is_extract_tmp = is_generated_extract_tmp_name(file_name, &extract_tmp_prefix);
+        let is_extract_tmp = is_generated_extract_tmp_name(file_name, &extract_tmp_prefix)
+            || is_generated_extract_tmp_name(file_name, &trash_prefix);
         if !is_archive_tmp && !is_extract_tmp {
             continue;
         }

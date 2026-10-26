@@ -334,6 +334,48 @@ fn named_database_cleanup_only_removes_generated_temp_paths() {
     assert!(!generated_dir.exists());
 }
 
+/// A clean close deletes the sidecar through a trash name, so a close
+/// that dies midway leaves a trash directory, never a partial sidecar the
+/// next open would trust over the complete container.
+#[test]
+fn named_database_ignores_and_removes_a_half_deleted_sidecar_in_trash() {
+    let dir = TmpDir::new("named-trash");
+    let open = || {
+        Database::open_named(
+            "app",
+            DatabaseOpenOptions::default().with_database_dir(dir.path()),
+        )
+        .unwrap()
+    };
+    {
+        let db = open();
+        db.execute("CREATE (:N {id: 1})", rows()).unwrap();
+        db.execute("CREATE (:N {id: 2})", rows()).unwrap();
+        db.sync().unwrap();
+        db.execute("CREATE (:N {id: 3})", rows()).unwrap();
+        copy_dir_all(
+            &dir.path().join("app.loradb.wal"),
+            &dir.path().join("saved"),
+        );
+    }
+    assert!(!dir.path().join("app.loradb.wal").exists());
+
+    // What an interrupted delete leaves: the trash holds a WAL segment
+    // without the snapshot it continues.
+    let trash = dir.path().join("app.loradb.wal.trash.1.2.3");
+    std::fs::create_dir(&trash).unwrap();
+    for entry in std::fs::read_dir(dir.path().join("saved")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) == Some("wal") {
+            std::fs::copy(&path, trash.join(path.file_name().unwrap())).unwrap();
+        }
+    }
+
+    let db = open();
+    assert_eq!(db.node_count(), 3);
+    assert!(!trash.exists(), "open should remove leftover trash");
+}
+
 #[test]
 fn named_database_rejects_invalid_archive_without_publishing_partial_sidecar() {
     let dir = TmpDir::new("named-invalid-archive");
