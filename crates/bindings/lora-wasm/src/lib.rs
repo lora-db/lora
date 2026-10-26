@@ -491,6 +491,9 @@ impl WasmDatabase {
         params: JsValue,
         format: &str,
     ) -> Result<JsValue, JsError> {
+        // A write export takes the writer lock, which an open write stream
+        // holds: on the only thread, waiting for it traps the module.
+        self.ensure_can_run(query)?;
         let params_map = parse_optional_params(params)?;
         let format = parse_row_format(format, "export")?;
         let mut out: Vec<u8> = Vec::new();
