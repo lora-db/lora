@@ -946,16 +946,19 @@ impl<'db> Transaction<'db> {
             }
         };
 
-        if wrote_wal_commit {
-            if let (Some(snapshots), Some(rec)) = (&self.snapshots, wal.as_ref()) {
-                snapshots.observe_commit(&staged, rec)?;
-            }
-        }
-
         // Atomic publish — concurrent readers will see the new state on
         // their next `load_full()`, while in-flight readers keep their
         // existing `Arc<InMemoryGraph>` snapshot until they drop it.
-        lease.store.store(Arc::new(staged));
+        let staged = Arc::new(staged);
+        lease.store.store(staged.clone());
+
+        // After the publish: the commit is durable, so a failing automatic
+        // checkpoint is logged rather than failing the commit.
+        if wrote_wal_commit {
+            if let (Some(snapshots), Some(rec)) = (&self.snapshots, wal.as_ref()) {
+                snapshots.observe_commit(&staged, rec);
+            }
+        }
 
         Ok(())
     }

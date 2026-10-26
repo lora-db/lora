@@ -17,7 +17,7 @@ use self::platform::replace_file_atomic;
 use self::platform::sync_dir;
 use self::worker::spawn_archive_worker;
 use self::workspace::{
-    cleanup_stale_temp_paths, make_work_dir, prepare_work_dir, sorted_wal_files,
+    cleanup_stale_temp_paths, make_work_dir, prepare_work_dir, remove_work_dir, sorted_wal_files,
 };
 
 /// Container-backed `.loradb` database file.
@@ -255,10 +255,7 @@ impl Drop for WalArchive {
             }
         }
         if shutdown_cleanly {
-            let _ = fs::remove_dir_all(&self.work_dir);
-            if let Some(parent) = self.work_dir.parent() {
-                let _ = sync_dir(parent);
-            }
+            let _ = remove_work_dir(&self.work_dir);
         }
     }
 }

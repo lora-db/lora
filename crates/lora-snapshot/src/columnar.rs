@@ -16,7 +16,8 @@ use crate::body::{
 };
 use crate::errors::{Result, SnapshotCodecError};
 use crate::format::{
-    BODY_FORMAT_VERSION, BODY_FORMAT_VERSION_V2, BODY_FORMAT_VERSION_V3, BODY_FORMAT_VERSION_V4,
+    nested_decode_depth, nested_encode_depth, BODY_FORMAT_VERSION, BODY_FORMAT_VERSION_V2,
+    BODY_FORMAT_VERSION_V3, BODY_FORMAT_VERSION_V4,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -494,7 +495,7 @@ impl PropertyColumns {
 
         write_len(out, self.value.len())?;
         for value in &self.value {
-            value.encode_binary(out)?;
+            value.encode_binary(out, 0)?;
         }
         Ok(())
     }
@@ -544,7 +545,7 @@ impl PropertyColumns {
         }
         let mut value = reader.vec_with_capacity(len, "property value")?;
         for _ in 0..value_len {
-            value.push(ValueCell::decode_binary(reader)?);
+            value.push(ValueCell::decode_binary(reader, 0)?);
         }
 
         Ok(Self {
@@ -618,7 +619,7 @@ impl From<ValueCell> for PropertyValue {
 }
 
 impl ValueCell {
-    fn encode_binary(&self, out: &mut Vec<u8>) -> Result<()> {
+    fn encode_binary(&self, out: &mut Vec<u8>, depth: usize) -> Result<()> {
         match self {
             Self::Null => out.push(0),
             Self::Bool(value) => {
@@ -645,18 +646,20 @@ impl ValueCell {
                 }
             }
             Self::List(values) => {
+                let depth = nested_encode_depth(depth)?;
                 out.push(5);
                 write_len(out, values.len())?;
                 for value in values {
-                    value.encode_binary(out)?;
+                    value.encode_binary(out, depth)?;
                 }
             }
             Self::Map(values) => {
+                let depth = nested_encode_depth(depth)?;
                 out.push(6);
                 write_len(out, values.len())?;
                 for (key, value) in values {
                     write_string(out, key)?;
-                    value.encode_binary(out)?;
+                    value.encode_binary(out, depth)?;
                 }
             }
             Self::Extension(value) => {
@@ -669,7 +672,7 @@ impl ValueCell {
         Ok(())
     }
 
-    fn decode_binary(reader: &mut BodyReader<'_>) -> Result<Self> {
+    fn decode_binary(reader: &mut BodyReader<'_>, depth: usize) -> Result<Self> {
         match reader.read_u8()? {
             0 => Ok(Self::Null),
             1 => Ok(Self::Bool(reader.read_u8()? != 0)),
@@ -685,18 +688,20 @@ impl ValueCell {
                 Ok(Self::Binary(segments))
             }
             5 => {
+                let depth = nested_decode_depth(depth)?;
                 let len = reader.read_len_bounded("list value")?;
                 let mut values = reader.vec_with_capacity(len, "list value")?;
                 for _ in 0..len {
-                    values.push(Self::decode_binary(reader)?);
+                    values.push(Self::decode_binary(reader, depth)?);
                 }
                 Ok(Self::List(values))
             }
             6 => {
+                let depth = nested_decode_depth(depth)?;
                 let len = reader.read_len_bounded("map entry")?;
                 let mut values = reader.vec_with_capacity(len, "map entry")?;
                 for _ in 0..len {
-                    values.push((reader.read_string()?, Self::decode_binary(reader)?));
+                    values.push((reader.read_string()?, Self::decode_binary(reader, depth)?));
                 }
                 Ok(Self::Map(values))
             }
@@ -743,4 +748,44 @@ fn dictionary_encode_strings(values: &[String]) -> Result<(Vec<String>, Vec<u32>
         ids.push(id);
     }
     Ok((dictionary, ids))
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::*;
+    use crate::format::MAX_VALUE_DEPTH;
+
+    fn crafted(depth: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        for _ in 0..depth {
+            out.push(5);
+            out.extend_from_slice(&1u64.to_le_bytes());
+        }
+        out.push(0);
+        out
+    }
+
+    fn nested(depth: usize) -> ValueCell {
+        let mut value = ValueCell::Null;
+        for _ in 0..depth {
+            value = ValueCell::List(vec![value]);
+        }
+        value
+    }
+
+    #[test]
+    fn value_cells_reject_nesting_past_the_cap() {
+        let at_cap = crafted(MAX_VALUE_DEPTH);
+        ValueCell::decode_binary(&mut BodyReader::new(&at_cap), 0).unwrap();
+        let deep = crafted(1_000_000);
+        let err = ValueCell::decode_binary(&mut BodyReader::new(&deep), 0).unwrap_err();
+        assert!(err.to_string().contains("deeper than 128"), "{err}");
+
+        nested(MAX_VALUE_DEPTH)
+            .encode_binary(&mut Vec::new(), 0)
+            .unwrap();
+        assert!(nested(MAX_VALUE_DEPTH + 1)
+            .encode_binary(&mut Vec::new(), 0)
+            .is_err());
+    }
 }

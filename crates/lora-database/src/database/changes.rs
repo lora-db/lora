@@ -92,6 +92,14 @@ impl Database<InMemoryGraph> {
         self.changes.set_retention(batches);
     }
 
+    /// Approximate heap bytes of the recent batches kept in memory for
+    /// same-process resume (default [`crate::DEFAULT_RETENTION_BYTES`]).
+    /// Older batches are dropped once either this or the batch count
+    /// limit is exceeded.
+    pub fn set_change_retention_bytes(&self, bytes: usize) {
+        self.changes.set_retention_bytes(bytes);
+    }
+
     /// LSN of the newest captured batch, or `None` while no feed has been
     /// opened on this database.
     pub fn changes_head(&self) -> Option<u64> {

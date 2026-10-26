@@ -114,11 +114,23 @@ impl ManagedSnapshotStore {
         graph: &InMemoryGraph,
         recorder: &WalRecorder,
     ) -> Result<SnapshotMeta> {
+        self.checkpoint_tracked(graph, recorder, &mut false)
+    }
+
+    /// [`Self::checkpoint`], setting `installed` once the new snapshot file
+    /// is in place, from where recovery may load it. A failure with
+    /// `installed` still `false` left the recovered state unchanged.
+    pub(crate) fn checkpoint_tracked(
+        &self,
+        graph: &InMemoryGraph,
+        recorder: &WalRecorder,
+        installed: &mut bool,
+    ) -> Result<SnapshotMeta> {
         recorder
             .force_fsync()
             .map_err(|e| anyhow!("WAL fsync before managed snapshot failed: {e}"))?;
         let snapshot_lsn = recorder.wal().durable_lsn();
-        let meta = self.write_snapshot(graph, snapshot_lsn)?;
+        let meta = self.write_snapshot(graph, snapshot_lsn, installed)?;
 
         recorder
             .checkpoint_marker(snapshot_lsn)
@@ -135,29 +147,53 @@ impl ManagedSnapshotStore {
         }
 
         self.commits_since_checkpoint.store(0, Ordering::Relaxed);
-        self.prune_old_snapshots(snapshot_lsn)?;
+        // The new snapshot is in place and `CURRENT` names it: a failed
+        // cleanup of older files only leaves extra files behind.
+        if let Err(err) = self.prune_old_snapshots(snapshot_lsn) {
+            tracing::warn!(
+                lsn = snapshot_lsn.raw(),
+                error = %err,
+                "removing old managed snapshots failed; will retry at the next checkpoint"
+            );
+        }
         Ok(meta)
     }
 
-    pub(crate) fn observe_commit(
-        &self,
-        graph: &InMemoryGraph,
-        recorder: &WalRecorder,
-    ) -> Result<()> {
+    /// Count one committed WAL transaction and checkpoint when the
+    /// configured threshold is reached.
+    ///
+    /// Runs after the commit is durable and published, so it cannot fail
+    /// the write: a failed checkpoint is logged and the count starts over,
+    /// so a checkpoint that keeps failing is retried every
+    /// `checkpoint_every_commits` commits rather than on every one. The
+    /// WAL still holds every commit, so recovery is unaffected.
+    pub(crate) fn observe_commit(&self, graph: &InMemoryGraph, recorder: &WalRecorder) {
         let Some(every) = self.config.checkpoint_every_commits else {
-            return Ok(());
+            return;
         };
         let commits = self
             .commits_since_checkpoint
             .fetch_add(1, Ordering::Relaxed)
             + 1;
-        if commits >= every {
-            self.checkpoint(graph, recorder)?;
+        if commits < every {
+            return;
         }
-        Ok(())
+        if let Err(err) = self.checkpoint(graph, recorder) {
+            self.commits_since_checkpoint.store(0, Ordering::Relaxed);
+            tracing::warn!(
+                dir = %self.config.dir.display(),
+                error = %format!("{err:#}"),
+                "automatic managed checkpoint failed; the WAL keeps every commit and the checkpoint is retried later"
+            );
+        }
     }
 
-    fn write_snapshot(&self, graph: &InMemoryGraph, snapshot_lsn: Lsn) -> Result<SnapshotMeta> {
+    fn write_snapshot(
+        &self,
+        graph: &InMemoryGraph,
+        snapshot_lsn: Lsn,
+        installed: &mut bool,
+    ) -> Result<SnapshotMeta> {
         let target = snapshot_path(&self.config.dir, snapshot_lsn);
         let tmp = tmp_path(&target);
         let mut file = OpenOptions::new()
@@ -185,6 +221,8 @@ impl ManagedSnapshotStore {
 
         fs::rename(&tmp, &target)
             .with_context(|| format!("rename {} to {}", tmp.display(), target.display()))?;
+        // Without `CURRENT`, recovery picks the newest file in the dir.
+        *installed = true;
         sync_dir(&self.config.dir)
             .with_context(|| format!("sync snapshot dir {}", self.config.dir.display()))?;
         write_current(&self.config.dir, &target)?;

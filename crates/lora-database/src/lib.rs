@@ -30,7 +30,7 @@ mod wal;
 
 pub use changes::{
     Change, ChangeBatch, ChangeFeed, ChangeFeedCloser, ChangeFeedOptions, ChangePoll,
-    DEFAULT_FEED_BUFFER, DEFAULT_RETENTION,
+    DEFAULT_FEED_BUFFER, DEFAULT_RETENTION, DEFAULT_RETENTION_BYTES,
 };
 pub use database::{Database, GraphDirection, QueryRunner};
 pub use error::{LoraError, LoraErrorCategory, LoraErrorCode};

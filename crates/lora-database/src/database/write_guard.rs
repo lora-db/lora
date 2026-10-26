@@ -170,19 +170,18 @@ where
         }
     }
 
-    pub(crate) fn observe_snapshot_commit_if_needed(
-        &self,
-        store: &S,
-        recorder: &WalRecorder,
-    ) -> Result<()> {
+    /// Managed-snapshot accounting for one written WAL commit. Call it
+    /// after the commit is published: a failing checkpoint is logged, never
+    /// returned, because the write it follows is already durable.
+    pub(crate) fn observe_snapshot_commit_if_needed(&self, store: &S, recorder: &WalRecorder) {
         let Some(snapshots) = &self.snapshots else {
-            return Ok(());
+            return;
         };
-        let graph = (store as &dyn Any)
-            .downcast_ref::<InMemoryGraph>()
-            .ok_or_else(|| anyhow!("managed snapshots require InMemoryGraph storage"))?;
-        snapshots.observe_commit(graph, recorder)?;
-        Ok(())
+        // Managed snapshots are only configured on `InMemoryGraph`
+        // databases.
+        if let Some(graph) = (store as &dyn Any).downcast_ref::<InMemoryGraph>() {
+            snapshots.observe_commit(graph, recorder);
+        }
     }
 
     /// Admin entry into the live-mutate write path.
@@ -261,10 +260,18 @@ where
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        if let Some(rec) = self.wal.as_ref() {
-            ensure_wal_query_can_start(rec)?;
-            rec.arm()?;
-        }
+        // A panic in `f` may leave the live graph partly mutated: the scope
+        // then aborts the recorder and poisons it if events were recorded.
+        let scope = match self.wal.as_ref() {
+            Some(rec) => {
+                ensure_wal_query_can_start(rec)?;
+                Some(WalWriteScope::arm(
+                    rec,
+                    WalAbortPolicy::PoisonIfMutated(crate::database::QUERY_FAILURE_POISON),
+                )?)
+            }
+            None => None,
+        };
 
         let capture = self.changes.is_active();
         let mut handle = self.store.write();
@@ -297,6 +304,9 @@ where
             }
             result
         };
+        if let Some(scope) = scope {
+            scope.release();
+        }
 
         let mut committed: Option<(Option<lora_wal::Lsn>, Vec<MutationEvent>)> = None;
         if let Some(rec) = self.wal.as_ref() {
@@ -314,8 +324,10 @@ where
                         rec.commit()?.wrote()
                     };
                     if wrote {
+                        // The write is live and durable: a checkpoint that
+                        // fails now is logged, not returned.
                         let live = handle.snapshot();
-                        self.observe_snapshot_commit_if_needed(&*live, rec)?;
+                        self.observe_snapshot_commit_if_needed(&*live, rec);
                     }
                 }
                 Err(_) => {
@@ -396,10 +408,6 @@ where
             f(staged)
         };
         let (wrote_commit, captured) = scope.finish(&result, capture)?;
-        if wrote_commit {
-            let staged = guard.staged_or_error()?;
-            self.observe_snapshot_commit_if_needed(staged, &rec)?;
-        }
 
         // Strip the per-mutation recorder before publish — the new live
         // store carries the durable recorder reinstalled below.
@@ -418,16 +426,128 @@ where
                     Some(rec.clone() as Arc<dyn MutationRecorder>),
                 );
             }
-            match captured {
-                Some((lsn, events)) => {
-                    let pre = self.store.load_full();
-                    guard.publish_in_place();
-                    let post = self.store.load_full();
-                    self.publish_changes(Some(lsn), &events, Some(&*pre), &post);
-                }
-                None => guard.publish(),
+            let pre = captured.as_ref().map(|_| self.store.load_full());
+            guard.publish_in_place();
+            let post = self.store.load_full();
+            if let (Some((lsn, events)), Some(pre)) = (captured, pre) {
+                self.publish_changes(Some(lsn), &events, Some(&*pre), &post);
+            }
+            // Once the commit record is written the staged graph is
+            // published whatever happens next, so recovery and the live
+            // graph agree. The checkpoint runs last, still under the writer
+            // lock, and only logs its failures.
+            if wrote_commit {
+                self.observe_snapshot_commit_if_needed(&post, &rec);
             }
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::path::PathBuf;
+
+    use lora_store::{GraphStorageMut, InMemoryGraph, Properties};
+    use lora_wal::{SyncMode, WalConfig};
+
+    use crate::{Database, LoraErrorCode};
+
+    struct TmpDir(PathBuf);
+
+    impl TmpDir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "lora-write-guard-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn open(&self) -> Database<InMemoryGraph> {
+            Database::open_with_wal(WalConfig::Enabled {
+                dir: self.0.join("wal"),
+                sync_mode: SyncMode::GroupSync {
+                    interval_ms: 60_000,
+                },
+                segment_target_bytes: 1 << 20,
+            })
+            .unwrap()
+        }
+    }
+
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn create(graph: &mut InMemoryGraph) {
+        graph.create_node(vec!["N".to_string()], Properties::new());
+    }
+
+    #[test]
+    fn panic_in_a_staged_write_leaves_the_wal_usable() {
+        let dir = TmpDir::new("staged_panic");
+        {
+            let db = dir.open();
+            let panicked = catch_unwind(AssertUnwindSafe(|| {
+                db.run_with_durable_recorder(|graph| -> anyhow::Result<()> {
+                    create(graph);
+                    panic!("write failed");
+                })
+            }));
+            assert!(panicked.is_err());
+            assert_eq!(db.node_count(), 0);
+
+            db.run_with_durable_recorder(|graph| {
+                create(graph);
+                Ok(())
+            })
+            .unwrap();
+            db.execute("CREATE (:N)", None).unwrap();
+            assert_eq!(db.node_count(), 2);
+        }
+        assert_eq!(dir.open().node_count(), 2);
+    }
+
+    #[test]
+    fn panic_in_a_live_write_before_any_mutation_leaves_the_wal_usable() {
+        let dir = TmpDir::new("live_panic_clean");
+        let db = dir.open();
+        let panicked = catch_unwind(AssertUnwindSafe(|| {
+            db.run_live_fast_with_durable_recorder(false, |_graph| -> anyhow::Result<()> {
+                panic!("write failed");
+            })
+        }));
+        assert!(panicked.is_err());
+        db.execute("CREATE (:N)", None).unwrap();
+        drop(db);
+        assert_eq!(dir.open().node_count(), 1);
+    }
+
+    #[test]
+    fn panic_in_a_live_write_after_mutating_poisons_the_wal() {
+        let dir = TmpDir::new("live_panic_mutated");
+        let db = dir.open();
+        let panicked = catch_unwind(AssertUnwindSafe(|| {
+            db.run_live_fast_with_durable_recorder(false, |graph| -> anyhow::Result<()> {
+                create(graph);
+                panic!("write failed");
+            })
+        }));
+        assert!(panicked.is_err());
+        // The live graph may hold the half-applied write, so writes stop
+        // until the database is reopened from durable state.
+        let err = db.execute("CREATE (:N)", None).unwrap_err();
+        assert_eq!(err.code(), LoraErrorCode::WalPoisoned);
+        drop(db);
+        assert_eq!(dir.open().node_count(), 0);
     }
 }

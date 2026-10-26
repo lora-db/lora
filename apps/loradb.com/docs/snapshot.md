@@ -45,6 +45,11 @@ The bright line, stated explicitly so it cannot be missed:
 - **Not a wall-clock checkpoint scheduler.** Manual snapshots run when
   you call them. Explicit WAL helpers can also write managed snapshots
   after N committed transactions, but there is no built-in timer.
+- **Not a WAL write.** Loading a snapshot into a WAL-backed database
+  checkpoints the loaded graph into its managed snapshot directory or
+  `.loradb` file before the load returns. A WAL-backed database with
+  neither refuses the load with `LORA_CONFIG`; restore it at startup with
+  `--restore-from` instead.
 - **Not a general persistent storage layer.** There is no alternative
   backend; a snapshot is a dump of the in-memory graph, not a format
   a different engine writes into.

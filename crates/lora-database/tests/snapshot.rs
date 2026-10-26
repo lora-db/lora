@@ -113,11 +113,8 @@ fn atomic_write_leaves_no_tmp_file() {
     db.save_snapshot_to(&path).unwrap();
 
     assert!(path.exists());
-    // The .tmp file must not be lying around after a successful save.
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = std::path::PathBuf::from(tmp);
-    assert!(!tmp.exists(), "stale .tmp file found at {}", tmp.display());
+    // No scratch file may be lying around after a successful save.
+    assert_eq!(dir_entries(&dir), vec!["snap.bin".to_string()]);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -284,15 +281,8 @@ fn failed_save_cleans_up_tmp_file() {
         "expected save to fail because target is a directory"
     );
 
-    // The `.tmp` scratch file must not be left behind on a failed save.
-    let mut tmp = target.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = std::path::PathBuf::from(tmp);
-    assert!(
-        !tmp.exists(),
-        "stale .tmp file at {} after failed save",
-        tmp.display()
-    );
+    // The scratch file must not be left behind on a failed save.
+    assert_eq!(dir_entries(&dir), vec!["snap.bin".to_string()]);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -324,6 +314,46 @@ fn failed_load_preserves_existing_state() {
 /// Minimal temp-dir helper. The test suite does not depend on `tempfile`,
 /// so we roll our own: `std::env::temp_dir()` + a per-test suffix, cleaned
 /// up at the end of each test.
+fn dir_entries(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn concurrent_saves_to_one_path_do_not_interleave() {
+    let dir = tempdir_like("concurrent_saves");
+    let path = dir.join("snap.bin");
+    let db = Database::in_memory();
+    for i in 0..200 {
+        db.execute(
+            &format!("CREATE (:N {{i: {i}, pad: 'xxxxxxxxxxxxxxxx'}})"),
+            opts(),
+        )
+        .unwrap();
+    }
+
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                for _ in 0..10 {
+                    db.save_snapshot_to(&path).unwrap();
+                }
+            });
+        }
+    });
+
+    let restored = Database::in_memory();
+    restored.load_snapshot_from(&path).unwrap();
+    assert_eq!(restored.node_count(), 200);
+    assert_eq!(dir_entries(&dir), vec!["snap.bin".to_string()]);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn tempdir_like(tag: &str) -> std::path::PathBuf {
     let mut dir = std::env::temp_dir();
     dir.push(format!(
