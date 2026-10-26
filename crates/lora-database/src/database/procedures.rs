@@ -412,7 +412,7 @@ fn eval_usize_arg(expr: &Expr, params: &BTreeMap<String, LoraValue>, label: &str
 fn eval_vector_arg(expr: &Expr, params: &BTreeMap<String, LoraValue>) -> Result<LoraVector> {
     let value = resolve_literal(expr, params)?;
     match value {
-        LoraValue::Vector(v) => Ok(v),
+        LoraValue::Vector(v) => Ok(*v),
         LoraValue::List(items) => list_to_float32_vector(&items),
         other => Err(invalid_vector_error(format!(
             "query must be a VECTOR or LIST<NUMBER>; got {other:?}"
@@ -526,7 +526,7 @@ fn resolve_vector_ctor(args: &[Expr], params: &BTreeMap<String, LoraValue>) -> R
     }
     let v = LoraVector::try_new(raw, dim, coord)
         .map_err(|e| invalid_vector_error(format!("vector(): {e}")))?;
-    Ok(LoraValue::Vector(v))
+    Ok(LoraValue::Vector(Box::new(v)))
 }
 
 fn coord_type_from_expr(

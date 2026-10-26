@@ -52,12 +52,12 @@ fn now(args: &[LoraValue]) -> LoraValue {
     };
     let kind_lower = raw.as_deref().map(str::to_ascii_lowercase);
     match kind_lower.as_deref() {
-        None => LoraValue::DateTime(LoraDateTime::now()),
+        None => LoraValue::DateTime(Box::new(LoraDateTime::now())),
         Some("date") => LoraValue::Date(LoraDate::today()),
-        Some("datetime") => LoraValue::DateTime(LoraDateTime::now()),
+        Some("datetime") => LoraValue::DateTime(Box::new(LoraDateTime::now())),
         Some("time") => LoraValue::Time(LoraTime::now()),
         Some("local_time") => LoraValue::LocalTime(LoraLocalTime::now()),
-        Some("local_datetime") => LoraValue::LocalDateTime(LoraLocalDateTime::now()),
+        Some("local_datetime") => LoraValue::LocalDateTime(Box::new(LoraLocalDateTime::now())),
         // Not a known "kind" keyword — interpret the argument as a
         // value to parse. This is what `datetime("2025-01-01T12:00:00Z")`
         // and `date("2025-01-01")` rely on.
@@ -66,11 +66,11 @@ fn now(args: &[LoraValue]) -> LoraValue {
                 return LoraValue::Null;
             };
             if let Ok(dt) = LoraDateTime::parse(s) {
-                LoraValue::DateTime(dt)
+                LoraValue::DateTime(Box::new(dt))
             } else if let Ok(d) = LoraDate::parse(s) {
                 LoraValue::Date(d)
             } else if let Ok(d) = LoraDuration::parse(s) {
-                LoraValue::Duration(d)
+                LoraValue::Duration(Box::new(d))
             } else {
                 LoraValue::Null
             }
@@ -106,10 +106,10 @@ fn parse(args: &[LoraValue]) -> LoraValue {
             .map(LoraValue::Date)
             .unwrap_or(LoraValue::Null),
         "datetime" => LoraDateTime::parse(s)
-            .map(LoraValue::DateTime)
+            .map(LoraValue::from)
             .unwrap_or(LoraValue::Null),
         "duration" => LoraDuration::parse(s)
-            .map(LoraValue::Duration)
+            .map(LoraValue::from)
             .unwrap_or(LoraValue::Null),
         _ => LoraValue::Null,
     }
@@ -205,7 +205,7 @@ fn add(args: &[LoraValue]) -> LoraValue {
     };
     match t {
         LoraValue::Date(date) => LoraValue::Date(date.add_duration(d)),
-        LoraValue::DateTime(dt) => LoraValue::DateTime(dt.add_duration(d)),
+        LoraValue::DateTime(dt) => LoraValue::DateTime(Box::new(dt.add_duration(d))),
         _ => LoraValue::Null,
     }
 }
@@ -332,7 +332,7 @@ fn duration_between(args: &[LoraValue], what: Between) -> LoraValue {
     match (args.first(), args.get(1)) {
         (Some(a), Some(b)) if !matches!(a, LoraValue::Null) && !matches!(b, LoraValue::Null) => {
             match temporal_build::between(a, b, what) {
-                Ok(d) => LoraValue::Duration(d),
+                Ok(d) => LoraValue::Duration(Box::new(d)),
                 Err(e) => {
                     set_eval_error(e);
                     LoraValue::Null
@@ -379,10 +379,10 @@ fn report(result: Result<LoraValue, String>) -> LoraValue {
 fn between(args: &[LoraValue]) -> LoraValue {
     match (args.first(), args.get(1)) {
         (Some(LoraValue::Date(a)), Some(LoraValue::Date(b))) => {
-            LoraValue::Duration(LoraDuration::between_dates(a, b))
+            LoraValue::Duration(Box::new(LoraDuration::between_dates(a, b)))
         }
         (Some(LoraValue::DateTime(a)), Some(LoraValue::DateTime(b))) => {
-            LoraValue::Duration(LoraDuration::between_datetimes(a, b))
+            LoraValue::Duration(Box::new(LoraDuration::between_datetimes(a, b)))
         }
         _ => LoraValue::Null,
     }
@@ -393,7 +393,7 @@ fn between(args: &[LoraValue]) -> LoraValue {
 fn in_days(args: &[LoraValue]) -> LoraValue {
     match (args.first(), args.get(1)) {
         (Some(LoraValue::Date(a)), Some(LoraValue::Date(b))) => {
-            LoraValue::Duration(LoraDuration::in_days(a, b))
+            LoraValue::Duration(Box::new(LoraDuration::in_days(a, b)))
         }
         _ => duration_between(args, Between::Days),
     }

@@ -122,7 +122,7 @@ fn vector<S: GraphStorage>(
     };
     let query = match args.get(2) {
         Some(LoraValue::Vector(v)) => v.clone(),
-        Some(LoraValue::List(items)) => float32_vector(items)?,
+        Some(LoraValue::List(items)) => Box::new(float32_vector(items)?),
         other => {
             return Err(format!(
                 "query must be a VECTOR or LIST<NUMBER>, got {other:?}"

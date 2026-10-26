@@ -16,6 +16,10 @@ use serde::{Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// A query value. Four words: every row slot holds one, so the payloads
+/// larger than a `String` (binary, path, datetime, local datetime,
+/// duration, point, vector) are boxed. Build those from the plain value
+/// with `LoraValue::from`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoraValue {
     Null,
@@ -23,20 +27,20 @@ pub enum LoraValue {
     Int(i64),
     Float(f64),
     String(String),
-    Binary(LoraBinary),
+    Binary(Box<LoraBinary>),
     List(Vec<LoraValue>),
     Map(BTreeMap<String, LoraValue>),
     Node(NodeId),
     Relationship(RelationshipId),
-    Path(LoraPath),
+    Path(Box<LoraPath>),
     Date(LoraDate),
     Time(LoraTime),
     LocalTime(LoraLocalTime),
-    DateTime(LoraDateTime),
-    LocalDateTime(LoraLocalDateTime),
-    Duration(LoraDuration),
-    Point(LoraPoint),
-    Vector(LoraVector),
+    DateTime(Box<LoraDateTime>),
+    LocalDateTime(Box<LoraLocalDateTime>),
+    Duration(Box<LoraDuration>),
+    Point(Box<LoraPoint>),
+    Vector(Box<LoraVector>),
 }
 
 impl LoraValue {
@@ -196,6 +200,32 @@ fn serialize_vector<S: Serializer>(serializer: S, v: &LoraVector) -> Result<S::O
     m.end()
 }
 
+/// The variants whose payload would make every `LoraValue` (and with it
+/// every row slot) larger are boxed; these build them from the plain
+/// value.
+macro_rules! boxed_from {
+    ($($variant:ident($ty:ty)),* $(,)?) => {
+        $(
+            impl From<$ty> for LoraValue {
+                #[inline]
+                fn from(value: $ty) -> Self {
+                    LoraValue::$variant(Box::new(value))
+                }
+            }
+        )*
+    };
+}
+
+boxed_from!(
+    Binary(LoraBinary),
+    Path(LoraPath),
+    DateTime(LoraDateTime),
+    LocalDateTime(LoraLocalDateTime),
+    Duration(LoraDuration),
+    Point(LoraPoint),
+    Vector(LoraVector),
+);
+
 impl From<PropertyValue> for LoraValue {
     fn from(value: PropertyValue) -> Self {
         match value {
@@ -204,7 +234,7 @@ impl From<PropertyValue> for LoraValue {
             PropertyValue::Int(v) => LoraValue::Int(v),
             PropertyValue::Float(v) => LoraValue::Float(v),
             PropertyValue::String(v) => LoraValue::String(v),
-            PropertyValue::Binary(v) => LoraValue::Binary(v),
+            PropertyValue::Binary(v) => LoraValue::Binary(Box::new(v)),
             PropertyValue::List(values) => {
                 LoraValue::List(values.into_iter().map(LoraValue::from).collect())
             }
@@ -216,11 +246,11 @@ impl From<PropertyValue> for LoraValue {
             PropertyValue::Date(d) => LoraValue::Date(d),
             PropertyValue::Time(t) => LoraValue::Time(t),
             PropertyValue::LocalTime(t) => LoraValue::LocalTime(t),
-            PropertyValue::DateTime(dt) => LoraValue::DateTime(dt),
-            PropertyValue::LocalDateTime(dt) => LoraValue::LocalDateTime(dt),
-            PropertyValue::Duration(dur) => LoraValue::Duration(dur),
-            PropertyValue::Point(p) => LoraValue::Point(p),
-            PropertyValue::Vector(v) => LoraValue::Vector(v),
+            PropertyValue::DateTime(dt) => LoraValue::DateTime(Box::new(dt)),
+            PropertyValue::LocalDateTime(dt) => LoraValue::LocalDateTime(Box::new(dt)),
+            PropertyValue::Duration(dur) => LoraValue::Duration(Box::new(dur)),
+            PropertyValue::Point(p) => LoraValue::Point(Box::new(p)),
+            PropertyValue::Vector(v) => LoraValue::Vector(Box::new(v)),
         }
     }
 }
@@ -255,7 +285,7 @@ impl From<&PropertyValue> for LoraValue {
             PropertyValue::Int(v) => LoraValue::Int(*v),
             PropertyValue::Float(v) => LoraValue::Float(*v),
             PropertyValue::String(v) => LoraValue::String(v.clone()),
-            PropertyValue::Binary(v) => LoraValue::Binary(v.clone()),
+            PropertyValue::Binary(v) => LoraValue::Binary(Box::new(v.clone())),
             PropertyValue::List(values) => {
                 LoraValue::List(values.iter().map(LoraValue::from).collect())
             }
@@ -267,11 +297,11 @@ impl From<&PropertyValue> for LoraValue {
             PropertyValue::Date(d) => LoraValue::Date(d.clone()),
             PropertyValue::Time(t) => LoraValue::Time(t.clone()),
             PropertyValue::LocalTime(t) => LoraValue::LocalTime(t.clone()),
-            PropertyValue::DateTime(dt) => LoraValue::DateTime(dt.clone()),
-            PropertyValue::LocalDateTime(dt) => LoraValue::LocalDateTime(dt.clone()),
-            PropertyValue::Duration(dur) => LoraValue::Duration(dur.clone()),
-            PropertyValue::Point(p) => LoraValue::Point(p.clone()),
-            PropertyValue::Vector(v) => LoraValue::Vector(v.clone()),
+            PropertyValue::DateTime(dt) => LoraValue::DateTime(Box::new(dt.clone())),
+            PropertyValue::LocalDateTime(dt) => LoraValue::LocalDateTime(Box::new(dt.clone())),
+            PropertyValue::Duration(dur) => LoraValue::Duration(Box::new(dur.clone())),
+            PropertyValue::Point(p) => LoraValue::Point(Box::new(p.clone())),
+            PropertyValue::Vector(v) => LoraValue::Vector(Box::new(v.clone())),
         }
     }
 }
@@ -284,7 +314,7 @@ impl From<LoraValue> for PropertyValue {
             LoraValue::Int(v) => PropertyValue::Int(v),
             LoraValue::Float(v) => PropertyValue::Float(v),
             LoraValue::String(v) => PropertyValue::String(v),
-            LoraValue::Binary(v) => PropertyValue::Binary(v),
+            LoraValue::Binary(v) => PropertyValue::Binary(*v),
             LoraValue::List(values) => {
                 PropertyValue::List(values.into_iter().map(PropertyValue::from).collect())
             }
@@ -299,11 +329,11 @@ impl From<LoraValue> for PropertyValue {
             LoraValue::Date(d) => PropertyValue::Date(d),
             LoraValue::Time(t) => PropertyValue::Time(t),
             LoraValue::LocalTime(t) => PropertyValue::LocalTime(t),
-            LoraValue::DateTime(dt) => PropertyValue::DateTime(dt),
-            LoraValue::LocalDateTime(dt) => PropertyValue::LocalDateTime(dt),
-            LoraValue::Duration(dur) => PropertyValue::Duration(dur),
-            LoraValue::Point(p) => PropertyValue::Point(p),
-            LoraValue::Vector(v) => PropertyValue::Vector(v),
+            LoraValue::DateTime(dt) => PropertyValue::DateTime(*dt),
+            LoraValue::LocalDateTime(dt) => PropertyValue::LocalDateTime(*dt),
+            LoraValue::Duration(dur) => PropertyValue::Duration(*dur),
+            LoraValue::Point(p) => PropertyValue::Point(*p),
+            LoraValue::Vector(v) => PropertyValue::Vector(*v),
         }
     }
 }
@@ -1046,6 +1076,13 @@ mod tests {
             std::mem::size_of::<SlotValue>(),
             std::mem::size_of::<LoraValue>()
         );
+    }
+
+    #[test]
+    fn a_value_is_four_words() {
+        // Every row slot holds one: the large temporal, spatial, vector,
+        // binary and path payloads are boxed to keep rows small.
+        assert_eq!(std::mem::size_of::<LoraValue>(), 32);
     }
 
     #[test]

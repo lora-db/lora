@@ -329,7 +329,9 @@ fn py_to_lora_value(obj: &Bound<'_, PyAny>) -> PyResult<LoraValue> {
         return Ok(LoraValue::String(s.extract::<String>()?));
     }
     if let Ok(bytes) = obj.extract::<PyBackedBytes>() {
-        return Ok(LoraValue::Binary(LoraBinary::from_bytes(bytes.to_vec())));
+        return Ok(LoraValue::Binary(Box::new(LoraBinary::from_bytes(
+            bytes.to_vec(),
+        ))));
     }
     if let Ok(list) = obj.downcast::<PyList>() {
         let mut out = Vec::with_capacity(list.len());
@@ -369,17 +371,17 @@ fn py_dict_to_cypher(dict: &Bound<'_, PyDict>) -> PyResult<LoraValue> {
                 }
                 "datetime" => {
                     return parse_tagged(dict, "datetime", |iso| {
-                        LoraDateTime::parse(iso).map(LoraValue::DateTime)
+                        LoraDateTime::parse(iso).map(LoraValue::from)
                     })
                 }
                 "localdatetime" => {
                     return parse_tagged(dict, "localdatetime", |iso| {
-                        LoraLocalDateTime::parse(iso).map(LoraValue::LocalDateTime)
+                        LoraLocalDateTime::parse(iso).map(LoraValue::from)
                     })
                 }
                 "duration" => {
                     return parse_tagged(dict, "duration", |iso| {
-                        LoraDuration::parse(iso).map(LoraValue::Duration)
+                        LoraDuration::parse(iso).map(LoraValue::from)
                     })
                 }
                 "point" => {
@@ -400,7 +402,7 @@ fn py_dict_to_cypher(dict: &Bound<'_, PyDict>) -> PyResult<LoraValue> {
                         .get_item("z")?
                         .map(|v| v.extract::<f64>())
                         .transpose()?;
-                    return Ok(LoraValue::Point(LoraPoint { x, y, z, srid }));
+                    return Ok(LoraValue::Point(Box::new(LoraPoint { x, y, z, srid })));
                 }
                 "vector" => {
                     return build_vector_from_dict(dict);
@@ -435,7 +437,7 @@ fn build_binary_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<LoraValue> {
             .map_err(|_| InvalidParamsError::new_err("binary segment must be bytes"))?;
         out.push(bytes.to_vec());
     }
-    Ok(LoraValue::Binary(LoraBinary::from_segments(out)))
+    Ok(LoraValue::Binary(Box::new(LoraBinary::from_segments(out))))
 }
 
 fn parse_tagged(
@@ -499,5 +501,5 @@ fn build_vector_from_dict(dict: &Bound<'_, PyDict>) -> PyResult<LoraValue> {
 
     let v = LoraVector::try_new(raw, dimension, coordinate_type)
         .map_err(|e| InvalidParamsError::new_err(e.to_string()))?;
-    Ok(LoraValue::Vector(v))
+    Ok(LoraValue::Vector(Box::new(v)))
 }

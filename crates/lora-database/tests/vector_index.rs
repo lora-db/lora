@@ -317,7 +317,7 @@ fn vector_query_accepts_vector_arg() {
     let mut params = BTreeMap::new();
     params.insert(
         "q".to_string(),
-        LoraValue::Vector(
+        LoraValue::from(
             LoraVector::try_new(
                 vec![
                     RawCoordinate::Float(1.0),
@@ -381,14 +381,14 @@ fn seeded_vectors(seed: u64, n: usize, dim: usize) -> Vec<LoraVector> {
 fn seed_vector_nodes(db: &TestDb, vectors: &[LoraVector]) {
     for v in vectors {
         let mut params = BTreeMap::new();
-        params.insert("e".to_string(), LoraValue::Vector(v.clone()));
+        params.insert("e".to_string(), LoraValue::Vector(Box::new(v.clone())));
         db.run_with_params("CREATE (:V {e: $e})", params);
     }
 }
 
 fn call_top_k(db: &TestDb, k: usize, query: &LoraVector) -> Vec<f64> {
     let mut params = BTreeMap::new();
-    params.insert("q".to_string(), LoraValue::Vector(query.clone()));
+    params.insert("q".to_string(), LoraValue::Vector(Box::new(query.clone())));
     let rows = db.run_with_params(
         &format!("CALL db.index.vector.queryNodes('vidx', {k}, $q) YIELD score"),
         params,
@@ -565,7 +565,7 @@ fn hnsw_top_k_returns_k_results() {
     seed_vector_nodes(&db, &vectors);
     let query = seeded_vectors(0xEEFF, 1, dim).pop().unwrap();
     let mut params = BTreeMap::new();
-    params.insert("q".to_string(), LoraValue::Vector(query));
+    params.insert("q".to_string(), LoraValue::Vector(Box::new(query)));
     let rows = db.run_with_params(
         "CALL db.index.vector.queryNodes('vidx', 5, $q) YIELD node, score",
         params,
@@ -597,7 +597,7 @@ fn hnsw_recall_at_10_meets_target_cosine() {
     let query = seeded_vectors(0xDEAD_BEEF_u64, 1, dim).pop().unwrap();
 
     let mut params = BTreeMap::new();
-    params.insert("q".to_string(), LoraValue::Vector(query.clone()));
+    params.insert("q".to_string(), LoraValue::Vector(Box::new(query.clone())));
     let rows = db.run_with_params(
         "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD node, score",
         params,
@@ -646,7 +646,7 @@ fn hnsw_explicit_flat_provider_matches_oracle_exactly() {
     seed_vector_nodes(&db, &vectors);
     let query = seeded_vectors(14, 1, dim).pop().unwrap();
     let mut params = BTreeMap::new();
-    params.insert("q".to_string(), LoraValue::Vector(query.clone()));
+    params.insert("q".to_string(), LoraValue::Vector(Box::new(query.clone())));
     let rows = db.run_with_params(
         "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD score",
         params,
@@ -715,7 +715,7 @@ fn dot_metric_top_k_matches_oracle_flat() {
     seed_vector_nodes(&db, &vectors);
     let query = seeded_vectors(0xD071, 1, dim).pop().unwrap();
     let mut params = BTreeMap::new();
-    params.insert("q".to_string(), LoraValue::Vector(query.clone()));
+    params.insert("q".to_string(), LoraValue::Vector(Box::new(query.clone())));
     let rows = db.run_with_params(
         "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD score",
         params,
@@ -743,7 +743,7 @@ fn manhattan_metric_top_k_matches_oracle_flat() {
     seed_vector_nodes(&db, &vectors);
     let query = seeded_vectors(0x1A_11, 1, dim).pop().unwrap();
     let mut params = BTreeMap::new();
-    params.insert("q".to_string(), LoraValue::Vector(query.clone()));
+    params.insert("q".to_string(), LoraValue::Vector(Box::new(query.clone())));
     let rows = db.run_with_params(
         "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD score",
         params,
@@ -771,7 +771,7 @@ fn dot_metric_works_with_hnsw_provider() {
     seed_vector_nodes(&db, &vectors);
     let query = seeded_vectors(0x000D_0721, 1, dim).pop().unwrap();
     let mut params = BTreeMap::new();
-    params.insert("q".to_string(), LoraValue::Vector(query));
+    params.insert("q".to_string(), LoraValue::Vector(Box::new(query)));
     let rows = db.run_with_params(
         "CALL db.index.vector.queryNodes('vidx', 5, $q) YIELD score",
         params,
@@ -944,7 +944,7 @@ fn hnsw_backend_survives_snapshot_round_trip() {
     // Capture donor query result so we can compare after restore.
     let query = seeded_vectors(0xC1_AB_u64, 1, dim).pop().unwrap();
     let mut donor_params = BTreeMap::new();
-    donor_params.insert("q".to_string(), LoraValue::Vector(query.clone()));
+    donor_params.insert("q".to_string(), LoraValue::Vector(Box::new(query.clone())));
     let donor_rows = donor.run_with_params(
         "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD node, score",
         donor_params,
@@ -968,7 +968,7 @@ fn hnsw_backend_survives_snapshot_round_trip() {
     // results. Identical-byte parity is the strongest signal that
     // the snapshot path skipped the rebuild.
     let mut target_params = BTreeMap::new();
-    target_params.insert("q".to_string(), LoraValue::Vector(query));
+    target_params.insert("q".to_string(), LoraValue::Vector(Box::new(query)));
     let target_rows = target.run_with_params(
         "CALL db.index.vector.queryNodes('vidx', 10, $q) YIELD node, score",
         target_params,
@@ -1061,7 +1061,7 @@ fn hnsw_int8_returns_top_k_for_normalized_embeddings() {
     seed_vector_nodes(&db, &normalized);
     let q = normalized[0].clone();
     let mut params = BTreeMap::new();
-    params.insert("q".to_string(), LoraValue::Vector(q));
+    params.insert("q".to_string(), LoraValue::Vector(Box::new(q)));
     let rows = db.run_with_params(
         "CALL db.index.vector.queryNodes('vidx', 5, $q) YIELD node, score",
         params,
@@ -1150,7 +1150,7 @@ fn restrict_to_filters_results_hnsw() {
 
     let query = seeded_vectors(0x00F1_17E2_u64, 1, dim).pop().unwrap();
     let mut params = BTreeMap::new();
-    params.insert("q".to_string(), LoraValue::Vector(query));
+    params.insert("q".to_string(), LoraValue::Vector(Box::new(query)));
     let rows = db.run_with_params(
         &format!(
             "CALL db.index.vector.queryNodes('vidx', 5, $q, {{restrictTo: [{restrict_str}]}}) \

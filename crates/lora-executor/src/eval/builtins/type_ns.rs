@@ -391,13 +391,13 @@ fn parse_temporal(s: &str, kind: Kind) -> Result<LoraValue, String> {
         Kind::LocalTime => LoraValue::LocalTime(LoraLocalTime::parse(s)?),
         // A date alone is midnight UTC: `datetime('2026-10-01')`.
         Kind::DateTime => LoraValue::DateTime(match LoraDateTime::parse(s) {
-            Ok(dt) => dt,
+            Ok(dt) => Box::new(dt),
             Err(e) => {
                 let d = LoraDate::parse(s).map_err(|_| e)?;
-                LoraDateTime::new(d.year, d.month, d.day, 0, 0, 0, 0, 0)?
+                Box::new(LoraDateTime::new(d.year, d.month, d.day, 0, 0, 0, 0, 0)?)
             }
         }),
-        Kind::LocalDateTime => LoraValue::LocalDateTime(match LoraLocalDateTime::parse(s) {
+        Kind::LocalDateTime => LoraValue::from(match LoraLocalDateTime::parse(s) {
             Ok(dt) => dt,
             Err(e) => {
                 let d = LoraDate::parse(s).map_err(|_| e)?;
@@ -426,8 +426,8 @@ fn local_datetime_date(dt: &LoraLocalDateTime) -> LoraDate {
 fn cast_duration(value: Option<&LoraValue>) -> CastResult {
     Ok(LoraValue::Duration(match value.ok_or(None)? {
         LoraValue::Duration(d) => d.clone(),
-        LoraValue::String(s) => LoraDuration::parse(s).map_err(Some)?,
-        LoraValue::Map(m) => temporal_build::duration_from_map(m).map_err(Some)?,
+        LoraValue::String(s) => Box::new(LoraDuration::parse(s).map_err(Some)?),
+        LoraValue::Map(m) => Box::new(temporal_build::duration_from_map(m).map_err(Some)?),
         _ => return Err(None),
     }))
 }
@@ -436,7 +436,7 @@ fn cast_point(value: Option<&LoraValue>, report_errors: bool) -> Option<LoraValu
     Some(match value? {
         LoraValue::Point(p) => LoraValue::Point(p.clone()),
         LoraValue::Map(m) => match build_point_from_map(m) {
-            Ok(Some(point)) => LoraValue::Point(point),
+            Ok(Some(point)) => LoraValue::Point(Box::new(point)),
             Ok(None) => LoraValue::Null,
             Err(err) => {
                 if report_errors {
@@ -487,7 +487,7 @@ fn cast_vector(
     };
     LoraVector::try_new(raw, dimension, coord)
         .ok()
-        .map(LoraValue::Vector)
+        .map(LoraValue::from)
 }
 
 fn coerce_list_to_raw_coords(items: &[LoraValue]) -> Result<Vec<RawCoordinate>, ()> {

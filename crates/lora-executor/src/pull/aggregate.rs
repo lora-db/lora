@@ -98,7 +98,7 @@ impl Total {
             }
             LoraValue::Duration(d) => {
                 let sum = match &self.duration {
-                    None => Some(d),
+                    None => Some(*d),
                     Some(cur) => cur.try_add(&d),
                 };
                 match sum {
@@ -125,7 +125,7 @@ impl Total {
             None => Ok(LoraValue::Null),
             Some(LoraValue::Duration(d)) => d
                 .try_div_int(self.durations as i64)
-                .map(LoraValue::Duration)
+                .map(LoraValue::from)
                 .ok_or_else(|| ExecutorError::RuntimeError("avg() overflowed".into())),
             Some(LoraValue::Int(i)) => Ok(LoraValue::Float(i as f64 / numbers as f64)),
             Some(LoraValue::Float(f)) => Ok(LoraValue::Float(f / numbers as f64)),
@@ -142,7 +142,7 @@ impl Total {
             (Some(_), n) if n > 0 => Err(ExecutorError::RuntimeError(format!(
                 "{name}() can't add durations and numbers"
             ))),
-            (Some(d), _) => Ok(Some(LoraValue::Duration(d.clone()))),
+            (Some(d), _) => Ok(Some(LoraValue::Duration(Box::new(d.clone())))),
             (None, 0) => Ok(None),
             (None, _) if self.floats == 0 => Ok(Some(LoraValue::Int(self.int))),
             (None, _) => Ok(Some(LoraValue::Float(self.int as f64 + self.float))),

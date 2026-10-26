@@ -235,17 +235,17 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue, String> {
                     "datetime" => {
                         let iso = require_iso(&obj, "datetime")?;
                         let dt = LoraDateTime::parse(iso).map_err(|e| e.to_string())?;
-                        return Ok(LoraValue::DateTime(dt));
+                        return Ok(LoraValue::DateTime(Box::new(dt)));
                     }
                     "localdatetime" => {
                         let iso = require_iso(&obj, "localdatetime")?;
                         let dt = LoraLocalDateTime::parse(iso).map_err(|e| e.to_string())?;
-                        return Ok(LoraValue::LocalDateTime(dt));
+                        return Ok(LoraValue::LocalDateTime(Box::new(dt)));
                     }
                     "duration" => {
                         let iso = require_iso(&obj, "duration")?;
                         let d = LoraDuration::parse(iso).map_err(|e| e.to_string())?;
-                        return Ok(LoraValue::Duration(d));
+                        return Ok(LoraValue::Duration(Box::new(d)));
                     }
                     "point" => {
                         let coords = lora_store::NamedPointCoordinates {
@@ -258,12 +258,12 @@ fn json_value_to_cypher(value: serde_json::Value) -> Result<LoraValue, String> {
                             height: obj.get("height").and_then(|v| v.as_f64()),
                         };
                         let point = coords.resolve()?;
-                        return Ok(LoraValue::Point(point));
+                        return Ok(LoraValue::Point(Box::new(point)));
                     }
                     "vector" => {
-                        return vector_from_json_map(&obj).map(LoraValue::Vector);
+                        return vector_from_json_map(&obj).map(LoraValue::from);
                     }
-                    "binary" | "blob" => return binary_from_json_map(&obj).map(LoraValue::Binary),
+                    "binary" | "blob" => return binary_from_json_map(&obj).map(LoraValue::from),
                     _ => { /* fall through to generic map */ }
                 }
             }

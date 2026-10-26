@@ -228,17 +228,17 @@ fn ruby_hash_to_cypher(ruby: &Ruby, hash: RHash) -> Result<LoraValue, MagnusErro
             }
             "datetime" => {
                 return parse_tagged(ruby, hash, "datetime", |iso| {
-                    LoraDateTime::parse(iso).map(LoraValue::DateTime)
+                    LoraDateTime::parse(iso).map(LoraValue::from)
                 });
             }
             "localdatetime" => {
                 return parse_tagged(ruby, hash, "localdatetime", |iso| {
-                    LoraLocalDateTime::parse(iso).map(LoraValue::LocalDateTime)
+                    LoraLocalDateTime::parse(iso).map(LoraValue::from)
                 });
             }
             "duration" => {
                 return parse_tagged(ruby, hash, "duration", |iso| {
-                    LoraDuration::parse(iso).map(LoraValue::Duration)
+                    LoraDuration::parse(iso).map(LoraValue::from)
                 });
             }
             "point" => return build_point(ruby, hash),
@@ -291,7 +291,7 @@ fn build_point(ruby: &Ruby, hash: RHash) -> Result<LoraValue, MagnusError> {
     let x = read_f64(ruby, hash, "x")?.ok_or_else(|| invalid_params(ruby, "point.x required"))?;
     let y = read_f64(ruby, hash, "y")?.ok_or_else(|| invalid_params(ruby, "point.y required"))?;
     let z = read_f64(ruby, hash, "z")?;
-    Ok(LoraValue::Point(LoraPoint { x, y, z, srid }))
+    Ok(LoraValue::Point(Box::new(LoraPoint { x, y, z, srid })))
 }
 
 fn build_vector(ruby: &Ruby, hash: RHash) -> Result<LoraValue, MagnusError> {
@@ -341,7 +341,7 @@ fn build_vector(ruby: &Ruby, hash: RHash) -> Result<LoraValue, MagnusError> {
 
     let v = LoraVector::try_new(raw, dimension, coordinate_type)
         .map_err(|e| invalid_params(ruby, e.to_string()))?;
-    Ok(LoraValue::Vector(v))
+    Ok(LoraValue::Vector(Box::new(v)))
 }
 
 fn build_binary(ruby: &Ruby, hash: RHash) -> Result<LoraValue, MagnusError> {
@@ -355,7 +355,9 @@ fn build_binary(ruby: &Ruby, hash: RHash) -> Result<LoraValue, MagnusError> {
             .map_err(|_| invalid_params(ruby, "binary.segments entries must be Strings"))?;
         segments.push(unsafe { segment.as_slice().to_vec() });
     }
-    Ok(LoraValue::Binary(LoraBinary::from_segments(segments)))
+    Ok(LoraValue::Binary(Box::new(LoraBinary::from_segments(
+        segments,
+    ))))
 }
 
 fn read_i64(ruby: &Ruby, hash: RHash, key: &str) -> Result<Option<i64>, MagnusError> {

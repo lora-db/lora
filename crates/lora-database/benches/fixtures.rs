@@ -653,7 +653,7 @@ pub fn build_vector_graph(n: usize, dim: usize, sim: &str, provider: &str) -> Be
                 let coords: Vec<RawCoordinate> = (0..dim)
                     .map(|_| RawCoordinate::Float(rng() as f64))
                     .collect();
-                LoraValue::Vector(
+                LoraValue::from(
                     LoraVector::try_new(coords, dim as i64, VectorCoordinateType::Float32)
                         .expect("vector construction"),
                 )
