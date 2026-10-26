@@ -27,6 +27,13 @@ pub struct DatabaseOpenOptions {
     /// WAL, so the next open loads the snapshot instead of replaying the
     /// log again. `u64::MAX` turns it off.
     pub compact_on_open_wal_bytes: u64,
+    /// Checkpoint, as [`crate::Database::sync`] does, once the WAL has grown
+    /// by this many bytes since the last checkpoint, so a long-running
+    /// process does not keep every WAL segment. The checkpoint runs on a
+    /// background thread; writers wait only while the graph and its LSN
+    /// are taken. 0 turns it off. Defaults to
+    /// [`crate::DEFAULT_CHECKPOINT_WAL_BYTES`].
+    pub checkpoint_wal_bytes: u64,
 }
 
 impl Default for DatabaseOpenOptions {
@@ -37,6 +44,7 @@ impl Default for DatabaseOpenOptions {
             segment_target_bytes: 8 * 1024 * 1024,
             max_database_bytes: DEFAULT_DATABASE_MAX_BYTES,
             compact_on_open_wal_bytes: DEFAULT_COMPACT_ON_OPEN_WAL_BYTES,
+            checkpoint_wal_bytes: crate::DEFAULT_CHECKPOINT_WAL_BYTES,
         }
     }
 }

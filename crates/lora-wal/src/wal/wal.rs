@@ -82,6 +82,13 @@ type BgFailure = Mutex<Option<String>>;
 /// call, but it must be quick and must not call back into the WAL.
 pub type DurableListener = Arc<dyn Fn(Lsn) + Send + Sync>;
 
+/// Called after a commit once [`Wal::bytes_since_checkpoint`] reaches the
+/// threshold given to [`Wal::set_growth_listener`], on the committing
+/// thread, which may hold the host's writer lock. It must return quickly
+/// (hand the checkpoint to another thread) and must not call back into the
+/// WAL's commit path.
+pub type GrowthListener = Arc<dyn Fn() + Send + Sync>;
+
 /// Selects the durability work that [`Wal::flush_inner`] actually does.
 /// Centralising the normal write-only path and the forced fsync path keeps
 /// the call sites from duplicating durable-LSN rules.
@@ -129,6 +136,9 @@ pub struct Wal {
     appended_bytes: AtomicU64,
     /// `appended_bytes` at the last [`Self::mark_checkpoint`].
     checkpoint_mark: AtomicU64,
+    /// See [`Self::set_growth_listener`]; 0 when no listener is set.
+    growth_threshold: AtomicU64,
+    growth_listener: Mutex<Option<GrowthListener>>,
     /// Test hook: while set, `fsync`s are skipped and `durable_lsn` stays
     /// put, as if the disk had not confirmed anything since.
     fsync_held: AtomicBool,
@@ -263,6 +273,8 @@ impl Wal {
             durable_listener: Mutex::new(None),
             appended_bytes: AtomicU64::new(0),
             checkpoint_mark: AtomicU64::new(0),
+            growth_threshold: AtomicU64::new(0),
+            growth_listener: Mutex::new(None),
             fsync_held: AtomicBool::new(false),
             corrupt_cut,
             _dir_lock: dir_lock,
@@ -645,6 +657,11 @@ impl Wal {
         // force_fsync/checkpoint/sync/drop boundary.
         self.flush_inner(FlushKind::PerConfiguredMode)?;
 
+        let threshold = self.growth_threshold.load(Ordering::Relaxed);
+        if threshold != 0 && self.bytes_since_checkpoint() >= threshold {
+            self.notify_growth();
+        }
+
         Ok(Some(commit_lsn))
     }
 
@@ -715,6 +732,32 @@ impl Wal {
             self.appended_bytes.load(Ordering::Relaxed),
             Ordering::Relaxed,
         );
+    }
+
+    /// Install (or with `None` remove) the callback told after each commit
+    /// that leaves [`Self::bytes_since_checkpoint`] at or above `threshold`
+    /// bytes. A host uses it to checkpoint by WAL growth. It keeps firing
+    /// on every commit until a checkpoint restarts the count or the
+    /// listener is removed. A `threshold` of 0 removes the listener.
+    pub fn set_growth_listener(&self, threshold: u64, listener: Option<GrowthListener>) {
+        let mut slot = self
+            .growth_listener
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let threshold = if listener.is_some() { threshold } else { 0 };
+        *slot = listener.filter(|_| threshold != 0);
+        self.growth_threshold.store(threshold, Ordering::Relaxed);
+    }
+
+    fn notify_growth(&self) {
+        let listener = self
+            .growth_listener
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(listener) = listener {
+            listener();
+        }
     }
 
     /// Install (or with `None` remove) the callback told about each advance

@@ -52,7 +52,7 @@ pub use named::{
 };
 pub use snapshot::{
     snapshot_credentials_from_json, snapshot_options_from_json, SnapshotAdmin, SnapshotByteFormat,
-    SnapshotConfig,
+    SnapshotConfig, DEFAULT_CHECKPOINT_WAL_BYTES,
 };
 pub use stream::QueryStream;
 pub use transaction::{Transaction, TransactionError, TransactionMode};

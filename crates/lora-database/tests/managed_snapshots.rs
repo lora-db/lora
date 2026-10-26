@@ -307,6 +307,114 @@ fn failing_automatic_checkpoint_does_not_fail_or_lose_writes() {
     assert!(snapshot_dir.join("CURRENT").exists());
 }
 
+fn wal_segments(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter(|e| e.as_ref().unwrap().path().extension() == Some("wal".as_ref()))
+        .count()
+}
+
+fn write_users(db: &Database<lora_database::InMemoryGraph>, ids: std::ops::Range<u32>) {
+    for i in ids {
+        db.execute(
+            &format!("CREATE (:User {{id: {i}, pad: 'xxxxxxxxxxxxxxxxxxxxxxxx'}})"),
+            opts(),
+        )
+        .unwrap();
+    }
+}
+
+/// Wait for the background checkpoint to leave a snapshot.
+fn wait_for(mut done: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !done() {
+        if std::time::Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    true
+}
+
+/// A process that writes for days must not keep every WAL segment: managed
+/// snapshots checkpoint once the WAL has grown by `checkpoint_wal_bytes`,
+/// without a commit count or an explicit call.
+#[test]
+fn managed_snapshots_checkpoint_by_wal_size() {
+    let dir = TmpDir::new("checkpoint_by_wal_size");
+    let wal_dir = dir.path().join("wal");
+    let snapshot_dir = dir.path().join("snapshots");
+    let config = || SnapshotConfig::enabled(&snapshot_dir).checkpoint_wal_bytes(16 * 1024);
+
+    {
+        let db = Database::open_with_wal_snapshots(wal_enabled(&wal_dir), config()).unwrap();
+        write_users(&db, 0..300);
+        assert!(wait_for(|| snapshot_dir.join("CURRENT").exists()));
+        // Writes keep going while it runs and after it.
+        write_users(&db, 300..600);
+        // 600 commits fill about 200 segments; 16 KiB is about 32.
+        assert!(wait_for(|| wal_segments(&wal_dir) < 60));
+    }
+
+    let reopened = Database::open_with_wal_snapshots(wal_enabled(&wal_dir), config()).unwrap();
+    assert_eq!(
+        row_count(reopened.execute("MATCH (u:User) RETURN u", opts()).unwrap()),
+        600
+    );
+}
+
+#[test]
+fn managed_snapshots_wal_size_checkpoint_can_be_turned_off() {
+    let dir = TmpDir::new("checkpoint_by_wal_size_off");
+    let wal_dir = dir.path().join("wal");
+    let snapshot_dir = dir.path().join("snapshots");
+    let db = Database::open_with_wal_snapshots(
+        wal_enabled(&wal_dir),
+        SnapshotConfig::enabled(&snapshot_dir).checkpoint_wal_bytes(0),
+    )
+    .unwrap();
+    write_users(&db, 0..600);
+    drop(db);
+    assert!(!snapshot_dir.join("CURRENT").exists());
+    // About three commits per 512-byte segment.
+    assert!(wal_segments(&wal_dir) > 150, "{}", wal_segments(&wal_dir));
+}
+
+/// The checkpoint by WAL size runs after the commit, on its own thread: a
+/// failure is logged, never returned, and loses nothing.
+#[cfg(unix)]
+#[test]
+fn failing_wal_size_checkpoint_does_not_fail_or_lose_writes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TmpDir::new("failing_wal_size_checkpoint");
+    let wal_dir = dir.path().join("wal");
+    let snapshot_dir = dir.path().join("snapshots");
+    let config = || SnapshotConfig::enabled(&snapshot_dir).checkpoint_wal_bytes(16 * 1024);
+
+    {
+        let db = Database::open_with_wal_snapshots(wal_enabled(&wal_dir), config()).unwrap();
+        std::fs::set_permissions(&snapshot_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        write_users(&db, 0..300);
+        let mut tx = db.begin_transaction(TransactionMode::ReadWrite).unwrap();
+        tx.execute("CREATE (:User {id: 300})", opts()).unwrap();
+        tx.commit().unwrap();
+        // Dropping waits for a running checkpoint.
+        drop(db);
+        assert!(!snapshot_dir.join("CURRENT").exists());
+        std::fs::set_permissions(&snapshot_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    let reopened = Database::open_with_wal_snapshots(wal_enabled(&wal_dir), config()).unwrap();
+    assert_eq!(
+        row_count(reopened.execute("MATCH (u:User) RETURN u", opts()).unwrap()),
+        301
+    );
+    // With the directory writable again a later checkpoint succeeds.
+    write_users(&reopened, 400..700);
+    assert!(wait_for(|| snapshot_dir.join("CURRENT").exists()));
+}
+
 struct TmpDir {
     path: PathBuf,
 }

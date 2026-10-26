@@ -2,6 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 
 use anyhow::{anyhow, Context, Result};
 use lora_snapshot::{read_graph_snapshot, write_graph_snapshot, SnapshotOptions};
@@ -9,6 +10,7 @@ use lora_store::{InMemoryGraph, SnapshotMeta};
 use lora_wal::{Lsn, WalRecorder};
 
 use crate::durable_io::{sync_dir, sync_file};
+use crate::live_store::LiveStore;
 
 const CURRENT_FILE: &str = "CURRENT";
 
@@ -33,7 +35,18 @@ pub struct SnapshotConfig {
     /// Columnar snapshot codec options. Defaults to fast gzip compression and
     /// no encryption.
     pub codec: SnapshotOptions,
+    /// Create a managed checkpoint once the WAL has grown by this many bytes
+    /// since the last one, so a long-running process does not keep every
+    /// WAL segment. The checkpoint runs on a background thread; writers
+    /// wait only while the graph and its LSN are taken. 0 turns it off.
+    /// Defaults to [`DEFAULT_CHECKPOINT_WAL_BYTES`].
+    pub checkpoint_wal_bytes: u64,
 }
+
+/// Default for [`SnapshotConfig::checkpoint_wal_bytes`] and
+/// [`crate::DatabaseOpenOptions::checkpoint_wal_bytes`]: the WAL size at
+/// which a named database's open compacts, as a checkpoint at runtime.
+pub const DEFAULT_CHECKPOINT_WAL_BYTES: u64 = crate::named::DEFAULT_COMPACT_ON_OPEN_WAL_BYTES;
 
 impl SnapshotConfig {
     pub fn enabled(dir: impl Into<PathBuf>) -> Self {
@@ -42,7 +55,15 @@ impl SnapshotConfig {
             checkpoint_every_commits: None,
             keep_old: 1,
             codec: SnapshotOptions::default(),
+            checkpoint_wal_bytes: DEFAULT_CHECKPOINT_WAL_BYTES,
         }
+    }
+
+    /// Checkpoint once the WAL has grown by `bytes` since the last
+    /// checkpoint; 0 turns it off. See [`Self::checkpoint_wal_bytes`].
+    pub fn checkpoint_wal_bytes(mut self, bytes: u64) -> Self {
+        self.checkpoint_wal_bytes = bytes;
+        self
     }
 
     pub fn every_commits(mut self, commits: u64) -> Self {
@@ -64,6 +85,12 @@ impl SnapshotConfig {
 pub(crate) struct ManagedSnapshotStore {
     config: SnapshotConfig,
     commits_since_checkpoint: AtomicU64,
+    /// Held for the whole of a checkpoint, so checkpoints install their
+    /// snapshots one at a time. Holds the fence of the newest installed
+    /// one: a checkpoint taken behind the writers skips installing a
+    /// snapshot older than it, which would otherwise become `CURRENT` after
+    /// a newer checkpoint dropped the WAL it needs.
+    newest: Mutex<Lsn>,
 }
 
 impl ManagedSnapshotStore {
@@ -73,7 +100,16 @@ impl ManagedSnapshotStore {
         Ok(Self {
             config,
             commits_since_checkpoint: AtomicU64::new(0),
+            newest: Mutex::new(Lsn::ZERO),
         })
+    }
+
+    pub(crate) fn checkpoint_wal_bytes(&self) -> u64 {
+        self.config.checkpoint_wal_bytes
+    }
+
+    fn lock_newest(&self) -> MutexGuard<'_, Lsn> {
+        self.newest.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(crate) fn load_latest(&self, graph: &mut InMemoryGraph) -> Result<Lsn> {
@@ -86,7 +122,9 @@ impl ManagedSnapshotStore {
             read_graph_snapshot(BufReader::new(file), self.config.codec.encryption.as_ref())
                 .with_context(|| format!("load snapshot {}", path.display()))?;
         replace_graph(graph, loaded);
-        Ok(info.wal_lsn.map(Lsn::new).unwrap_or(Lsn::ZERO))
+        let lsn = info.wal_lsn.map(Lsn::new).unwrap_or(Lsn::ZERO);
+        *self.lock_newest() = lsn;
+        Ok(lsn)
     }
 
     /// Managed snapshot files whose LSN fence is at or below `lsn`,
@@ -120,8 +158,22 @@ impl ManagedSnapshotStore {
     /// [`Self::checkpoint`], setting `installed` once the new snapshot file
     /// is in place, from where recovery may load it. A failure with
     /// `installed` still `false` left the recovered state unchanged.
+    ///
+    /// The caller holds the writer lock, so `graph` is the graph at the
+    /// WAL's end.
     pub(crate) fn checkpoint_tracked(
         &self,
+        graph: &InMemoryGraph,
+        recorder: &WalRecorder,
+        installed: &mut bool,
+    ) -> Result<SnapshotMeta> {
+        let mut newest = self.lock_newest();
+        self.checkpoint_locked(&mut newest, graph, recorder, installed)
+    }
+
+    fn checkpoint_locked(
+        &self,
+        newest: &mut Lsn,
         graph: &InMemoryGraph,
         recorder: &WalRecorder,
         installed: &mut bool,
@@ -130,7 +182,47 @@ impl ManagedSnapshotStore {
             .force_fsync()
             .map_err(|e| anyhow!("WAL fsync before managed snapshot failed: {e}"))?;
         let snapshot_lsn = recorder.wal().durable_lsn();
+        self.install_locked(newest, graph, snapshot_lsn, recorder, installed)
+    }
+
+    /// Checkpoint without holding the writer lock while the snapshot is
+    /// written: `writer` is taken only to fsync the WAL and take the graph
+    /// with its LSN. Returns `None` when a checkpoint at or past that LSN
+    /// was installed meanwhile. Used by the automatic checkpoint by WAL
+    /// growth, from its own thread.
+    pub(crate) fn checkpoint_behind_writers(
+        &self,
+        writer: &Mutex<()>,
+        store: &LiveStore<InMemoryGraph>,
+        recorder: &WalRecorder,
+    ) -> Result<Option<SnapshotMeta>> {
+        let (graph, snapshot_lsn): (Arc<InMemoryGraph>, Lsn) = {
+            let _writer = writer.lock().unwrap_or_else(PoisonError::into_inner);
+            recorder
+                .force_fsync()
+                .map_err(|e| anyhow!("WAL fsync before managed snapshot failed: {e}"))?;
+            (store.load_full(), recorder.wal().durable_lsn())
+        };
+        let mut newest = self.lock_newest();
+        if *newest >= snapshot_lsn {
+            return Ok(None);
+        }
+        self.install_locked(&mut newest, &graph, snapshot_lsn, recorder, &mut false)
+            .map(Some)
+    }
+
+    /// Write `graph` as the checkpoint at `snapshot_lsn`, append its marker
+    /// and drop the WAL it covers. The caller holds `newest`.
+    fn install_locked(
+        &self,
+        newest: &mut Lsn,
+        graph: &InMemoryGraph,
+        snapshot_lsn: Lsn,
+        recorder: &WalRecorder,
+        installed: &mut bool,
+    ) -> Result<SnapshotMeta> {
         let meta = self.write_snapshot(graph, snapshot_lsn, installed)?;
+        *newest = snapshot_lsn;
 
         recorder
             .checkpoint_marker(snapshot_lsn)
@@ -178,7 +270,15 @@ impl ManagedSnapshotStore {
         if commits < every {
             return;
         }
-        if let Err(err) = self.checkpoint(graph, recorder) {
+        // A checkpoint running behind the writers holds the lock: skip
+        // rather than make every writer wait for it; the count stays, so
+        // the next commit tries again.
+        let mut newest = match self.newest.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return,
+        };
+        if let Err(err) = self.checkpoint_locked(&mut newest, graph, recorder, &mut false) {
             self.commits_since_checkpoint.store(0, Ordering::Relaxed);
             tracing::warn!(
                 dir = %self.config.dir.display(),

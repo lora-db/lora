@@ -56,7 +56,7 @@ next, **P2** planned, **P3** when convenient.
 - [ ] P2 A transaction's lifetime is unbounded: one that is opened and never committed holds the writer lock until it is disposed. `begin()` bounds only the wait for the lock (`timeoutMs`, `signal`).
 - [ ] P1 No online snapshot of a directory-backed graph: a copy taken while the owner writes is not a database, and the cross-process lock keeps a second process out. Wanted: `db.snapshot(targetDir)` (checkpoint plus a copy of the immutable files, or hard-linked segments plus the WAL tail) consistent with one committed transaction, readers and writers kept running, `lora snapshot <dir> <target>` for a closed directory, exposed through lora-graphql; `kill -9` during it must leave both valid (Festimap G-62; today a backup stops the container).
 - [ ] P2 Managed checkpoints run inline on commit, under the writer mutex (`write_guard.rs:173-186`, `snapshot/store.rs:135-151`); move to a worker.
-- [ ] P3 Time-based checkpoint scheduler (only `checkpoint_every_commits`).
+- [ ] P3 Time-based checkpoint scheduler (only `checkpoint_every_commits` and `checkpoint_wal_bytes`).
 - [ ] P3 Consolidate torn-tail detection (`lora-wal/src/segment.rs:335-343`, ADR 0004).
 - [ ] P3 Binary vector-index trailer in snapshot v5 (JSON today, `lora-snapshot/src/format.rs:14-18`).
 - [ ] P3 Remove the unused `LockTable` / `WriteSetLocks` and the dead `lock_table` field (`lora-store/src/lock_table.rs`, `database/mod.rs:114-118`, `builder.rs:239,258`): the single writer is the design.

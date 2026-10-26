@@ -225,7 +225,61 @@ entire LSN range is at or below the fence. The active segment is never
 deleted, and the segment immediately before it is kept so a crash before the
 next checkpoint still finds a self-describing log start. `checkpoint_to` calls
 it after writing the `Checkpoint` marker, under the writer mutex;
-`/admin/wal/truncate` calls it without taking any store lock.
+`/admin/wal/truncate` calls it without taking any store lock. It also restarts
+the growth count behind the automatic checkpoint below.
+
+## Automatic checkpoint by WAL size
+
+A process that writes for days and never calls `sync()` or a checkpoint
+would keep every segment, and the next open would replay all of them. So a
+database with somewhere to put a snapshot checkpoints on its own once the
+WAL has grown by a threshold since the last checkpoint:
+
+| Configuration | Option (0 turns it off) | Default |
+|---|---|---|
+| Managed snapshots (`open_with_wal_snapshots`) | `SnapshotConfig::checkpoint_wal_bytes` / `.checkpoint_wal_bytes(n)` | 64 MiB |
+| Named `.loradb` database (`open_named`) | `DatabaseOpenOptions::checkpoint_wal_bytes` | 64 MiB |
+| Plain WAL (`open_with_wal`, `recover`, `lora-server --wal-dir`) | none | warns once at 64 MiB |
+
+The default is `DEFAULT_CHECKPOINT_WAL_BYTES`, the same size as
+`compact_on_open_wal_bytes`, at which a named database's open checkpoints.
+It is independent of `checkpoint_every_commits`, which still works as before.
+
+`Wal` counts the bytes of every committed transaction
+(`Wal::bytes_since_checkpoint`); `truncate_up_to`, which every checkpoint
+ends with, restarts the count. After a commit that leaves the count at or
+past the threshold, the WAL calls the growth listener
+(`Wal::set_growth_listener`), installed by
+`crates/lora-database/src/wal/auto_checkpoint.rs`. The listener runs on the
+committing thread and only starts a `lora-checkpoint` thread (one at a time)
+and restarts the count. The thread:
+
+- on a named database runs `sync()`'s checkpoint (`checkpoint_named`):
+  archive checkpoint lock, then the writer lock just long enough to fsync
+  the WAL and take the graph and its durable LSN, then the snapshot is
+  written and installed without the writer lock;
+- with managed snapshots runs
+  `ManagedSnapshotStore::checkpoint_behind_writers`: the writer lock just
+  long enough to fsync and take the graph and LSN, then, under the store's
+  checkpoint lock, the snapshot, the `Checkpoint` marker, the fsync and the
+  truncation. If a checkpoint at or past that LSN was installed meanwhile it
+  writes nothing, so an older snapshot never becomes `CURRENT` after a newer
+  checkpoint dropped the WAL it would need. The commit-count checkpoint skips
+  its turn while one of these runs instead of making writers wait.
+
+So writers wait for an fsync, not for the snapshot. The thread needs the
+writer lock, so it starts only after the commit that triggered it is
+published. A failure is logged with `tracing::warn!` and never reaches a
+write; the WAL still holds every commit, and the next attempt comes after
+another threshold of growth. Dropping the database waits for a running
+checkpoint.
+
+A plain WAL has nowhere to put a snapshot (`recover` reads its snapshot path
+but does not own it), so nothing is checkpointed: when the WAL has grown by
+64 MiB it logs one warning and stops listening. Checkpoint it with
+`checkpoint_to` (`POST /admin/checkpoint` on `lora-server`) or open it with
+managed snapshots. `lora-server` does not install a `tracing` subscriber, so
+the warning is not printed there.
 
 ## See also
 

@@ -160,6 +160,9 @@ pub struct Database<S> {
     /// Committed-change fan-out for [`Database::changes`]. Idle (one atomic
     /// load per write) until the first feed opens.
     pub(crate) changes: Arc<crate::changes::ChangeHub>,
+    /// Checkpoints by WAL growth on WAL-backed databases. Declared last so
+    /// the fields above drop first; it holds the WAL and archive too.
+    pub(crate) auto_checkpoint: Option<Arc<crate::wal::auto_checkpoint::AutoCheckpoint>>,
 }
 
 impl<S> Drop for Database<S> {
@@ -167,6 +170,10 @@ impl<S> Drop for Database<S> {
         // End every open change feed so consumers see the feed close
         // instead of waiting forever.
         self.changes.close();
+        // Let a running automatic checkpoint finish before the WAL closes.
+        if let Some(auto) = &self.auto_checkpoint {
+            auto.shutdown();
+        }
     }
 }
 
@@ -222,32 +229,44 @@ impl Database<InMemoryGraph> {
     pub fn sync(&self) -> Result<(), LoraError> {
         if let Some(wal) = &self.wal {
             if let Some(archive) = &self.named_archive {
-                let _checkpoint = archive.checkpoint_lock()?;
-                let (graph, snapshot_lsn) = {
-                    let _commit_lock = self
-                        .writer
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    wal.force_fsync_wal_only()?;
-                    (self.store.load_full(), wal.wal().durable_lsn())
-                };
-                let staged = archive.staged_snapshot_path();
-                let staged_guard = crate::snapshot::TempFileGuard::new(staged.clone());
-                crate::snapshot::write_graph_snapshot_file(
-                    &staged,
-                    &graph,
-                    Some(snapshot_lsn.raw()),
-                    &lora_snapshot::SnapshotOptions::default(),
-                )?;
-                drop(graph);
-                archive.install_snapshot(|| wal.truncate_covered_by_mirror(snapshot_lsn))?;
-                staged_guard.commit();
+                checkpoint_named(archive, &self.writer, wal, &self.store)?;
             } else {
                 wal.force_fsync()?;
             }
         }
         Ok(())
     }
+}
+
+/// [`Database::sync`] on a named database: write the graph at the WAL's
+/// durable end as the container's base snapshot and drop the WAL it covers.
+/// `writer` is held only while the graph and its LSN are taken.
+pub(crate) fn checkpoint_named(
+    archive: &WalArchive,
+    writer: &Mutex<()>,
+    wal: &WalRecorder,
+    store: &LiveStore<InMemoryGraph>,
+) -> Result<(), LoraError> {
+    let _checkpoint = archive.checkpoint_lock()?;
+    let (graph, snapshot_lsn) = {
+        let _commit_lock = writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        wal.force_fsync_wal_only()?;
+        (store.load_full(), wal.wal().durable_lsn())
+    };
+    let staged = archive.staged_snapshot_path();
+    let staged_guard = crate::snapshot::TempFileGuard::new(staged.clone());
+    crate::snapshot::write_graph_snapshot_file(
+        &staged,
+        &graph,
+        Some(snapshot_lsn.raw()),
+        &lora_snapshot::SnapshotOptions::default(),
+    )?;
+    drop(graph);
+    archive.install_snapshot(|| wal.truncate_covered_by_mirror(snapshot_lsn))?;
+    staged_guard.commit();
+    Ok(())
 }
 
 impl<S> Database<S>

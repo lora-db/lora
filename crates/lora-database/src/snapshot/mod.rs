@@ -17,7 +17,7 @@ pub(crate) mod store;
 
 pub use json::{snapshot_credentials_from_json, snapshot_options_from_json};
 pub(crate) use store::ManagedSnapshotStore;
-pub use store::SnapshotConfig;
+pub use store::{SnapshotConfig, DEFAULT_CHECKPOINT_WAL_BYTES};
 
 use std::fs::OpenOptions;
 use std::io::{BufReader, Write};

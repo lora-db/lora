@@ -18,4 +18,4 @@ mod group_flusher;
 #[cfg(test)]
 mod tests;
 
-pub use wal::{DurableListener, Wal};
+pub use wal::{DurableListener, GrowthListener, Wal};

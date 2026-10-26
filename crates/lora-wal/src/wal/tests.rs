@@ -1067,3 +1067,28 @@ fn bytes_since_checkpoint_counts_commits_until_truncation() {
     wal.truncate_up_to(wal.durable_lsn()).unwrap();
     assert_eq!(wal.bytes_since_checkpoint(), 0);
 }
+
+#[test]
+fn growth_listener_fires_once_the_threshold_is_reached() {
+    let dir = TmpDir::new("growth-listener");
+    let (wal, _) = open_default(&dir.path);
+    let fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = fired.clone();
+    wal.set_growth_listener(
+        4096,
+        Some(Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })),
+    );
+    let mut id = 0;
+    while wal.bytes_since_checkpoint() < 4096 {
+        assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 0);
+        write_txs(&wal, id..id + 1);
+        id += 1;
+    }
+    assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
+    wal.mark_checkpoint();
+    write_txs(&wal, id..id + 1);
+    assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
+    wal.set_growth_listener(0, None);
+}
