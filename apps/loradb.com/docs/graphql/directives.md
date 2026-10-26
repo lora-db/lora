@@ -1314,7 +1314,9 @@ The operators, and the index each one gets:
 - `CASE_INSENSITIVE`: strings and ids. No index can apply; prefer
   [`@fulltext`](#fulltext) on large data.
 - `IS_NULL`: nullable fields. No index can apply.
-- `INCLUDES`: lists.
+- `INCLUDES`: lists. A RANGE index on the list: it keeps each list's
+  elements, so `{ includes: "techno" }` (compiled to `$v IN this.genres`)
+  seeks the nodes whose list holds the value instead of scanning the label.
 - `WITHIN_BBOX`, `DISTANCE`: `Point` and `CartesianPoint`. A POINT index.
 
 Each operator is checked against the field's type at startup, so

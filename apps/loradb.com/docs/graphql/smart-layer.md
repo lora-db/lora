@@ -35,6 +35,7 @@ with the reason for each:
 | non-null `@sortable` field | existence constraint |
 | `EQ`, `IN` | nothing: LoraDB indexes equality lazily |
 | `LT`, `LTE`, `GT`, `GTE` | RANGE index |
+| `INCLUDES` on a list | RANGE index: it keeps each list's elements, so `includes` seeks them |
 | `@sortable`, when a root list can sort by it | RANGE index |
 | `CONTAINS`, `STARTS_WITH`, `ENDS_WITH` | TEXT index |
 | `WITHIN_BBOX`, `DISTANCE` | POINT index |

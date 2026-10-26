@@ -43,7 +43,7 @@ Index names may also come from a string parameter:
 
 | Kind | Syntax | Useful predicates |
 |---|---|---|
-| RANGE | `CREATE INDEX ...` or `CREATE RANGE INDEX ...` | `=`, `<`, `<=`, `>`, `>=`, bounded ranges, and `STARTS WITH` (as a prefix range) when no TEXT index covers the property |
+| RANGE | `CREATE INDEX ...` or `CREATE RANGE INDEX ...` | `=`, `<`, `<=`, `>`, `>=`, bounded ranges, `STARTS WITH` (as a prefix range) when no TEXT index covers the property, and `value IN n.list` on a list property |
 | TEXT | `CREATE TEXT INDEX ...` | `STARTS WITH`, `CONTAINS`, `ENDS WITH` |
 | POINT | `CREATE POINT INDEX ...` | `geo.within_bbox(...)`, `geo.distance(...) <= radius` |
 | LOOKUP | `CREATE LOOKUP INDEX ...` | Catalog-visible label/type token indexes |
@@ -326,6 +326,32 @@ RETURN v`} />
 
 See [`geo.within_bbox`](../functions/spatial#geowithin_bbox) for the full
 semantics.
+
+### List properties
+
+A RANGE index on a property that holds lists keeps each list twice: whole,
+for `n.tags = ['a', 'b']` and ranges over lists, and by each distinct
+element, for membership. `value IN n.tags` and
+`any(x IN n.tags WHERE x = value)` then seek the nodes whose list holds the
+value instead of scanning the label:
+
+<QueryCodeBlock code={String.raw`CREATE INDEX event_genres FOR (e:Event) ON (e.genreLineage);
+
+MATCH (e:Event) WHERE $genre IN e.genreLineage RETURN e
+;// NodeByPropertyScan, mode: element`} />
+
+The value may be a parameter, a literal or a value from an earlier clause.
+Results are exactly those of the unindexed filter: a node whose list
+holds the value twice comes back once, numbers match across integer and
+float (`1` finds `1.0`), a `null` value finds nothing, and a list with a
+`null` element and no match is filtered out (the test is `null`). The
+plan's estimate is the average number of nodes per list element; beside
+another indexed test (`e.city = $c AND $g IN e.genreLineage`) the planner
+seeks whichever finds fewer rows, and a keyset page
+(`... AND e.key > $after ORDER BY e.key LIMIT n`) still pages in order.
+Elements without an index image (durations, points, vectors) are skipped;
+seeking one scans. Relationship indexes seek list elements the same way
+(`RelByListElementScan`).
 
 The same rewrite family exists for relationship scans when the pattern
 can be satisfied from the relationship index:
