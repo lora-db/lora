@@ -53,9 +53,15 @@ where
         groups.insert(Vec::new(), input_rows);
     } else {
         let mut keys = RowKeyBuilder::default();
+        let mut key = Vec::with_capacity(group_by.len());
         for row in input_rows {
-            let key = group_key(&mut keys, group_by, &row, eval_ctx)?;
-            groups.entry(key).or_default().push(row);
+            group_key(&mut keys, &mut key, group_by, &row, eval_ctx)?;
+            match groups.get_mut(key.as_slice()) {
+                Some(rows) => rows.push(row),
+                None => {
+                    groups.insert(std::mem::take(&mut key), vec![row]);
+                }
+            }
         }
     }
 
@@ -85,12 +91,16 @@ where
 
     let mut groups: BTreeMap<Vec<RowKeyPart>, StreamingGroup> = BTreeMap::new();
     let mut keys = RowKeyBuilder::default();
+    let mut key = Vec::with_capacity(group_by.len());
 
     for row in input_rows {
-        let key = group_key(&mut keys, group_by, &row, eval_ctx)?;
-        let entry = groups
-            .entry(key)
-            .or_insert_with(|| StreamingGroup::new(specs, row.clone()));
+        group_key(&mut keys, &mut key, group_by, &row, eval_ctx)?;
+        let entry = match groups.get_mut(key.as_slice()) {
+            Some(entry) => entry,
+            None => groups
+                .entry(std::mem::take(&mut key))
+                .or_insert_with(|| StreamingGroup::new(specs, row.clone())),
+        };
         fold_streaming_aggs(&mut entry.aggs, specs, &row, eval_ctx)?;
     }
 
@@ -175,19 +185,24 @@ where
     Ok(())
 }
 
-/// `row`'s grouping key. A grouping key that is a bare variable is keyed
-/// from the row's slot: a carried list is neither copied nor, when the
-/// previous row shared it, keyed again.
+/// `row`'s grouping key, built in `key` (cleared first). A grouping key
+/// that is a bare variable is keyed from the row's slot: a carried list is
+/// neither copied nor, when the previous row shared it, keyed again.
+///
+/// Callers reuse one `key` across rows and look groups up by the borrowed
+/// slice, so a row of an existing group allocates no key; only a new
+/// group's key is moved into the map.
 pub(crate) fn group_key<S>(
     keys: &mut RowKeyBuilder,
+    key: &mut Vec<RowKeyPart>,
     group_by: &[ResolvedProjection],
     row: &Row,
     eval_ctx: &EvalContext<'_, S>,
-) -> ExecResult<Vec<RowKeyPart>>
+) -> ExecResult<()>
 where
     S: GraphStorage,
 {
-    let mut key = Vec::with_capacity(group_by.len());
+    key.clear();
     for (column, proj) in group_by.iter().enumerate() {
         if let ResolvedExpr::Variable(var) = &proj.expr {
             if let Some(value) = row.get(*var) {
@@ -199,7 +214,7 @@ where
             eval_expr_result(&proj.expr, row, eval_ctx).map_err(ExecutorError::from_eval)?;
         key.push(RowKeyPart::Inline(GroupValueKey::from_value(&value)));
     }
-    Ok(key)
+    Ok(())
 }
 
 fn fold_streaming_aggs<S>(
