@@ -18,9 +18,10 @@
 //! ## Comparison key
 //!
 //! Reuses [`super::property_index::PropertyIndexKey`] so the same
-//! `PropertyValue → indexable key` projection rules apply. `Ord` is
-//! derived from the variant ordering in `PropertyIndexKey` plus
-//! lexicographic ordering for the inner data (strings, lists, maps).
+//! `PropertyValue → indexable key` projection rules apply. `Ord` follows
+//! the variant ordering in `PropertyIndexKey` (integers and floats share
+//! one run, by numeric value) plus lexicographic ordering for the inner
+//! data (strings, lists, maps).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
@@ -161,7 +162,8 @@ impl SortedPropertyIndex {
         let scope = self
             .by_scope
             .get(&ScopedPropertyKey::new(label, property))?;
-        let Some(key) = PropertyIndexKey::from_value(like) else {
+        let Some(key) = PropertyIndexKey::from_value(like).filter(PropertyIndexKey::is_temporal)
+        else {
             return Some(Vec::new());
         };
         let (Some(kind_floor), Some(kind_ceiling)) = (key.kind_floor(), key.kind_ceiling()) else {
@@ -266,7 +268,7 @@ impl SortedPropertyIndex {
 /// Index bounds for an inclusive `[lo, hi]` probe. `None` when a bound has
 /// no index image (a duration, say): values of that type are not indexed,
 /// so the caller must scan. Temporal bounds widen across UTC offsets, and a
-/// one-sided temporal range is capped at the end of its temporal kind.
+/// one-sided temporal or numeric range is capped at the end of its kind.
 fn probe_bounds(
     lo: Option<&PropertyValue>,
     hi: Option<&PropertyValue>,
@@ -382,5 +384,111 @@ mod tests {
         assert!(!got.contains(&1));
         assert!(got.contains(&2));
         assert!(!got.contains(&3));
+    }
+
+    fn mixed_numbers() -> SortedPropertyIndex {
+        let mut idx = SortedPropertyIndex::default();
+        idx.add_scope("P", "age");
+        idx.insert("P", "age", 1, &PropertyValue::Int(30));
+        idx.insert("P", "age", 2, &PropertyValue::Float(1.5));
+        idx.insert("P", "age", 3, &PropertyValue::Int(10));
+        idx.insert("P", "age", 4, &PropertyValue::Float(10.0));
+        idx.insert("P", "age", 5, &PropertyValue::Null);
+        idx.insert("P", "age", 6, &PropertyValue::Bool(true));
+        idx.insert("P", "age", 7, &PropertyValue::String("x".into()));
+        idx
+    }
+
+    fn ids(
+        idx: &SortedPropertyIndex,
+        lo: Option<PropertyValue>,
+        hi: Option<PropertyValue>,
+    ) -> Vec<u64> {
+        idx.range_candidates("P", "age", lo.as_ref(), hi.as_ref())
+            .unwrap()
+            .into_iter()
+            .collect()
+    }
+
+    /// Integers and floats share one numeric order: a float bound finds
+    /// the integers past it and an integer bound the floats, and a
+    /// one-sided range stays inside the numbers.
+    #[test]
+    fn mixed_int_and_float_ranges_compare_by_value() {
+        use PropertyValue::{Float, Int};
+        let idx = mixed_numbers();
+        assert_eq!(ids(&idx, Some(Float(25.5)), None), vec![1]);
+        assert_eq!(ids(&idx, None, Some(Int(9))), vec![2]);
+        // Equal values of the other kind sit on the inclusive bound.
+        assert_eq!(ids(&idx, Some(Float(10.0)), Some(Int(10))), vec![3, 4]);
+        assert_eq!(ids(&idx, Some(Int(10)), Some(Float(10.0))), vec![3, 4]);
+        assert_eq!(ids(&idx, None, Some(Int(10))), vec![2, 3, 4]);
+        assert_eq!(ids(&idx, Some(Float(10.0)), None), vec![1, 3, 4]);
+        assert_eq!(ids(&idx, Some(Int(2)), Some(Float(29.9))), vec![3, 4]);
+    }
+
+    #[test]
+    fn ordered_walk_interleaves_ints_and_floats() {
+        let idx = mixed_numbers();
+        let lo = PropertyValue::Int(i64::MIN);
+        let asc = idx
+            .ordered_chunk("P", "age", Some(&lo), None, false, None, 100)
+            .unwrap();
+        assert_eq!(asc, vec![2, 3, 4, 1]);
+        let desc = idx
+            .ordered_chunk("P", "age", Some(&lo), None, true, None, 100)
+            .unwrap();
+        assert_eq!(desc, vec![1, 4, 3, 2]);
+        // Resuming from a cursor on an integer continues with the float of
+        // the same value.
+        let after = PropertyValue::Int(10);
+        let rest = idx
+            .ordered_chunk("P", "age", Some(&lo), None, false, Some((&after, 3)), 100)
+            .unwrap();
+        assert_eq!(rest, vec![4, 1]);
+    }
+
+    /// Extremes: integers beyond 2^53 are not rounded through `f64`, and
+    /// infinities bound every integer.
+    #[test]
+    fn numeric_order_is_exact_at_the_extremes() {
+        use PropertyValue::{Float, Int};
+        let mut idx = SortedPropertyIndex::default();
+        idx.add_scope("P", "x");
+        let big = 1i64 << 53;
+        idx.insert("P", "x", 1, &Int(big + 1));
+        idx.insert("P", "x", 2, &Float(big as f64));
+        idx.insert("P", "x", 3, &Int(i64::MAX));
+        idx.insert("P", "x", 4, &Float(9_223_372_036_854_775_808.0));
+        idx.insert("P", "x", 5, &Int(i64::MIN));
+        idx.insert("P", "x", 6, &Float(f64::NEG_INFINITY));
+        idx.insert("P", "x", 7, &Float(-0.0));
+        idx.insert("P", "x", 8, &Int(0));
+        let lo = Float(f64::NEG_INFINITY);
+        let order = idx
+            .ordered_chunk("P", "x", Some(&lo), None, false, None, 100)
+            .unwrap();
+        assert_eq!(order, vec![6, 5, 8, 7, 2, 1, 3, 4]);
+        let got: Vec<u64> = idx
+            .range_candidates("P", "x", Some(&Float(big as f64)), Some(&Int(big)))
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(got, vec![2]);
+        let got: Vec<u64> = idx
+            .range_candidates("P", "x", Some(&Int(0)), Some(&Float(0.0)))
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(got, vec![7, 8]);
+    }
+
+    #[test]
+    fn numeric_bounds_report_no_other_temporal_kind() {
+        let idx = mixed_numbers();
+        assert_eq!(
+            idx.other_temporal_kind_ids("P", "age", &PropertyValue::Int(3)),
+            Some(Vec::new())
+        );
     }
 }

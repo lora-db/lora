@@ -404,7 +404,10 @@ impl PropertyIndexState {
 ///
 /// Floats use a sortable IEEE-754 bit projection, so range indexes
 /// preserve numeric ordering across negative and positive values.
-/// `f64::NAN` is rejected upstream by `from_value`.
+/// `f64::NAN` is rejected upstream by `from_value`. Integers and floats
+/// share one run ordered by exact numeric value (as Cypher compares them),
+/// an integer before a float of the same value so `Ord` agrees with the
+/// derived `Eq`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) enum PropertyIndexKey {
     Null,
@@ -479,8 +482,7 @@ impl Ord for PropertyIndexKey {
         let tag = |k: &PropertyIndexKey| match k {
             PropertyIndexKey::Null => 0,
             PropertyIndexKey::Bool(_) => 1,
-            PropertyIndexKey::Int(_) => 2,
-            PropertyIndexKey::Float(_) => 3,
+            PropertyIndexKey::Int(_) | PropertyIndexKey::Float(_) => 2,
             PropertyIndexKey::String(_) => 4,
             PropertyIndexKey::Binary(_) => 5,
             PropertyIndexKey::List(_) => 6,
@@ -493,6 +495,14 @@ impl Ord for PropertyIndexKey {
                 (PropertyIndexKey::Bool(a), PropertyIndexKey::Bool(b)) => a.cmp(b),
                 (PropertyIndexKey::Int(a), PropertyIndexKey::Int(b)) => a.cmp(b),
                 (PropertyIndexKey::Float(a), PropertyIndexKey::Float(b)) => a.cmp(b),
+                (PropertyIndexKey::Int(a), PropertyIndexKey::Float(b)) => {
+                    int_float_cmp(*a, float_from_sortable_bits(*b)).then(Ordering::Less)
+                }
+                (PropertyIndexKey::Float(a), PropertyIndexKey::Int(b)) => {
+                    int_float_cmp(*b, float_from_sortable_bits(*a))
+                        .reverse()
+                        .then(Ordering::Greater)
+                }
                 (PropertyIndexKey::String(a), PropertyIndexKey::String(b)) => a.cmp(b),
                 (PropertyIndexKey::Binary(a), PropertyIndexKey::Binary(b)) => {
                     // Lexicographic byte comparison across segments.
@@ -610,27 +620,52 @@ impl PropertyIndexKey {
     /// The smallest key a value `>= value` can have. Equal to
     /// [`Self::from_value`] except for temporals, which widen to the lowest
     /// offset so a bound matches every value denoting the same instant.
+    /// A whole float widens to the integer of the same value, which sorts
+    /// just before it.
     pub(super) fn range_lower(value: &PropertyValue) -> Option<Self> {
         match Self::from_value(value)? {
             Self::Temporal { kind, nanos, .. } => Some(Self::temporal(kind, nanos, i32::MIN)),
+            Self::Float(bits) => {
+                let f = float_from_sortable_bits(bits);
+                let whole = f as i64;
+                Some(if int_float_cmp(whole, f) == std::cmp::Ordering::Equal {
+                    Self::Int(whole)
+                } else {
+                    Self::Float(bits)
+                })
+            }
             key => Some(key),
         }
     }
 
     /// The largest key a value `<= value` can have; see [`Self::range_lower`].
+    /// An integer widens to the float of the same value, when one exists,
+    /// which sorts just after it.
     pub(super) fn range_upper(value: &PropertyValue) -> Option<Self> {
         match Self::from_value(value)? {
             Self::Temporal { kind, nanos, .. } => Some(Self::temporal(kind, nanos, i32::MAX)),
+            Self::Int(i) => {
+                let f = i as f64;
+                Some(if int_float_cmp(i, f) == std::cmp::Ordering::Equal {
+                    Self::Float(sortable_f64_bits(f))
+                } else {
+                    Self::Int(i)
+                })
+            }
             key => Some(key),
         }
     }
 
-    /// For a one-sided temporal range, the other end of that temporal kind:
-    /// values of other types never satisfy a temporal comparison, so the
-    /// probe (and an ordered walk) stays inside the kind.
+    /// For a one-sided temporal or numeric range, the other end of that
+    /// kind: values of other types never satisfy the comparison, so the
+    /// probe (and an ordered walk) stays inside the kind. Integers and
+    /// floats are one kind, bounded by the infinities.
     pub(super) fn kind_floor(&self) -> Option<Self> {
         match self {
             Self::Temporal { kind, .. } => Some(Self::temporal(*kind, i128::MIN, i32::MIN)),
+            Self::Int(_) | Self::Float(_) => {
+                Some(Self::Float(sortable_f64_bits(f64::NEG_INFINITY)))
+            }
             _ => None,
         }
     }
@@ -639,8 +674,13 @@ impl PropertyIndexKey {
     pub(super) fn kind_ceiling(&self) -> Option<Self> {
         match self {
             Self::Temporal { kind, .. } => Some(Self::temporal(*kind, i128::MAX, i32::MAX)),
+            Self::Int(_) | Self::Float(_) => Some(Self::Float(sortable_f64_bits(f64::INFINITY))),
             _ => None,
         }
+    }
+
+    pub(super) fn is_temporal(&self) -> bool {
+        matches!(self, Self::Temporal { .. })
     }
 
     /// The first and last possible temporal keys: the temporal kinds sit
@@ -664,6 +704,32 @@ fn sortable_f64_bits(value: f64) -> u64 {
     } else {
         !bits
     }
+}
+
+/// Inverse of [`sortable_f64_bits`] (a negative zero comes back positive).
+fn float_from_sortable_bits(bits: u64) -> f64 {
+    f64::from_bits(if bits & (1 << 63) != 0 {
+        bits & !(1 << 63)
+    } else {
+        !bits
+    })
+}
+
+/// Exact comparison of an integer with a (non-NaN) float, without the
+/// rounding of `i as f64`: every `i64` lies in `[-2^63, 2^63)`, and inside
+/// that range a float's whole part converts to `i64` exactly.
+fn int_float_cmp(i: i64, f: f64) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+    if f >= TWO_63 {
+        return Ordering::Less;
+    }
+    if f < -TWO_63 {
+        return Ordering::Greater;
+    }
+    let whole = f.trunc();
+    i.cmp(&(whole as i64))
+        .then_with(|| 0.0f64.partial_cmp(&(f - whole)).unwrap_or(Ordering::Equal))
 }
 
 #[cfg(test)]
