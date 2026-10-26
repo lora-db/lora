@@ -30,8 +30,11 @@
  * library never waits for another caller thread, so on its own it cannot
  * deadlock a thread pool: every waiter waits for a writer that is running.
  *
- * A stream handle may be used and freed on any thread (one call at a
- * time). A mutating stream (CREATE, SET, MERGE, DELETE, ...) holds the
+ * A stream handle may be used and freed on any thread, one call at a
+ * time: calls on the same stream handle must not overlap. In particular
+ * `lora_stream_free` must not race any other call on that handle; freeing
+ * while another thread is inside `lora_stream_next_*` or
+ * `lora_stream_columns_json` is a use-after-free. A mutating stream (CREATE, SET, MERGE, DELETE, ...) holds the
  * writer lock from `lora_db_stream_open_json` until it is exhausted or
  * freed; it runs on its own library thread, which is where the lock is
  * taken and released. Caller contract: while you hold an unfinished
@@ -215,6 +218,24 @@ int lora_db_transaction_json(
     char **out_result,
     char **out_error);
 
+/* Same as lora_db_transaction_json, but returns the results as one binary
+ * payload (little-endian):
+ *
+ *   "LRT\0"   magic, 4 bytes
+ *   u32       result count N
+ *   N times:  u32 byte length L, then L bytes of an lora_db_execute_buffer
+ *             style result ("LR1\0" ...), in statement order.
+ *
+ * The caller owns `*out_bytes` on success and releases it with
+ * `lora_bytes_free(out_bytes, out_len)`. On failure `*out_error` is set. */
+int lora_db_transaction_buffer(
+    LoraDatabase *db,
+    const char *statements_json,
+    const char *mode,
+    uint8_t **out_bytes,
+    size_t *out_len,
+    char **out_error);
+
 /* Opens a true native row stream. The returned LoraQueryStream owns the
  * underlying Rust cursor; callers must release it with lora_stream_free.
  * A mutating stream holds the writer lock until it is exhausted (which
@@ -240,7 +261,23 @@ int lora_stream_next_json(
     char **out_result,
     char **out_error);
 
-/* Frees a stream handle. Null is a no-op. */
+/* Pulls up to `max_rows` rows (0 counts as 1) as one binary batch in the
+ * lora_db_execute_buffer layout ("LR1\0" ...). End-of-stream is reported
+ * as LORA_STATUS_OK with *out_bytes == NULL. A mutating stream's batch
+ * never reaches past the rows already produced, so the pull that commits
+ * is always a call of its own returning no rows (freeing the stream after
+ * the last row but before that call still rolls back). An error after
+ * some rows is reported by the next call. Release `*out_bytes` with
+ * `lora_bytes_free(out_bytes, out_len)`. */
+int lora_stream_next_buffer(
+    LoraQueryStream *stream,
+    size_t max_rows,
+    uint8_t **out_bytes,
+    size_t *out_len,
+    char **out_error);
+
+/* Frees a stream handle. Null is a no-op. Must not race any other call on
+ * the same handle (see Threading above). */
 void lora_stream_free(LoraQueryStream *stream);
 
 /* --- Clear / counts --------------------------------------------------- */
