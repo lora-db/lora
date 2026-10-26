@@ -40,11 +40,13 @@ where
         query: &str,
         params: Option<BTreeMap<String, LoraValue>>,
     ) -> Result<QueryPlan, LoraError> {
+        let mut params = params.unwrap_or_default();
+        super::check_parameter_values(&mut params).map_err(LoraError::from_anyhow)?;
         let (store, store_epoch) = self.read_store_with_epoch_deadline(None)?;
         // The plan the query would run with these parameters: a
         // `$p IS NULL` test folds when `params` names `p`.
         let compiled = self
-            .compile_query_cached(query, &*store, store_epoch, &params.unwrap_or_default())
+            .compile_query_cached(query, &*store, store_epoch, &params)
             .map_err(LoraError::from_anyhow)?;
         let mut tree = plan_tree_from_compiled(&compiled);
         let stats = store.graph_stats();

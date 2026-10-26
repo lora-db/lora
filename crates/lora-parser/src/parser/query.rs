@@ -2,6 +2,7 @@ use super::clauses::{
     lower_create, lower_delete, lower_foreach, lower_in_query_call, lower_match, lower_merge,
     lower_remove, lower_return_clause, lower_set, lower_unwind, lower_with_clause,
 };
+use super::limits::DepthGuard;
 use super::util::{pair_span, single_inner, unexpected_rule};
 use super::Rule;
 use crate::errors::ParseError;
@@ -39,93 +40,87 @@ pub(super) fn lower_regular_query(pair: Pair<Rule>) -> Result<RegularQuery, Pars
 }
 
 pub(super) fn lower_single_query(pair: Pair<Rule>) -> Result<SingleQuery, ParseError> {
-    match pair.as_rule() {
-        Rule::single_query => lower_single_query(single_inner(pair)?),
-        Rule::single_part_query => Ok(SingleQuery::SinglePart(lower_single_part_query(pair)?)),
-        Rule::multi_part_query => Ok(SingleQuery::MultiPart(lower_multi_part_query(pair)?)),
-        _ => Err(unexpected_rule("single_query", pair)),
+    if pair.as_rule() != Rule::single_query {
+        return Err(unexpected_rule("single_query", pair));
     }
-}
-
-pub(super) fn lower_multi_part_query(pair: Pair<Rule>) -> Result<MultiPartQuery, ParseError> {
     let span = pair_span(&pair);
+    // Each clause of a query runs nested inside the one after it, so a
+    // branch's clauses (with those of the CALL bodies inside it) are
+    // bounded together.
+    let clauses = pair.clone().into_inner().count();
+    let _clauses = DepthGuard::clauses(clauses, span.start, span.end)?;
+
     let mut parts = Vec::new();
-    let mut tail = None;
-
-    for p in pair.into_inner() {
-        match p.as_rule() {
-            Rule::query_part => parts.push(lower_query_part(p)?),
-            Rule::single_part_query => tail = Some(lower_single_part_query(p)?),
-            _ => {}
-        }
-    }
-
-    Ok(MultiPartQuery {
-        parts,
-        tail: Box::new(tail.ok_or_else(|| {
-            ParseError::new("expected single-part tail query", span.start, span.end)
-        })?),
-        span,
-    })
-}
-
-pub(super) fn lower_query_part(pair: Pair<Rule>) -> Result<QueryPart, ParseError> {
-    let span = pair_span(&pair);
-    let mut reading_clauses = Vec::new();
-    let mut updating_clauses = Vec::new();
-    let mut with_clause = None;
-
-    for p in pair.into_inner() {
-        match p.as_rule() {
-            Rule::reading_clause => reading_clauses.push(lower_reading_clause(p)?),
-            Rule::call_subquery_clause => {
-                let inner = single_inner(p)?;
-                reading_clauses.push(ReadingClause::CallSubquery(lower_call_subquery_pair(
-                    inner,
-                )?));
-            }
-            Rule::updating_clause => updating_clauses.push(lower_updating_clause(p)?),
-            Rule::with_clause => with_clause = Some(lower_with_clause(p)?),
-            _ => {}
-        }
-    }
-
-    Ok(QueryPart {
-        reading_clauses,
-        updating_clauses,
-        with_clause: with_clause
-            .ok_or_else(|| ParseError::new("expected WITH clause", span.start, span.end))?,
-        span,
-    })
-}
-
-pub(super) fn lower_single_part_query(pair: Pair<Rule>) -> Result<SinglePartQuery, ParseError> {
-    let span = pair_span(&pair);
     let mut reading_clauses = Vec::new();
     let mut updating_clauses = Vec::new();
     let mut return_clause = None;
+    // Start of the first clause of the part being collected.
+    let mut part_start = None;
 
     for p in pair.into_inner() {
+        let p_span = pair_span(&p);
+        if return_clause.is_some() {
+            return Err(ParseError::new(
+                "RETURN must be the last clause of a query; use WITH to continue the query",
+                p_span.start,
+                p_span.end,
+            ));
+        }
+        part_start.get_or_insert(p_span.start);
         match p.as_rule() {
-            Rule::reading_clause => reading_clauses.push(lower_reading_clause(p)?),
-            Rule::call_subquery_clause => {
-                let inner = single_inner(p)?;
-                reading_clauses.push(ReadingClause::CallSubquery(lower_call_subquery_pair(
-                    inner,
-                )?));
+            Rule::reading_clause => {
+                if !updating_clauses.is_empty() {
+                    return Err(ParseError::new(
+                        "a reading clause (MATCH, UNWIND, CALL) cannot follow an updating \
+                         clause; separate them with WITH",
+                        p_span.start,
+                        p_span.end,
+                    ));
+                }
+                reading_clauses.push(lower_reading_clause(p)?);
             }
             Rule::updating_clause => updating_clauses.push(lower_updating_clause(p)?),
+            Rule::with_clause => {
+                let with_clause = lower_with_clause(p)?;
+                parts.push(QueryPart {
+                    reading_clauses: std::mem::take(&mut reading_clauses),
+                    updating_clauses: std::mem::take(&mut updating_clauses),
+                    with_clause,
+                    span: Span::new(part_start.take().unwrap_or(p_span.start), p_span.end),
+                });
+            }
             Rule::return_clause => return_clause = Some(lower_return_clause(p)?),
-            _ => {}
+            _ => return Err(unexpected_rule("clause", p)),
         }
     }
 
-    Ok(SinglePartQuery {
+    // The last part ends in RETURN, in updating clauses, or in a unit
+    // `CALL { ... }` subquery (one whose body ends in an update, not a
+    // RETURN; the analyzer checks that).
+    let ends_in_unit_call = matches!(reading_clauses.last(), Some(ReadingClause::CallSubquery(_)));
+    if return_clause.is_none() && updating_clauses.is_empty() && !ends_in_unit_call {
+        return Err(ParseError::new(
+            "a query must end with RETURN, an updating clause, or CALL { ... }",
+            span.end,
+            span.end,
+        ));
+    }
+    let tail = SinglePartQuery {
         reading_clauses,
         updating_clauses,
         return_clause,
-        span,
-    })
+        span: Span::new(part_start.unwrap_or(span.end), span.end),
+    };
+
+    if parts.is_empty() {
+        Ok(SingleQuery::SinglePart(SinglePartQuery { span, ..tail }))
+    } else {
+        Ok(SingleQuery::MultiPart(MultiPartQuery {
+            parts,
+            tail: Box::new(tail),
+            span,
+        }))
+    }
 }
 
 pub(super) fn lower_reading_clause(pair: Pair<Rule>) -> Result<ReadingClause, ParseError> {

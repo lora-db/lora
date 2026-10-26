@@ -55,7 +55,8 @@ where
         params: Option<BTreeMap<String, LoraValue>>,
         deadline: Option<Instant>,
     ) -> Result<QueryProfile, LoraError> {
-        let params = params.unwrap_or_default();
+        let mut params = params.unwrap_or_default();
+        super::check_parameter_values(&mut params).map_err(LoraError::from_anyhow)?;
 
         // Compile up front so we can attach the plan to the profile
         // result whether execution succeeds or not. (Errors during

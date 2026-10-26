@@ -23,6 +23,10 @@ pub(super) fn dispatch(op: &str, args: &[LoraValue]) -> Option<LoraValue> {
     })
 }
 
+/// Enough for every digit of any `f64` (the smallest subnormal has 1074
+/// decimal places).
+const MAX_FORMAT_PRECISION: i64 = 1100;
+
 fn format(args: &[LoraValue]) -> LoraValue {
     let n = match args.first() {
         Some(LoraValue::Int(i)) => *i as f64,
@@ -35,6 +39,13 @@ fn format(args: &[LoraValue]) -> LoraValue {
         _ => None,
     };
     let s = match precision {
+        // Past this every digit is zero, and the formatter panics on
+        // precisions over 65535.
+        Some(p) if p > MAX_FORMAT_PRECISION => {
+            return super::fail(format!(
+                "number.format precision must be at most {MAX_FORMAT_PRECISION}, got {p}"
+            ))
+        }
         Some(p) if p >= 0 => format!("{:.*}", p as usize, n),
         _ => {
             if n.fract() == 0.0 && n.is_finite() && n.abs() < 1e18 {

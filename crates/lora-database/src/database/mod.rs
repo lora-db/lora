@@ -13,6 +13,16 @@ mod builder;
 mod changes;
 mod compile;
 pub(crate) use compile::{ensure_parameters, param_nullness};
+
+/// Refuse parameters nested deeper or larger than a query-built value may
+/// be (see [`lora_executor::limits`]), before anything walks them. Run first
+/// on every path that takes parameters.
+pub(crate) fn check_parameter_values(
+    params: &mut BTreeMap<String, LoraValue>,
+) -> anyhow::Result<()> {
+    lora_executor::limits::check_parameters(params)
+        .map_err(|message| crate::error::DatabaseOperationError::invalid_params(message).into())
+}
 mod execute;
 mod explain;
 mod graph_api;

@@ -22,7 +22,7 @@ type Result<T> = std::result::Result<T, StoreCodecError>;
 /// Decoding recurses once per level, so a crafted value nested a hundred
 /// thousand deep would overflow the stack; encoding refuses the same
 /// depth so nothing written becomes unreadable.
-pub const MAX_VALUE_NESTING: usize = 128;
+pub const MAX_VALUE_NESTING: usize = lora_ast::limits::MAX_VALUE_NESTING;
 
 fn nesting_error(kind: fn(String) -> StoreCodecError) -> StoreCodecError {
     kind(format!(

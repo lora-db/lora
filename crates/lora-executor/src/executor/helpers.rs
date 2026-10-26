@@ -78,9 +78,28 @@ macro_rules! check_deadline_or_discard {
     };
 }
 
+/// [`check_deadline_at`] that always reads the clock, for operator
+/// boundaries: an operator can do a lot of work before its first per-row
+/// check (building a cartesian product, for one), so the boundary must not
+/// fall between two strided reads.
+pub(super) fn check_deadline_now(deadline: Instant) -> ExecResult<()> {
+    if crate::cancel::eval_tripped() || crate::cancel::deadline_reached(deadline) {
+        Err(ExecutorError::QueryTimeout)
+    } else {
+        Ok(())
+    }
+}
+
+/// Fail once `deadline` passed or its query was cancelled. Called per row,
+/// so the clock is read only every few calls (see
+/// [`crate::cancel::row_check_due`]).
 pub(super) fn check_deadline_at(deadline: Instant) -> ExecResult<()> {
     // Also true when the query was cancelled; see `crate::cancel`.
-    if crate::cancel::eval_tripped() || crate::cancel::deadline_reached(deadline) {
+    // An expression that stopped on the deadline fails its own evaluation,
+    // so its trip needs no per-row check either.
+    if crate::cancel::row_check_due()
+        && (crate::cancel::eval_tripped() || crate::cancel::deadline_reached(deadline))
+    {
         Err(ExecutorError::QueryTimeout)
     } else {
         Ok(())
@@ -837,6 +856,7 @@ pub(super) fn expand_var_len_rows<S: GraphStorage>(
     input_rows: Vec<Row>,
     op: &ExpandExec,
     range: &RangeLiteral,
+    deadline: Option<Instant>,
 ) -> ExecResult<Vec<Row>> {
     let (min_hops, max_hops) = resolve_range(range);
     let bind_relationships = op.rel.is_some();
@@ -857,7 +877,17 @@ pub(super) fn expand_var_len_rows<S: GraphStorage>(
             min_hops,
             max_hops,
             bind_relationships,
+            deadline,
         );
+        let expansions = match expansions {
+            Ok(expansions) => expansions,
+            Err(err) => {
+                // The rows built before a timeout can hold millions of
+                // paths; freeing them is not the failed query's job.
+                discard_rows(out);
+                return Err(err);
+            }
+        };
 
         for result in expansions {
             if bound_dst.is_some_and(|dst| dst != result.dst_node_id) {
@@ -938,10 +968,19 @@ pub(super) fn eval_properties_expr<S: GraphStorage>(
     // stored, so `keys(n)` and existence checks do not see it.
     if let ResolvedExpr::Map(items) = expr {
         let mut out = Properties::new();
+        // The properties of one entity are written as one record, so they
+        // share the single-value size limit.
+        let mut bytes = 0usize;
         for (k, v) in items {
             let value = eval_expr_result(v, row, &eval_ctx).map_err(ExecutorError::from_eval)?;
             if matches!(value, LoraValue::Null) {
                 continue;
+            }
+            bytes = bytes.saturating_add(crate::limits::measure(&value).1 + k.len());
+            if bytes > crate::limits::MAX_VALUE_BYTES {
+                return Err(ExecutorError::RuntimeError(
+                    crate::limits::too_large_message(),
+                ));
             }
             let prop = lora_value_to_property(value)
                 .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
@@ -1018,6 +1057,8 @@ pub(crate) fn compute_aggregate_expr<S: GraphStorage>(
                         values = dedup_values(values);
                     }
 
+                    crate::limits::check_built_nesting(&values)
+                        .map_err(ExecutorError::RuntimeError)?;
                     Ok(LoraValue::List(values))
                 }
 
@@ -2564,6 +2605,12 @@ pub(crate) struct VarLenResult {
 ///
 /// Uses BFS with relationship-uniqueness per path (each path does not
 /// reuse the same relationship, but may revisit nodes).
+///
+/// Checks `deadline` per frontier entry, and fails once the paths it holds
+/// (frontier and results together) pass [`VAR_LENGTH_PATH_BUDGET`]: each
+/// path copies its prefix, so a long or bushy expansion used to grow
+/// quadratically until memory ran out.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn variable_length_expand<S: GraphStorage>(
     storage: &S,
     start_node_id: NodeId,
@@ -2572,8 +2619,12 @@ pub(crate) fn variable_length_expand<S: GraphStorage>(
     min_hops: u64,
     max_hops: u64,
     bind_relationships: bool,
-) -> Vec<VarLenResult> {
+    deadline: Option<Instant>,
+) -> ExecResult<Vec<VarLenResult>> {
     let mut results = Vec::new();
+    // Relationship ids (plus one per path) held in `results` and the
+    // frontiers.
+    let mut held = 0usize;
 
     // Each frontier entry: (current_node_id, relationships_used_so_far)
     let mut frontier: Vec<(NodeId, Vec<u64>)> = vec![(start_node_id, Vec::new())];
@@ -2586,6 +2637,9 @@ pub(crate) fn variable_length_expand<S: GraphStorage>(
         let mut next_frontier: Vec<(NodeId, Vec<u64>)> = Vec::new();
 
         for (current_node, rels_used) in &frontier {
+            if let Some(deadline) = deadline {
+                check_deadline_at(deadline)?;
+            }
             // ID-only expand avoids cloning full records/properties for every
             // neighbour on every hop.
             for (rel_id, neighbor_id) in storage.expand_ids(*current_node, direction, types) {
@@ -2593,6 +2647,19 @@ pub(crate) fn variable_length_expand<S: GraphStorage>(
                 // traversed on this particular path.
                 if rels_used.contains(&rel_id) {
                     continue;
+                }
+
+                held += if bind_relationships || !is_last_hop {
+                    rels_used.len() + 2
+                } else {
+                    1
+                };
+                if held > VAR_LENGTH_PATH_BUDGET {
+                    return Err(ExecutorError::RuntimeError(format!(
+                        "variable-length expansion found more paths than fit in {} MiB; \
+                         narrow the pattern, lower its upper bound or add a LIMIT",
+                        crate::limits::MAX_VALUE_BYTES >> 20
+                    )));
                 }
 
                 if is_last_hop {
@@ -2651,8 +2718,12 @@ pub(crate) fn variable_length_expand<S: GraphStorage>(
         );
     }
 
-    results
+    Ok(results)
 }
+
+/// See [`variable_length_expand`]: relationship ids one expansion may hold,
+/// 8 bytes each, within the single-value limit.
+const VAR_LENGTH_PATH_BUDGET: usize = crate::limits::MAX_VALUE_BYTES / 8;
 
 /// Filter rows to keep only shortest paths.
 /// `all` = false → keep one shortest path; `all` = true → keep all shortest.

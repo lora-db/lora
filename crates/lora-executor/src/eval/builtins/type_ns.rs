@@ -505,8 +505,11 @@ fn coerce_list_to_raw_coords(items: &[LoraValue]) -> Result<Vec<RawCoordinate>, 
 fn list_element_type(items: &[LoraValue]) -> Option<RuntimeType> {
     let first = items.first()?;
     let first_type = RuntimeType::of(Some(first));
+    // Skip the first item: typing it again doubled the work at every level
+    // of a nested list, which hung on a list 30 levels deep.
     if items
         .iter()
+        .skip(1)
         .all(|item| RuntimeType::of(Some(item)) == first_type)
     {
         Some(first_type)

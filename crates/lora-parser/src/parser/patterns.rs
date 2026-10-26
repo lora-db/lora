@@ -271,6 +271,15 @@ pub(super) fn lower_range_literal(pair: Pair<Rule>) -> Result<RangeLiteral, Pars
         }
     };
 
+    let max = lora_ast::limits::MAX_VAR_LENGTH_HOPS;
+    if start.max(end).is_some_and(|hops| hops > max) {
+        return Err(ParseError::new(
+            format!("a variable-length relationship may span at most {max} hops"),
+            span.start,
+            span.end,
+        ));
+    }
+
     Ok(RangeLiteral { start, end, span })
 }
 

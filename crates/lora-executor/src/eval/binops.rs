@@ -320,7 +320,15 @@ fn add_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
             Some(out) => LoraValue::Int(out),
             None => arithmetic_overflow("integer addition"),
         },
-        (LoraValue::String(a), LoraValue::String(b)) => LoraValue::String(a + &b),
+        (LoraValue::String(a), LoraValue::String(b)) => {
+            match crate::limits::check_bytes(a.len().saturating_add(b.len())) {
+                Ok(()) => LoraValue::String(a + &b),
+                Err(message) => {
+                    set_eval_error(message);
+                    LoraValue::Null
+                }
+            }
+        }
         // A string and a number concatenate, as toString would print the
         // number: 'p' + 1 is 'p1' (it was a silent null).
         (LoraValue::String(a), LoraValue::Int(b)) => LoraValue::String(format!("{a}{b}")),
@@ -328,15 +336,27 @@ fn add_values(lhs: LoraValue, rhs: LoraValue) -> LoraValue {
         (LoraValue::Int(a), LoraValue::String(b)) => LoraValue::String(format!("{a}{b}")),
         (LoraValue::Float(a), LoraValue::String(b)) => LoraValue::String(format!("{a}{b}")),
         (LoraValue::List(mut a), LoraValue::List(b)) => {
+            if let Err(message) = crate::limits::check_concat(&a, &b, false) {
+                set_eval_error(message);
+                return LoraValue::Null;
+            }
             a.extend(b);
             LoraValue::List(a)
         }
         // A list and an element: append or prepend it.
         (LoraValue::List(mut a), b) => {
+            if let Err(message) = crate::limits::check_concat(&a, std::slice::from_ref(&b), true) {
+                set_eval_error(message);
+                return LoraValue::Null;
+            }
             a.push(b);
             LoraValue::List(a)
         }
         (a, LoraValue::List(mut b)) => {
+            if let Err(message) = crate::limits::check_concat(&b, std::slice::from_ref(&a), true) {
+                set_eval_error(message);
+                return LoraValue::Null;
+            }
             b.insert(0, a);
             LoraValue::List(b)
         }

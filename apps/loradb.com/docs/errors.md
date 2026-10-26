@@ -18,13 +18,13 @@ on the message.
 
 | Code | When you'll see it |
 |---|---|
-| `LORA_PARSE` | Cypher syntax could not be parsed. |
+| `LORA_PARSE` | Cypher syntax could not be parsed, or the query is past a [shape limit](./limitations#query-limits) (nesting, operator chain, clause count, hop count). |
 | `LORA_SEMANTIC` | Unknown variable or function, wrong arity, or type mismatch. |
-| `LORA_INVALID_PARAMS` | A parameter value couldn't be coerced into a Lora value. |
+| `LORA_INVALID_PARAMS` | A parameter value couldn't be coerced into a Lora value, or is nested or sized past the [value limits](./limitations#query-limits). |
 | `LORA_READ_ONLY` | A mutating statement was issued in a read-only context. |
 | `LORA_NOT_FOUND` | A named entity (database, label, key) does not exist. |
 | `LORA_CONSTRAINT` | A precondition failed (e.g. `DELETE` on a node with relationships — use `DETACH DELETE`). |
-| `LORA_VALIDATION` | A well-formed database operation failed validation. |
+| `LORA_VALIDATION` | A well-formed database operation failed validation, including a value a query builds or stores past the [value limits](./limitations#query-limits). |
 | `LORA_UNIQUE_CONSTRAINT` | A uniqueness constraint rejected duplicate data. |
 | `LORA_NOT_NULL_CONSTRAINT` | An existence / NOT NULL constraint rejected missing data. |
 | `LORA_FOREIGN_KEY` | A relationship or dependent record references a missing entity. |

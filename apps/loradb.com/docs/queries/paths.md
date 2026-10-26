@@ -376,6 +376,12 @@ MATCH (a)-[:KNOWS*1..6]-(b) …
 // Risky on large graphs — unbounded
 MATCH (a)-[:KNOWS*]-(b) …`} />
 
+A pattern without an upper bound (`*`, `*2..`) stops at 100 hops. An
+explicit bound may be at most 1000 hops: `*1..1001` is a parse error.
+Without a `LIMIT` to stream against, one expansion may hold at most
+128 MiB of paths at once before the query fails with `LORA_VALIDATION`.
+See [Query limits](../limitations#query-limits).
+
 ### Zero-hop semantics
 
 `[:R*0..N]` includes the start node itself as a valid `b` via a

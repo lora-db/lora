@@ -207,23 +207,94 @@ fn replace(args: &[LoraValue]) -> LoraValue {
     else {
         return LoraValue::Null;
     };
-    let limit = args.get(3).and_then(LoraValue::as_i64).filter(|n| *n >= 0);
+    let limit = args
+        .get(3)
+        .and_then(LoraValue::as_i64)
+        .filter(|n| *n >= 0)
+        .map(|n| usize::try_from(n).unwrap_or(usize::MAX));
     let result = if is_regex(pat) {
         let pattern = strip_regex(pat);
-        match Regex::new(pattern) {
-            Ok(re) => match limit {
-                Some(n) => re.replacen(s, n as usize, with.as_str()).into_owned(),
-                None => re.replace_all(s, with.as_str()).into_owned(),
-            },
-            Err(_) => return LoraValue::Null,
+        let re = match compile_regex(pattern) {
+            Ok(re) => re,
+            Err(fallback) => return fallback,
+        };
+        if let Err(message) = check_regex_replacement(&re, s, with, limit) {
+            return super::fail(message);
+        }
+        match limit {
+            Some(n) => re.replacen(s, n, with.as_str()).into_owned(),
+            None => re.replace_all(s, with.as_str()).into_owned(),
         }
     } else {
+        // At most one match per `pat.len()` bytes (one per character, plus
+        // one, for an empty `pat`); count them only when that bound is not
+        // enough.
+        let at_most = s.len() / pat.len().max(1) + 1;
+        let growth = with.len().saturating_sub(pat.len());
+        if crate::limits::check_bytes(s.len().saturating_add(at_most.saturating_mul(growth)))
+            .is_err()
+        {
+            let matches = if pat.is_empty() {
+                s.chars().count() + 1
+            } else {
+                s.matches(pat.as_str()).count()
+            };
+            let matches = limit.map_or(matches, |n| n.min(matches));
+            let grown = s.len().saturating_add(matches.saturating_mul(growth));
+            if let Err(message) = crate::limits::check_bytes(grown) {
+                return super::fail(message);
+            }
+        }
         match limit {
-            Some(n) => s.replacen(pat.as_str(), with, n as usize),
+            Some(n) => s.replacen(pat.as_str(), with, n),
             None => s.replace(pat.as_str(), with),
         }
     };
     LoraValue::String(result)
+}
+
+/// Refuse a regex replacement whose result would pass the value-size
+/// limit, before building it. Without `$` references each match grows the
+/// string by at most `with`; with them, expand each match to measure.
+fn check_regex_replacement(
+    re: &Regex,
+    s: &str,
+    with: &str,
+    limit: Option<usize>,
+) -> Result<(), String> {
+    let limit = limit.unwrap_or(usize::MAX);
+    if !with.contains('$') {
+        // At most one match per byte, plus an empty one at the end.
+        let at_most = (s.len() + 1).saturating_mul(with.len());
+        if crate::limits::check_bytes(s.len().saturating_add(at_most)).is_ok() {
+            return Ok(());
+        }
+        let matches = re.find_iter(s).take(limit).count();
+        return crate::limits::check_bytes(
+            s.len().saturating_add(matches.saturating_mul(with.len())),
+        );
+    }
+    let mut total = s.len();
+    let mut expanded = String::new();
+    for caps in re.captures_iter(s).take(limit) {
+        expanded.clear();
+        caps.expand(with, &mut expanded);
+        total = total.saturating_add(expanded.len());
+        crate::limits::check_bytes(total)?;
+    }
+    Ok(())
+}
+
+/// `pattern` from the per-thread regex cache. An invalid pattern makes the
+/// call null, as it always has; one too large to compile fails the query.
+fn compile_regex(pattern: &str) -> Result<Regex, LoraValue> {
+    super::super::regex::compile(pattern).map_err(|err| {
+        if err.too_large {
+            super::fail(err.message)
+        } else {
+            LoraValue::Null
+        }
+    })
 }
 
 fn find(args: &[LoraValue]) -> LoraValue {
@@ -260,9 +331,9 @@ fn count(args: &[LoraValue]) -> LoraValue {
         if pattern.is_empty() {
             return LoraValue::Null;
         }
-        return match Regex::new(pattern) {
+        return match compile_regex(pattern) {
             Ok(re) => LoraValue::Int(re.find_iter(s).count() as i64),
-            Err(_) => LoraValue::Null,
+            Err(fallback) => fallback,
         };
     }
     if needle.is_empty() {
@@ -320,13 +391,13 @@ fn split(args: &[LoraValue]) -> LoraValue {
     };
     if is_regex(sep) {
         let pattern = strip_regex(sep);
-        match Regex::new(pattern) {
+        match compile_regex(pattern) {
             Ok(re) => LoraValue::List(
                 re.split(s)
                     .map(|p| LoraValue::String(p.to_string()))
                     .collect(),
             ),
-            Err(_) => LoraValue::Null,
+            Err(fallback) => fallback,
         }
     } else if sep.is_empty() {
         // An empty delimiter splits into characters, as in Cypher: `str::split`
@@ -391,6 +462,17 @@ fn join(args: &[LoraValue]) -> LoraValue {
     else {
         return LoraValue::Null;
     };
+    let content: usize = items
+        .iter()
+        .map(|v| match v {
+            LoraValue::String(s) => s.len(),
+            _ => 24,
+        })
+        .fold(0usize, usize::saturating_add);
+    let separators = sep.len().saturating_mul(items.len().saturating_sub(1));
+    if let Err(message) = crate::limits::check_bytes(content.saturating_add(separators)) {
+        return super::fail(message);
+    }
     let parts: Vec<String> = items
         .iter()
         .map(|v| match v {
@@ -424,7 +506,13 @@ fn pad(args: &[LoraValue]) -> LoraValue {
     if current >= target {
         return LoraValue::String(s.to_string());
     }
-    let needed = (target - current) as usize;
+    let needed = usize::try_from(target - current).unwrap_or(usize::MAX);
+    let widest = with.chars().map(char::len_utf8).max().unwrap_or(1);
+    if let Err(message) =
+        crate::limits::check_bytes(needed.saturating_mul(widest).saturating_add(s.len()))
+    {
+        return super::fail(message);
+    }
     match side.as_str() {
         "left" => {
             let prefix: String = with.chars().cycle().take(needed).collect();
@@ -455,7 +543,11 @@ fn repeat(args: &[LoraValue]) -> LoraValue {
     if n < 0 {
         return LoraValue::Null;
     }
-    LoraValue::String(s.repeat(n as usize))
+    let n = usize::try_from(n).unwrap_or(usize::MAX);
+    if let Err(message) = crate::limits::check_bytes(s.len().saturating_mul(n)) {
+        return super::fail(message);
+    }
+    LoraValue::String(s.repeat(n))
 }
 
 fn slugify(args: &[LoraValue]) -> LoraValue {
@@ -572,9 +664,9 @@ fn regex_groups(args: &[LoraValue]) -> LoraValue {
     };
     let pattern = strip_regex(pat);
     let by_name = matches!(args.get(2), Some(LoraValue::Bool(true)));
-    let re = match Regex::new(pattern) {
+    let re = match compile_regex(pattern) {
         Ok(r) => r,
-        Err(_) => return LoraValue::Null,
+        Err(fallback) => return fallback,
     };
     let mut out = Vec::new();
     for caps in re.captures_iter(s) {
@@ -605,9 +697,9 @@ fn matches_re(args: &[LoraValue]) -> LoraValue {
         return LoraValue::Null;
     };
     let pattern = strip_regex(pat);
-    match Regex::new(pattern) {
+    match compile_regex(pattern) {
         Ok(re) => LoraValue::Bool(re.is_match(s)),
-        Err(_) => LoraValue::Null,
+        Err(fallback) => fallback,
     }
 }
 

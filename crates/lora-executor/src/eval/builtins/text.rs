@@ -28,7 +28,13 @@ fn distance(args: &[LoraValue]) -> LoraValue {
     else {
         return LoraValue::Null;
     };
-    let n = match metric.to_ascii_lowercase().as_str() {
+    let metric = metric.to_ascii_lowercase();
+    if metric != "hamming" {
+        if let Err(message) = check_pairwise("text.distance", a, b) {
+            return super::fail(message);
+        }
+    }
+    let n = match metric.as_str() {
         "levenshtein" => levenshtein(a, b),
         "damerau" => damerau_levenshtein(a, b),
         "hamming" => match hamming(a, b) {
@@ -46,6 +52,9 @@ fn similarity(args: &[LoraValue]) -> LoraValue {
     else {
         return LoraValue::Null;
     };
+    if let Err(message) = check_pairwise("text.similarity", a, b) {
+        return super::fail(message);
+    }
     let val = match metric.to_ascii_lowercase().as_str() {
         "levenshtein" => levenshtein_similarity(a, b),
         "jaro" => jaro(a, b),
@@ -80,6 +89,26 @@ fn phonetic_match(args: &[LoraValue]) -> LoraValue {
     LoraValue::Bool(codes.0 == codes.1)
 }
 
+/// Character pairs a quadratic comparison may visit: about a second of
+/// work.
+const MAX_PAIRWISE_CELLS: usize = 1 << 28;
+
+/// Refuse comparing `a` and `b` when a quadratic metric would visit more
+/// than [`MAX_PAIRWISE_CELLS`] character pairs.
+fn check_pairwise(function: &str, a: &str, b: &str) -> Result<(), String> {
+    if a.len().saturating_mul(b.len()) <= MAX_PAIRWISE_CELLS {
+        return Ok(());
+    }
+    let (m, n) = (a.chars().count(), b.chars().count());
+    if m.saturating_mul(n) <= MAX_PAIRWISE_CELLS {
+        return Ok(());
+    }
+    Err(format!(
+        "{function} compares every pair of characters; {m} x {n} is more than the \
+         {MAX_PAIRWISE_CELLS} pairs allowed"
+    ))
+}
+
 fn levenshtein(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
@@ -93,6 +122,9 @@ fn levenshtein(a: &str, b: &str) -> usize {
     let mut prev: Vec<usize> = (0..=n).collect();
     let mut curr: Vec<usize> = vec![0; n + 1];
     for i in 1..=m {
+        if crate::cancel::eval_deadline_hit() {
+            return 0;
+        }
         curr[0] = i;
         for j in 1..=n {
             let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
@@ -113,25 +145,27 @@ fn damerau_levenshtein(a: &str, b: &str) -> usize {
     if n == 0 {
         return m;
     }
-    let mut d = vec![vec![0usize; n + 1]; m + 1];
-    for (i, row) in d.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for (j, cell) in d[0].iter_mut().enumerate() {
-        *cell = j;
-    }
+    // Optimal string alignment needs the two rows before the current one:
+    // three rolling rows instead of the full (m + 1) x (n + 1) matrix.
+    let mut before: Vec<usize> = vec![0; n + 1];
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr: Vec<usize> = vec![0; n + 1];
     for i in 1..=m {
+        if crate::cancel::eval_deadline_hit() {
+            return 0;
+        }
+        curr[0] = i;
         for j in 1..=n {
             let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            d[i][j] = (d[i - 1][j] + 1)
-                .min(d[i][j - 1] + 1)
-                .min(d[i - 1][j - 1] + cost);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
             if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+                curr[j] = curr[j].min(before[j - 2] + 1);
             }
         }
+        std::mem::swap(&mut before, &mut prev);
+        std::mem::swap(&mut prev, &mut curr);
     }
-    d[m][n]
+    prev[n]
 }
 
 fn hamming(a: &str, b: &str) -> Option<usize> {
@@ -281,5 +315,69 @@ fn soundex_code(c: char) -> char {
         'M' | 'N' => '5',
         'R' => '6',
         _ => '0',
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The full-matrix optimal-string-alignment distance the rolling rows
+    /// replaced.
+    fn damerau_reference(a: &str, b: &str) -> usize {
+        let a: Vec<char> = a.chars().collect();
+        let b: Vec<char> = b.chars().collect();
+        let (m, n) = (a.len(), b.len());
+        let mut d = vec![vec![0usize; n + 1]; m + 1];
+        for (i, row) in d.iter_mut().enumerate() {
+            row[0] = i;
+        }
+        for (j, cell) in d[0].iter_mut().enumerate() {
+            *cell = j;
+        }
+        for i in 1..=m {
+            for j in 1..=n {
+                let cost = usize::from(a[i - 1] != b[j - 1]);
+                d[i][j] = (d[i - 1][j] + 1)
+                    .min(d[i][j - 1] + 1)
+                    .min(d[i - 1][j - 1] + cost);
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+                }
+            }
+        }
+        d[m][n]
+    }
+
+    #[test]
+    fn rolling_damerau_matches_the_full_matrix() {
+        // Every pair of strings up to length 5 over a three-letter
+        // alphabet, which exercises transpositions at every position.
+        let mut words = vec![String::new()];
+        for _ in 0..5 {
+            let longer: Vec<String> = words
+                .iter()
+                .filter(|w| w.len() == words.last().unwrap().len())
+                .flat_map(|w| ["a", "b", "c"].map(|c| format!("{w}{c}")))
+                .collect();
+            words.extend(longer);
+        }
+        for a in words.iter().step_by(3) {
+            for b in words.iter().step_by(5) {
+                assert_eq!(
+                    damerau_levenshtein(a, b),
+                    damerau_reference(a, b),
+                    "{a} {b}"
+                );
+            }
+        }
+        assert_eq!(
+            damerau_levenshtein("ca", "abc"),
+            damerau_reference("ca", "abc")
+        );
+        assert_eq!(
+            damerau_levenshtein("héllo", "ehllö"),
+            damerau_reference("héllo", "ehllö")
+        );
     }
 }

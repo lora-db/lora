@@ -23,6 +23,9 @@ use lora_store::GraphStorage;
 
 use super::expr::EvalContext;
 
+#[cfg(test)]
+mod fuzz_tests;
+
 mod bits_ns;
 mod bytes_ns;
 mod cast_ns;
@@ -46,6 +49,12 @@ mod type_ns;
 mod uuid_ns;
 mod value;
 mod vector_ns;
+
+/// Fail the current call with `message`: the query errors with it.
+pub(super) fn fail(message: String) -> LoraValue {
+    super::errors::set_eval_error(message);
+    LoraValue::Null
+}
 
 /// Dispatch a `<namespace>.<operation>` call.
 ///

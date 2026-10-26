@@ -257,7 +257,9 @@ fn median(args: &[LoraValue]) -> LoraValue {
     if values.is_empty() {
         return LoraValue::Null;
     }
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // `total_cmp`: a comparator that is not a total order (NaN against
+    // anything) may panic in the standard library's sort.
+    values.sort_by(f64::total_cmp);
     let mid = values.len() / 2;
     if values.len().is_multiple_of(2) {
         LoraValue::Float((values[mid - 1] + values[mid]) / 2.0)
@@ -271,7 +273,14 @@ fn sort(args: &[LoraValue]) -> LoraValue {
         return LoraValue::Null;
     };
     let mut out: Vec<LoraValue> = xs.to_vec();
-    out.sort_by(|a, b| compare_values(a, b).unwrap_or(std::cmp::Ordering::Equal));
+    // ORDER BY's total order (nulls last): a partial one, as mixed types
+    // give, may panic in the standard library's sort.
+    out.sort_by(|a, b| match (a, b) {
+        (LoraValue::Null, LoraValue::Null) => std::cmp::Ordering::Equal,
+        (LoraValue::Null, _) => std::cmp::Ordering::Greater,
+        (_, LoraValue::Null) => std::cmp::Ordering::Less,
+        _ => crate::executor::compare_values_total(a, b),
+    });
     if matches!(
         args.get(1),
         Some(LoraValue::String(s)) if s.eq_ignore_ascii_case("desc")
@@ -542,10 +551,17 @@ fn windows(args: &[LoraValue]) -> LoraValue {
     if size <= 0 {
         return LoraValue::Null;
     }
-    let size = size as usize;
-    let step = as_i64(args.get(2)).unwrap_or(1).max(1) as usize;
+    let size = usize::try_from(size).unwrap_or(usize::MAX);
+    let step = usize::try_from(as_i64(args.get(2)).unwrap_or(1).max(1)).unwrap_or(usize::MAX);
     if size > xs.len() {
         return LoraValue::List(Vec::new());
+    }
+    // Overlapping windows copy each item up to `size / step` times.
+    let windows = (xs.len() - size) / step + 1;
+    if let Err(message) =
+        crate::limits::check_len(windows, size.saturating_mul(crate::limits::ELEMENT_BYTES))
+    {
+        return super::fail(message);
     }
     let mut out: Vec<LoraValue> = Vec::new();
     let mut i: usize = 0;
@@ -655,9 +671,13 @@ fn repeat(args: &[LoraValue]) -> LoraValue {
         return LoraValue::Null;
     };
     let count = match as_i64(args.get(1)) {
-        Some(n) if n >= 0 => n as usize,
+        Some(n) if n >= 0 => usize::try_from(n).unwrap_or(usize::MAX),
         _ => return LoraValue::Null,
     };
+    let (_, item_bytes) = crate::limits::measure(item);
+    if let Err(message) = crate::limits::check_len(count, item_bytes) {
+        return super::fail(message);
+    }
     LoraValue::List(vec![item.clone(); count])
 }
 
@@ -718,27 +738,53 @@ fn combinations(args: &[LoraValue]) -> LoraValue {
         return LoraValue::List(Vec::new());
     }
     let k = k as usize;
-    let mut out: Vec<Vec<LoraValue>> = Vec::new();
-    let mut current: Vec<LoraValue> = Vec::with_capacity(k);
-    fn go(
-        xs: &[LoraValue],
-        start: usize,
-        k: usize,
-        current: &mut Vec<LoraValue>,
-        out: &mut Vec<Vec<LoraValue>>,
-    ) {
-        if current.len() == k {
-            out.push(current.clone());
-            return;
+    // C(n, k) combinations of k items each: refuse before building them.
+    let count = binomial(xs.len(), k);
+    let (_, item_bytes) = crate::limits::measure_list(xs);
+    let average = item_bytes / xs.len().max(1);
+    if let Err(message) = count
+        .and_then(|count| {
+            crate::limits::check_len(
+                count,
+                k.saturating_mul(average + crate::limits::ELEMENT_BYTES),
+            )
+            .ok()
+        })
+        .ok_or_else(crate::limits::too_large_message)
+    {
+        return super::fail(message);
+    }
+    // Lexicographic index combinations, without recursion: `indices` is
+    // the current combination; advance the rightmost index that can move.
+    let mut out = Vec::new();
+    let mut indices: Vec<usize> = (0..k).collect();
+    loop {
+        if crate::cancel::eval_deadline_hit() {
+            return LoraValue::Null;
         }
-        for i in start..xs.len() {
-            current.push(xs[i].clone());
-            go(xs, i + 1, k, current, out);
-            current.pop();
+        out.push(LoraValue::List(
+            indices.iter().map(|&i| xs[i].clone()).collect(),
+        ));
+        let Some(pos) = (0..k).rev().find(|&pos| indices[pos] < xs.len() - k + pos) else {
+            break;
+        };
+        indices[pos] += 1;
+        for next in pos + 1..k {
+            indices[next] = indices[next - 1] + 1;
         }
     }
-    go(xs, 0, k, &mut current, &mut out);
-    LoraValue::List(out.into_iter().map(LoraValue::List).collect())
+    LoraValue::List(out)
+}
+
+/// C(n, k), or `None` past `usize`.
+fn binomial(n: usize, k: usize) -> Option<usize> {
+    let k = k.min(n - k);
+    let mut c: usize = 1;
+    for i in 0..k {
+        // c * (n - i) / (i + 1) stays an integer at every step.
+        c = c.checked_mul(n - i)? / (i + 1);
+    }
+    Some(c)
 }
 
 fn concat(args: &[LoraValue]) -> LoraValue {
@@ -975,7 +1021,7 @@ fn range(args: &[LoraValue]) -> LoraValue {
         span.abs() / abs_step + 1
     };
     if expected_len > MAX_RANGE_LEN as i128 {
-        return LoraValue::Null;
+        return super::fail(crate::limits::too_large_message());
     }
     let mut result = Vec::with_capacity(expected_len as usize);
     let mut i = start;

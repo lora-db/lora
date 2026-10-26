@@ -143,9 +143,10 @@ where
     pub(crate) fn execute_rows_with_params_deadline(
         &self,
         query: &str,
-        params: BTreeMap<String, LoraValue>,
+        mut params: BTreeMap<String, LoraValue>,
         deadline: Option<Instant>,
     ) -> Result<Vec<Row>> {
+        super::check_parameter_values(&mut params)?;
         // Schema commands (CREATE INDEX, SHOW INDEXES) are catalog-level
         // mutations and don't share the row-producing pipeline. A cheap
         // textual prefix check routes them out before the parser cache and

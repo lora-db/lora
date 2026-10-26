@@ -48,7 +48,7 @@ pub fn eval_expr<S: GraphStorage>(
         ResolvedExpr::Literal(lit) => eval_literal(lit),
 
         ResolvedExpr::List(items) => {
-            LoraValue::List(items.iter().map(|e| eval_expr(e, row, ctx)).collect())
+            built_list(items.iter().map(|e| eval_expr(e, row, ctx)).collect())
         }
 
         ResolvedExpr::Map(items) => {
@@ -56,7 +56,7 @@ pub fn eval_expr<S: GraphStorage>(
             for (k, v) in items {
                 map.insert(k.clone(), eval_expr(v, row, ctx));
             }
-            LoraValue::Map(map)
+            built_map(map)
         }
 
         ResolvedExpr::Property { expr, property } => {
@@ -206,7 +206,7 @@ pub fn eval_expr<S: GraphStorage>(
                         };
                         result.push(val);
                     }
-                    LoraValue::List(result)
+                    built_list(result)
                 }
                 ListItems::Null | ListItems::NotAList => LoraValue::Null,
             }
@@ -349,7 +349,7 @@ pub fn eval_expr<S: GraphStorage>(
                 }
             }
 
-            LoraValue::Map(result)
+            built_map(result)
         }
 
         ResolvedExpr::Case {
@@ -386,6 +386,31 @@ pub fn eval_expr<S: GraphStorage>(
     }
 }
 
+/// `items` as a new list value, or null with an error when the list would
+/// break a value limit (see [`crate::limits`]).
+#[inline(never)]
+pub(super) fn built_list(items: Vec<LoraValue>) -> LoraValue {
+    match crate::limits::check_built_list(&items) {
+        Ok(()) => LoraValue::List(items),
+        Err(message) => {
+            super::errors::set_eval_error(message);
+            LoraValue::Null
+        }
+    }
+}
+
+/// [`built_list`] for a map.
+#[inline(never)]
+pub(super) fn built_map(map: BTreeMap<String, LoraValue>) -> LoraValue {
+    match crate::limits::check_built(map.values()) {
+        Ok(()) => LoraValue::Map(map),
+        Err(message) => {
+            super::errors::set_eval_error(message);
+            LoraValue::Null
+        }
+    }
+}
+
 /// The branch a `CASE` takes, or `None` when no alternative matches and
 /// there is no `ELSE`.
 fn case_branch<'e, S: GraphStorage>(
@@ -409,10 +434,11 @@ fn case_branch<'e, S: GraphStorage>(
     else_expr
 }
 
-/// Where an expression's value comes from: a variable the row holds, whose
-/// value can be read or shared in place, or a value computed for this call.
+/// Where an expression's value comes from: a variable the row holds (or a
+/// parameter, with no variable), whose value can be read or shared in
+/// place, or a value computed for this call.
 enum Source<'r> {
-    Var(VarId, &'r LoraValue),
+    Var(Option<VarId>, &'r LoraValue),
     Value(LoraValue),
 }
 
@@ -424,13 +450,16 @@ enum Source<'r> {
 fn eval_source<'r, S: GraphStorage>(
     expr: &ResolvedExpr,
     row: &'r Row,
-    ctx: &EvalContext<'_, S>,
+    ctx: &EvalContext<'r, S>,
 ) -> Source<'r> {
     match expr {
         ResolvedExpr::Variable(var) => match row.get(*var) {
-            Some(value) => Source::Var(*var, value),
+            Some(value) => Source::Var(Some(*var), value),
             None => Source::Value(LoraValue::Null),
         },
+        // A parameter is read in place too: `x IN $list` per row must not
+        // copy the list each time.
+        ResolvedExpr::Parameter(name) => Source::Var(None, ctx.params.get(name).unwrap_or(&NULL)),
         ResolvedExpr::Function { function, args, .. } if is_coalesce(*function) => {
             let mut args = args.iter();
             let mut first = Source::Value(LoraValue::Null);
@@ -485,10 +514,11 @@ fn is_coalesce(function: lora_analyzer::FunctionId) -> bool {
 pub(crate) fn eval_ref<'r, S: GraphStorage>(
     expr: &ResolvedExpr,
     row: &'r Row,
-    ctx: &EvalContext<'_, S>,
+    ctx: &EvalContext<'r, S>,
 ) -> Cow<'r, LoraValue> {
     match expr {
         ResolvedExpr::Variable(var) => Cow::Borrowed(row.get(*var).unwrap_or(&NULL)),
+        ResolvedExpr::Parameter(name) => Cow::Borrowed(ctx.params.get(name).unwrap_or(&NULL)),
         _ if passes_through(expr) => match eval_source(expr, row, ctx) {
             Source::Var(_, value) => Cow::Borrowed(value),
             Source::Value(value) => Cow::Owned(value),
@@ -550,7 +580,8 @@ pub fn eval_projected_result<S: GraphStorage>(
 ) -> Result<Projected, String> {
     clear_eval_error();
     let projected = match eval_source(expr, row, ctx) {
-        Source::Var(var, _) => Projected::Var(var),
+        Source::Var(Some(var), _) => Projected::Var(var),
+        Source::Var(None, value) => Projected::Value(value.clone()),
         Source::Value(value) => Projected::Value(value),
     };
     if crate::cancel::eval_tripped() {
@@ -602,7 +633,7 @@ impl ExactSizeIterator for ItemIter<'_> {}
 fn list_items<'r, S: GraphStorage>(
     list: &ResolvedExpr,
     row: &'r Row,
-    ctx: &EvalContext<'_, S>,
+    ctx: &EvalContext<'r, S>,
 ) -> ListItems<'r> {
     match eval_source(list, row, ctx) {
         Source::Var(_, LoraValue::List(items)) => {
@@ -738,7 +769,7 @@ fn eval_pattern_comprehension<S: GraphStorage>(
         }
         out.push(eval_expr(map_expr, r, ctx));
     }
-    LoraValue::List(out)
+    built_list(out)
 }
 
 /// A copy of `row` holding only `reads`, the variables a pattern subquery
@@ -993,7 +1024,7 @@ fn expand_walk_step<S: GraphStorage>(
             dst_bound,
             rels_bound,
         };
-        walk.visit(src, &mut Vec::new(), out);
+        walk.walk(src, out);
         return;
     }
 
@@ -1191,6 +1222,10 @@ fn where_seek_candidates<S: GraphStorage>(
 /// properties, and that ends on a node matching the step's node pattern (and
 /// on the node or relationship list the row already binds, if any). Each
 /// match extends `row` with `r` bound to the path's relationships.
+/// Longest pattern [`VarLengthWalk`] walks by recursion; one hop costs a
+/// few hundred bytes of stack.
+const RECURSIVE_WALK_MAX_HOPS: u64 = 32;
+
 struct VarLengthWalk<'q, 'c, S: GraphStorage> {
     step: &'q WalkStep<'q>,
     row: &'q Row,
@@ -1202,6 +1237,46 @@ struct VarLengthWalk<'q, 'c, S: GraphStorage> {
 }
 
 impl<S: GraphStorage> VarLengthWalk<'_, '_, S> {
+    /// Depth-first walk from `start`, emitting matches in path order. The
+    /// walk keeps its own stack (one frame per hop of the current path)
+    /// instead of recursing, so a long path cannot overflow the thread's.
+    fn walk(&self, start: lora_store::NodeId, out: &mut Vec<Row>) {
+        // Short patterns, the common case, recurse: a few frames deep that
+        // is cheaper than keeping a stack. Longer ones keep their own.
+        if self.max_hops <= RECURSIVE_WALK_MAX_HOPS {
+            self.visit(start, &mut Vec::new(), out);
+            return;
+        }
+        let depth = (self.max_hops.min(64) + 1) as usize;
+        let mut path: Vec<lora_store::RelationshipId> = Vec::with_capacity(depth);
+        // Per hop of `path`: the untried edges of the node it reached.
+        let mut frames: Vec<(Vec<(lora_store::RelationshipId, lora_store::NodeId)>, usize)> =
+            Vec::with_capacity(depth);
+        self.enter(start, &path, &mut frames, out);
+        while let Some((edges, next)) = frames.last_mut() {
+            let Some(&(rel_id, dst_id)) = edges.get(*next) else {
+                frames.pop();
+                // The root frame has no relationship on the path.
+                if !frames.is_empty() {
+                    path.pop();
+                }
+                continue;
+            };
+            *next += 1;
+            if path.contains(&rel_id)
+                || !rel_matches_properties(rel_id, &self.step.rel.properties, self.row, self.ctx)
+            {
+                continue;
+            }
+            path.push(rel_id);
+            if !self.enter(dst_id, &path, &mut frames, out) {
+                path.pop();
+            }
+        }
+    }
+
+    /// The recursive walk, for patterns of at most
+    /// [`RECURSIVE_WALK_MAX_HOPS`] hops.
     fn visit(
         &self,
         node: lora_store::NodeId,
@@ -1235,6 +1310,36 @@ impl<S: GraphStorage> VarLengthWalk<'_, '_, S> {
             self.visit(dst_id, path, out);
             path.pop();
         }
+    }
+
+    /// Visit `node` at the end of `path`: emit it if it matches, and push a
+    /// frame of its edges when the path may grow. Returns whether it did.
+    fn enter(
+        &self,
+        node: lora_store::NodeId,
+        path: &[lora_store::RelationshipId],
+        frames: &mut Vec<(Vec<(lora_store::RelationshipId, lora_store::NodeId)>, usize)>,
+        out: &mut Vec<Row>,
+    ) -> bool {
+        let hops = path.len() as u64;
+        if hops >= self.min_hops {
+            self.emit(node, path, out);
+        }
+        if hops >= self.max_hops || eval_deadline_hit() {
+            return false;
+        }
+        let mut next = Vec::new();
+        let _ = self.ctx.storage.try_for_each_expand_id(
+            node,
+            self.step.direction,
+            &self.step.rel.types,
+            |rel_id, dst_id| {
+                next.push((rel_id, dst_id));
+                Ok::<(), ()>(())
+            },
+        );
+        frames.push((next, 0));
+        true
     }
 
     fn emit(

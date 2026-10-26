@@ -188,9 +188,20 @@ fn round(args: &[LoraValue]) -> LoraValue {
         Some(LoraValue::String(s)) => s.to_ascii_lowercase(),
         _ => "half_up".to_string(),
     };
-    let digits = digits_arg.unwrap_or(0);
+    // Past 400 digits either way every f64 is unchanged or zero; clamping
+    // first keeps `digits as i32` from wrapping (it turned 2^63 - 1 into -1).
+    let digits = digits_arg.unwrap_or(0).clamp(-400, 400);
     let scale = 10f64.powi(digits as i32);
     let scaled = n * scale;
+    if n.is_finite() && (!scaled.is_finite() || scale == 0.0) {
+        // Finer than the float can hold: unchanged. Coarser than its
+        // magnitude: rounds to zero.
+        let result = if scale == 0.0 { 0.0 } else { n };
+        return match digits_arg {
+            None => f64_to_i64(result).map_or(LoraValue::Float(result), LoraValue::Int),
+            Some(_) => LoraValue::Float(result),
+        };
+    }
     let rounded = match mode.as_str() {
         "ceil" => scaled.ceil(),
         "floor" => scaled.floor(),
@@ -287,14 +298,27 @@ fn clamp(args: &[LoraValue]) -> LoraValue {
     ) else {
         return LoraValue::Null;
     };
-    if matches!(args.first(), Some(LoraValue::Int(_)))
-        && matches!(args.get(1), Some(LoraValue::Int(_)))
-        && matches!(args.get(2), Some(LoraValue::Int(_)))
+    // `clamp` panics when the bounds are reversed or NaN.
+    if let (Some(LoraValue::Int(x)), Some(LoraValue::Int(lo)), Some(LoraValue::Int(hi))) =
+        (args.first(), args.get(1), args.get(2))
     {
-        LoraValue::Int((x as i64).clamp(lo as i64, hi as i64))
-    } else {
-        LoraValue::Float(x.clamp(lo, hi))
+        // Compared as integers: through f64 they lose precision past 2^53.
+        if lo > hi {
+            return super::fail(format!(
+                "math.clamp lower bound {lo} is above upper bound {hi}"
+            ));
+        }
+        return LoraValue::Int((*x).clamp(*lo, *hi));
     }
+    if lo.is_nan() || hi.is_nan() {
+        return super::fail("math.clamp bounds must not be NaN".to_string());
+    }
+    if lo > hi {
+        return super::fail(format!(
+            "math.clamp lower bound {lo} is above upper bound {hi}"
+        ));
+    }
+    LoraValue::Float(x.clamp(lo, hi))
 }
 
 fn lerp(args: &[LoraValue]) -> LoraValue {

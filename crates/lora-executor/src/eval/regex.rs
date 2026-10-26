@@ -7,40 +7,112 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-const CACHE_MAX: usize = 128;
+/// Patterns kept compiled per thread. Most compile to a few KiB.
+const CACHE_MAX: usize = 64;
+
+/// Of those, patterns that compile past [`SMALL_SIZE_LIMIT`] (up to
+/// [`COMPILED_SIZE_LIMIT`] each). Bounding them keeps the cache to some
+/// tens of MiB per thread: it held 1.4 GB after 127 patterns like
+/// `\w{200}`.
+const LARGE_CACHE_MAX: usize = 4;
+
+/// Longest pattern accepted, in bytes.
+const MAX_PATTERN_BYTES: usize = 16 << 10;
+
+/// Compiled size up to which a pattern counts as small.
+const SMALL_SIZE_LIMIT: usize = 1 << 20;
+
+/// Largest compiled program a pattern may produce (the regex crate's
+/// default); larger ones fail to compile with an error.
+const COMPILED_SIZE_LIMIT: usize = 10 << 20;
+
+/// Largest lazy-DFA cache one pattern may grow while matching.
+const DFA_SIZE_LIMIT: usize = 2 << 20;
+
+/// Why a pattern did not compile.
+#[derive(Debug, Clone)]
+pub(crate) struct RegexError {
+    pub(crate) message: String,
+    /// The pattern is valid but too large (or too long) to compile: an
+    /// error even where an invalid pattern yields null.
+    pub(crate) too_large: bool,
+}
+
+/// A cached pattern: compiled (and whether it is large), or why not.
+type Cached = Result<(::regex::Regex, bool), RegexError>;
 
 thread_local! {
-    /// Compiled patterns, and the message of those that do not compile: a
+    /// Compiled patterns, and the error of those that do not compile: a
     /// pattern that is too large takes as long to reject as to compile.
-    static CACHE: RefCell<HashMap<String, Result<::regex::Regex, String>>> =
-        RefCell::new(HashMap::new());
+    static CACHE: RefCell<HashMap<String, Cached>> = RefCell::new(HashMap::new());
+}
+
+/// `pattern` compiled, from this thread's cache when it was compiled
+/// before. Cloning a compiled regex is a reference-count bump.
+pub(crate) fn compile(pattern: &str) -> Result<::regex::Regex, RegexError> {
+    compile_as(pattern, pattern)
+}
+
+/// [`compile`], naming `shown` (the pattern as the user wrote it) in
+/// errors.
+fn compile_as(pattern: &str, shown: &str) -> Result<::regex::Regex, RegexError> {
+    CACHE.with(|cache| {
+        if let Some(compiled) = cache.borrow().get(pattern) {
+            return compiled.clone().map(|(re, _)| re);
+        }
+        let compiled = build(pattern, shown);
+        let mut cached = cache.borrow_mut();
+        let large = matches!(compiled, Ok((_, true)));
+        let large_count = || {
+            cached
+                .values()
+                .filter(|c| matches!(c, Ok((_, true))))
+                .count()
+        };
+        if cached.len() >= CACHE_MAX || (large && large_count() >= LARGE_CACHE_MAX) {
+            cached.clear();
+        }
+        cached.insert(pattern.to_string(), compiled.clone());
+        compiled.map(|(re, _)| re)
+    })
+}
+
+fn build(pattern: &str, shown: &str) -> Cached {
+    if pattern.len() > MAX_PATTERN_BYTES {
+        return Err(RegexError {
+            message: format!(
+                "regular expression is too long ({} bytes; the limit is {MAX_PATTERN_BYTES})",
+                shown.len()
+            ),
+            too_large: true,
+        });
+    }
+    let with_limit = |limit: usize| {
+        ::regex::RegexBuilder::new(pattern)
+            .size_limit(limit)
+            .dfa_size_limit(DFA_SIZE_LIMIT)
+            .build()
+    };
+    match with_limit(SMALL_SIZE_LIMIT) {
+        Ok(re) => Ok((re, false)),
+        Err(::regex::Error::CompiledTooBig(_)) => with_limit(COMPILED_SIZE_LIMIT)
+            .map(|re| (re, true))
+            .map_err(|err| RegexError {
+                message: describe(shown, &err),
+                too_large: matches!(err, ::regex::Error::CompiledTooBig(_)),
+            }),
+        Err(err) => Err(RegexError {
+            message: describe(shown, &err),
+            too_large: false,
+        }),
+    }
 }
 
 pub(super) fn full_match(value: &str, pattern: &str) -> Result<bool, String> {
     let anchored = format!("^(?:{pattern})$");
-
-    CACHE.with(|cache| {
-        if let Some(compiled) = cache.borrow().get(&anchored) {
-            return compiled
-                .as_ref()
-                .map(|r| r.is_match(value))
-                .map_err(String::clone);
-        }
-
-        let compiled = ::regex::Regex::new(&anchored).map_err(|err| describe(pattern, &err));
-        let result = compiled
-            .as_ref()
-            .map(|r| r.is_match(value))
-            .map_err(String::clone);
-
-        let mut cached = cache.borrow_mut();
-        if cached.len() >= CACHE_MAX {
-            cached.clear();
-        }
-        cached.insert(anchored, compiled);
-
-        result
-    })
+    compile_as(&anchored, pattern)
+        .map(|re| re.is_match(value))
+        .map_err(|err| err.message)
 }
 
 fn describe(pattern: &str, err: &::regex::Error) -> String {

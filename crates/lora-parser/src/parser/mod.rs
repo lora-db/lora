@@ -2,7 +2,7 @@
 //!
 //! Layout:
 //! - `query` — top-of-tree query-shape lowerings (`regular_query`,
-//!   `single_query`, `multi_part_query`, `query_part`, `single_part_query`,
+//!   `single_query` (grouped into WITH-separated parts),
 //!   `reading_clause`, `updating_clause`).
 //! - `clauses` — clause-level lowerings (MATCH, UNWIND, CREATE, MERGE,
 //!   DELETE, SET, REMOVE, CALL, YIELD, WITH, WHERE, RETURN, projection
@@ -27,6 +27,7 @@ use pest::Parser;
 
 mod clauses;
 mod expressions;
+mod limits;
 mod literals;
 mod patterns;
 mod query;
@@ -46,6 +47,8 @@ use util::{pair_span, unexpected_rule};
 pub(super) struct LoraParser;
 
 pub fn parse_query(input: &str) -> Result<Document, ParseError> {
+    limits::reset_budgets();
+    limits::check_nesting(input)?;
     let mut pairs = LoraParser::parse(Rule::query, input)
         .map_err(|e| ParseError::new(e.to_string(), 0, input.len()))?;
 
