@@ -110,12 +110,6 @@ pub struct Database<S> {
     /// WAL records are appended in the same order live state advances.
     /// Readers never touch this Mutex; only writers contend.
     pub(crate) writer: Arc<Mutex<()>>,
-    /// Per-record write locks. Plumbed for a future phase that allows
-    /// concurrent commits across disjoint write sets; today the writer
-    /// Mutex provides single-writer-at-a-time semantics so this table
-    /// is idle.
-    #[allow(dead_code)]
-    pub(crate) lock_table: Arc<lora_store::LockTable>,
     pub(crate) wal: Option<Arc<WalRecorder>>,
     pub(crate) snapshots: Option<Arc<ManagedSnapshotStore>>,
     /// Present for named `.loradb` databases. Runtime state is still the
