@@ -78,6 +78,7 @@ import {
 } from "./compile/selection.js";
 import {
   boundedWrites,
+  type DriverSnapshot,
   type LoraDriver,
   type QueryResult,
   type Statement,
@@ -1798,6 +1799,28 @@ export class LoraGraphQL {
     );
     this.#workers.add(worker);
     return worker;
+  }
+
+  /**
+   * Write an online copy of the database into `targetDir` (missing or
+   * empty) while requests keep running: the graph as of one committed
+   * transaction, as `<targetDir>/<name>.loradb`, which opens with
+   * `createDatabase(name, { databaseDir: targetDir })`. Mutations wait
+   * only while the graph is taken, not while it is written. For an
+   * off-host backup of a database this process owns.
+   *
+   * Needs a driver with `snapshot()`: `loraDriver(db)` over a lora-node
+   * database opened with a name and `databaseDir`.
+   */
+  async snapshot(targetDir: string): Promise<DriverSnapshot> {
+    // `driver` is absent in an offline instance (schema tooling).
+    const driver = this.#driver as LoraDriver | undefined;
+    if (!driver?.snapshot) {
+      throw new Error(
+        "snapshot() needs a driver with snapshot(): pass loraDriver(db) over a lora-node database opened with a name and databaseDir",
+      );
+    }
+    return driver.snapshot(targetDir);
   }
 
   /** Stop the workers, and the engine change feed (with `changeFeed: true`). */

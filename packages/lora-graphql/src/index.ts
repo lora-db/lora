@@ -17,6 +17,7 @@ export {
 } from "./results.js";
 export {
   loraDriver,
+  type DriverSnapshot,
   type DriverTransaction,
   type LoraDatabaseLike,
   type LoraDriver,
