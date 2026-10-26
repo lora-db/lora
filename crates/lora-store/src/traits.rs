@@ -838,6 +838,16 @@ pub trait GraphStorage {
         GraphStats::default()
     }
 
+    /// [`GraphStats::plan_signature`] of [`Self::graph_stats`]: changes
+    /// whenever a plan compiled against the stats could come out
+    /// different. Plan caches key on it, so it must change when an
+    /// online index appears or goes, a label / type / counted key
+    /// appears or goes, or a count crosses a power of two. Backends
+    /// override it to skip building the stats.
+    fn plan_signature(&self) -> u64 {
+        self.graph_stats().plan_signature()
+    }
+
     /// Trigram-index candidates for `query` on `label.property`.
     ///
     /// Semantics:

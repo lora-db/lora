@@ -1,4 +1,4 @@
-//! Compiled-plan cache keyed by raw query text plus live-store epoch.
+//! Compiled-plan cache keyed by raw query text plus plan epoch.
 //!
 //! Parse + analyze + compile costs the same handful of microseconds for every
 //! `Database::execute_with_params` call, even when the query text is reused
@@ -9,37 +9,49 @@
 //! # Why this is safe
 //!
 //! The compiled plan is a pure function of the parsed `Document` plus the
-//! graph/catalog snapshot read at compile time:
-//! - The analyzer reads the store only to validate that label /
-//!   relationship-type / property-key names exist (analyzer.rs:1110–1170);
-//!   it does not embed any store-derived data into the resolved query.
-//! - The optimizer reads `GraphStats` for cost-based selection between
-//!   competing index rewrites (`use_indexed_node_scans` in
-//!   `lora-compiler/src/optimizer.rs`). The cache key includes the
-//!   live-store epoch, which bumps after every write, so cardinality shifts
-//!   and catalog changes compile into a fresh entry instead of reusing stale
-//!   operator choices.
-//! - The storage layer still has the final say on index contents at
-//!   execution time; the cache only avoids redoing analysis and planning
-//!   while the graph/catalog epoch remains unchanged.
+//! stats snapshot read at compile time:
+//! - The analyzer does not read the store at all (see
+//!   `lora-analyzer/src/analyzer/state.rs`): whether a query is valid does
+//!   not depend on which labels, types or keys exist.
+//! - The planner and optimizer read only [`lora_store::GraphStats`]: counts
+//!   per label / type, distinct-value estimates per counted key, and the
+//!   online range / text / point / vector index scopes. They use them for
+//!   cost alone (anchor choice, index rewrites, index-backed ordering);
+//!   every index operator re-checks at execution time and falls back to a
+//!   label scan when its index is gone, and the predicate it replaced is
+//!   still evaluated. So any plan is correct against any graph; stats only
+//!   decide how fast it runs.
 //!
-//! # Write-heavy workloads
+//! # Plan epochs
 //!
-//! Every write bumps the epoch, so a mutating query never hits a plan
-//! compiled for an earlier epoch. Two things keep that cheap:
-//! - The parsed [`Document`] is a pure function of the query text, so it
-//!   is kept per query across epochs and a recompile skips the parser
-//!   (the parser is the largest share of compile time).
-//! - Only the [`EPOCHS_PER_QUERY`] newest plans are kept per query.
-//!   Epochs only move forward, so older plans can never hit again once a
-//!   newer epoch is live; keeping them would fill the cache with dead
-//!   entries and push out plans for other queries.
+//! Plans are keyed on a *plan epoch* rather than on the live store's write
+//! epoch. The plan epoch advances only when the store's
+//! [`plan_signature`](lora_store::GraphStorage::plan_signature) changes:
+//! an online index appears or goes (CREATE / DROP INDEX, a constraint's
+//! backing index), a label, type or counted property key appears or goes,
+//! or a count crosses a power of two. Ordinary writes leave it alone, so a
+//! repeated `CREATE` or `SET` reuses its plan instead of re-analyzing,
+//! re-planning and rebuilding the stats on every call. The signature is
+//! computed at most once per store write epoch, by the first query that
+//! sees it.
+//!
+//! Because a cached plan may be reused while counts drift within their
+//! buckets, a plan's operator choice can lag the exact stats by up to a
+//! factor of two in any count. That changes cost, never results (see
+//! above), with one visible effect: the row order of a query without
+//! `ORDER BY` follows the chosen operators, as it always has.
+//!
+//! The parsed [`Document`] is a pure function of the query text, so it is
+//! kept per query across plan epochs and a recompile skips the parser.
+//! Only the [`EPOCHS_PER_QUERY`] newest plans are kept per query. Epochs
+//! only move forward, so older plans can never hit again once a newer epoch
+//! is live; keeping them would fill the cache with dead entries.
 //!
 //! # Eviction
 //!
 //! A small bounded LRU over query texts keeps the working set hot without
 //! unbounded growth. On overflow we evict the query with the oldest access
-//! counter. The eviction scan is `O(capacity)` with `capacity = 256` and
+//! stamp. The eviction scan is `O(capacity)` with `capacity = 256` and
 //! allocates nothing; it is paid only when a new query text is admitted.
 
 use std::collections::HashMap;
@@ -83,10 +95,22 @@ pub(crate) struct PlanCache {
 
 struct Inner {
     entries: HashMap<String, Slot>,
+    /// Which plan epoch the newest resolved store write epoch maps to.
+    resolved: Resolved,
     /// Maximum number of cached plans across all queries.
     capacity: usize,
     /// Number of cached plans across all queries.
     len: usize,
+}
+
+/// The store write epoch → plan epoch mapping, for the newest store
+/// epoch seen.
+#[derive(Default)]
+struct Resolved {
+    store_epoch: u64,
+    /// Plan signature of that store epoch; `None` before the first.
+    signature: Option<u64>,
+    plan_epoch: u64,
 }
 
 struct Slot {
@@ -129,6 +153,7 @@ impl PlanCache {
         Self {
             inner: RwLock::new(Inner {
                 entries: HashMap::with_capacity(capacity),
+                resolved: Resolved::default(),
                 capacity,
                 len: 0,
             }),
@@ -148,13 +173,54 @@ impl PlanCache {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// The plan epoch of store write epoch `store_epoch` if it is the
+    /// newest resolved one, together with the cached plan for `query`
+    /// under it. `(None, None)` means the caller must
+    /// [`resolve`](Self::resolve) the store epoch first.
+    pub(crate) fn lookup(
+        &self,
+        query: &str,
+        store_epoch: u64,
+    ) -> (Option<u64>, Option<Arc<CompiledQuery>>) {
+        let guard = self.read();
+        if guard.resolved.signature.is_none() || guard.resolved.store_epoch != store_epoch {
+            return (None, None);
+        }
+        let epoch = guard.resolved.plan_epoch;
+        (Some(epoch), self.get_locked(&guard, query, epoch))
+    }
+
+    /// Map store write epoch `store_epoch`, whose snapshot has plan
+    /// signature `signature`, to a plan epoch. The plan epoch advances
+    /// when a newer store epoch brings a new signature. `None` for an
+    /// older snapshot whose signature differs from the newest one: plans
+    /// for it are not cached.
+    pub(crate) fn resolve(&self, store_epoch: u64, signature: u64) -> Option<u64> {
+        let mut guard = self.write();
+        let resolved = &mut guard.resolved;
+        if resolved.signature == Some(signature) {
+            resolved.store_epoch = resolved.store_epoch.max(store_epoch);
+            return Some(resolved.plan_epoch);
+        }
+        if resolved.signature.is_some() && store_epoch <= resolved.store_epoch {
+            return None;
+        }
+        resolved.store_epoch = store_epoch;
+        resolved.signature = Some(signature);
+        resolved.plan_epoch += 1;
+        Some(resolved.plan_epoch)
+    }
+
     /// Look up a cached plan for `query` under a plan epoch. Returns
     /// `None` on miss.
     ///
     /// On hit, the entry's last-used stamp is bumped so it survives
     /// eviction longer.
     pub(crate) fn get(&self, query: &str, epoch: u64) -> Option<Arc<CompiledQuery>> {
-        let guard = self.read();
+        self.get_locked(&self.read(), query, epoch)
+    }
+
+    fn get_locked(&self, guard: &Inner, query: &str, epoch: u64) -> Option<Arc<CompiledQuery>> {
         let slot = guard.entries.get(query)?;
         let plan = slot
             .plans
