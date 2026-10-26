@@ -1069,6 +1069,7 @@ dependencies = [
  "lora-store",
  "serde",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

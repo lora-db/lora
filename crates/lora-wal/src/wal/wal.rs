@@ -45,7 +45,7 @@ use crate::lock::DirLock;
 use crate::lsn::Lsn;
 use crate::record::{encode_frame, framed_len, RecordKind, WalRecord};
 use crate::recorder::WroteCommit;
-use crate::replay::{replay_segments, ReplaySink, TornTailInfo};
+use crate::replay::{replay_segments, CorruptCut, ReplaySink, TornTailInfo};
 use crate::segment::{SegmentReader, SegmentWriter, SEGMENT_HEADER_LEN};
 use crate::{codec, record::MAX_RECORD_LEN};
 
@@ -116,6 +116,9 @@ pub struct Wal {
     batch_target_bytes: AtomicUsize,
     /// Number of `fsync`s issued by [`Self::flush_inner`]. Diagnostic.
     fsyncs: AtomicU64,
+    /// Where this open cut a corrupt log, when it was opened with
+    /// `truncate_corrupt_tail` and needed to.
+    corrupt_cut: Option<CorruptCut>,
     /// Held for the lifetime of the WAL so a second handle cannot append
     /// to the same active segment concurrently.
     _dir_lock: DirLock,
@@ -166,16 +169,52 @@ impl Wal {
         checkpoint_lsn: Lsn,
         apply: &mut ReplaySink<'_>,
     ) -> Result<Arc<Self>, WalError> {
+        Self::open_replaying_with(
+            dir,
+            sync_mode,
+            segment_target_bytes,
+            checkpoint_lsn,
+            false,
+            apply,
+        )
+    }
+
+    /// [`Self::open_replaying`], and with `truncate_corrupt_tail` an
+    /// incident-recovery open of a log that fails with
+    /// [`WalError::Corrupt`]: instead of failing, the log is cut at the
+    /// first corrupt point and opens with the transactions committed
+    /// before it. The corrupt segment's bytes from that point are copied
+    /// to `<segment>.corrupt-<offset>` before it is truncated, and every
+    /// later segment is renamed to `<segment>.after-corrupt-<id>-<offset>`
+    /// (nothing is deleted). Corruption in an older, sealed segment so
+    /// loses every later segment's transactions. The cut is logged as a
+    /// warning and reported by [`Self::corrupt_cut`]. Other open errors
+    /// ([`WalError::Gap`], `Malformed`, I/O) still fail.
+    pub fn open_replaying_with(
+        dir: impl Into<std::path::PathBuf>,
+        sync_mode: SyncMode,
+        segment_target_bytes: u64,
+        checkpoint_lsn: Lsn,
+        truncate_corrupt_tail: bool,
+        apply: &mut ReplaySink<'_>,
+    ) -> Result<Arc<Self>, WalError> {
         let segments = SegmentDir::new(dir);
         fs::create_dir_all(segments.root())?;
         let dir_lock = DirLock::acquire(segments.root())?;
 
         let mut entries = segments.list()?;
         Self::discard_unborn_segment(&segments, &mut entries)?;
-        let (active_id, active_writer, next_lsn) = if entries.is_empty() {
-            Self::open_fresh(&segments, checkpoint_lsn)?
+        let (active_id, active_writer, next_lsn, corrupt_cut) = if entries.is_empty() {
+            let (id, writer, next_lsn) = Self::open_fresh(&segments, checkpoint_lsn)?;
+            (id, writer, next_lsn, None)
         } else {
-            Self::open_existing(&segments, &entries, checkpoint_lsn, apply)?
+            Self::open_existing(
+                &segments,
+                &entries,
+                checkpoint_lsn,
+                truncate_corrupt_tail,
+                apply,
+            )?
         };
 
         // Treat everything readable at open time, and everything the
@@ -205,6 +244,7 @@ impl Wal {
             flusher: Mutex::new(None),
             batch_target_bytes: AtomicUsize::new(BATCH_TARGET_BYTES),
             fsyncs: AtomicU64::new(0),
+            corrupt_cut,
             _dir_lock: dir_lock,
         });
 
@@ -277,14 +317,31 @@ impl Wal {
         segments: &SegmentDir,
         entries: &[crate::dir::SegmentEntry],
         checkpoint_lsn: Lsn,
+        truncate_corrupt_tail: bool,
         apply: &mut ReplaySink<'_>,
-    ) -> Result<(SegmentId, SegmentWriter, Lsn), WalError> {
+    ) -> Result<(SegmentId, SegmentWriter, Lsn, Option<CorruptCut>), WalError> {
         let paths: Vec<_> = entries.iter().map(|e| e.path.clone()).collect();
-        let replay = replay_segments(&paths, checkpoint_lsn, apply)?;
+        let mut replay = replay_segments(&paths, checkpoint_lsn, truncate_corrupt_tail, apply)?;
         // Never hand out an LSN at or below the fence: a snapshot can be
         // ahead of a log whose tail was lost, and replay skips everything
         // the fence covers.
         let next_lsn = next_lsn_after(replay.max_lsn.max(checkpoint_lsn))?;
+
+        let mut entries = entries;
+        if let Some(cut) = &mut replay.corrupt_cut {
+            let index = entries
+                .iter()
+                .position(|e| e.path == cut.segment_path)
+                .ok_or_else(|| {
+                    WalError::Malformed(format!(
+                        "corrupt segment {} is not in the WAL directory listing",
+                        cut.segment_path.display()
+                    ))
+                })?;
+            cut_corrupt_log(segments, &entries[index..], cut)?;
+            entries = &entries[..=index];
+        }
+        let corrupt_cut = replay.corrupt_cut.take();
 
         // The active segment is whichever file has the highest
         // numeric id — segment file names are self-describing, so
@@ -302,7 +359,7 @@ impl Wal {
                 .ok_or_else(|| WalError::Malformed("WAL segment id space is exhausted".into()))?;
             let writer = SegmentWriter::create(segments.path_for(next_id), next_lsn)?;
             segments.sync_dir()?;
-            return Ok((next_id, writer, next_lsn));
+            return Ok((next_id, writer, next_lsn, corrupt_cut));
         }
 
         let mut writer = SegmentWriter::open_for_append_at(
@@ -323,7 +380,14 @@ impl Wal {
             writer.truncate_to(t.last_good_offset)?;
         }
 
-        Ok((active.id, writer, next_lsn))
+        Ok((active.id, writer, next_lsn, corrupt_cut))
+    }
+
+    /// Where this open cut a corrupt log, when it was opened with
+    /// `truncate_corrupt_tail` (see [`Self::open_replaying_with`]) and
+    /// found corruption. `None` for a log that opened intact.
+    pub fn corrupt_cut(&self) -> Option<&CorruptCut> {
+        self.corrupt_cut.as_ref()
     }
 
     pub fn dir(&self) -> &Path {
@@ -850,43 +914,122 @@ fn batch_payload_len_checked(count: usize, events_len: usize) -> Result<usize, W
 /// follows it, but keeping the bytes costs little and makes a wrong call
 /// recoverable.
 fn preserve_torn_tail(segments: &SegmentDir, torn: &TornTailInfo) -> Result<(), WalError> {
-    let mut source = fs::File::open(&torn.segment_path)?;
+    keep_segment_tail(segments, &torn.segment_path, torn.last_good_offset, "torn")?;
+    Ok(())
+}
+
+/// Copy `segment`'s bytes from `offset` to its end into a new file
+/// `<segment>.<kind>-<offset>` beside it (with a `-<n>` suffix if that
+/// name is taken), fsynced. Returns the new file, or `None` when the
+/// segment has no bytes past `offset`.
+fn keep_segment_tail(
+    segments: &SegmentDir,
+    segment: &Path,
+    offset: u64,
+    kind: &str,
+) -> Result<Option<PathBuf>, WalError> {
+    let mut source = fs::File::open(segment)?;
     let len = source.metadata()?.len();
-    if len <= torn.last_good_offset {
-        return Ok(());
+    if len <= offset {
+        return Ok(None);
     }
-    source.seek(SeekFrom::Start(torn.last_good_offset))?;
-    let file_name = torn
-        .segment_path
+    source.seek(SeekFrom::Start(offset))?;
+    let file_name = segment
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let (mut out, path) = create_unique(segments, &format!("{file_name}.{kind}-{offset}"))?;
+    std::io::copy(&mut (&mut source).take(len - offset), &mut out)?;
+    out.flush()?;
+    sync_file(&out)?;
+    segments.sync_dir()?;
+    Ok(Some(path))
+}
+
+/// Create `<dir>/<name>`, or `<name>-<n>` for the first free `n`.
+fn create_unique(segments: &SegmentDir, name: &str) -> Result<(fs::File, PathBuf), WalError> {
     let mut attempt = 0u32;
-    let (mut out, _path): (fs::File, PathBuf) = loop {
-        let suffix = if attempt == 0 {
-            String::new()
-        } else {
-            format!("-{attempt}")
-        };
-        let path = segments.root().join(format!(
-            "{file_name}.torn-{}{suffix}",
-            torn.last_good_offset
-        ));
+    loop {
+        let path = segments.root().join(unique_name(name, attempt));
         match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => break (file, path),
+            Ok(file) => return Ok((file, path)),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && attempt < 1000 => {
                 attempt += 1;
             }
             Err(err) => return Err(err.into()),
         }
+    }
+}
+
+fn unique_name(name: &str, attempt: u32) -> String {
+    if attempt == 0 {
+        name.to_string()
+    } else {
+        format!("{name}-{attempt}")
+    }
+}
+
+/// Cut the log at `cut`: keep the corrupt segment's bytes from the cut
+/// offset beside it, move every later segment out of the log, then
+/// truncate the corrupt segment. `from` starts with the corrupt segment.
+/// Each step keeps a crash safe to retry: until the truncate, the next
+/// open finds the same corruption and cuts again.
+fn cut_corrupt_log(
+    segments: &SegmentDir,
+    from: &[crate::dir::SegmentEntry],
+    cut: &mut CorruptCut,
+) -> Result<(), WalError> {
+    let Some((corrupt, later)) = from.split_first() else {
+        return Ok(());
     };
-    std::io::copy(
-        &mut (&mut source).take(len - torn.last_good_offset),
-        &mut out,
-    )?;
-    out.flush()?;
-    sync_file(&out)?;
+    cut.kept_tail = keep_segment_tail(segments, &corrupt.path, cut.offset, "corrupt")?;
+
+    let stem = corrupt
+        .path
+        .file_stem()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    for entry in later {
+        let file_name = entry
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let base = format!("{file_name}.after-corrupt-{stem}-{}", cut.offset);
+        let mut attempt = 0u32;
+        let target = loop {
+            let target = segments.root().join(unique_name(&base, attempt));
+            if !target.exists() || attempt >= 1000 {
+                break target;
+            }
+            attempt += 1;
+        };
+        if target.exists() {
+            return Err(WalError::Malformed(format!(
+                "cannot move WAL segment {} aside: {} exists",
+                entry.path.display(),
+                target.display()
+            )));
+        }
+        fs::rename(&entry.path, &target)?;
+        cut.moved_segments.push((entry.path.clone(), target));
+    }
     segments.sync_dir()?;
+
+    let file = OpenOptions::new().write(true).open(&corrupt.path)?;
+    file.set_len(cut.offset)?;
+    sync_file(&file)?;
+    segments.sync_dir()?;
+
+    tracing::warn!(
+        segment = %corrupt.path.display(),
+        offset = cut.offset,
+        reason = %cut.reason,
+        kept_tail = ?cut.kept_tail,
+        moved_segments = ?cut.moved_segments,
+        "WAL was corrupt and truncate_corrupt_tail is set: cut the log at the corrupt record; \
+         transactions from that point on are not recovered and were kept beside the log"
+    );
     Ok(())
 }
 

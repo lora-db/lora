@@ -57,10 +57,17 @@ impl Database<InMemoryGraph> {
                 dir,
                 sync_mode,
                 segment_target_bytes,
+                truncate_corrupt_tail,
             } => {
                 let mut graph = InMemoryGraph::new();
-                let wal =
-                    open_wal_into(&mut graph, dir, sync_mode, segment_target_bytes, Lsn::ZERO)?;
+                let wal = open_wal_into(
+                    &mut graph,
+                    dir,
+                    sync_mode,
+                    segment_target_bytes,
+                    Lsn::ZERO,
+                    truncate_corrupt_tail,
+                )?;
                 let recorder = Arc::new(WalRecorder::new(wal));
                 Ok(Self::from_graph_with_wal(graph, recorder, None, None))
             }
@@ -90,6 +97,7 @@ impl Database<InMemoryGraph> {
                 dir,
                 sync_mode,
                 segment_target_bytes,
+                truncate_corrupt_tail,
             } => {
                 let snapshot_lsn = snapshot_store
                     .load_latest(&mut graph)
@@ -100,6 +108,7 @@ impl Database<InMemoryGraph> {
                     sync_mode,
                     segment_target_bytes,
                     snapshot_lsn,
+                    truncate_corrupt_tail,
                 )?;
                 let recorder = Arc::new(WalRecorder::new(wal));
                 Ok(Self::from_graph_with_wal(
@@ -147,6 +156,7 @@ impl Database<InMemoryGraph> {
             options.sync_mode,
             options.segment_target_bytes,
             snapshot_lsn,
+            false,
         )?;
         let mirror: Arc<dyn WalMirror> = archive.clone();
         let recorder = Arc::new(WalRecorder::new_with_mirror(wal, Some(mirror)));
@@ -205,6 +215,7 @@ impl Database<InMemoryGraph> {
                 dir,
                 sync_mode,
                 segment_target_bytes,
+                truncate_corrupt_tail,
             } => {
                 // Diagnostic peek at the WAL's newest checkpoint
                 // marker so we can warn the operator about a stale
@@ -234,6 +245,7 @@ impl Database<InMemoryGraph> {
                     sync_mode,
                     segment_target_bytes,
                     snapshot_lsn,
+                    truncate_corrupt_tail,
                 )?;
                 let recorder = Arc::new(WalRecorder::new(wal));
                 Ok(Self::from_graph_with_wal(graph, recorder, None, None))

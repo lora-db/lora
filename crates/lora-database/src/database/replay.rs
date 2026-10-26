@@ -76,14 +76,16 @@ pub(crate) fn open_wal_into(
     sync_mode: SyncMode,
     segment_target_bytes: u64,
     checkpoint_lsn: Lsn,
+    truncate_corrupt_tail: bool,
 ) -> std::result::Result<Arc<Wal>, LoraError> {
     let mut applied = 0usize;
     let mut failure = None;
-    let opened = Wal::open_replaying(
+    let opened = Wal::open_replaying_with(
         dir,
         sync_mode,
         segment_target_bytes,
         checkpoint_lsn,
+        truncate_corrupt_tail,
         &mut |events| {
             let count = events.len();
             replay_from(graph, applied, events).map_err(|err| {

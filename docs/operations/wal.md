@@ -142,6 +142,32 @@ valid records after it, a bad frame in an older or sealed segment, or a
 CRC-valid record whose payload does not decode. Read errors fail the open
 as `WalError::Io`.
 
+`WalConfig::Enabled { truncate_corrupt_tail: true, .. }`
+(`Wal::open_replaying_with(.., true, ..)`, `lora-server
+--wal-truncate-corrupt-tail` / `LORA_SERVER_WAL_TRUNCATE_CORRUPT_TAIL`) is
+the incident-recovery way out of `WalError::Corrupt`. Replay stops at the
+first corrupt point instead of failing, so only the transactions committed
+before it are applied, then `cut_corrupt_log` (`src/wal/wal.rs`):
+
+1. copies the corrupt segment's bytes from the offset to its end into
+   `<segment>.wal.corrupt-<offset>` and fsyncs it;
+2. renames every later segment to
+   `<segment>.wal.after-corrupt-<corrupt segment id>-<offset>` (names the
+   segment listing ignores) and fsyncs the directory;
+3. truncates the corrupt segment at the offset and fsyncs it.
+
+A crash part way leaves the corruption in place, so the next forced open
+cuts again. If the corrupt segment is sealed it is now the newest one, and
+the open creates its successor as after a rotation crash. The next LSN is
+above both the last record kept and the snapshot fence. The cut is logged
+with `tracing::warn!` and kept on the handle as `Wal::corrupt_cut()`;
+`lora-server` prints it on stderr. Only `WalError::Corrupt` is cut:
+`WalError::Gap`, `Malformed` structure, a bad segment header and I/O errors
+still fail the open. Named databases (`DatabaseOpenOptions`) do not take the
+option, because their work directory, where the cut data would be kept, is
+removed on a clean close. The operator procedure is in
+[WAL and Checkpoints](../../apps/loradb.com/docs/wal.md#corrupt-wal-incident-procedure).
+
 Replay also fails with `WalError::Gap` when the oldest segment starts
 above `fence + 1` (its predecessors were removed by a checkpoint whose
 snapshot was not loaded) or when a segment id is missing between the

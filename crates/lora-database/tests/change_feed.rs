@@ -48,6 +48,7 @@ fn wal_config(dir: &Path, segment_target_bytes: u64) -> WalConfig {
         dir: dir.to_path_buf(),
         sync_mode: SyncMode::GroupSync { interval_ms: 1000 },
         segment_target_bytes,
+        truncate_corrupt_tail: false,
     }
 }
 

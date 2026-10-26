@@ -205,6 +205,9 @@ contents do not decode. So does a WAL that does not reach back to the replay
 fence, for example a log whose early segments a checkpoint removed, opened
 without that checkpoint's snapshot, or a log missing a segment in the middle.
 
+Opening a corrupt WAL needs an explicit decision from you; see
+[Corrupt WAL: incident procedure](#corrupt-wal-incident-procedure).
+
 A transaction too large for one WAL record is split across several
 `MutationBatch` records inside one `TxBegin`/`TxCommit` pair. Property values
 nested more than 128 lists or maps deep are rejected when they are written.
@@ -251,6 +254,60 @@ a marker implies the snapshot existed at the time of the checkpoint.
 If recovery sees a newer checkpoint marker than the snapshot you
 supplied, it prints a warning and still replays from the snapshot's own
 fence. That is safe, but it may do more replay work than necessary.
+
+## Corrupt WAL: incident procedure
+
+When the WAL is damaged in the middle (a flipped bit on disk, a segment
+overwritten by another tool), the database refuses to open with
+`LORA_WAL_CORRUPTION`. The error names the segment file, the byte
+offset, and what was wrong there, for example:
+
+```text
+WAL segment `/var/lib/lora/wal/0000000003.wal` is corrupt at byte 52113: CRC mismatch ...; a valid record follows at byte 52190, so this is not a torn tail
+```
+
+Nothing is changed on disk. Work through these steps:
+
+1. **Stop and copy.** Keep the server stopped and copy the whole WAL
+   directory (and your snapshots) somewhere safe before trying anything.
+2. **Prefer a better copy.** If you have a backup, a replica, or a
+   recent snapshot plus an intact WAL elsewhere, restore that instead.
+3. **Decide whether to cut.** If the WAL in place is the only copy,
+   you can start from everything before the damage. Writes recorded
+   after the corrupt point are not recovered. If the damage is in an
+   older segment, that includes every later segment.
+4. **Start once with the cut enabled**, then restart without it:
+
+   ```bash
+   lora-server --wal-dir /var/lib/lora/wal --wal-truncate-corrupt-tail
+   # or LORA_SERVER_WAL_TRUNCATE_CORRUPT_TAIL=true
+   ```
+
+   In Rust, set `truncate_corrupt_tail: true` on `WalConfig::Enabled`
+   for `Database::open_with_wal`, `open_with_wal_snapshots` or
+   `recover`.
+
+With the option set, the open cuts the log at the first corrupt record
+and starts with the transactions committed before it. Nothing is
+deleted:
+
+| What | Where it goes |
+|---|---|
+| Bytes of the corrupt segment from the bad record to its end | `<segment>.wal.corrupt-<offset>` beside it |
+| Every later segment | Renamed to `<segment>.wal.after-corrupt-<corrupt segment>-<offset>` |
+| The corrupt segment | Truncated at the bad record; if it was sealed, a new segment starts after it |
+
+`lora-server` prints each of these on stderr at startup, and the
+embedded library logs them as a `tracing` warning. In Rust,
+`Wal::corrupt_cut()` (through `db.wal()`) reports them too. The open
+only acts on `LORA_WAL_CORRUPTION` from a damaged record; a missing
+segment (a gap) or an unreadable segment header still fails.
+
+Once the server is up, take a snapshot or checkpoint, and do not keep
+the option on: a later open should fail loudly if the disk damages the
+log again. The option is not wired into named databases
+(`openDatabase(name)` and the `.loradb` container) or the language
+bindings' WAL options.
 
 ## Sync modes
 

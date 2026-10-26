@@ -86,6 +86,7 @@ fn enabled(dir: &Path) -> WalConfig {
             interval_ms: 60_000,
         },
         segment_target_bytes: 8 * 1024 * 1024,
+        truncate_corrupt_tail: false,
     }
 }
 
@@ -96,6 +97,7 @@ fn group_enabled(dir: &Path) -> WalConfig {
             interval_ms: 60_000,
         },
         segment_target_bytes: 8 * 1024 * 1024,
+        truncate_corrupt_tail: false,
     }
 }
 
@@ -1209,6 +1211,60 @@ fn recover_seeds_a_fresh_wal_from_an_unfenced_snapshot() {
             serde_json::json!({"x": 2}),
             serde_json::json!({"x": 3}),
         ]
+    );
+}
+
+#[test]
+fn truncate_corrupt_tail_opens_a_corrupt_wal_at_its_last_good_record() {
+    let wal_dir = TmpDir::new("cut-corrupt-db");
+    {
+        let db = Database::open_with_wal(enabled(wal_dir.path())).unwrap();
+        for i in 0..50 {
+            db.execute(&format!("CREATE (:C {{i: {i}}})"), rows())
+                .unwrap();
+        }
+    }
+    let segment = std::fs::read_dir(wal_dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "wal"))
+        .max()
+        .unwrap();
+    let mut bytes = std::fs::read(&segment).unwrap();
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0x10;
+    std::fs::write(&segment, &bytes).unwrap();
+
+    let err = match Database::open_with_wal(enabled(wal_dir.path())) {
+        Ok(_) => panic!("a corrupt WAL must not open by default"),
+        Err(err) => err,
+    };
+    assert_eq!(err.code(), lora_database::LoraErrorCode::WalCorruption);
+
+    let mut forced = enabled(wal_dir.path());
+    if let WalConfig::Enabled {
+        truncate_corrupt_tail,
+        ..
+    } = &mut forced
+    {
+        *truncate_corrupt_tail = true;
+    }
+    let kept = {
+        let db = Database::open_with_wal(forced).unwrap();
+        let kept = db.node_count();
+        assert!(kept > 0 && kept < 50, "kept {kept} of 50 nodes");
+        let cut = db.wal().unwrap().wal().corrupt_cut().cloned().unwrap();
+        assert!(cut.kept_tail.unwrap().exists());
+        db.execute("CREATE (:C {i: 1000})", rows()).unwrap();
+        kept
+    };
+
+    let db = Database::open_with_wal(enabled(wal_dir.path())).unwrap();
+    assert_eq!(db.node_count(), kept + 1);
+    assert_eq!(
+        json_rows(&db, "MATCH (c:C) RETURN max(c.i) AS top"),
+        vec![serde_json::json!({"top": 1000})]
     );
 }
 

@@ -117,6 +117,7 @@ fn wal_config(cfg: &ServerConfig, dir: &Path) -> WalConfig {
         dir: dir.to_path_buf(),
         sync_mode: cfg.wal_sync_mode,
         segment_target_bytes: DEFAULT_WAL_SEGMENT_TARGET_BYTES,
+        truncate_corrupt_tail: false,
     }
 }
 

@@ -82,6 +82,7 @@ fn wal_config(dir: &std::path::Path, sync_mode: SyncMode) -> WalConfig {
         dir: dir.to_path_buf(),
         sync_mode,
         segment_target_bytes: 8 * 1024 * 1024,
+        truncate_corrupt_tail: false,
     }
 }
 

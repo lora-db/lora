@@ -70,6 +70,28 @@ pub struct ReplayOutcome {
     /// segment walked. `Wal::open` uses this to reopen the active writer
     /// without performing a second full scan of the active segment.
     pub last_good_offset: u64,
+
+    /// Where replay stopped at corruption instead of failing, when it was
+    /// asked to (`truncate_corrupt_tail`). Everything from this point on
+    /// was not replayed; the caller cuts the log here.
+    pub corrupt_cut: Option<CorruptCut>,
+}
+
+/// A corrupt point at which an open with `truncate_corrupt_tail` cut the
+/// log: the segment was truncated at `offset`, the bytes after it were
+/// copied to `kept_tail`, and every later segment was renamed to the
+/// matching path in `moved_segments`. Nothing is deleted.
+#[derive(Debug, Clone)]
+pub struct CorruptCut {
+    pub segment_path: PathBuf,
+    pub offset: u64,
+    /// The [`WalError::Corrupt`] reason replay found at `offset`.
+    pub reason: String,
+    /// Copy of the segment's bytes from `offset` to its end, or `None`
+    /// when there were none.
+    pub kept_tail: Option<PathBuf>,
+    /// Later segments moved out of the log, as `(from, to)`.
+    pub moved_segments: Vec<(PathBuf, PathBuf)>,
 }
 
 #[derive(Debug)]
@@ -96,14 +118,20 @@ pub type ReplaySink<'a> = dyn FnMut(Vec<MutationEvent>) -> Result<(), WalError> 
 /// cutting it would silently drop committed transactions. A log whose
 /// oldest segment starts above `checkpoint_lsn + 1`, or that is missing a
 /// segment in the middle, fails with [`WalError::Gap`].
+///
+/// With `cut_corruption`, a [`WalError::Corrupt`] point ends the replay
+/// instead of failing it: the outcome's `corrupt_cut` names it, and only
+/// the transactions committed before it reached `sink`.
 pub(crate) fn replay_segments(
     paths: &[PathBuf],
     checkpoint_lsn: Lsn,
+    cut_corruption: bool,
     sink: &mut ReplaySink<'_>,
 ) -> Result<ReplayOutcome, WalError> {
     check_segment_ids_contiguous(paths)?;
     let mut state = ReplayState::new(sink);
     let mut torn_tail: Option<TornTailInfo> = None;
+    let mut corrupt_cut: Option<CorruptCut> = None;
     let mut last_good_offset = SEGMENT_HEADER_LEN as u64;
 
     'outer: for (index, path) in paths.iter().enumerate() {
@@ -125,9 +153,15 @@ pub(crate) fn replay_segments(
                     // The frame's CRC matched, so these are the bytes that
                     // were written: a payload that does not decode is never
                     // a torn tail.
-                    let record = raw
-                        .decode()
-                        .map_err(|err| corrupt(path, before, err.to_string()))?;
+                    let record = match raw.decode() {
+                        Ok(record) => record,
+                        Err(err) => {
+                            let err = corrupt(path, before, err.to_string());
+                            corrupt_cut = Some(cut_or_fail(err, cut_corruption)?);
+                            last_good_offset = before;
+                            break 'outer;
+                        }
+                    };
                     state.accept_record(record, segment_base, checkpoint_lsn, path)?;
                     last_good_offset = reader.position();
                 }
@@ -140,17 +174,23 @@ pub(crate) fn replay_segments(
                         } else {
                             "a segment that is not the newest"
                         };
-                        return Err(corrupt(path, before, format!("{cause} in {place}")));
+                        let err = corrupt(path, before, format!("{cause} in {place}"));
+                        corrupt_cut = Some(cut_or_fail(err, cut_corruption)?);
+                        last_good_offset = before;
+                        break 'outer;
                     }
                     if let Some(at) = reader.find_valid_frame_after(before, state.last_lsn)? {
-                        return Err(corrupt(
+                        let err = corrupt(
                             path,
                             before,
                             format!(
                                 "{cause}; a valid record follows at byte {at}, \
                                  so this is not a torn tail"
                             ),
-                        ));
+                        );
+                        corrupt_cut = Some(cut_or_fail(err, cut_corruption)?);
+                        last_good_offset = before;
+                        break 'outer;
                     }
                     torn_tail = Some(TornTailInfo {
                         segment_path: path.clone(),
@@ -163,7 +203,26 @@ pub(crate) fn replay_segments(
         }
     }
 
-    Ok(state.finish(torn_tail, last_good_offset))
+    Ok(state.finish(torn_tail, corrupt_cut, last_good_offset))
+}
+
+/// `err` (a [`WalError::Corrupt`]) as the point to cut the log at, when
+/// the caller asked for that, or `err` itself.
+fn cut_or_fail(err: WalError, cut_corruption: bool) -> Result<CorruptCut, WalError> {
+    match err {
+        WalError::Corrupt {
+            path,
+            offset,
+            reason,
+        } if cut_corruption => Ok(CorruptCut {
+            segment_path: path,
+            offset,
+            reason,
+            kept_tail: None,
+            moved_segments: Vec::new(),
+        }),
+        err => Err(err),
+    }
 }
 
 fn corrupt(path: &Path, offset: u64, reason: String) -> WalError {
@@ -405,7 +464,12 @@ impl<'s, 'a> ReplayState<'s, 'a> {
         Ok(())
     }
 
-    fn finish(self, torn_tail: Option<TornTailInfo>, last_good_offset: u64) -> ReplayOutcome {
+    fn finish(
+        self,
+        torn_tail: Option<TornTailInfo>,
+        corrupt_cut: Option<CorruptCut>,
+        last_good_offset: u64,
+    ) -> ReplayOutcome {
         // Any transaction still in `pending` at end-of-log was started
         // but never committed (and never explicitly aborted). Treat as
         // crashed mid-query and discard.
@@ -414,6 +478,7 @@ impl<'s, 'a> ReplayState<'s, 'a> {
             torn_tail,
             checkpoint_lsn_observed: self.checkpoint_lsn_observed,
             last_good_offset,
+            corrupt_cut,
         }
     }
 }
@@ -435,7 +500,7 @@ fn missing_tx_begin(kind: &str, record_lsn: Lsn, tx_begin_lsn: Lsn) -> WalError 
 pub fn replay_dir(dir: &Path, checkpoint_lsn: Lsn) -> Result<ReplayOutcome, WalError> {
     let entries = SegmentDir::new(dir).list()?;
     let paths: Vec<PathBuf> = entries.into_iter().map(|e| e.path).collect();
-    replay_segments(&paths, checkpoint_lsn, &mut |_| Ok(()))
+    replay_segments(&paths, checkpoint_lsn, false, &mut |_| Ok(()))
 }
 
 /// Newest checkpoint marker in the WAL at `dir`: the `snapshot_lsn` of the

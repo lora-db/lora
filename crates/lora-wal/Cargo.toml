@@ -16,3 +16,4 @@ lora-store.workspace = true
 serde.workspace = true
 crc32fast.workspace = true
 thiserror.workspace = true
+tracing.workspace = true

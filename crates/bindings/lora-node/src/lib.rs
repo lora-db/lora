@@ -1210,6 +1210,7 @@ fn open_explicit_wal_database(
         dir: PathBuf::from(wal_dir),
         sync_mode,
         segment_target_bytes: 8 * 1024 * 1024,
+        truncate_corrupt_tail: false,
     };
     let db = if let Some(snapshot_dir) = snapshot_dir {
         let mut snapshots = SnapshotConfig::enabled(snapshot_dir)
