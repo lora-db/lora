@@ -43,8 +43,9 @@
 //! allocates nothing; it is paid only when a new query text is admitted.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use lora_ast::Document;
 use lora_compiler::CompiledQuery;
@@ -58,22 +59,30 @@ const DEFAULT_CAPACITY: usize = 256;
 /// the epoch just before a concurrent write landed.
 const EPOCHS_PER_QUERY: usize = 2;
 
-/// Content-addressed cache mapping `(query text, live-store epoch)` →
+/// Content-addressed cache mapping `(query text, plan epoch)` →
 /// compiled plan, plus query text → parsed document.
 ///
 /// Cloning a `PlanCache` is meaningful: callers wrap it in `Arc` so all
 /// `Database` clones (and the read/write phases of a single `execute`) share
 /// the same map.
+///
+/// # Concurrency
+///
+/// Hits take only the read lock, so concurrent readers of cached plans
+/// never wait on each other. The LRU stamp of a hit is an atomic that is
+/// written only when it changes: the stamp is the miss clock, which moves
+/// once per insert, so a hot query hit over and over writes nothing
+/// shared beyond the plan's refcount.
 pub(crate) struct PlanCache {
-    inner: Mutex<Inner>,
+    inner: RwLock<Inner>,
+    /// Logical clock for LRU stamps; advances once per insert. Hits stamp
+    /// their slot with the current value, so slots hit since the last
+    /// insert tie, and everything older sorts below them.
+    clock: AtomicU64,
 }
 
 struct Inner {
     entries: HashMap<String, Slot>,
-    /// Monotonic counter used as the "last accessed" stamp for LRU eviction.
-    /// Wrapping at u64 takes longer than any reasonable process lifetime, so
-    /// we don't worry about overflow.
-    counter: u64,
     /// Maximum number of cached plans across all queries.
     capacity: usize,
     /// Number of cached plans across all queries.
@@ -87,11 +96,21 @@ struct Slot {
     document: Option<Arc<Document>>,
     /// At most [`EPOCHS_PER_QUERY`] plans, one per epoch.
     plans: Vec<Entry>,
-    last_used: u64,
+    last_used: AtomicU64,
+}
+
+impl Slot {
+    fn touch(&self, now: u64) {
+        // Load first: a hit on a slot already stamped `now` stays a pure
+        // read, so readers on different cores don't bounce its line.
+        if self.last_used.load(Ordering::Relaxed) != now {
+            self.last_used.store(now, Ordering::Relaxed);
+        }
+    }
 }
 
 struct Entry {
-    store_epoch: u64,
+    epoch: u64,
     plan: Arc<CompiledQuery>,
 }
 
@@ -108,44 +127,48 @@ impl PlanCache {
 
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
-            inner: Mutex::new(Inner {
+            inner: RwLock::new(Inner {
                 entries: HashMap::with_capacity(capacity),
-                counter: 0,
                 capacity,
                 len: 0,
             }),
+            clock: AtomicU64::new(0),
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+    fn read(&self) -> RwLockReadGuard<'_, Inner> {
         self.inner
-            .lock()
+            .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Look up a cached plan for `query` under a live-store epoch.
-    /// Returns `None` on miss.
+    fn write(&self) -> RwLockWriteGuard<'_, Inner> {
+        self.inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Look up a cached plan for `query` under a plan epoch. Returns
+    /// `None` on miss.
     ///
-    /// On hit, the entry's last-used timestamp is bumped so it survives
+    /// On hit, the entry's last-used stamp is bumped so it survives
     /// eviction longer.
-    pub(crate) fn get(&self, query: &str, store_epoch: u64) -> Option<Arc<CompiledQuery>> {
-        let mut guard = self.lock();
-        let counter = guard.counter.wrapping_add(1);
-        guard.counter = counter;
-        let slot = guard.entries.get_mut(query)?;
+    pub(crate) fn get(&self, query: &str, epoch: u64) -> Option<Arc<CompiledQuery>> {
+        let guard = self.read();
+        let slot = guard.entries.get(query)?;
         let plan = slot
             .plans
             .iter()
-            .find(|entry| entry.store_epoch == store_epoch)?
+            .find(|entry| entry.epoch == epoch)?
             .plan
             .clone();
-        slot.last_used = counter;
+        slot.touch(self.clock.load(Ordering::Relaxed));
         Some(plan)
     }
 
     /// The cached parse of `query`, if any epoch of it has been compiled.
     pub(crate) fn document(&self, query: &str) -> Option<Arc<Document>> {
-        self.lock()
+        self.read()
             .entries
             .get(query)
             .and_then(|slot| slot.document.clone())
@@ -153,34 +176,31 @@ impl PlanCache {
 
     /// Insert a freshly-compiled plan. If the cache is at capacity, evict
     /// the least recently used query.
-    pub(crate) fn insert(&self, query: &str, store_epoch: u64, plan: Arc<CompiledQuery>) {
-        self.insert_with_document(query, store_epoch, None, plan);
+    pub(crate) fn insert(&self, query: &str, epoch: u64, plan: Arc<CompiledQuery>) {
+        self.insert_with_document(query, epoch, None, plan);
     }
 
     pub(crate) fn insert_with_document(
         &self,
         query: &str,
-        store_epoch: u64,
+        epoch: u64,
         document: Option<Arc<Document>>,
         plan: Arc<CompiledQuery>,
     ) {
-        let mut guard = self.lock();
+        let mut guard = self.write();
         if guard.capacity == 0 {
             return;
         }
-        let counter = guard.counter.wrapping_add(1);
-        guard.counter = counter;
+        // Stamp with the current tick, then advance it: hits from now on
+        // rank above this insert.
+        let now = self.clock.fetch_add(1, Ordering::Relaxed);
 
         if let Some(slot) = guard.entries.get_mut(query) {
-            slot.last_used = counter;
+            *slot.last_used.get_mut() = now;
             if slot.document.is_none() {
                 slot.document = document;
             }
-            if let Some(entry) = slot
-                .plans
-                .iter_mut()
-                .find(|entry| entry.store_epoch == store_epoch)
-            {
+            if let Some(entry) = slot.plans.iter_mut().find(|entry| entry.epoch == epoch) {
                 entry.plan = plan;
                 return;
             }
@@ -192,15 +212,15 @@ impl PlanCache {
                     .plans
                     .iter()
                     .enumerate()
-                    .map(|(idx, entry)| (idx, entry.store_epoch))
+                    .map(|(idx, entry)| (idx, entry.epoch))
                     .min_by_key(|&(_, epoch)| epoch)
                     .expect("slot holds plans");
-                if store_epoch > oldest_epoch {
-                    slot.plans[oldest_idx] = Entry { store_epoch, plan };
+                if epoch > oldest_epoch {
+                    slot.plans[oldest_idx] = Entry { epoch, plan };
                 }
                 return;
             }
-            slot.plans.push(Entry { store_epoch, plan });
+            slot.plans.push(Entry { epoch, plan });
             guard.len += 1;
             while guard.len > guard.capacity {
                 if !evict_oldest(&mut guard, Some(query)) {
@@ -219,8 +239,8 @@ impl PlanCache {
             query.to_owned(),
             Slot {
                 document,
-                plans: vec![Entry { store_epoch, plan }],
-                last_used: counter,
+                plans: vec![Entry { epoch, plan }],
+                last_used: AtomicU64::new(now),
             },
         );
         guard.len += 1;
@@ -228,7 +248,7 @@ impl PlanCache {
 
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.lock().len
+        self.read().len
     }
 }
 
@@ -239,7 +259,7 @@ fn evict_oldest(guard: &mut Inner, keep: Option<&str>) -> bool {
         .entries
         .iter()
         .filter(|(query, _)| Some(query.as_str()) != keep)
-        .min_by_key(|(_, slot)| slot.last_used)
+        .min_by_key(|(_, slot)| slot.last_used.load(Ordering::Relaxed))
         .map(|(query, _)| query.clone());
     let Some(query) = oldest else {
         return false;
