@@ -18,7 +18,7 @@ use lora_store::{
     DeletedRecordSink, GraphStorage, GraphStorageMut, InMemoryGraph, MutationEvent,
     MutationRecorder,
 };
-use lora_wal::{Lsn, SyncMode, Wal, WalError};
+use lora_wal::{Lsn, ReplayStep, SyncMode, Wal, WalError};
 
 use crate::error::{LoraError, LoraErrorCode};
 
@@ -70,6 +70,13 @@ pub(crate) fn replay_into(graph: &mut InMemoryGraph, events: Vec<MutationEvent>)
 /// Open a WAL, applying each committed transaction to `graph` as replay
 /// reads it, so the open holds the graph and one transaction rather than
 /// the whole log decoded.
+///
+/// A transaction too large for replay to buffer arrives in parts before
+/// its commit ([`ReplayStep::Partial`]). They are applied to `graph` at
+/// once, over a clone of the graph taken before the first: a clone shares
+/// the graph's storage, so it costs the parts of the graph the
+/// transaction changes, not the graph. A commit drops the clone; a
+/// discard puts it back.
 pub(crate) fn open_wal_into(
     graph: &mut InMemoryGraph,
     dir: impl Into<std::path::PathBuf>,
@@ -80,21 +87,55 @@ pub(crate) fn open_wal_into(
 ) -> std::result::Result<Arc<Wal>, LoraError> {
     let mut applied = 0usize;
     let mut failure = None;
+    // The graph before the transaction streaming in parts, and the first
+    // error applying them: it only counts if the transaction commits.
+    let mut before: Option<(InMemoryGraph, usize)> = None;
+    let mut provisional_failure: Option<anyhow::Error> = None;
     let opened = Wal::open_replaying_with(
         dir,
         sync_mode,
         segment_target_bytes,
         checkpoint_lsn,
         truncate_corrupt_tail,
-        &mut |events| {
-            let count = events.len();
-            replay_from(graph, applied, events).map_err(|err| {
+        &mut |step| {
+            let fail = |err: anyhow::Error, failure: &mut Option<anyhow::Error>| {
                 let message = err.to_string();
-                failure = Some(err);
+                *failure = Some(err);
                 WalError::Malformed(message)
-            })?;
-            applied += count;
-            Ok(())
+            };
+            match step {
+                ReplayStep::Partial(events) => {
+                    if before.is_none() {
+                        before = Some((graph.clone(), applied));
+                    }
+                    if provisional_failure.is_none() {
+                        let count = events.len();
+                        match replay_from(graph, applied, events) {
+                            Ok(()) => applied += count,
+                            Err(err) => provisional_failure = Some(err),
+                        }
+                    }
+                    Ok(())
+                }
+                ReplayStep::Commit(events) => {
+                    before = None;
+                    if let Some(err) = provisional_failure.take() {
+                        return Err(fail(err, &mut failure));
+                    }
+                    let count = events.len();
+                    replay_from(graph, applied, events).map_err(|err| fail(err, &mut failure))?;
+                    applied += count;
+                    Ok(())
+                }
+                ReplayStep::Discard => {
+                    if let Some((graph_before, applied_before)) = before.take() {
+                        *graph = graph_before;
+                        applied = applied_before;
+                    }
+                    provisional_failure = None;
+                    Ok(())
+                }
+            }
         },
     );
     match (opened, failure) {

@@ -246,3 +246,101 @@ fn opening_a_checkpoint_writes_no_wal_for_the_graph() {
         wal_bytes(&dir.path)
     );
 }
+
+/// Nodes the large-transaction test writes in one statement: their WAL
+/// records come to over three times what replay buffers of one
+/// transaction (`lora_wal::PENDING_BUDGET_BYTES`).
+const LARGE_TX_NODES: usize = 400_000;
+
+/// Heap replaying a large transaction may take over the graph: one WAL
+/// record (8 MB at most) and its events decoded, about 35 MB.
+const REPLAY_SLACK: isize = 48 * 1024 * 1024;
+
+/// Heap a checkpoint may take over the graph: copy buffers and the
+/// compressors, about 1 MB, never a segment or the snapshot.
+const CHECKPOINT_SLACK: isize = 8 * 1024 * 1024;
+
+#[test]
+fn a_transaction_larger_than_the_replay_buffer_opens_and_syncs_in_bounded_memory() {
+    let _guard = MEASURE.lock().unwrap_or_else(|p| p.into_inner());
+    let dir = TmpDir::new("large-tx");
+
+    {
+        let db = Database::open_named("app", options(&dir.path, u64::MAX)).unwrap();
+        // One transaction never spans segments: this leaves one segment
+        // of about 50 MB, whatever the 256 KB target.
+        db.execute(
+            &format!(
+                "UNWIND list.range(0, {}) AS i \
+                 CREATE (:Record {{key: 'src:item:' + toString(i), hash: '0123456789abcdef', v: i}})",
+                LARGE_TX_NODES - 1
+            ),
+            rows(),
+        )
+        .unwrap();
+    }
+    let wal = wal_bytes_in_container(&dir.path);
+    assert!(
+        wal > 3 * lora_wal::PENDING_BUDGET_BYTES as u64,
+        "the transaction's {wal} bytes of WAL fit the replay buffer"
+    );
+
+    // Without a snapshot the open replays the transaction. Buffering it
+    // whole held its decoded events beside the graph it builds: 216 MB
+    // at the peak for a 20 MB graph. Applied in parts it holds the graph
+    // and one 8 MB WAL record decoded: 55 MB.
+    let opened = measured_open(&dir.path, u64::MAX);
+    assert_eq!(opened.db.node_count(), LARGE_TX_NODES);
+    let graph = opened.retained;
+    assert!(
+        opened.peak < graph + REPLAY_SLACK,
+        "open peaked at {} bytes over a {graph}-byte graph",
+        opened.peak
+    );
+
+    // A checkpoint streams the snapshot and the WAL segments into the
+    // container: under 1 MB over the graph. It used to read each segment,
+    // this one included, into memory and compress it there: 56 MB.
+    for _ in 0..2 {
+        let before = LIVE.load(Ordering::Relaxed);
+        PEAK.store(before, Ordering::Relaxed);
+        opened.db.sync().unwrap();
+        let peak = PEAK.load(Ordering::Relaxed) - before;
+        assert!(
+            peak < CHECKPOINT_SLACK,
+            "sync() peaked at {peak} bytes over the graph"
+        );
+    }
+    drop(opened);
+
+    let reopened = measured_open(&dir.path, u64::MAX);
+    assert_eq!(reopened.db.node_count(), LARGE_TX_NODES);
+    let result = reopened
+        .db
+        .execute(
+            "MATCH (n:Record {key: 'src:item:123'}) RETURN n.v AS v",
+            rows(),
+        )
+        .unwrap();
+    let json = serde_json::to_value(&result).unwrap();
+    assert_eq!(json["rows"], serde_json::json!([{"v": 123}]));
+}
+
+/// Raw bytes of the WAL segments the container holds: the frames'
+/// decoded lengths, from their headers.
+fn wal_bytes_in_container(dir: &Path) -> u64 {
+    let bytes = container(dir);
+    let mut at = 32;
+    let mut total = 0;
+    while &bytes[at..at + 8] == b"LORAFRM\0" {
+        let kind = bytes[at + 8];
+        let name_len = u16::from_le_bytes([bytes[at + 12], bytes[at + 13]]) as usize;
+        let body_len = u64::from_le_bytes(bytes[at + 16..at + 24].try_into().unwrap()) as usize;
+        let raw_len = u64::from_le_bytes(bytes[at + 24..at + 32].try_into().unwrap());
+        if kind == 1 {
+            total += raw_len;
+        }
+        at += 48 + name_len + body_len;
+    }
+    total
+}

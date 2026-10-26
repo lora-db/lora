@@ -53,6 +53,7 @@ pub use recorder::{
     WalBufferedCommitError, WalCommitError, WalMirror, WalPoisonError, WalRecorder, WroteCommit,
 };
 pub use replay::{
-    newest_checkpoint_marker, replay_dir, CorruptCut, ReplayOutcome, ReplaySink, TornTailInfo,
+    newest_checkpoint_marker, replay_dir, CorruptCut, ReplayOutcome, ReplaySink, ReplayStep,
+    TornTailInfo, PENDING_BUDGET_BYTES,
 };
 pub use wal::Wal;
