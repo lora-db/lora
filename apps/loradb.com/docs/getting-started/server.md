@@ -95,9 +95,11 @@ Most runtime flags also have an env-var equivalent:
 | `--restore-from <PATH>` | — | unset | Load a snapshot at boot, before accepting queries. |
 | `--wal-dir <DIR>` | `LORA_SERVER_WAL_DIR` | unset | Attach a write-ahead log at this directory and enable the WAL admin routes. |
 | `--wal-sync-mode <MODE>` | `LORA_SERVER_WAL_SYNC_MODE` | `group-sync` | WAL durability cadence: `group-sync`. |
+| `--wal-truncate-corrupt-tail` | `LORA_SERVER_WAL_TRUNCATE_CORRUPT_TAIL` | off | Incident recovery: start from a WAL that is corrupt mid-log by cutting it at the first bad record. See [Corrupt WAL](../wal#corrupt-wal-incident-procedure). |
 | `--query-timeout-ms <MS>` | `LORA_SERVER_QUERY_TIMEOUT_MS` | `30000` | Time budget for each `/query` and `/profile` request. `0` disables it. |
 | `--max-concurrent-queries <N>` | `LORA_SERVER_MAX_CONCURRENT_QUERIES` | twice the CPU count | How many `/query`, `/explain` and `/profile` requests run at once. `0` means unlimited. |
 | `--max-body-bytes <BYTES>` | `LORA_SERVER_MAX_BODY_BYTES` | `2097152` | Largest accepted request body. Larger bodies get `413`. |
+| `--header-read-timeout-ms <MS>` | `LORA_SERVER_HEADER_READ_TIMEOUT_MS` | `10000` | Time a connection gets to send a request's headers before it is closed. `0` disables it. |
 | `--admin-path-root <DIR>` | `LORA_SERVER_ADMIN_PATH_ROOT` | unset | Allow admin requests to send a `path` inside this directory. Unset = every `path` override is rejected. |
 
 ### Query limits
@@ -119,6 +121,12 @@ query does not hold up `/health` or other requests.
 - **`--max-body-bytes <BYTES>`** caps the request body. Results are
   not capped: a query that returns a large result is built in memory
   before it is sent, so bound result size with `LIMIT`.
+- **`--header-read-timeout-ms <MS>`** closes a connection that has not
+  sent a complete request head (request line and headers) within this
+  time, so clients that open connections and send headers a byte at a
+  time cannot hold them open. It also bounds how long an idle
+  keep-alive connection waits for its next request. The request body is
+  not covered. `0` turns it off.
 
 ```bash
 lora-server --query-timeout-ms 5000 --max-concurrent-queries 16

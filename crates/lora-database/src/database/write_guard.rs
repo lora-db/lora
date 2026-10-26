@@ -477,6 +477,7 @@ mod tests {
                     interval_ms: 60_000,
                 },
                 segment_target_bytes: 1 << 20,
+                truncate_corrupt_tail: false,
             })
             .unwrap()
         }

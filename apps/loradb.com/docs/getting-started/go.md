@@ -357,8 +357,8 @@ if err != nil { log.Fatal(err) }
 defer durable.Close()
 ```
 
-`SnapshotMeta.WalLsn` is a `*uint64`; it is `nil` for a pure snapshot
-and non-`nil` when you load or save a checkpoint snapshot written by a
+`SnapshotMeta.WalLsn` is a `*uint64`; it is `nil` for a snapshot saved
+without a WAL and non-`nil` when you load or save a snapshot written by a
 WAL-enabled deployment. Save and load encode or decode the whole graph, so large
 snapshots can still affect latency. A crash
 between saves loses every mutation since the last save.

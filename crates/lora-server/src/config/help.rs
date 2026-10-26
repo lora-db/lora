@@ -1,9 +1,10 @@
 //! Static `--help` and `--version` text.
 
 use super::{
-    ADMIN_PATH_ROOT_ENV, DEFAULT_HOST, DEFAULT_MAX_BODY_BYTES, DEFAULT_PORT,
-    DEFAULT_QUERY_TIMEOUT_MS, HOST_ENV, MAX_BODY_BYTES_ENV, MAX_CONCURRENT_QUERIES_ENV, PORT_ENV,
-    QUERY_TIMEOUT_MS_ENV, SNAPSHOT_PATH_ENV, WAL_DIR_ENV, WAL_SYNC_MODE_ENV,
+    ADMIN_PATH_ROOT_ENV, DEFAULT_HEADER_READ_TIMEOUT_MS, DEFAULT_HOST, DEFAULT_MAX_BODY_BYTES,
+    DEFAULT_PORT, DEFAULT_QUERY_TIMEOUT_MS, HEADER_READ_TIMEOUT_MS_ENV, HOST_ENV,
+    MAX_BODY_BYTES_ENV, MAX_CONCURRENT_QUERIES_ENV, PORT_ENV, QUERY_TIMEOUT_MS_ENV,
+    SNAPSHOT_PATH_ENV, WAL_DIR_ENV, WAL_SYNC_MODE_ENV, WAL_TRUNCATE_CORRUPT_TAIL_ENV,
 };
 
 pub fn help_text() -> String {
@@ -43,6 +44,16 @@ OPTIONS:
         --wal-sync-mode <MODE>     WAL durability cadence. Only `group-sync`
                                    is supported (default).
                                    Also read from ${WAL_SYNC_MODE_ENV}.
+        --wal-truncate-corrupt-tail
+                                   Incident recovery only. When the WAL is
+                                   corrupt mid-log (LORA_WAL_CORRUPTION),
+                                   cut it at the first corrupt record and
+                                   start with the writes before it instead
+                                   of refusing to start. The cut bytes and
+                                   any later segments are kept in the WAL
+                                   directory; writes after the cut are not
+                                   recovered. Off by default. Also read from
+                                   ${WAL_TRUNCATE_CORRUPT_TAIL_ENV} (true/false).
         --query-timeout-ms <MS>    Time budget for each /query and /profile
                                    request, including any wait for a free
                                    query slot. A query that runs out of time,
@@ -58,6 +69,12 @@ OPTIONS:
                                    Also read from ${MAX_CONCURRENT_QUERIES_ENV}.
         --max-body-bytes <BYTES>   Largest accepted request body.
                                    Default: {DEFAULT_MAX_BODY_BYTES}. Also read from ${MAX_BODY_BYTES_ENV}.
+        --header-read-timeout-ms <MS>
+                                   Time a connection gets to send a
+                                   request's headers before it is closed,
+                                   so slow or stalled clients cannot hold
+                                   connections open. 0 disables it.
+                                   Default: {DEFAULT_HEADER_READ_TIMEOUT_MS}. Also read from ${HEADER_READ_TIMEOUT_MS_ENV}.
         --admin-path-root <DIR>    Allow admin requests to send a `path`
                                    override, as long as it stays inside DIR.
                                    Without it, overrides are rejected and the
@@ -76,6 +93,8 @@ ENVIRONMENT:
     {MAX_CONCURRENT_QUERIES_ENV}   Value used by --max-concurrent-queries.
     {MAX_BODY_BYTES_ENV}           Value used by --max-body-bytes.
     {ADMIN_PATH_ROOT_ENV}          Directory used by --admin-path-root.
+    {HEADER_READ_TIMEOUT_MS_ENV}   Value used by --header-read-timeout-ms.
+    {WAL_TRUNCATE_CORRUPT_TAIL_ENV} Value used by --wal-truncate-corrupt-tail.
 
 EXAMPLES:
     lora-server

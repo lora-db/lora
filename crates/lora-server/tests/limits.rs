@@ -228,3 +228,88 @@ fn engine_panic_answers_500_and_server_keeps_serving() {
     );
     assert!(status.contains(" 200 "), "{status}: {body}");
 }
+
+#[test]
+fn slow_header_client_is_disconnected_while_health_answers() {
+    let addr = start_server(
+        seeded_db(),
+        QueryLimits {
+            header_read_timeout: Some(Duration::from_millis(500)),
+            ..QueryLimits::default()
+        },
+    );
+
+    // A slowloris client: a partial request head, then one more header
+    // byte every 100 ms, never the blank line that ends the head.
+    let mut slow = TcpStream::connect(addr).expect("connect");
+    slow.set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    slow.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nX-Slow: ")
+        .unwrap();
+    let started = Instant::now();
+    let mut writer = slow.try_clone().unwrap();
+    let trickle = thread::spawn(move || {
+        for _ in 0..100 {
+            thread::sleep(Duration::from_millis(100));
+            if writer.write_all(b"a").is_err() {
+                break;
+            }
+        }
+    });
+
+    // Other clients are served while it trickles.
+    thread::sleep(Duration::from_millis(200));
+    let (status, _) = request(addr, "GET", "/health", "");
+    assert!(status.contains(" 200 "), "{status}");
+
+    // The server closes the connection once the header read time is up,
+    // without answering the incomplete request with a 200.
+    let mut response = Vec::new();
+    let _ = slow.read_to_end(&mut response);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "slow client held its connection for {elapsed:?}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&response).contains(" 200 "),
+        "{}",
+        String::from_utf8_lossy(&response)
+    );
+    trickle.join().unwrap();
+
+    let (status, _) = request(addr, "GET", "/health", "");
+    assert!(status.contains(" 200 "), "{status}");
+}
+
+#[test]
+fn header_read_timeout_can_be_disabled() {
+    let addr = start_server(
+        seeded_db(),
+        QueryLimits {
+            header_read_timeout: None,
+            ..QueryLimits::default()
+        },
+    );
+    let mut slow = TcpStream::connect(addr).expect("connect");
+    slow.set_read_timeout(Some(Duration::from_millis(1500)))
+        .unwrap();
+    slow.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n")
+        .unwrap();
+    let mut buf = [0u8; 64];
+    let err = slow
+        .read(&mut buf)
+        .expect_err("the connection should stay open");
+    assert!(
+        matches!(
+            err.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+        "{err}"
+    );
+    slow.write_all(b"\r\n").unwrap();
+    slow.set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let n = slow.read(&mut buf).unwrap();
+    assert!(String::from_utf8_lossy(&buf[..n]).contains(" 200 "));
+}

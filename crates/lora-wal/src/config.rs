@@ -35,6 +35,13 @@ pub enum WalConfig {
         /// only happens at a `TxBegin` boundary so a transaction never
         /// spans segments.
         segment_target_bytes: u64,
+        /// Incident recovery, off by default: open a log that is corrupt
+        /// mid-way (`WalError::Corrupt`) by cutting it at the first
+        /// corrupt record instead of failing. The cut bytes and any later
+        /// segments are kept beside the log, never deleted; see
+        /// [`Wal::open_replaying_with`](crate::Wal::open_replaying_with).
+        /// Transactions from the cut on are lost to the opened database.
+        truncate_corrupt_tail: bool,
     },
 }
 
@@ -46,6 +53,7 @@ impl WalConfig {
             dir: dir.into(),
             sync_mode: SyncMode::default(),
             segment_target_bytes: 8 * 1024 * 1024,
+            truncate_corrupt_tail: false,
         }
     }
 }

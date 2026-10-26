@@ -52,6 +52,7 @@ impl DatabaseOpenOptions {
             dir: self.database_path_for(name),
             sync_mode: self.sync_mode,
             segment_target_bytes: self.segment_target_bytes,
+            truncate_corrupt_tail: false,
         }
     }
 

@@ -33,6 +33,7 @@ fn wal_enabled(dir: &Path) -> WalConfig {
             interval_ms: 60_000,
         },
         segment_target_bytes: 512,
+        truncate_corrupt_tail: false,
     }
 }
 

@@ -86,6 +86,7 @@ fn enabled(dir: &Path) -> WalConfig {
             interval_ms: 60_000,
         },
         segment_target_bytes: 8 * 1024 * 1024,
+        truncate_corrupt_tail: false,
     }
 }
 
@@ -96,6 +97,7 @@ fn group_enabled(dir: &Path) -> WalConfig {
             interval_ms: 60_000,
         },
         segment_target_bytes: 8 * 1024 * 1024,
+        truncate_corrupt_tail: false,
     }
 }
 
@@ -1115,6 +1117,155 @@ fn recover_with_disabled_wal_only_loads_snapshot() {
     let db = Database::recover(&snap_path, WalConfig::Disabled).unwrap();
     assert_eq!(db.node_count(), 2);
     assert!(db.wal().is_none());
+}
+
+fn json_rows(db: &Database<lora_store::InMemoryGraph>, query: &str) -> Vec<serde_json::Value> {
+    let result = db.execute(query, rows()).unwrap();
+    let json = serde_json::to_value(&result).unwrap();
+    json["rows"].as_array().expect("rows array").clone()
+}
+
+#[test]
+fn save_snapshot_to_on_a_wal_database_is_fenced_for_recover() {
+    let wal_dir = TmpDir::new("fenced-save-wal");
+    let snap_dir = TmpDir::new("fenced-save-snap");
+    let snap_path = snap_dir.path().join("snapshot.bin");
+    let bytes_path = snap_dir.path().join("snapshot-bytes.bin");
+
+    {
+        let db = Database::open_with_wal(enabled(wal_dir.path())).unwrap();
+        db.execute(
+            "CREATE CONSTRAINT u FOR (x:U) REQUIRE x.k IS UNIQUE",
+            rows(),
+        )
+        .unwrap();
+        db.execute("CREATE (:U {k: 1, n: 0})", rows()).unwrap();
+        db.execute("MATCH (u:U {k: 1}) SET u.n = u.n + 1", rows())
+            .unwrap();
+
+        let meta = db.save_snapshot_to(&snap_path).unwrap();
+        assert!(
+            meta.wal_lsn.unwrap_or_default() > 0,
+            "a snapshot of a WAL database carries the WAL fence"
+        );
+        std::fs::write(&bytes_path, db.save_snapshot_to_bytes().unwrap()).unwrap();
+
+        // Writes after the save: replaying the ones before it again
+        // would fail on the constraint or count the SET twice.
+        db.execute("MATCH (u:U {k: 1}) SET u.n = u.n + 1", rows())
+            .unwrap();
+        db.execute("CREATE (:U {k: 2, n: 0})", rows()).unwrap();
+    }
+
+    for path in [&snap_path, &bytes_path] {
+        let recovered = Database::recover(path, enabled(wal_dir.path())).unwrap();
+        assert_eq!(
+            json_rows(
+                &recovered,
+                "MATCH (u:U) RETURN u.k AS k, u.n AS n ORDER BY k"
+            ),
+            vec![
+                serde_json::json!({"k": 1, "n": 2}),
+                serde_json::json!({"k": 2, "n": 0}),
+            ],
+            "recovering from {} replays only the writes after the save",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn save_snapshot_to_without_a_wal_is_unfenced() {
+    let snap_dir = TmpDir::new("unfenced-save");
+    let snap_path = snap_dir.path().join("seed.bin");
+    let db = Database::in_memory();
+    db.execute("CREATE (:Seed)", rows()).unwrap();
+    let meta = db.save_snapshot_to(&snap_path).unwrap();
+    assert_eq!(meta.wal_lsn, None);
+}
+
+#[test]
+fn recover_seeds_a_fresh_wal_from_an_unfenced_snapshot() {
+    // The `lora-server --restore-from seed.bin --wal-dir` flow: a seed
+    // saved without a WAL, recovered over an empty WAL directory, then
+    // recovered again over the WAL the first run wrote.
+    let wal_dir = TmpDir::new("seed-flow-wal");
+    let snap_dir = TmpDir::new("seed-flow-snap");
+    let seed = snap_dir.path().join("seed.bin");
+    {
+        let db = Database::in_memory();
+        db.execute("CREATE (:Seed {x: 1})", rows()).unwrap();
+        db.execute("CREATE (:Seed {x: 2})", rows()).unwrap();
+        db.save_snapshot_to(&seed).unwrap();
+    }
+    {
+        let db = Database::recover(&seed, enabled(wal_dir.path())).unwrap();
+        assert_eq!(db.node_count(), 2);
+        db.execute("CREATE (:Seed {x: 3})", rows()).unwrap();
+    }
+    let db = Database::recover(&seed, enabled(wal_dir.path())).unwrap();
+    assert_eq!(
+        json_rows(&db, "MATCH (s:Seed) RETURN s.x AS x ORDER BY x"),
+        vec![
+            serde_json::json!({"x": 1}),
+            serde_json::json!({"x": 2}),
+            serde_json::json!({"x": 3}),
+        ]
+    );
+}
+
+#[test]
+fn truncate_corrupt_tail_opens_a_corrupt_wal_at_its_last_good_record() {
+    let wal_dir = TmpDir::new("cut-corrupt-db");
+    {
+        let db = Database::open_with_wal(enabled(wal_dir.path())).unwrap();
+        for i in 0..50 {
+            db.execute(&format!("CREATE (:C {{i: {i}}})"), rows())
+                .unwrap();
+        }
+    }
+    let segment = std::fs::read_dir(wal_dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "wal"))
+        .max()
+        .unwrap();
+    let mut bytes = std::fs::read(&segment).unwrap();
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0x10;
+    std::fs::write(&segment, &bytes).unwrap();
+
+    let err = match Database::open_with_wal(enabled(wal_dir.path())) {
+        Ok(_) => panic!("a corrupt WAL must not open by default"),
+        Err(err) => err,
+    };
+    assert_eq!(err.code(), lora_database::LoraErrorCode::WalCorruption);
+
+    let mut forced = enabled(wal_dir.path());
+    if let WalConfig::Enabled {
+        truncate_corrupt_tail,
+        ..
+    } = &mut forced
+    {
+        *truncate_corrupt_tail = true;
+    }
+    let kept = {
+        let db = Database::open_with_wal(forced).unwrap();
+        let kept = db.node_count();
+        assert!(kept > 0 && kept < 50, "kept {kept} of 50 nodes");
+        let cut = db.wal().unwrap().wal().corrupt_cut().cloned().unwrap();
+        assert!(cut.kept_tail.unwrap().exists());
+        db.execute("CREATE (:C {i: 1000})", rows()).unwrap();
+        kept
+    };
+
+    let db = Database::open_with_wal(enabled(wal_dir.path())).unwrap();
+    assert_eq!(db.node_count(), kept + 1);
+    assert_eq!(
+        json_rows(&db, "MATCH (c:C) RETURN max(c.i) AS top"),
+        vec![serde_json::json!({"top": 1000})]
+    );
 }
 
 #[test]

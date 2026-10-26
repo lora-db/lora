@@ -75,6 +75,7 @@ fn open_wal_group(tag: &str) -> (WalScratch, Database<InMemoryGraph>) {
         dir: dir.path.clone(),
         sync_mode: SyncMode::GroupSync { interval_ms: 50 },
         segment_target_bytes: 8 * 1024 * 1024,
+        truncate_corrupt_tail: false,
     };
     let db = Database::open_with_wal(cfg).unwrap();
     (dir, db)
@@ -470,6 +471,7 @@ fn bench_perf_smoke(c: &mut Criterion) {
                 dir: dir.path.clone(),
                 sync_mode: SyncMode::GroupSync { interval_ms: 50 },
                 segment_target_bytes: 8 * 1024 * 1024,
+                truncate_corrupt_tail: false,
             };
             let db = Database::open_with_wal(cfg).unwrap();
             for _ in 0..100 {
@@ -485,6 +487,7 @@ fn bench_perf_smoke(c: &mut Criterion) {
                     dir: path.clone(),
                     sync_mode: SyncMode::GroupSync { interval_ms: 50 },
                     segment_target_bytes: 8 * 1024 * 1024,
+                    truncate_corrupt_tail: false,
                 };
                 let db = Database::open_with_wal(cfg).unwrap();
                 black_box(db.node_count());

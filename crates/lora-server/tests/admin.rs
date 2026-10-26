@@ -253,6 +253,7 @@ fn enabled(wal_dir: &std::path::Path) -> WalConfig {
             interval_ms: 60_000,
         },
         segment_target_bytes: 8 * 1024 * 1024,
+        truncate_corrupt_tail: false,
     }
 }
 

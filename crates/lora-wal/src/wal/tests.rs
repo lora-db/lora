@@ -894,3 +894,131 @@ fn newest_checkpoint_marker_matches_full_replay() {
     assert!(scanned.is_some());
     assert_eq!(scanned, replayed);
 }
+
+fn open_truncating_corruption(dir: &Path, target: u64) -> (Arc<Wal>, Vec<MutationEvent>) {
+    let mut events = Vec::new();
+    let wal = Wal::open_replaying_with(
+        dir,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        target,
+        Lsn::ZERO,
+        true,
+        &mut |committed| {
+            events.extend(committed);
+            Ok(())
+        },
+    )
+    .unwrap();
+    (wal, events)
+}
+
+fn files_containing(dir: &Path, needle: &str) -> Vec<std::path::PathBuf> {
+    let mut found: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains(needle))
+        .map(|e| e.path())
+        .collect();
+    found.sort();
+    found
+}
+
+/// `events` is `ev(0)..ev(k)` for some `k < total`; returns `k`.
+fn assert_strict_prefix(events: &[MutationEvent], total: u64) -> u64 {
+    let k = events.len() as u64;
+    assert!(k < total, "replay should stop before the corruption");
+    assert_eq!(events, (0..k).map(ev).collect::<Vec<_>>());
+    k
+}
+
+#[test]
+fn truncate_corrupt_tail_cuts_a_mid_log_bit_flip() {
+    let dir = TmpDir::new("cut-bitflip");
+    {
+        let (wal, _) = open_default(&dir.path);
+        write_txs(&wal, 0..100);
+    }
+    let path = segment_paths(&dir.path).pop().unwrap();
+    let original = fs::read(&path).unwrap();
+    flip_byte(&path, original.len() as u64 / 2);
+    let damaged = fs::read(&path).unwrap();
+
+    // Without the option the open still refuses.
+    assert!(matches!(
+        replay_with(&dir.path, 8 * 1024 * 1024, Lsn::ZERO),
+        Err(WalError::Corrupt { .. })
+    ));
+    assert_eq!(fs::read(&path).unwrap(), damaged);
+
+    let (wal, events) = open_truncating_corruption(&dir.path, 8 * 1024 * 1024);
+    let k = assert_strict_prefix(&events, 100);
+    let cut = wal.corrupt_cut().expect("the open reports its cut").clone();
+    assert_eq!(cut.segment_path, path);
+    assert!(cut.moved_segments.is_empty());
+    let kept = cut.kept_tail.clone().expect("cut bytes are kept");
+    assert_eq!(files_containing(&dir.path, ".corrupt-"), vec![kept.clone()]);
+    let offset = cut.offset as usize;
+    assert_eq!(fs::read(&kept).unwrap(), damaged[offset..].to_vec());
+    assert_eq!(fs::read(&path).unwrap(), damaged[..offset].to_vec());
+
+    write_txs(&wal, 1000..1001);
+    drop(wal);
+
+    // A plain reopen finds an intact log: the prefix and the new write.
+    let (wal, events) = open_default(&dir.path);
+    assert!(wal.corrupt_cut().is_none());
+    let mut expected: Vec<_> = (0..k).map(ev).collect();
+    expected.push(ev(1000));
+    assert_eq!(events, expected);
+}
+
+#[test]
+fn truncate_corrupt_tail_in_a_sealed_segment_moves_later_segments_aside() {
+    let dir = TmpDir::new("cut-sealed");
+    {
+        let wal = open_with(&dir.path, 256, Lsn::ZERO).unwrap();
+        write_txs(&wal, 0..20);
+        assert!(wal.active_segment_id() >= 3);
+    }
+    let segments_before = segment_paths(&dir.path);
+    let first = segments_before[0].clone();
+    let len = fs::metadata(&first).unwrap().len();
+    flip_byte(&first, len - 2);
+    let later_bytes: Vec<Vec<u8>> = segments_before[1..]
+        .iter()
+        .map(|p| fs::read(p).unwrap())
+        .collect();
+
+    assert!(matches!(
+        replay_with(&dir.path, 256, Lsn::ZERO),
+        Err(WalError::Corrupt { .. })
+    ));
+
+    let (wal, events) = open_truncating_corruption(&dir.path, 256);
+    let k = assert_strict_prefix(&events, 20);
+    let cut = wal.corrupt_cut().expect("the open reports its cut").clone();
+    assert_eq!(cut.segment_path, first);
+    assert!(cut.kept_tail.is_some());
+    // Every later segment is kept, byte for byte, under a new name.
+    assert_eq!(cut.moved_segments.len(), segments_before.len() - 1);
+    for ((from, to), bytes) in cut.moved_segments.iter().zip(&later_bytes) {
+        assert_ne!(from, to);
+        assert_eq!(&fs::read(to).unwrap(), bytes);
+    }
+    // The sealed segment is the newest left, so the open starts a fresh
+    // second segment in place of the one moved aside.
+    let segments_after = segment_paths(&dir.path);
+    assert_eq!(segments_after, segments_before[..2].to_vec());
+    assert!(fs::metadata(&segments_after[1]).unwrap().len() < later_bytes[0].len() as u64);
+
+    write_txs(&wal, 1000..1001);
+    drop(wal);
+
+    let (wal, events) = open_default(&dir.path);
+    assert!(wal.corrupt_cut().is_none());
+    let mut expected: Vec<_> = (0..k).map(ev).collect();
+    expected.push(ev(1000));
+    assert_eq!(events, expected);
+}
