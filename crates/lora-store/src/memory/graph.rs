@@ -85,8 +85,11 @@ pub struct InMemoryGraph {
     /// [`IdBitmap`] holds an id in two bytes or less (an eighth of a byte
     /// for a label most nodes carry), where a list held eight, and
     /// removes one by binary search.
-    pub(super) nodes_by_label: BTreeMap<String, IdBitmap>,
-    pub(super) relationships_by_type: BTreeMap<String, IdBitmap>,
+    ///
+    /// Keyed by `Arc<str>`: every staged write clones the graph, and with
+    /// `String` keys that cloned (allocated) every label and type name.
+    pub(super) nodes_by_label: BTreeMap<Arc<str>, IdBitmap>,
+    pub(super) relationships_by_type: BTreeMap<Arc<str>, IdBitmap>,
 
     /// All index machinery — the declared-index catalog, hash-bucket
     /// property registry, and the per-entity-kind secondary index
@@ -635,7 +638,7 @@ impl InMemoryGraph {
             bucket.insert(node_id);
         } else {
             self.nodes_by_label
-                .insert(label.to_string(), std::iter::once(node_id).collect());
+                .insert(Arc::from(label), std::iter::once(node_id).collect());
         }
     }
 
@@ -654,7 +657,7 @@ impl InMemoryGraph {
             bucket.insert(rel_id);
         } else {
             self.relationships_by_type
-                .insert(rel_type.to_string(), std::iter::once(rel_id).collect());
+                .insert(Arc::from(rel_type), std::iter::once(rel_id).collect());
         }
     }
 
@@ -1683,14 +1686,18 @@ impl InMemoryGraph {
             relationship_count: self.live_rel_count,
             ..Default::default()
         };
-        for (label, ids) in &self.nodes_by_label {
-            stats.nodes_by_label.insert(label.clone(), ids.len());
-        }
-        for (rel_type, ids) in &self.relationships_by_type {
-            stats
-                .relationships_by_type
-                .insert(rel_type.clone(), ids.len());
-        }
+        // Collected from ascending keys, the maps are built in one pass
+        // instead of searched and grown per insert.
+        stats.nodes_by_label = self
+            .nodes_by_label
+            .iter()
+            .map(|(label, ids)| (label.to_string(), ids.len()))
+            .collect();
+        stats.relationships_by_type = self
+            .relationships_by_type
+            .iter()
+            .map(|(rel_type, ids)| (rel_type.to_string(), ids.len()))
+            .collect();
         // Distinct values per (label / type, property): estimated from
         // the distinct-value sketches, which exist for every key and are
         // a function of the live data alone. Deliberately *not* the

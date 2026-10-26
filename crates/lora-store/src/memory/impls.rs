@@ -554,11 +554,14 @@ impl GraphStorage for InMemoryGraph {
     }
 
     fn all_labels(&self) -> Vec<String> {
-        self.nodes_by_label.keys().cloned().collect()
+        self.nodes_by_label.keys().map(|k| k.to_string()).collect()
     }
 
     fn all_relationship_types(&self) -> Vec<String> {
-        self.relationships_by_type.keys().cloned().collect()
+        self.relationships_by_type
+            .keys()
+            .map(|k| k.to_string())
+            .collect()
     }
 
     // ---------- Optimization hooks: zero-clone borrow access ----------

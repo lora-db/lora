@@ -84,9 +84,9 @@ pub struct MemoryReport {
     /// Incoming adjacency, charged the same way.
     pub incoming_bytes: usize,
 
-    /// `nodes_by_label: BTreeMap<String, IdBitmap>`.
+    /// `nodes_by_label: BTreeMap<Arc<str>, IdBitmap>`.
     pub label_index_bytes: usize,
-    /// `relationships_by_type: BTreeMap<String, IdBitmap>`.
+    /// `relationships_by_type: BTreeMap<Arc<str>, IdBitmap>`.
     pub type_index_bytes: usize,
 
     /// Hash-bucket property registry (`find_*_by_property`).
@@ -313,12 +313,13 @@ fn adjacency_bytes(adj: &ChunkedVec<super::adjacency::Adjacency>) -> (usize, usi
     (out, inc)
 }
 
-fn label_or_type_bytes(map: &BTreeMap<String, super::id_bitmap::IdBitmap>) -> usize {
+fn label_or_type_bytes(map: &BTreeMap<std::sync::Arc<str>, super::id_bitmap::IdBitmap>) -> usize {
     let mut total = 0;
     for (key, ids) in map {
         total += BTREE_PER_ENTRY
-            + size_of::<String>()
-            + key.capacity()
+            + size_of::<std::sync::Arc<str>>()
+            + super::ARC_HEADER
+            + key.len()
             + size_of::<super::id_bitmap::IdBitmap>()
             + ids.heap_bytes();
     }
