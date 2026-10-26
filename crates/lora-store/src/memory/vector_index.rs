@@ -261,8 +261,19 @@ impl VectorIndexRegistry {
         self.by_name.remove(name);
     }
 
-    pub(super) fn is_empty(&self) -> bool {
-        self.by_name.is_empty()
+    /// Whether an index covers `property` on any of `labels`. Checked
+    /// through a read guard before maintenance takes the (copy-on-write)
+    /// write guard, which copies every index of a shared graph.
+    pub(super) fn covers_any<'a>(
+        &self,
+        labels: impl IntoIterator<Item = &'a str>,
+        property: &str,
+    ) -> bool {
+        labels.into_iter().any(|label| {
+            self.by_name
+                .values()
+                .any(|entry| entry.label == label && entry.property == property)
+        })
     }
 
     /// Insert `vector` for `entity_id` into every index whose
