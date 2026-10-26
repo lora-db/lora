@@ -143,13 +143,26 @@ fn write_value(out: &mut Vec<u8>, value: &PropertyValue) {
             // Reads decode these bytes and treat a failure as a bug, so
             // every debug build checks each value on its way in.
             debug_assert!(
-                crate::codec::decode_stored_property_value(&encoded).as_ref() == Ok(other),
+                !vectors_consistent(other)
+                    || crate::codec::decode_stored_property_value(&encoded).as_ref() == Ok(other),
                 "the codec does not round-trip {other:?}"
             );
             out.push(TAG_OTHER);
             varint::push(out, encoded.len() as u64);
             out.extend_from_slice(&encoded);
         }
+    }
+}
+
+/// Whether every vector in `value` has the dimension of its coordinates.
+/// The codec stores the coordinates' count, so only such values round-trip
+/// exactly.
+fn vectors_consistent(value: &PropertyValue) -> bool {
+    match value {
+        PropertyValue::Vector(v) => v.dimension == v.values.len(),
+        PropertyValue::List(items) => items.iter().all(vectors_consistent),
+        PropertyValue::Map(entries) => entries.values().all(vectors_consistent),
+        _ => true,
     }
 }
 

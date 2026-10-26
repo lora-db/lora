@@ -567,7 +567,10 @@ fn write_time_fields(out: &mut Vec<u8>, hour: u32, minute: u32, second: u32, nan
 }
 
 fn write_vector(out: &mut Vec<u8>, vector: &LoraVector) -> Result<()> {
-    write_len(out, vector.dimension)?;
+    // The coordinates decide the dimension. A vector built with another
+    // `dimension` (its fields are public) would otherwise encode bytes the
+    // decoder rejects, and a stored record would fail on every read.
+    write_len(out, vector.values.len())?;
     match &vector.values {
         VectorValues::Float64(values) => {
             out.push(VECTOR_FLOAT64);
