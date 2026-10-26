@@ -7,7 +7,10 @@
 //!
 //! The snapshot frame is copied from and to `snapshot.lsnap` in the work
 //! directory as a stream: it is the size of the graph's encoding, and
-//! neither writing nor opening a container holds it in memory. Its frame is
+//! neither writing nor opening a container holds it in memory. WAL
+//! segment frames stream the same way: a segment is usually near its
+//! target size, but one transaction never spans segments, so a large one
+//! leaves a segment as large as its writes. Its frame is
 //! gzip-compressed again on the way: the snapshot's own fast deflate leaves
 //! long repeats in its columns that a second pass halves, and the second
 //! pass reads only the compressed snapshot.
@@ -167,6 +170,7 @@ impl ArchiveCodec {
     }
 }
 
+#[allow(dead_code)] // Built only by `encode_body`, for tests and encryption.
 struct EncodedBody {
     body: Vec<u8>,
     raw_len: u64,
@@ -250,7 +254,7 @@ pub(super) fn write_archive_atomic(
     max_archive_bytes: u64,
 ) -> Result<(), WalError> {
     let tmp_path = make_archive_tmp_path(archive_path);
-    let result = write_archive_tmp(wal_dir, &tmp_path, &ArchiveCodec::default()).and_then(|_| {
+    let result = write_archive_tmp(wal_dir, &tmp_path).and_then(|_| {
         let len = fs::metadata(&tmp_path)?.len();
         if len > max_archive_bytes {
             let _ = fs::remove_file(&tmp_path);
@@ -273,11 +277,7 @@ pub(super) fn write_archive_atomic(
     result
 }
 
-fn write_archive_tmp(
-    wal_dir: &Path,
-    tmp_path: &Path,
-    codec: &ArchiveCodec,
-) -> Result<(), WalError> {
+fn write_archive_tmp(wal_dir: &Path, tmp_path: &Path) -> Result<(), WalError> {
     {
         let file = OpenOptions::new()
             .write(true)
@@ -308,13 +308,13 @@ fn write_archive_tmp(
                     "unsafe WAL container entry name: {name}"
                 )));
             }
-            let raw = fs::read(&entry)?;
-            tally.add(write_frame(
+            // Streamed like the snapshot: a segment holding one large
+            // transaction can be far larger than the segment target.
+            tally.add(write_compressed_file_frame(
                 &mut writer,
-                codec,
                 FRAME_KIND_WAL_FILE,
                 name,
-                raw,
+                File::open(&entry)?,
             )?);
         }
         writer.write_all(&tally.encode())?;
@@ -675,7 +675,9 @@ fn read_container_header(input: &mut impl Read) -> Result<u32, WalError> {
     Ok(version)
 }
 
-/// Write one frame, returning its checksum.
+/// Write one frame from memory, returning its checksum. The container
+/// writer streams its frames instead; this builds containers for tests.
+#[cfg(test)]
 fn write_frame(
     out: &mut impl Write,
     codec: &ArchiveCodec,
@@ -686,6 +688,7 @@ fn write_frame(
     write_frame_version(out, codec, CONTAINER_VERSION, kind, name, raw)
 }
 
+#[cfg(test)]
 fn write_frame_version(
     out: &mut impl Write,
     codec: &ArchiveCodec,
