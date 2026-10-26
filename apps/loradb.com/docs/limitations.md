@@ -158,7 +158,7 @@ or memory of the process it runs in.
 | Size of a single value: a string or byte array, or a list or map counted as 8 bytes per element plus the strings it holds; also the properties one `CREATE` writes for one node or relationship | 128 MiB | `LORA_INVALID_PARAMS` for a parameter, otherwise `LORA_VALIDATION` |
 | Paths one variable-length expansion holds at once when a query has no `LIMIT` to stream against | 128 MiB of relationship ids | `LORA_VALIDATION` |
 | Length of a regular expression | 16 KiB | `LORA_VALIDATION` |
-| Compiled size of a regular expression | 2 MiB | `LORA_VALIDATION` |
+| Compiled size of a regular expression (the regex engine's default) | 10 MiB | `LORA_VALIDATION` |
 | Character pairs `text.distance` and `text.similarity` compare (the product of both lengths, except for `'hamming'`) | 2^28 | `LORA_VALIDATION` |
 
 A query at every limit at once still runs on a 1 MiB thread stack in a
