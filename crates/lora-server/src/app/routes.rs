@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::{
     extract::{rejection::JsonRejection, State},
@@ -8,27 +9,143 @@ use axum::{
     Json,
 };
 use lora_database::{
-    ExecuteOptions, LoraError, LoraErrorCode, LoraValue, PlanShape, PlanTreeNode, QueryPlan,
-    QueryProfile, QueryRunner,
+    CancellableDeadline, ExecuteOptions, LoraError, LoraErrorCode, LoraValue, PlanShape,
+    PlanTreeNode, QueryPlan, QueryProfile, QueryRunner,
 };
+use tokio::sync::Semaphore;
+use web_time::Instant;
 
-use super::errors::{json_rejection_error, lora_error_response};
+use super::errors::{json_rejection_response, lora_error_response};
 use super::types::{HealthResponse, PlanRequest, QueryRequest};
+use super::QueryLimits;
+
+/// State shared by the query routes: the runner plus the limits every
+/// engine call goes through (see [`run_engine`]).
+pub(crate) struct QueryState<R> {
+    db: Arc<R>,
+    timeout: Option<Duration>,
+    slots: Option<Arc<Semaphore>>,
+}
+
+impl<R> Clone for QueryState<R> {
+    fn clone(&self) -> Self {
+        Self {
+            db: Arc::clone(&self.db),
+            timeout: self.timeout,
+            slots: self.slots.clone(),
+        }
+    }
+}
+
+impl<R> QueryState<R> {
+    pub(crate) fn new(db: Arc<R>, limits: &QueryLimits) -> Self {
+        Self {
+            db,
+            timeout: limits.timeout,
+            slots: limits
+                .max_concurrent
+                .filter(|n| *n > 0)
+                .map(|n| Arc::new(Semaphore::new(n))),
+        }
+    }
+}
+
+/// Cancels the query when the handler future is dropped before the engine
+/// call finished, which is what happens when the client disconnects.
+struct CancelOnDrop(Option<Arc<Mutex<CancellableDeadline>>>);
+
+impl CancelOnDrop {
+    fn disarm(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.lock().unwrap_or_else(|p| p.into_inner()).cancel();
+        }
+    }
+}
+
+/// Run one engine call off the async workers, bounded by the configured
+/// timeout and concurrency limit.
+///
+/// The call gets a cancellable deadline: it fails with `LORA_TIMEOUT` once
+/// the timeout passes, or as soon as the request future is dropped (client
+/// disconnect). The slot and the deadline registration live inside the
+/// blocking task, so a cancelled query keeps its slot until the engine has
+/// actually stopped.
+async fn run_engine<R, T, F>(state: &QueryState<R>, call: F) -> Result<T, LoraError>
+where
+    R: QueryRunner,
+    T: Send + 'static,
+    F: FnOnce(&R, Instant) -> Result<T, LoraError> + Send + 'static,
+{
+    let handle = Arc::new(Mutex::new(CancellableDeadline::new(state.timeout)));
+    let deadline = handle.lock().unwrap_or_else(|p| p.into_inner()).deadline();
+    let guard = CancelOnDrop(Some(Arc::clone(&handle)));
+
+    let slot = match &state.slots {
+        None => None,
+        Some(slots) => {
+            let acquire = Arc::clone(slots).acquire_owned();
+            let acquired = match state.timeout {
+                None => Ok(acquire.await),
+                Some(_) => {
+                    tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), acquire).await
+                }
+            };
+            match acquired {
+                Ok(Ok(permit)) => Some(permit),
+                Ok(Err(_)) => {
+                    return Err(LoraError::new(
+                        LoraErrorCode::Internal,
+                        "query slots closed",
+                    ))
+                }
+                Err(_) => {
+                    guard.disarm();
+                    return Err(LoraError::new(
+                        LoraErrorCode::Timeout,
+                        "query timed out waiting for a free query slot",
+                    ));
+                }
+            }
+        }
+    };
+
+    let db = Arc::clone(&state.db);
+    let task = tokio::task::spawn_blocking(move || {
+        let _slot = slot;
+        let _registration = handle;
+        call(&db, deadline)
+    });
+    let outcome = task.await;
+    guard.disarm();
+    match outcome {
+        Ok(result) => result,
+        Err(join) => Err(LoraError::new(
+            LoraErrorCode::Internal,
+            format!("query task failed: {join}"),
+        )),
+    }
+}
 
 pub(crate) async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
 
 pub(crate) async fn query<R>(
-    State(db): State<Arc<R>>,
+    State(state): State<QueryState<R>>,
     body: Result<Json<QueryRequest>, JsonRejection>,
 ) -> impl IntoResponse
 where
     R: QueryRunner,
 {
-    let req = match parse_json(body) {
-        Ok(req) => req,
-        Err(err) => return lora_error_response(err),
+    let req = match body {
+        Ok(Json(req)) => req,
+        Err(rejection) => return json_rejection_response(rejection),
     };
     let params = match parse_params(req.params) {
         Ok(p) => p,
@@ -38,7 +155,12 @@ where
         format: format.into(),
     });
 
-    match db.execute_with_params(&req.query, options, params.unwrap_or_default()) {
+    let query = req.query;
+    let outcome = run_engine(&state, move |db, deadline| {
+        db.execute_with_params_deadline(&query, options, params.unwrap_or_default(), deadline)
+    })
+    .await;
+    match outcome {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(err) => lora_error_response(err),
     }
@@ -48,21 +170,22 @@ where
 /// without invoking the executor. Mutating queries leave the graph
 /// untouched.
 pub(crate) async fn explain<R>(
-    State(db): State<Arc<R>>,
+    State(state): State<QueryState<R>>,
     body: Result<Json<PlanRequest>, JsonRejection>,
 ) -> impl IntoResponse
 where
     R: QueryRunner,
 {
-    let req = match parse_json(body) {
-        Ok(req) => req,
-        Err(err) => return lora_error_response(err),
+    let req = match body {
+        Ok(Json(req)) => req,
+        Err(rejection) => return json_rejection_response(rejection),
     };
     let params = match parse_params(req.params) {
         Ok(p) => p,
         Err(err) => return lora_error_response(err),
     };
-    match db.explain(&req.query, params) {
+    let query = req.query;
+    match run_engine(&state, move |db, _| db.explain(&query, params)).await {
         Ok(plan) => (StatusCode::OK, Json(plan_to_json(&plan))).into_response(),
         Err(err) => lora_error_response(err),
     }
@@ -75,30 +198,28 @@ where
 /// persisted exactly as in `POST /query`. Use `POST /explain` to
 /// inspect a mutating plan without running it.
 pub(crate) async fn profile<R>(
-    State(db): State<Arc<R>>,
+    State(state): State<QueryState<R>>,
     body: Result<Json<PlanRequest>, JsonRejection>,
 ) -> impl IntoResponse
 where
     R: QueryRunner,
 {
-    let req = match parse_json(body) {
-        Ok(req) => req,
-        Err(err) => return lora_error_response(err),
+    let req = match body {
+        Ok(Json(req)) => req,
+        Err(rejection) => return json_rejection_response(rejection),
     };
     let params = match parse_params(req.params) {
         Ok(p) => p,
         Err(err) => return lora_error_response(err),
     };
-    match db.profile(&req.query, params) {
+    let query = req.query;
+    let outcome = run_engine(&state, move |db, deadline| {
+        db.profile_deadline(&query, params, deadline)
+    })
+    .await;
+    match outcome {
         Ok(prof) => (StatusCode::OK, Json(profile_to_json(&prof))).into_response(),
         Err(err) => lora_error_response(err),
-    }
-}
-
-fn parse_json<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, LoraError> {
-    match body {
-        Ok(Json(value)) => Ok(value),
-        Err(rejection) => Err(json_rejection_error(rejection)),
     }
 }
 

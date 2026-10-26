@@ -8,8 +8,16 @@ pub enum ConfigError {
     UnknownArg(String),
     MissingValue(&'static str),
     EmptyValue(&'static str),
-    InvalidPort { value: String, reason: String },
+    InvalidPort {
+        value: String,
+        reason: String,
+    },
     InvalidSyncMode(String),
+    InvalidNumber {
+        flag: &'static str,
+        value: String,
+        reason: String,
+    },
     UnexpectedPositional(String),
 }
 
@@ -28,6 +36,11 @@ impl fmt::Display for ConfigError {
                     "invalid `--wal-sync-mode` `{value}`: expected `group-sync`"
                 )
             }
+            ConfigError::InvalidNumber {
+                flag,
+                value,
+                reason,
+            } => write!(f, "invalid `{flag}` `{value}`: {reason}"),
             ConfigError::UnexpectedPositional(a) => {
                 write!(f, "unexpected positional argument `{a}`")
             }

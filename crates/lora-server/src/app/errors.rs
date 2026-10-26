@@ -62,6 +62,19 @@ pub(crate) fn json_rejection_error(rejection: JsonRejection) -> LoraError {
     )
 }
 
+/// Response for a request body that failed to parse. A body over the
+/// configured size limit keeps axum's 413 status; everything else maps
+/// through [`lora_error_response`].
+pub(crate) fn json_rejection_response(rejection: JsonRejection) -> Response {
+    let status = rejection.status();
+    let lora = json_rejection_error(rejection);
+    if status == StatusCode::PAYLOAD_TOO_LARGE {
+        tracing::warn!(code = lora.code().as_str(), "request body too large");
+        return (status, Json(ErrorResponse::from_lora(&lora))).into_response();
+    }
+    lora_error_response(lora)
+}
+
 /// Map a [`LoraError`] to its HTTP status code.
 ///
 /// Server-category errors collapse to 500, with one refinement:

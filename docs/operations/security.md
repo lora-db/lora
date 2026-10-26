@@ -41,7 +41,9 @@ There is no maximum query length or result size. An attacker or accidental user 
 When `lora-server` is started with `--snapshot-path <PATH>` (or
 `LORA_SERVER_SNAPSHOT_PATH`), two snapshot endpoints become available:
 `POST /admin/snapshot/save` and `POST /admin/snapshot/load`. Both accept
-an optional JSON body of the form `{"path": "/override/location.bin"}`.
+an optional JSON body of the form `{"path": "/override/location.bin"}`,
+which is rejected unless the server runs with `--admin-path-root <DIR>`
+and must then stay inside `DIR`.
 When the server is started with `--wal-dir <DIR>` (or
 `LORA_SERVER_WAL_DIR`), the WAL admin routes mount independently:
 `POST /admin/wal/status`, `POST /admin/wal/truncate`, and
@@ -76,7 +78,7 @@ LoraDB's mitigation posture today:
 3. **Separate binds.** If you need public `/query` access alongside admin
    snapshots or WAL controls, bind the server to `127.0.0.1` or a management
    interface and proxy-rewrite only the admin routes from the trusted path.
-4. **Never trust the `path` body on an untrusted network.** Even with auth, a compromised client with admin access can use the path override to write anywhere the server UID can. Prefer omitting the body so the server uses its configured `--snapshot-path`.
+4. **Keep `path` overrides off unless you need them.** Without `--admin-path-root` the server rejects every body `path` and only touches its configured `--snapshot-path`. With it, a client with admin access can still read or overwrite any file inside that directory (and follow symlinks placed there), so point it at a directory that holds nothing but snapshots.
 
 > ⚠️ **Future releases may add authentication on the admin surface.** Until they do, the correct deployment is "admin disabled by default, and operators opt in only behind an auth boundary."
 

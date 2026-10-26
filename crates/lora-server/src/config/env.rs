@@ -5,8 +5,10 @@ use lora_database::SyncMode;
 use super::errors::ConfigError;
 use super::help::{help_text, version_text};
 use super::{
-    ConfigOutcome, ServerConfig, DEFAULT_HOST, DEFAULT_PORT, HOST_ENV, PORT_ENV, SNAPSHOT_PATH_ENV,
-    WAL_DIR_ENV, WAL_SYNC_MODE_ENV,
+    ConfigOutcome, ServerConfig, ADMIN_PATH_ROOT_ENV, DEFAULT_HOST, DEFAULT_MAX_BODY_BYTES,
+    DEFAULT_PORT, DEFAULT_QUERY_TIMEOUT_MS, HOST_ENV, MAX_BODY_BYTES_ENV,
+    MAX_CONCURRENT_QUERIES_ENV, PORT_ENV, QUERY_TIMEOUT_MS_ENV, SNAPSHOT_PATH_ENV, WAL_DIR_ENV,
+    WAL_SYNC_MODE_ENV,
 };
 
 /// Inputs to [`resolve`]. Wrapping the env values in a struct keeps the
@@ -18,6 +20,10 @@ pub struct EnvInputs {
     pub snapshot_path: Option<String>,
     pub wal_dir: Option<String>,
     pub wal_sync_mode: Option<String>,
+    pub query_timeout_ms: Option<String>,
+    pub max_concurrent_queries: Option<String>,
+    pub max_body_bytes: Option<String>,
+    pub admin_path_root: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -28,6 +34,10 @@ struct CliInputs {
     restore_from: Option<String>,
     wal_dir: Option<String>,
     wal_sync_mode: Option<String>,
+    query_timeout_ms: Option<String>,
+    max_concurrent_queries: Option<String>,
+    max_body_bytes: Option<String>,
+    admin_path_root: Option<String>,
 }
 
 impl CliInputs {
@@ -39,6 +49,10 @@ impl CliInputs {
             CliField::RestoreFrom => self.restore_from = Some(value),
             CliField::WalDir => self.wal_dir = Some(value),
             CliField::WalSyncMode => self.wal_sync_mode = Some(value),
+            CliField::QueryTimeoutMs => self.query_timeout_ms = Some(value),
+            CliField::MaxConcurrentQueries => self.max_concurrent_queries = Some(value),
+            CliField::MaxBodyBytes => self.max_body_bytes = Some(value),
+            CliField::AdminPathRoot => self.admin_path_root = Some(value),
         }
     }
 }
@@ -51,6 +65,10 @@ enum CliField {
     RestoreFrom,
     WalDir,
     WalSyncMode,
+    QueryTimeoutMs,
+    MaxConcurrentQueries,
+    MaxBodyBytes,
+    AdminPathRoot,
 }
 
 enum ParsedCli {
@@ -95,6 +113,23 @@ where
         None => SyncMode::default(),
     };
 
+    let query_timeout_ms = match cli.query_timeout_ms.or(env.query_timeout_ms) {
+        Some(raw) => parse_number("--query-timeout-ms", &raw)?,
+        None => DEFAULT_QUERY_TIMEOUT_MS,
+    };
+    let max_concurrent_queries = match cli.max_concurrent_queries.or(env.max_concurrent_queries) {
+        Some(raw) => parse_number("--max-concurrent-queries", &raw)?,
+        None => crate::app::default_max_concurrent_queries(),
+    };
+    let max_body_bytes = match cli.max_body_bytes.or(env.max_body_bytes) {
+        Some(raw) => parse_number("--max-body-bytes", &raw)?,
+        None => DEFAULT_MAX_BODY_BYTES,
+    };
+    let admin_path_root = cli
+        .admin_path_root
+        .or(env.admin_path_root)
+        .and_then(non_empty_path);
+
     Ok(ConfigOutcome::Run(ServerConfig {
         host,
         port,
@@ -102,6 +137,10 @@ where
         restore_from,
         wal_dir,
         wal_sync_mode,
+        query_timeout_ms,
+        max_concurrent_queries,
+        max_body_bytes,
+        admin_path_root,
     }))
 }
 
@@ -150,6 +189,12 @@ fn cli_field_for_flag(arg: &str) -> Option<(CliField, &'static str)> {
         "--restore-from" => Some((CliField::RestoreFrom, "--restore-from")),
         "--wal-dir" => Some((CliField::WalDir, "--wal-dir")),
         "--wal-sync-mode" => Some((CliField::WalSyncMode, "--wal-sync-mode")),
+        "--query-timeout-ms" => Some((CliField::QueryTimeoutMs, "--query-timeout-ms")),
+        "--max-concurrent-queries" => {
+            Some((CliField::MaxConcurrentQueries, "--max-concurrent-queries"))
+        }
+        "--max-body-bytes" => Some((CliField::MaxBodyBytes, "--max-body-bytes")),
+        "--admin-path-root" => Some((CliField::AdminPathRoot, "--admin-path-root")),
         _ => None,
     }
 }
@@ -170,6 +215,10 @@ pub fn resolve_from_process() -> Result<ConfigOutcome, ConfigError> {
             snapshot_path: std::env::var(SNAPSHOT_PATH_ENV).ok(),
             wal_dir: std::env::var(WAL_DIR_ENV).ok(),
             wal_sync_mode: std::env::var(WAL_SYNC_MODE_ENV).ok(),
+            query_timeout_ms: std::env::var(QUERY_TIMEOUT_MS_ENV).ok(),
+            max_concurrent_queries: std::env::var(MAX_CONCURRENT_QUERIES_ENV).ok(),
+            max_body_bytes: std::env::var(MAX_BODY_BYTES_ENV).ok(),
+            admin_path_root: std::env::var(ADMIN_PATH_ROOT_ENV).ok(),
         },
     )
 }
@@ -190,6 +239,24 @@ fn parse_port(raw: &str) -> Result<u16, ConfigError> {
     trimmed
         .parse::<u16>()
         .map_err(|e| ConfigError::InvalidPort {
+            value: raw.to_string(),
+            reason: e.to_string(),
+        })
+}
+
+fn parse_number<T>(flag: &'static str, raw: &str) -> Result<T, ConfigError>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ConfigError::EmptyValue(flag));
+    }
+    trimmed
+        .parse::<T>()
+        .map_err(|e| ConfigError::InvalidNumber {
+            flag,
             value: raw.to_string(),
             reason: e.to_string(),
         })

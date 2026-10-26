@@ -49,12 +49,11 @@ pub struct HealthResponse {
 /// optional; when it is absent (or an empty JSON object) the server uses
 /// the path configured in `AdminConfig`.
 ///
-/// Supplying a `path` override lets an operator snapshot to / restore from
-/// an arbitrary filesystem location in a single request. **Any client that
-/// can reach the admin surface can write to any path the server process
-/// can write to — deploy the admin surface behind authenticated transport
-/// only.** We deliberately do not sandbox the path here; a well-meaning
-/// whitelist would give a false sense of safety without auth.
+/// A `path` override is only accepted when the server was started with an
+/// admin path root (`--admin-path-root`), and must stay inside it. **The
+/// admin surface has no authentication: any client that can reach it can
+/// overwrite the snapshot, replace the live graph, and truncate the WAL.
+/// Deploy it behind authenticated transport only.**
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct SnapshotRequest {

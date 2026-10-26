@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use lora_database::{Database, InMemoryGraph, SnapshotAdmin, WalAdmin, WalConfig};
 use lora_server::config::{self, ConfigOutcome, ServerConfig, DEFAULT_WAL_SEGMENT_TARGET_BYTES};
-use lora_server::{serve_with_admin, AdminConfig, SnapshotAdminConfig};
+use lora_server::{serve_with, AdminConfig, QueryLimits, SnapshotAdminConfig};
 
 fn main() -> ExitCode {
     let cfg = match config::resolve_from_process() {
@@ -24,7 +24,10 @@ fn main() -> ExitCode {
         }
     };
 
-    let runtime = match tokio::runtime::Builder::new_current_thread()
+    // Engine calls run on the blocking pool (see `QueryLimits`); the worker
+    // threads only parse requests and serialise responses, so a large result
+    // being encoded never holds up other connections.
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
     {
@@ -46,13 +49,19 @@ fn main() -> ExitCode {
 
 async fn run(cfg: ServerConfig) -> anyhow::Result<()> {
     let db = open_database(&cfg)?;
-    let admin_config = build_admin_config(&cfg, &db);
+    let admin_config = build_admin_config(&cfg, &db)?;
+    let limits = QueryLimits {
+        timeout: (cfg.query_timeout_ms > 0)
+            .then(|| std::time::Duration::from_millis(cfg.query_timeout_ms)),
+        max_concurrent: (cfg.max_concurrent_queries > 0).then_some(cfg.max_concurrent_queries),
+        max_body_bytes: cfg.max_body_bytes,
+    };
 
     let addr = cfg.bind_addr();
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let local = listener.local_addr()?;
     println!("Lora server running at http://{local}");
-    serve_with_admin(listener, db, admin_config).await
+    serve_with(listener, db, limits, admin_config).await
 }
 
 // Four boot paths, picked by the (--wal-dir, --restore-from) cross product:
@@ -140,19 +149,34 @@ fn restore_snapshot_if_present(db: &Database<InMemoryGraph>, path: &Path) -> any
 fn build_admin_config(
     cfg: &ServerConfig,
     db: &Arc<Database<InMemoryGraph>>,
-) -> Option<AdminConfig> {
+) -> anyhow::Result<Option<AdminConfig>> {
     let snapshot_admin = snapshot_admin_config(cfg, db);
     let wal_admin = wal_admin_config(cfg, db);
 
-    if snapshot_admin.is_some() || wal_admin.is_some() {
-        announce_admin_routes(snapshot_admin.as_ref(), wal_admin.as_ref());
-        Some(AdminConfig {
-            snapshot: snapshot_admin,
-            wal: wal_admin,
-        })
-    } else {
-        None
+    if snapshot_admin.is_none() && wal_admin.is_none() {
+        return Ok(None);
     }
+    // Canonicalise once so request paths are compared against the real
+    // directory, not whatever relative spelling the operator typed.
+    let path_root = match &cfg.admin_path_root {
+        Some(root) => Some(
+            std::fs::canonicalize(root)
+                .map_err(|e| anyhow::anyhow!("--admin-path-root {}: {e}", root.display()))?,
+        ),
+        None => None,
+    };
+    announce_admin_routes(snapshot_admin.as_ref(), wal_admin.as_ref());
+    if let Some(root) = &path_root {
+        println!("Admin `path` overrides allowed inside {}", root.display());
+    }
+    println!(
+        "WARNING: the admin routes have no authentication. Do not expose them on an untrusted network."
+    );
+    Ok(Some(AdminConfig {
+        snapshot: snapshot_admin,
+        wal: wal_admin,
+        path_root,
+    }))
 }
 
 fn snapshot_admin_config(
@@ -188,7 +212,7 @@ fn announce_admin_routes(
             s.path.display()
         ),
         (None, Some(_)) => println!(
-            "Admin routes enabled: /admin/wal/{{status,truncate}} + /admin/checkpoint (path in body required)",
+            "Admin routes enabled: /admin/wal/{{status,truncate}} + /admin/checkpoint (path in body, needs --admin-path-root)",
         ),
         (None, None) => {}
     }

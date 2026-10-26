@@ -71,6 +71,7 @@ async fn admin_save_and_load_roundtrip() {
             admin: Arc::clone(&db) as Arc<dyn SnapshotAdmin>,
         }),
         wal: None,
+        path_root: None,
     };
     let app = build_app_with_admin(Arc::clone(&db), Some(admin));
 
@@ -135,6 +136,7 @@ async fn admin_malformed_json_returns_structured_error() {
             admin: Arc::clone(&db) as Arc<dyn SnapshotAdmin>,
         }),
         wal: None,
+        path_root: None,
     };
     let app = build_app_with_admin(Arc::clone(&db), Some(admin));
 
@@ -179,6 +181,7 @@ async fn admin_save_honours_path_override() {
             admin: Arc::clone(&db) as Arc<dyn SnapshotAdmin>,
         }),
         wal: None,
+        path_root: Some(dir.clone()),
     };
     let app = build_app_with_admin(Arc::clone(&db), Some(admin));
 
@@ -220,6 +223,7 @@ async fn admin_load_reports_error_for_missing_file() {
             admin: Arc::clone(&db) as Arc<dyn SnapshotAdmin>,
         }),
         wal: None,
+        path_root: None,
     };
     let app = build_app_with_admin(Arc::clone(&db), Some(admin));
 
@@ -321,6 +325,7 @@ async fn wal_status_and_checkpoint_endpoints() {
             admin: Arc::clone(&db) as Arc<dyn SnapshotAdmin>,
         }),
         wal: Some(Arc::clone(&db) as Arc<dyn WalAdmin>),
+        path_root: None,
     };
     let app = build_app_with_admin(Arc::clone(&db), Some(admin));
 
@@ -400,7 +405,8 @@ async fn wal_admin_routes_mount_without_snapshot_path() {
     )
     .unwrap();
 
-    let admin = AdminConfig::wal_only(Arc::clone(&db) as Arc<dyn WalAdmin>);
+    let admin =
+        AdminConfig::wal_only(Arc::clone(&db) as Arc<dyn WalAdmin>).with_path_root(dir.clone());
     let app = build_app_with_admin(Arc::clone(&db), Some(admin));
 
     // wal/status mounts.
@@ -505,6 +511,7 @@ async fn wal_status_errors_when_wal_admin_is_disconnected() {
             admin: Arc::clone(&db) as Arc<dyn SnapshotAdmin>,
         }),
         wal: Some(Arc::clone(&db) as Arc<dyn WalAdmin>),
+        path_root: None,
     };
     let app = build_app_with_admin(Arc::clone(&db), Some(admin));
 
@@ -526,6 +533,110 @@ async fn wal_status_errors_when_wal_admin_is_disconnected() {
         "database operation failed unexpectedly"
     );
     assert_eq!(json["error"]["category"].as_str().unwrap(), "server");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+async fn post_admin_path(
+    app: &axum::Router,
+    uri: &str,
+    path: &str,
+) -> (StatusCode, serde_json::Value) {
+    let body = serde_json::json!({ "path": path }).to_string();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap_or_default())
+}
+
+#[tokio::test]
+async fn admin_path_override_rejected_without_path_root() {
+    let dir = tempdir("no_root");
+    let default_path = dir.join("default.bin");
+    let outside = dir.join("elsewhere.bin");
+    let db = Arc::new(Database::in_memory());
+    let admin = AdminConfig::snapshot_only(
+        default_path.clone(),
+        Arc::clone(&db) as Arc<dyn SnapshotAdmin>,
+    );
+    let app = build_app_with_admin(Arc::clone(&db), Some(admin));
+
+    for uri in ["/admin/snapshot/save", "/admin/snapshot/load"] {
+        let (status, json) = post_admin_path(&app, uri, outside.to_str().unwrap()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+        assert_eq!(json["error"]["code"], "LORA_CONFIG");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("--admin-path-root"),
+            "{json}"
+        );
+    }
+    assert!(!outside.exists());
+    assert!(!default_path.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn admin_path_override_must_stay_inside_path_root() {
+    let dir = tempdir("root_escape");
+    let root = dir.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let wal_dir = dir.join("wal");
+    std::fs::create_dir_all(&wal_dir).unwrap();
+    let db = Arc::new(Database::open_with_wal(enabled(&wal_dir)).unwrap());
+    let admin = AdminConfig {
+        snapshot: Some(SnapshotAdminConfig {
+            path: root.join("default.bin"),
+            admin: Arc::clone(&db) as Arc<dyn SnapshotAdmin>,
+        }),
+        wal: Some(Arc::clone(&db) as Arc<dyn WalAdmin>),
+        path_root: Some(root.clone()),
+    };
+    let app = build_app_with_admin(Arc::clone(&db), Some(admin));
+
+    let escapes = [
+        dir.join("outside.bin").to_str().unwrap().to_string(),
+        "../outside.bin".to_string(),
+        root.join("../outside.bin").to_str().unwrap().to_string(),
+        root.to_str().unwrap().to_string(),
+    ];
+    for uri in [
+        "/admin/snapshot/save",
+        "/admin/snapshot/load",
+        "/admin/checkpoint",
+    ] {
+        for path in &escapes {
+            let (status, json) = post_admin_path(&app, uri, path).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} {path}: {json}");
+            assert_eq!(json["error"]["code"], "LORA_CONFIG");
+        }
+    }
+    assert!(!dir.join("outside.bin").exists());
+
+    // Relative and absolute paths inside the root are accepted.
+    let (status, json) = post_admin_path(&app, "/admin/snapshot/save", "nested.bin").await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(
+        json["path"].as_str().unwrap(),
+        root.join("nested.bin").display().to_string()
+    );
+    let inside = root.join("ckpt.bin");
+    let (status, json) = post_admin_path(&app, "/admin/checkpoint", inside.to_str().unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert!(inside.exists());
 
     let _ = std::fs::remove_dir_all(&dir);
 }

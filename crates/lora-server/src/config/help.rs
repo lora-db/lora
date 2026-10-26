@@ -1,8 +1,9 @@
 //! Static `--help` and `--version` text.
 
 use super::{
-    DEFAULT_HOST, DEFAULT_PORT, HOST_ENV, PORT_ENV, SNAPSHOT_PATH_ENV, WAL_DIR_ENV,
-    WAL_SYNC_MODE_ENV,
+    ADMIN_PATH_ROOT_ENV, DEFAULT_HOST, DEFAULT_MAX_BODY_BYTES, DEFAULT_PORT,
+    DEFAULT_QUERY_TIMEOUT_MS, HOST_ENV, MAX_BODY_BYTES_ENV, MAX_CONCURRENT_QUERIES_ENV, PORT_ENV,
+    QUERY_TIMEOUT_MS_ENV, SNAPSHOT_PATH_ENV, WAL_DIR_ENV, WAL_SYNC_MODE_ENV,
 };
 
 pub fn help_text() -> String {
@@ -42,6 +43,26 @@ OPTIONS:
         --wal-sync-mode <MODE>     WAL durability cadence. Only `group-sync`
                                    is supported (default).
                                    Also read from ${WAL_SYNC_MODE_ENV}.
+        --query-timeout-ms <MS>    Time budget for each /query and /profile
+                                   request, including any wait for a free
+                                   query slot. A query that runs out of time,
+                                   or whose client disconnects, is cancelled
+                                   and answered with LORA_TIMEOUT (HTTP 408).
+                                   0 disables the timeout.
+                                   Default: {DEFAULT_QUERY_TIMEOUT_MS}. Also read from ${QUERY_TIMEOUT_MS_ENV}.
+        --max-concurrent-queries <N>
+                                   How many /query, /explain and /profile
+                                   requests run at once; the rest wait for a
+                                   slot. 0 means unlimited.
+                                   Default: twice the CPU count.
+                                   Also read from ${MAX_CONCURRENT_QUERIES_ENV}.
+        --max-body-bytes <BYTES>   Largest accepted request body.
+                                   Default: {DEFAULT_MAX_BODY_BYTES}. Also read from ${MAX_BODY_BYTES_ENV}.
+        --admin-path-root <DIR>    Allow admin requests to send a `path`
+                                   override, as long as it stays inside DIR.
+                                   Without it, overrides are rejected and the
+                                   admin routes only use --snapshot-path.
+                                   Also read from ${ADMIN_PATH_ROOT_ENV}.
         --help                     Print this help and exit.
         --version                  Print version and exit.
 
@@ -51,6 +72,10 @@ ENVIRONMENT:
     {SNAPSHOT_PATH_ENV}   Path used by --snapshot-path.
     {WAL_DIR_ENV}         Directory used by --wal-dir.
     {WAL_SYNC_MODE_ENV}   Mode used by --wal-sync-mode.
+    {QUERY_TIMEOUT_MS_ENV}         Value used by --query-timeout-ms.
+    {MAX_CONCURRENT_QUERIES_ENV}   Value used by --max-concurrent-queries.
+    {MAX_BODY_BYTES_ENV}           Value used by --max-body-bytes.
+    {ADMIN_PATH_ROOT_ENV}          Directory used by --admin-path-root.
 
 EXAMPLES:
     lora-server
