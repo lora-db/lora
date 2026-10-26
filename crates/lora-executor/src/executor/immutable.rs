@@ -37,7 +37,7 @@ use super::helpers::{
     scan_node_ids_for_label_groups,
 };
 use super::{merge_optional_rows, optional_match_rows};
-use super::{project_item, project_item_in_place};
+use super::{project_row, ProjectionNames};
 use super::{sort_checked, sort_row_bound, sort_rows_with_top_k};
 
 #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
@@ -705,27 +705,19 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
             params: &self.ctx.params,
         };
         use rayon::prelude::*;
+        // Each worker counts on its own copies of the column names.
         let projected: ExecResult<Vec<Row>> = input_rows
             .into_par_iter()
-            .map(|row| {
-                let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
-                if let Some(deadline) = self.deadline {
-                    check_deadline_at(deadline)?;
-                }
-                if op.include_existing {
-                    let mut projected = row;
-                    for item in &op.items {
-                        project_item_in_place(&mut projected, item, &eval_ctx)?;
+            .map_init(
+                || ProjectionNames::private(&op.items),
+                |names, row| {
+                    let _deadline_scope = crate::cancel::DeadlineScope::enter(self.deadline);
+                    if let Some(deadline) = self.deadline {
+                        check_deadline_at(deadline)?;
                     }
-                    Ok(projected)
-                } else {
-                    let mut projected = Row::new();
-                    for item in &op.items {
-                        project_item(&mut projected, &row, item, &eval_ctx)?;
-                    }
-                    Ok(projected)
-                }
-            })
+                    project_row(row, &op.items, op.include_existing, names, &eval_ctx)
+                },
+            )
             .collect();
         let rows = projected?;
         Ok(if op.distinct {

@@ -13,7 +13,7 @@ use lora_store::GraphStorage;
 
 use crate::errors::{ExecResult, ExecutorError};
 use crate::eval::eval_expr_result;
-use crate::executor::{project_item, project_item_in_place, RowKeyBuilder, RowKeyPart};
+use crate::executor::{project_row, ProjectionNames, RowKeyBuilder, RowKeyPart};
 use crate::value::{LoraValue, Row};
 
 use super::{RowSource, StreamCtx};
@@ -26,6 +26,10 @@ pub struct ProjectionSource<'a, S: GraphStorage> {
     ctx: StreamCtx<'a, S>,
     items: &'a [ResolvedProjection],
     include_existing: bool,
+    /// The plan's names for the first rows, then private copies (see
+    /// [`ProjectionNames`]).
+    names: ProjectionNames,
+    rows: usize,
 }
 
 impl<'a, S: GraphStorage> ProjectionSource<'a, S> {
@@ -40,6 +44,8 @@ impl<'a, S: GraphStorage> ProjectionSource<'a, S> {
             ctx,
             items,
             include_existing,
+            names: ProjectionNames::shared(),
+            rows: 0,
         }
     }
 }
@@ -49,20 +55,19 @@ impl<'a, S: GraphStorage> RowSource for ProjectionSource<'a, S> {
         match self.upstream.next_row()? {
             None => Ok(None),
             Some(row) => {
-                let eval_ctx = self.ctx.eval_ctx();
-                if self.include_existing {
-                    let mut projected = row;
-                    for item in self.items {
-                        project_item_in_place(&mut projected, item, &eval_ctx)?;
-                    }
-                    Ok(Some(projected))
-                } else {
-                    let mut projected = Row::new();
-                    for item in self.items {
-                        project_item(&mut projected, &row, item, &eval_ctx)?;
-                    }
-                    Ok(Some(projected))
+                self.rows += 1;
+                if self.rows == ProjectionNames::SHARED_ROWS && !self.names.is_private() {
+                    self.names = ProjectionNames::private(self.items);
                 }
+                let eval_ctx = self.ctx.eval_ctx();
+                project_row(
+                    row,
+                    self.items,
+                    self.include_existing,
+                    &self.names,
+                    &eval_ctx,
+                )
+                .map(Some)
             }
         }
     }
