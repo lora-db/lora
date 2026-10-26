@@ -867,7 +867,16 @@ pub(super) fn expand_var_len_rows<S: GraphStorage>(
             max_hops,
             bind_relationships,
             deadline,
-        )?;
+        );
+        let expansions = match expansions {
+            Ok(expansions) => expansions,
+            Err(err) => {
+                // The rows built before a timeout can hold millions of
+                // paths; freeing them is not the failed query's job.
+                discard_rows(out);
+                return Err(err);
+            }
+        };
 
         for result in expansions {
             if bound_dst.is_some_and(|dst| dst != result.dst_node_id) {
