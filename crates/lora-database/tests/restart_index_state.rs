@@ -303,8 +303,8 @@ fn wal_replay_reproduces_declared_index_state() {
             &writer,
             "MATCH (p:Person) WHERE id(p) = 3 SET p:Company, p.code = 'C3'",
         );
-        // A dropped index: in the writer its hash buckets stay active
-        // (implicit from then on); replaying the DROP must do the same.
+        // A dropped index: the writer releases its hash buckets, and
+        // replaying the DROP must do the same.
         run(
             &writer,
             "CREATE INDEX person_score FOR (p:Person) ON (p.score)",
@@ -326,7 +326,6 @@ fn wal_replay_reproduces_declared_index_state() {
                 (StoredIndexEntity::Node, "age".to_string(), true),
                 (StoredIndexEntity::Node, "code".to_string(), true),
                 (StoredIndexEntity::Node, "email".to_string(), true),
-                (StoredIndexEntity::Node, "score".to_string(), false),
             ]
         );
         writer.sync().unwrap();
@@ -351,8 +350,8 @@ fn wal_replay_reproduces_declared_index_state() {
     run(&restarted, "CREATE (:Person {email: 'fresh@x'})");
 }
 
-// A snapshot drops what the writer only had implicitly, including the
-// buckets a dropped RANGE index left behind; query results are unchanged.
+// A snapshot drops what the writer only had implicitly; a dropped RANGE
+// index already released its buckets. Query results are unchanged.
 #[test]
 fn snapshot_restart_drops_implicit_indexes() {
     let dir = TmpDir::new("implicit");
@@ -371,12 +370,22 @@ fn snapshot_restart_drops_implicit_indexes() {
     );
     assert_eq!(
         active_keys(&writer),
-        vec![
-            (StoredIndexEntity::Node, "city".to_string(), false),
-            (StoredIndexEntity::Node, "score".to_string(), false),
-        ]
+        vec![(StoredIndexEntity::Node, "city".to_string(), false)]
     );
     assert!(report(&writer).implicit_property_index_bytes() > 0);
+    // A lookup on the dropped key rebuilds its buckets from the data, and
+    // writes made while it was released are in them.
+    run(&writer, "CREATE (:Person {name: 'late', score: 3.5})");
+    assert_eq!(
+        rows(
+            &writer,
+            "MATCH (p:Person {score: 3.5}) RETURN p.name AS n ORDER BY n"
+        ),
+        rows(
+            &writer,
+            "MATCH (p:Person) WHERE p.score + 0 = 3.5 RETURN p.name AS n ORDER BY n"
+        )
+    );
 
     writer.save_snapshot_to(&path).unwrap();
     let restarted = Database::in_memory_from_snapshot(&path).unwrap();

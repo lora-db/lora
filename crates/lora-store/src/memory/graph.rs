@@ -1159,9 +1159,9 @@ impl InMemoryGraph {
     }
 
     /// Inverse of [`Self::register_index`]. Removes the catalog entry
-    /// and (for RANGE) leaves the underlying property-index buckets in
-    /// place — they may still be needed for lazy-activation lookups
-    /// even after the explicit DDL declaration is gone.
+    /// and (for RANGE) releases the hash property index of each property
+    /// no other RANGE index still declares; a later equality lookup
+    /// activates it again.
     pub(super) fn drop_named_index(
         &self,
         name: &str,
@@ -1206,6 +1206,21 @@ impl InMemoryGraph {
                         for prop in &def.properties {
                             self.deactivate_sorted_scope(def.entity, label, prop);
                         }
+                    }
+                    // Writes stop paying for a hash index nothing declares
+                    // any more; an equality lookup rebuilds it on demand.
+                    let declared = self.declared_property_index_keys();
+                    let mut indexes = self.indexes_write();
+                    for prop in &def.properties {
+                        if declared.contains(&(def.entity, prop.clone())) {
+                            continue;
+                        }
+                        match def.entity {
+                            StoredIndexEntity::Node => indexes.node_properties.deactivate(prop),
+                            StoredIndexEntity::Relationship => {
+                                indexes.relationship_properties.deactivate(prop)
+                            }
+                        };
                     }
                 }
                 StoredIndexKind::Point => {

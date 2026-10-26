@@ -122,6 +122,34 @@ impl PropertyIndexState {
         Arc::make_mut(&mut self.active_keys).insert(key.to_string())
     }
 
+    /// Stop maintaining `key` and release its buckets in every scope. The
+    /// next equality lookup of the key activates it again from the data.
+    pub(super) fn deactivate(&mut self, key: &str) -> bool {
+        if !self.active_keys.contains(key) {
+            return false;
+        }
+        Arc::make_mut(&mut self.active_keys).remove(key);
+        if self.any_scope_keys.contains(key) {
+            Arc::make_mut(&mut self.any_scope_keys).remove(key);
+            Arc::make_mut(&mut self.any_scope).remove(key);
+        }
+        let holds_key: Vec<Arc<str>> = self
+            .scoped_values
+            .iter()
+            .filter(|(_, values)| values.contains_key(key))
+            .map(|(scope, _)| scope.clone())
+            .collect();
+        for scope in holds_key {
+            let scoped = Arc::make_mut(&mut self.scoped_values);
+            let values = Arc::make_mut(scoped.get_mut(&*scope).expect("scope listed above"));
+            values.remove(key);
+            if values.is_empty() {
+                scoped.remove(&*scope);
+            }
+        }
+        true
+    }
+
     pub(super) fn any_scope_is_active(&self, key: &str) -> bool {
         self.any_scope_keys.contains(key)
     }
