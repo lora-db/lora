@@ -31,13 +31,15 @@ mod actor;
 mod changes;
 mod encode;
 mod errors;
+mod guard;
 mod interactive;
 mod json;
 mod stream;
 mod tasks;
 mod to_napi;
 
-use errors::{closed_error_message, format_lora_error, INVALID_PARAMS_CODE, LORA_ERROR_CODE};
+use errors::{closed_error_message, format_lora_error, INVALID_PARAMS_CODE};
+use guard::{guard, lock, Guarded};
 use json::json_value_to_params;
 use tasks::{ClearTask, ExecuteTask, ExplainTask, ProfileTask, SyncTask, TransactionTask};
 use to_napi::row_to_napi;
@@ -128,7 +130,7 @@ impl Database {
             snapshot_keep_old,
             snapshot_options,
         };
-        Ok(Self::from_inner(request.open()?, query_timeout_ms))
+        guard(|| Ok(Self::from_inner(request.open()?, query_timeout_ms)))
     }
 
     /// Execute a Lora query on the libuv threadpool.
@@ -157,19 +159,25 @@ impl Database {
     #[napi(ts_return_type = "Promise<Buffer>")]
     pub fn execute(
         &self,
+        env: Env,
         query: String,
         #[napi(ts_arg_type = "Record<string, any> | null | undefined")] params: Option<
             serde_json::Value,
         >,
         #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
         #[napi(ts_arg_type = "number | null | undefined")] cancel_token: Option<u32>,
-    ) -> Result<AsyncTask<ExecuteTask>> {
-        Ok(AsyncTask::new(ExecuteTask {
-            db: self.inner()?,
-            query,
-            params,
-            limit: self.limit(timeout_ms, cancel_token)?,
-        }))
+    ) -> Result<JsObject> {
+        guard(|| {
+            let db = self.inner()?;
+            let off_pool = self.may_wait_for_js(&db, &query);
+            let task = ExecuteTask {
+                db,
+                query,
+                params,
+                limit: self.limit(timeout_ms, cancel_token)?,
+            };
+            tasks::spawn(&env, task, off_pool)
+        })
     }
 
     /// Create a cancellation token for one query. `timeout_ms` (or the
@@ -181,39 +189,34 @@ impl Database {
         &self,
         #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
     ) -> Result<u32> {
-        let timeout = self.effective_timeout(timeout_ms);
-        let handle = Arc::new(Mutex::new(CancellableDeadline::new(timeout)));
-        let id = self.next_cancel_id.fetch_add(1, Ordering::Relaxed);
-        self.cancels
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "cancel registry poisoned"))?
-            .insert(id, handle);
-        Ok(id)
+        guard(|| {
+            let timeout = self.effective_timeout(timeout_ms);
+            let handle = Arc::new(Mutex::new(CancellableDeadline::new(timeout)));
+            let id = self.next_cancel_id.fetch_add(1, Ordering::Relaxed);
+            lock(&self.cancels).insert(id, handle);
+            Ok(id)
+        })
     }
 
     /// Cancel the query holding `token`. It stops at its next check point
     /// and rejects with `LORA_TIMEOUT`. Unknown tokens are ignored.
     #[napi]
     pub fn cancel_query(&self, token: u32) -> Result<()> {
-        let handle = self
-            .cancels
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "cancel registry poisoned"))?
-            .get(&token)
-            .cloned();
-        if let Some(handle) = handle {
-            handle.lock().unwrap_or_else(|p| p.into_inner()).cancel();
-        }
-        Ok(())
+        guard(|| {
+            let handle = lock(&self.cancels).get(&token).cloned();
+            if let Some(handle) = handle {
+                handle.lock().unwrap_or_else(|p| p.into_inner()).cancel();
+            }
+            Ok(())
+        })
     }
 
     #[napi]
     pub fn release_cancel_token(&self, token: u32) -> Result<()> {
-        self.cancels
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "cancel registry poisoned"))?
-            .remove(&token);
-        Ok(())
+        guard(|| {
+            lock(&self.cancels).remove(&token);
+            Ok(())
+        })
     }
 
     /// Compile a query and return its execution plan without running it.
@@ -229,12 +232,14 @@ impl Database {
         #[napi(ts_arg_type = "Record<string, any> | null | undefined")] params: Option<
             serde_json::Value,
         >,
-    ) -> Result<AsyncTask<ExplainTask>> {
-        Ok(AsyncTask::new(ExplainTask {
-            db: self.inner()?,
-            query,
-            params,
-        }))
+    ) -> Result<AsyncTask<Guarded<ExplainTask>>> {
+        guard(|| {
+            Ok(AsyncTask::new(Guarded(ExplainTask {
+                db: self.inner()?,
+                query,
+                params,
+            })))
+        })
     }
 
     /// Execute a query and return runtime metrics alongside the plan.
@@ -245,16 +250,17 @@ impl Database {
     #[napi(ts_return_type = "Promise<LoraQueryProfile>")]
     pub fn profile(
         &self,
+        env: Env,
         query: String,
         #[napi(ts_arg_type = "Record<string, any> | null | undefined")] params: Option<
             serde_json::Value,
         >,
-    ) -> Result<AsyncTask<ProfileTask>> {
-        Ok(AsyncTask::new(ProfileTask {
-            db: self.inner()?,
-            query,
-            params,
-        }))
+    ) -> Result<JsObject> {
+        guard(|| {
+            let db = self.inner()?;
+            let off_pool = self.may_wait_for_js(&db, &query);
+            tasks::spawn(&env, ProfileTask { db, query, params }, off_pool)
+        })
     }
 
     /// Open a true native row stream.
@@ -272,65 +278,64 @@ impl Database {
         #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
         #[napi(ts_arg_type = "number | null | undefined")] cancel_token: Option<u32>,
     ) -> Result<u32> {
-        let limit = self.limit(timeout_ms, cancel_token)?;
-        let deadline = limit.deadline();
-        let params_map = match params {
-            None | Some(serde_json::Value::Null) => BTreeMap::new(),
-            Some(other) => json_value_to_params(other)?,
-        };
-        let db = self.inner()?;
-        let lora_err = |e: LoraError| NapiError::new(Status::GenericFailure, format_lora_error(&e));
-        // A mutating stream takes the writer lock when it opens. Waiting for
-        // it here, on the JS thread, deadlocks against an interactive
-        // transaction or another mutating stream holding the lock (they
-        // need the JS thread to release it) and blocks the event loop
-        // behind a pool query, so unless the lock is free such a stream
-        // opens on its own thread and is pulled asynchronously (see
-        // [`stream`]). With the lock free it opens and is pulled here, like
-        // a read.
-        let shape = self.shapes.classify(&db, &query).map_err(lora_err)?;
-        let local_writer = if shape.mutating {
-            stream::register_local_writer().map(Some)
-        } else {
-            Some(None)
-        };
-        let kind = match local_writer {
-            Some(writer) => StreamKind::Local(
-                stream::LocalStream::open(db, &query, params_map, deadline, writer)
-                    .map_err(lora_err)?,
-            ),
-            None => StreamKind::Actor(
-                stream::StreamActor::spawn(db, query, params_map, deadline, shape.columns)
-                    .map_err(interactive::napi_err)?,
-            ),
-        };
-        let stream_id = self.next_stream_id.fetch_add(1, Ordering::Relaxed);
-        let mut streams = self
-            .streams
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "stream registry poisoned"))?;
-        streams.insert(
-            stream_id,
-            NativeQueryStream {
-                kind,
-                _limit: limit,
-            },
-        );
-        Ok(stream_id)
+        guard(|| {
+            let limit = self.limit(timeout_ms, cancel_token)?;
+            let deadline = limit.deadline();
+            let params_map = match params {
+                None | Some(serde_json::Value::Null) => BTreeMap::new(),
+                Some(other) => json_value_to_params(other)?,
+            };
+            let db = self.inner()?;
+            let lora_err =
+                |e: LoraError| NapiError::new(Status::GenericFailure, format_lora_error(&e));
+            // A mutating stream takes the writer lock when it opens. Waiting for
+            // it here, on the JS thread, deadlocks against an interactive
+            // transaction or another mutating stream holding the lock (they
+            // need the JS thread to release it) and blocks the event loop
+            // behind a pool query, so unless the lock is free such a stream
+            // opens on its own thread and is pulled asynchronously (see
+            // [`stream`]). With the lock free it opens and is pulled here, like
+            // a read.
+            let shape = self.shapes.classify(&db, &query).map_err(lora_err)?;
+            let local_writer = if shape.mutating {
+                stream::register_local_writer().map(Some)
+            } else {
+                Some(None)
+            };
+            let kind = match local_writer {
+                Some(writer) => StreamKind::Local(
+                    stream::LocalStream::open(db, &query, params_map, deadline, writer)
+                        .map_err(lora_err)?,
+                ),
+                None => StreamKind::Actor(
+                    stream::StreamActor::spawn(db, query, params_map, deadline, shape.columns)
+                        .map_err(interactive::napi_err)?,
+                ),
+            };
+            let stream_id = self.next_stream_id.fetch_add(1, Ordering::Relaxed);
+            let mut streams = lock(&self.streams);
+            streams.insert(
+                stream_id,
+                NativeQueryStream {
+                    kind,
+                    _limit: limit,
+                },
+            );
+            Ok(stream_id)
+        })
     }
 
     #[napi(ts_return_type = "string[]")]
     pub fn stream_columns(&self, stream_id: u32) -> Result<Vec<String>> {
-        let streams = self
-            .streams
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "stream registry poisoned"))?;
-        let stream = streams
-            .get(&stream_id)
-            .ok_or_else(|| NapiError::new(Status::GenericFailure, "query stream is closed"))?;
-        Ok(match &stream.kind {
-            StreamKind::Local(local) => local.columns().to_vec(),
-            StreamKind::Actor(actor) => actor.columns.to_vec(),
+        guard(|| {
+            let streams = lock(&self.streams);
+            let stream = streams
+                .get(&stream_id)
+                .ok_or_else(|| NapiError::new(Status::GenericFailure, "query stream is closed"))?;
+            Ok(match &stream.kind {
+                StreamKind::Local(local) => local.columns().to_vec(),
+                StreamKind::Actor(actor) => actor.columns.to_vec(),
+            })
         })
     }
 
@@ -338,14 +343,13 @@ impl Database {
     /// (a mutating stream) rather than [`Self::stream_next`].
     #[napi]
     pub fn stream_is_async(&self, stream_id: u32) -> Result<bool> {
-        let streams = self
-            .streams
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "stream registry poisoned"))?;
-        let stream = streams
-            .get(&stream_id)
-            .ok_or_else(|| NapiError::new(Status::GenericFailure, stream::closed()))?;
-        Ok(matches!(stream.kind, StreamKind::Actor(_)))
+        guard(|| {
+            let streams = lock(&self.streams);
+            let stream = streams
+                .get(&stream_id)
+                .ok_or_else(|| NapiError::new(Status::GenericFailure, stream::closed()))?;
+            Ok(matches!(stream.kind, StreamKind::Actor(_)))
+        })
     }
 
     /// Pull the next row of a mutating stream. Resolves with the row, or
@@ -355,69 +359,66 @@ impl Database {
     /// caller closes the stream with [`Self::stream_close`].
     #[napi(ts_return_type = "Promise<Record<string, any> | null>")]
     pub fn stream_next_async(&self, env: Env, stream_id: u32) -> Result<JsObject> {
-        let streams = self
-            .streams
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "stream registry poisoned"))?;
-        let stream = streams
-            .get(&stream_id)
-            .ok_or_else(|| NapiError::new(Status::GenericFailure, stream::closed()))?;
-        let StreamKind::Actor(actor) = &stream.kind else {
-            return Err(NapiError::new(
-                Status::GenericFailure,
-                "LORA_INTERNAL: a read-only stream is pulled with streamNext",
-            ));
-        };
-        let (deferred, promise) =
-            env.create_deferred::<Option<JsObject>, Resolver<Option<JsObject>>>()?;
-        actor.pull(stream::pull_done(move |pulled| {
-            deferred.resolve(Box::new(move |env| match pulled {
-                Ok(Some(row)) => Ok(Some(row_to_napi(&env, &row)?)),
-                Ok(None) => Ok(None),
-                Err(message) => Err(NapiError::new(Status::GenericFailure, message)),
-            }))
-        }));
-        Ok(promise)
+        guard(|| {
+            let streams = lock(&self.streams);
+            let stream = streams
+                .get(&stream_id)
+                .ok_or_else(|| NapiError::new(Status::GenericFailure, stream::closed()))?;
+            let StreamKind::Actor(actor) = &stream.kind else {
+                return Err(NapiError::new(
+                    Status::GenericFailure,
+                    "LORA_INTERNAL: a read-only stream is pulled with streamNext",
+                ));
+            };
+            let (deferred, promise) =
+                env.create_deferred::<Option<JsObject>, Resolver<Option<JsObject>>>()?;
+            actor.pull(stream::pull_done(move |pulled| {
+                deferred.resolve(guard::settle(move |env| match pulled {
+                    Ok(Some(row)) => Ok(Some(row_to_napi(&env, &row)?)),
+                    Ok(None) => Ok(None),
+                    Err(message) => Err(NapiError::new(Status::GenericFailure, message)),
+                }))
+            }));
+            Ok(promise)
+        })
     }
 
     #[napi(ts_return_type = "Record<string, any> | null")]
     pub fn stream_next(&self, env: Env, stream_id: u32) -> Result<Option<JsUnknown>> {
-        let mut streams = self
-            .streams
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "stream registry poisoned"))?;
-        let stream = streams
-            .get_mut(&stream_id)
-            .ok_or_else(|| NapiError::new(Status::GenericFailure, stream::closed()))?;
-        let StreamKind::Local(local) = &mut stream.kind else {
-            return Err(NapiError::new(
-                Status::GenericFailure,
-                "LORA_INTERNAL: a mutating stream is pulled with streamNextAsync",
-            ));
-        };
-        // The stream's deadline (or cancellation) is active inside the
-        // pull; closing the stream drops its read snapshot.
-        match local.next_row() {
-            Ok(Some(row)) => Ok(Some(row_to_napi(&env, &row)?.into_unknown())),
-            Ok(None) => {
-                streams.remove(&stream_id);
-                Ok(None)
+        guard(|| {
+            let mut streams = lock(&self.streams);
+            let stream = streams
+                .get_mut(&stream_id)
+                .ok_or_else(|| NapiError::new(Status::GenericFailure, stream::closed()))?;
+            let StreamKind::Local(local) = &mut stream.kind else {
+                return Err(NapiError::new(
+                    Status::GenericFailure,
+                    "LORA_INTERNAL: a mutating stream is pulled with streamNextAsync",
+                ));
+            };
+            // The stream's deadline (or cancellation) is active inside the
+            // pull; closing the stream drops its read snapshot.
+            match local.next_row() {
+                Ok(Some(row)) => Ok(Some(row_to_napi(&env, &row)?.into_unknown())),
+                Ok(None) => {
+                    streams.remove(&stream_id);
+                    Ok(None)
+                }
+                Err(message) => {
+                    streams.remove(&stream_id);
+                    Err(NapiError::new(Status::GenericFailure, message))
+                }
             }
-            Err(message) => {
-                streams.remove(&stream_id);
-                Err(NapiError::new(Status::GenericFailure, message))
-            }
-        }
+        })
     }
 
     #[napi]
     pub fn stream_close(&self, stream_id: u32) -> Result<()> {
-        let mut streams = self
-            .streams
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "stream registry poisoned"))?;
-        streams.remove(&stream_id);
-        Ok(())
+        guard(|| {
+            let mut streams = lock(&self.streams);
+            streams.remove(&stream_id);
+            Ok(())
+        })
     }
 
     /// Execute multiple statements inside one core transaction.
@@ -436,13 +437,15 @@ impl Database {
         mode: Option<String>,
         #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
         #[napi(ts_arg_type = "number | null | undefined")] cancel_token: Option<u32>,
-    ) -> Result<AsyncTask<TransactionTask>> {
-        Ok(AsyncTask::new(TransactionTask {
-            db: self.inner()?,
-            statements,
-            mode,
-            limit: self.limit(timeout_ms, cancel_token)?,
-        }))
+    ) -> Result<AsyncTask<Guarded<TransactionTask>>> {
+        guard(|| {
+            Ok(AsyncTask::new(Guarded(TransactionTask {
+                db: self.inner()?,
+                statements,
+                mode,
+                limit: self.limit(timeout_ms, cancel_token)?,
+            })))
+        })
     }
 
     /// Begin an interactive transaction. Resolves with a transaction id
@@ -462,42 +465,41 @@ impl Database {
         mode: Option<String>,
         #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
     ) -> Result<JsObject> {
-        // Everything that can fail runs before the deferred exists: a
-        // deferred dropped unsettled keeps the process alive.
-        let mode = tasks::parse_transaction_mode(mode.as_deref())?;
-        // How long a read-write transaction may wait for the writer lock.
-        let deadline = timeout_ms
-            .filter(|ms| *ms > 0)
-            .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms.into()));
-        let db = self.inner()?;
-        let mut txs = self
-            .txs
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "transaction registry poisoned"))?;
-        let id = self.next_tx_id.fetch_add(1, Ordering::Relaxed);
-        let (deferred, promise) = env.create_deferred::<u32, Resolver<u32>>()?;
-        let registry = self.txs.clone();
-        let actor = interactive::TxActor::spawn(
-            db,
-            mode,
-            deadline,
-            interactive::done(move |opened| {
-                // Settled on the JS thread, after this call has registered
-                // the actor: a failed open unregisters it there. A
-                // transaction that opened just as `dispose()` dropped it is
-                // closed, not handed out.
-                deferred.resolve(Box::new(move |_env| match opened {
-                    Ok(()) if tx_registered(&registry, id) => Ok(id),
-                    Ok(()) => Err(interactive::napi_err(interactive::closed())),
-                    Err(message) => {
-                        forget_tx(&registry, id);
-                        Err(interactive::napi_err(message))
-                    }
-                }))
-            }),
-        );
-        txs.insert(id, Arc::new(actor));
-        Ok(promise)
+        guard(|| {
+            // Everything that can fail runs before the deferred exists: a
+            // deferred dropped unsettled keeps the process alive.
+            let mode = tasks::parse_transaction_mode(mode.as_deref())?;
+            // How long a read-write transaction may wait for the writer lock.
+            let deadline = timeout_ms
+                .filter(|ms| *ms > 0)
+                .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms.into()));
+            let db = self.inner()?;
+            let mut txs = lock(&self.txs);
+            let id = self.next_tx_id.fetch_add(1, Ordering::Relaxed);
+            let (deferred, promise) = env.create_deferred::<u32, Resolver<u32>>()?;
+            let registry = self.txs.clone();
+            let actor = interactive::TxActor::spawn(
+                db,
+                mode,
+                deadline,
+                interactive::done(move |opened| {
+                    // Settled on the JS thread, after this call has registered
+                    // the actor: a failed open unregisters it there. A
+                    // transaction that opened just as `dispose()` dropped it is
+                    // closed, not handed out.
+                    deferred.resolve(guard::settle(move |_env| match opened {
+                        Ok(()) if tx_registered(&registry, id) => Ok(id),
+                        Ok(()) => Err(interactive::napi_err(interactive::closed())),
+                        Err(message) => {
+                            forget_tx(&registry, id);
+                            Err(interactive::napi_err(message))
+                        }
+                    }))
+                }),
+            );
+            txs.insert(id, Arc::new(actor));
+            Ok(promise)
+        })
     }
 
     /// Run one statement inside interactive transaction `tx_id`. A failed
@@ -514,42 +516,44 @@ impl Database {
         #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
         #[napi(ts_arg_type = "number | null | undefined")] cancel_token: Option<u32>,
     ) -> Result<JsObject> {
-        let actor = self.tx_actor(tx_id)?;
-        let limit = self.limit(timeout_ms, cancel_token)?;
-        let params = match params {
-            None | Some(serde_json::Value::Null) => BTreeMap::new(),
-            Some(other) => match json_value_to_params(other) {
-                Ok(params) => params,
-                Err(err) => {
-                    // The JS side treats any rejection as closing the
-                    // transaction; roll it back so the writer lock is freed.
-                    // Dropping the last handle never waits for a running
-                    // statement (see `actor`).
-                    forget_tx(&self.txs, tx_id);
-                    actor.rollback(interactive::done(|_| {}));
-                    return Err(err);
-                }
-            },
-        };
-        let (deferred, promise) = env.create_deferred::<Buffer, Resolver<Buffer>>()?;
-        let registry = self.txs.clone();
-        actor.execute(
-            query,
-            params,
-            limit,
-            interactive::done(move |result| {
-                let encoded = result.map(tasks::encode_query_result_rowarrays);
-                deferred.resolve(Box::new(move |_env| match encoded {
-                    Ok(bytes) => Ok(Buffer::from(bytes?)),
-                    Err(message) => {
-                        // The actor rolled back; forget the transaction.
-                        forget_tx(&registry, tx_id);
-                        Err(interactive::napi_err(message))
+        guard(|| {
+            let actor = self.tx_actor(tx_id)?;
+            let limit = self.limit(timeout_ms, cancel_token)?;
+            let params = match params {
+                None | Some(serde_json::Value::Null) => BTreeMap::new(),
+                Some(other) => match json_value_to_params(other) {
+                    Ok(params) => params,
+                    Err(err) => {
+                        // The JS side treats any rejection as closing the
+                        // transaction; roll it back so the writer lock is freed.
+                        // Dropping the last handle never waits for a running
+                        // statement (see `actor`).
+                        forget_tx(&self.txs, tx_id);
+                        actor.rollback(interactive::done(|_| {}));
+                        return Err(err);
                     }
-                }))
-            }),
-        );
-        Ok(promise)
+                },
+            };
+            let (deferred, promise) = env.create_deferred::<Buffer, Resolver<Buffer>>()?;
+            let registry = self.txs.clone();
+            actor.execute(
+                query,
+                params,
+                limit,
+                interactive::done(move |result| {
+                    let encoded = result.map(tasks::encode_query_result_rowarrays);
+                    deferred.resolve(guard::settle(move |_env| match encoded {
+                        Ok(bytes) => Ok(Buffer::from(bytes?)),
+                        Err(message) => {
+                            // The actor rolled back; forget the transaction.
+                            forget_tx(&registry, tx_id);
+                            Err(interactive::napi_err(message))
+                        }
+                    }))
+                }),
+            );
+            Ok(promise)
+        })
     }
 
     /// Run several statements inside interactive transaction `tx_id` in one
@@ -566,45 +570,48 @@ impl Database {
         #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
         #[napi(ts_arg_type = "number | null | undefined")] cancel_token: Option<u32>,
     ) -> Result<JsObject> {
-        let actor = self.tx_actor(tx_id)?;
-        let limit = self.limit(timeout_ms, cancel_token)?;
-        let statements = match tasks::parse_transaction_statements(statements) {
-            Ok(statements) => statements
-                .into_iter()
-                .map(|st| (st.query, st.params))
-                .collect(),
-            Err(err) => {
-                // A rejected call closes the transaction on the JS side, so
-                // roll it back here too rather than leave the writer lock
-                // held by a handle nothing can reach.
-                forget_tx(&self.txs, tx_id);
-                actor.rollback(interactive::done(|_| {}));
-                return Err(err);
-            }
-        };
-        let (deferred, promise) = env.create_deferred::<Vec<Buffer>, Resolver<Vec<Buffer>>>()?;
-        let registry = self.txs.clone();
-        actor.execute_many(
-            statements,
-            limit,
-            interactive::done::<Vec<lora_database::QueryResult>>(move |result| {
-                let encoded = result.map(|results| {
-                    results
-                        .into_iter()
-                        .map(tasks::encode_query_result_rowarrays)
-                        .collect::<Result<Vec<_>>>()
-                });
-                deferred.resolve(Box::new(move |_env| match encoded {
-                    Ok(buffers) => Ok(buffers?.into_iter().map(Buffer::from).collect()),
-                    Err(message) => {
-                        // The actor rolled back; forget the transaction.
-                        forget_tx(&registry, tx_id);
-                        Err(interactive::napi_err(message))
-                    }
-                }))
-            }),
-        );
-        Ok(promise)
+        guard(|| {
+            let actor = self.tx_actor(tx_id)?;
+            let limit = self.limit(timeout_ms, cancel_token)?;
+            let statements = match tasks::parse_transaction_statements(statements) {
+                Ok(statements) => statements
+                    .into_iter()
+                    .map(|st| (st.query, st.params))
+                    .collect(),
+                Err(err) => {
+                    // A rejected call closes the transaction on the JS side, so
+                    // roll it back here too rather than leave the writer lock
+                    // held by a handle nothing can reach.
+                    forget_tx(&self.txs, tx_id);
+                    actor.rollback(interactive::done(|_| {}));
+                    return Err(err);
+                }
+            };
+            let (deferred, promise) =
+                env.create_deferred::<Vec<Buffer>, Resolver<Vec<Buffer>>>()?;
+            let registry = self.txs.clone();
+            actor.execute_many(
+                statements,
+                limit,
+                interactive::done::<Vec<lora_database::QueryResult>>(move |result| {
+                    let encoded = result.map(|results| {
+                        results
+                            .into_iter()
+                            .map(tasks::encode_query_result_rowarrays)
+                            .collect::<Result<Vec<_>>>()
+                    });
+                    deferred.resolve(guard::settle(move |_env| match encoded {
+                        Ok(buffers) => Ok(buffers?.into_iter().map(Buffer::from).collect()),
+                        Err(message) => {
+                            // The actor rolled back; forget the transaction.
+                            forget_tx(&registry, tx_id);
+                            Err(interactive::napi_err(message))
+                        }
+                    }))
+                }),
+            );
+            Ok(promise)
+        })
     }
 
     /// Run `statements` in one read-write transaction on its own thread and
@@ -621,99 +628,98 @@ impl Database {
         #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
         #[napi(ts_arg_type = "number | null | undefined")] cancel_token: Option<u32>,
     ) -> Result<JsObject> {
-        let statements: Vec<_> = tasks::parse_transaction_statements(statements)?
-            .into_iter()
-            .map(|st| (st.query, st.params))
-            .collect();
-        let limit = self.limit(timeout_ms, cancel_token)?;
-        let deadline = limit.deadline();
-        let db = self.inner()?;
-        let mut txs = self
-            .txs
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "transaction registry poisoned"))?;
-        let id = self.next_tx_id.fetch_add(1, Ordering::Relaxed);
-        let (deferred, promise) = env.create_deferred::<Vec<Buffer>, Resolver<Vec<Buffer>>>()?;
-        // Settled once: by a failed open (the lock was not free in time,
-        // the database was disposed) or by the batch.
-        let deferred = Arc::new(Mutex::new(Some(deferred)));
-        let opening = deferred.clone();
-        let failed_open = self.txs.clone();
-        let actor = Arc::new(interactive::TxActor::spawn(
-            db,
-            lora_database::TransactionMode::ReadWrite,
-            deadline,
-            interactive::done(move |opened| {
-                if let Err(message) = opened {
-                    let taken = opening.lock().ok().and_then(|mut d| d.take());
-                    if let Some(deferred) = taken {
-                        deferred.resolve(Box::new(move |_env| {
-                            // Never opened (the lock was not free in time):
-                            // nothing else will forget the transaction.
-                            forget_tx(&failed_open, id);
-                            Err(interactive::napi_err(message))
-                        }));
+        guard(|| {
+            let statements: Vec<_> = tasks::parse_transaction_statements(statements)?
+                .into_iter()
+                .map(|st| (st.query, st.params))
+                .collect();
+            let limit = self.limit(timeout_ms, cancel_token)?;
+            let deadline = limit.deadline();
+            let db = self.inner()?;
+            let mut txs = lock(&self.txs);
+            let id = self.next_tx_id.fetch_add(1, Ordering::Relaxed);
+            let (deferred, promise) =
+                env.create_deferred::<Vec<Buffer>, Resolver<Vec<Buffer>>>()?;
+            // Settled once: by a failed open (the lock was not free in time,
+            // the database was disposed) or by the batch.
+            let deferred = Arc::new(Mutex::new(Some(deferred)));
+            let opening = deferred.clone();
+            let failed_open = self.txs.clone();
+            let actor = Arc::new(interactive::TxActor::spawn(
+                db,
+                lora_database::TransactionMode::ReadWrite,
+                deadline,
+                interactive::done(move |opened| {
+                    if let Err(message) = opened {
+                        let taken = lock(&opening).take();
+                        if let Some(deferred) = taken {
+                            deferred.resolve(guard::settle(move |_env| {
+                                // Never opened (the lock was not free in time):
+                                // nothing else will forget the transaction.
+                                forget_tx(&failed_open, id);
+                                Err(interactive::napi_err(message))
+                            }));
+                        }
                     }
-                }
-            }),
-        ));
-        let registry = self.txs.clone();
-        // The handle rides along to the JS thread and is dropped there,
-        // after the actor has finished (see `tx_finish`).
-        let keep = actor.clone();
-        actor.execute_many_and_commit(
-            statements,
-            limit,
-            interactive::done::<Vec<lora_database::QueryResult>>(move |result| {
-                let encoded = result.map(|results| {
-                    results
-                        .into_iter()
-                        .map(tasks::encode_query_result_rowarrays)
-                        .collect::<Result<Vec<_>>>()
-                });
-                let taken = deferred.lock().ok().and_then(|mut d| d.take());
-                let Some(deferred) = taken else {
-                    return;
-                };
-                deferred.resolve(Box::new(move |_env| {
-                    forget_tx(&registry, id);
-                    drop(keep);
-                    match encoded {
-                        Ok(buffers) => Ok(buffers?.into_iter().map(Buffer::from).collect()),
-                        Err(message) => Err(interactive::napi_err(message)),
-                    }
-                }))
-            }),
-        );
-        txs.insert(id, actor);
-        Ok(promise)
+                }),
+            ));
+            let registry = self.txs.clone();
+            // The handle rides along to the JS thread and is dropped there,
+            // after the actor has finished (see `tx_finish`).
+            let keep = actor.clone();
+            actor.execute_many_and_commit(
+                statements,
+                limit,
+                interactive::done::<Vec<lora_database::QueryResult>>(move |result| {
+                    let encoded = result.map(|results| {
+                        results
+                            .into_iter()
+                            .map(tasks::encode_query_result_rowarrays)
+                            .collect::<Result<Vec<_>>>()
+                    });
+                    let taken = lock(&deferred).take();
+                    let Some(deferred) = taken else {
+                        return;
+                    };
+                    deferred.resolve(guard::settle(move |_env| {
+                        forget_tx(&registry, id);
+                        drop(keep);
+                        match encoded {
+                            Ok(buffers) => Ok(buffers?.into_iter().map(Buffer::from).collect()),
+                            Err(message) => Err(interactive::napi_err(message)),
+                        }
+                    }))
+                }),
+            );
+            txs.insert(id, actor);
+            Ok(promise)
+        })
     }
 
     /// Commit (`commit = true`) or roll back interactive transaction `tx_id`.
     #[napi(ts_return_type = "Promise<void>")]
     pub fn tx_finish(&self, env: Env, tx_id: u32, commit: bool) -> Result<JsObject> {
-        let actor = self
-            .txs
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "transaction registry poisoned"))?
-            .remove(&tx_id)
-            .ok_or_else(|| interactive::napi_err(tx_closed_message()))?;
-        let (deferred, promise) = env.create_deferred::<(), Resolver<()>>()?;
-        // The handle rides along to the JS thread and is dropped there, after
-        // the actor has finished: its thread is joined off the actor itself.
-        let keep = actor.clone();
-        let done = interactive::done(move |result| {
-            deferred.resolve(Box::new(move |_env| {
-                drop(keep);
-                result.map_err(interactive::napi_err)
-            }))
-        });
-        if commit {
-            actor.commit(done);
-        } else {
-            actor.rollback(done);
-        }
-        Ok(promise)
+        guard(|| {
+            let actor = lock(&self.txs)
+                .remove(&tx_id)
+                .ok_or_else(|| interactive::napi_err(tx_closed_message()))?;
+            let (deferred, promise) = env.create_deferred::<(), Resolver<()>>()?;
+            // The handle rides along to the JS thread and is dropped there, after
+            // the actor has finished: its thread is joined off the actor itself.
+            let keep = actor.clone();
+            let done = interactive::done(move |result| {
+                deferred.resolve(guard::settle(move |_env| {
+                    drop(keep);
+                    result.map_err(interactive::napi_err)
+                }))
+            });
+            if commit {
+                actor.commit(done);
+            } else {
+                actor.rollback(done);
+            }
+            Ok(promise)
+        })
     }
 
     /// Open a committed-change feed. Resolves with a feed id once the feed
@@ -726,44 +732,51 @@ impl Database {
         #[napi(ts_arg_type = "number | null | undefined")] from_lsn: Option<f64>,
         #[napi(ts_arg_type = "number | null | undefined")] buffer_size: Option<u32>,
         #[napi(ts_arg_type = "() => void")] on_wake: JsFunction,
-    ) -> Result<AsyncTask<changes::OpenChangesTask>> {
-        let from_lsn = match from_lsn {
-            None => None,
-            Some(lsn) if lsn.is_finite() && lsn >= 0.0 && lsn.fract() == 0.0 => Some(lsn as u64),
-            Some(_) => {
-                return Err(NapiError::new(
-                    Status::InvalidArg,
-                    format!("{INVALID_PARAMS_CODE}: `fromLsn` must be a non-negative integer"),
-                ))
-            }
-        };
-        let buffer_size = match buffer_size {
-            None => lora_database::DEFAULT_FEED_BUFFER,
-            Some(0) => {
-                return Err(NapiError::new(
-                    Status::InvalidArg,
-                    format!("{INVALID_PARAMS_CODE}: `bufferSize` must be greater than 0"),
-                ))
-            }
-            Some(n) => n as usize,
-        };
-        let mut waker: changes::Waker =
-            on_wake.create_threadsafe_function(0, |_ctx| Ok(Vec::<u32>::new()))?;
-        waker.unref(&env)?;
-        let db = self.inner()?;
-        let options = lora_database::ChangeFeedOptions {
-            from_lsn,
-            buffer_size,
-        };
-        let opened = db.try_changes(options);
-        Ok(AsyncTask::new(changes::OpenChangesTask {
-            db,
-            options,
-            opened,
-            waker: Some(waker),
-            registry: self.feeds.clone(),
-            id: self.next_feed_id.fetch_add(1, Ordering::Relaxed),
-        }))
+    ) -> Result<JsObject> {
+        guard(|| {
+            let from_lsn = match from_lsn {
+                None => None,
+                Some(lsn) if lsn.is_finite() && lsn >= 0.0 && lsn.fract() == 0.0 => {
+                    Some(lsn as u64)
+                }
+                Some(_) => {
+                    return Err(NapiError::new(
+                        Status::InvalidArg,
+                        format!("{INVALID_PARAMS_CODE}: `fromLsn` must be a non-negative integer"),
+                    ))
+                }
+            };
+            let buffer_size = match buffer_size {
+                None => lora_database::DEFAULT_FEED_BUFFER,
+                Some(0) => {
+                    return Err(NapiError::new(
+                        Status::InvalidArg,
+                        format!("{INVALID_PARAMS_CODE}: `bufferSize` must be greater than 0"),
+                    ))
+                }
+                Some(n) => n as usize,
+            };
+            let mut waker: changes::Waker =
+                on_wake.create_threadsafe_function(0, |_ctx| Ok(Vec::<u32>::new()))?;
+            waker.unref(&env)?;
+            let db = self.inner()?;
+            let options = lora_database::ChangeFeedOptions {
+                from_lsn,
+                buffer_size,
+            };
+            let opened = db.try_changes(options);
+            // Not yet open: the worker waits for the writer lock.
+            let off_pool = opened.is_none() && stream::js_bound_writers();
+            let task = changes::OpenChangesTask {
+                db,
+                options,
+                opened,
+                waker: Some(waker),
+                registry: self.feeds.clone(),
+                id: self.next_feed_id.fetch_add(1, Ordering::Relaxed),
+            };
+            tasks::spawn(&env, task, off_pool)
+        })
     }
 
     /// Drain up to `max` batches from feed `feed_id`. Resolves with
@@ -776,64 +789,67 @@ impl Database {
         &self,
         feed_id: u32,
         #[napi(ts_arg_type = "number | null | undefined")] max: Option<u32>,
-    ) -> Result<AsyncTask<changes::PollChangesTask>> {
-        let feed = self
-            .feeds
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "change feed registry poisoned"))?
-            .feeds
-            .get(&feed_id)
-            .cloned()
-            .ok_or_else(|| {
-                NapiError::new(
-                    Status::GenericFailure,
-                    "LORA_INTERNAL: change feed is closed",
-                )
-            })?;
-        Ok(AsyncTask::new(changes::PollChangesTask {
-            feed,
-            max: max.unwrap_or(256).max(1) as usize,
-        }))
+    ) -> Result<AsyncTask<Guarded<changes::PollChangesTask>>> {
+        guard(|| {
+            let feed = lock(&self.feeds)
+                .feeds
+                .get(&feed_id)
+                .cloned()
+                .ok_or_else(|| {
+                    NapiError::new(
+                        Status::GenericFailure,
+                        "LORA_INTERNAL: change feed is closed",
+                    )
+                })?;
+            Ok(AsyncTask::new(Guarded(changes::PollChangesTask {
+                feed,
+                max: max.unwrap_or(256).max(1) as usize,
+            })))
+        })
     }
 
     /// Close feed `feed_id`. Idempotent.
     #[napi]
     pub fn changes_close(&self, feed_id: u32) -> Result<()> {
-        let feed = self
-            .feeds
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "change feed registry poisoned"))?
-            .feeds
-            .remove(&feed_id);
-        if let Some(feed) = feed {
-            feed.close();
-        }
-        Ok(())
+        guard(|| {
+            let feed = lock(&self.feeds).feeds.remove(&feed_id);
+            if let Some(feed) = feed {
+                feed.close();
+            }
+            Ok(())
+        })
     }
 
     /// Force pending WAL bytes and the portable container mirror to disk.
     #[napi(ts_return_type = "Promise<void>")]
-    pub fn sync(&self) -> Result<AsyncTask<SyncTask>> {
-        Ok(AsyncTask::new(SyncTask { db: self.inner()? }))
+    pub fn sync(&self, env: Env) -> Result<JsObject> {
+        guard(|| {
+            // Takes the writer lock on a named database.
+            let task = SyncTask { db: self.inner()? };
+            tasks::spawn(&env, task, stream::js_bound_writers())
+        })
     }
 
     /// Drop every node and relationship, returning the database to an empty
     /// state.
     #[napi(ts_return_type = "Promise<void>")]
-    pub fn clear(&self) -> Result<AsyncTask<ClearTask>> {
-        Ok(AsyncTask::new(ClearTask { db: self.inner()? }))
+    pub fn clear(&self, env: Env) -> Result<JsObject> {
+        guard(|| {
+            let task = ClearTask { db: self.inner()? };
+            tasks::spawn(&env, task, stream::js_bound_writers())
+        })
     }
 
     /// Number of nodes in the graph. Synchronous.
     #[napi]
     pub fn node_count(&self) -> Result<u32> {
-        Ok(self.inner()?.node_count() as u32)
+        guard(|| Ok(self.inner()?.node_count() as u32))
     }
 
     /// Number of relationships in the graph. Synchronous.
     #[napi]
     pub fn relationship_count(&self) -> Result<u32> {
-        Ok(self.inner()?.relationship_count() as u32)
+        guard(|| Ok(self.inner()?.relationship_count() as u32))
     }
 
     /// Release the native database handle. Idempotent.
@@ -842,35 +858,39 @@ impl Database {
     /// handle until it finishes; new operations fail with `database is closed`.
     #[napi]
     pub fn dispose(&self) -> Result<()> {
-        // Dropping an open transaction's actor rolls it back and releases
-        // the writer lock. Close every actor before dropping any. Only idle
-        // actors are joined: one still waiting for the writer lock (which a
-        // transaction on another handle to the same directory may hold) or
-        // running a statement is left to finish by itself, and its pending
-        // `begin()` rejects as closed.
-        let actors = self
-            .txs
-            .lock()
-            .map(|mut txs| std::mem::take(&mut *txs))
-            .unwrap_or_default();
-        for actor in actors.values() {
-            actor.close();
-        }
-        drop(actors);
-        // End every change feed opened through this handle.
-        if let Ok(mut feeds) = self.feeds.lock() {
-            feeds.close_all();
-        }
-        self.streams
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "stream registry poisoned"))?
-            .clear();
-        let mut slot = self
-            .db
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, closed_error_message()))?;
-        slot.take();
-        Ok(())
+        guard(|| {
+            self.close_writers()?;
+            // End every change feed opened through this handle.
+            lock(&self.feeds).close_all();
+            lock(&self.db).take();
+            Ok(())
+        })
+    }
+
+    /// Roll back every open interactive transaction and close every open
+    /// stream of this handle, releasing the writer lock they may hold; the
+    /// database stays open. The TS wrapper calls it when the process exits,
+    /// so a write waiting for the lock on a libuv worker can finish and
+    /// libuv's exit-time join of its workers does not hang.
+    #[napi]
+    pub fn close_writers(&self) -> Result<()> {
+        guard(|| {
+            // Dropping an open transaction's actor rolls it back and releases
+            // the writer lock. Close every actor before dropping any. Only idle
+            // actors are joined: one still waiting for the writer lock (which a
+            // transaction on another handle to the same directory may hold) or
+            // running a statement is left to finish by itself, and its pending
+            // `begin()` rejects as closed.
+            let actors = std::mem::take(&mut *lock(&self.txs));
+            for actor in actors.values() {
+                actor.close();
+            }
+            drop(actors);
+            // Dropped outside the registry lock: a mutating stream rolls back.
+            let streams = std::mem::take(&mut *lock(&self.streams));
+            drop(streams);
+            Ok(())
+        })
     }
 
     /// Save the graph to a snapshot file. Atomic: the target is only
@@ -887,12 +907,14 @@ impl Database {
             serde_json::Value,
         >,
     ) -> Result<serde_json::Value> {
-        let options = parse_snapshot_options_for_napi(options)?;
-        let meta = self
-            .inner()?
-            .save_snapshot_to_with_options(&path, &options)
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
-        Ok(snapshot_meta_to_json(meta))
+        guard(|| {
+            let options = parse_snapshot_options_for_napi(options)?;
+            let meta = self
+                .inner()?
+                .save_snapshot_to_with_options(&path, &options)
+                .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
+            Ok(snapshot_meta_to_json(meta))
+        })
     }
 
     /// Serialize the current graph into snapshot bytes.
@@ -903,57 +925,88 @@ impl Database {
             serde_json::Value,
         >,
     ) -> Result<Buffer> {
-        let options = parse_snapshot_options_for_napi(options)?;
-        let (bytes, _) = self
-            .inner()?
-            .save_snapshot_to_bytes_with_options(&options)
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
-        Ok(Buffer::from(bytes))
+        guard(|| {
+            let options = parse_snapshot_options_for_napi(options)?;
+            let (bytes, _) = self
+                .inner()?
+                .save_snapshot_to_bytes_with_options(&options)
+                .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
+            Ok(Buffer::from(bytes))
+        })
     }
 
     /// Replace the current graph state with a snapshot loaded from disk.
+    ///
+    /// Runs off the JS thread: it takes the writer lock, which an
+    /// interactive transaction or a mutating stream may hold until the JS
+    /// thread lets it go.
     #[napi(
-        ts_return_type = "{ formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }"
+        ts_return_type = "Promise<{ formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }>"
     )]
     pub fn load_snapshot(
         &self,
+        env: Env,
         path: String,
         #[napi(ts_arg_type = "Record<string, any> | null | undefined")] options: Option<
             serde_json::Value,
         >,
-    ) -> Result<serde_json::Value> {
-        let credentials = parse_snapshot_credentials_for_napi(options)?;
-        let meta = self
-            .inner()?
-            .load_snapshot_from_with_credentials(&path, credentials.as_ref())
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
-        Ok(snapshot_meta_to_json(meta))
+    ) -> Result<JsObject> {
+        guard(|| {
+            let task = tasks::LoadSnapshotTask {
+                db: self.inner()?,
+                source: tasks::SnapshotSource::Path(path),
+                credentials: parse_snapshot_credentials_for_napi(options)?,
+            };
+            tasks::spawn(&env, task, stream::js_bound_writers())
+        })
     }
 
     /// Replace the current graph state with a snapshot loaded from bytes.
+    /// Runs off the JS thread, like [`Self::load_snapshot`].
     #[napi(
-        ts_return_type = "{ formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }"
+        ts_return_type = "Promise<{ formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }>"
     )]
     pub fn load_snapshot_buffer(
         &self,
+        env: Env,
         #[napi(ts_arg_type = "Uint8Array | Buffer")] bytes: Buffer,
         #[napi(ts_arg_type = "Record<string, any> | null | undefined")] options: Option<
             serde_json::Value,
         >,
-    ) -> Result<serde_json::Value> {
-        let credentials = parse_snapshot_credentials_for_napi(options)?;
-        let meta = self
-            .inner()?
-            .load_snapshot_from_bytes_with_credentials(bytes.as_ref(), credentials.as_ref())
-            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
-        Ok(snapshot_meta_to_json(meta))
+    ) -> Result<JsObject> {
+        guard(|| {
+            let task = tasks::LoadSnapshotTask {
+                db: self.inner()?,
+                source: tasks::SnapshotSource::Bytes(bytes),
+                credentials: parse_snapshot_credentials_for_napi(options)?,
+            };
+            tasks::spawn(&env, task, stream::js_bound_writers())
+        })
+    }
+
+    /// Test hook, not public API: panic on the JS thread while holding
+    /// the handle's registry locks. Lets the test suite check that a panic
+    /// in the binding rejects the call with `LORA_INTERNAL` instead of
+    /// aborting the process, and leaves the handle usable.
+    #[napi(js_name = "__panicForTesting")]
+    pub fn panic_for_testing(&self) -> Result<()> {
+        guard(|| {
+            let _streams = lock(&self.streams);
+            let _txs = lock(&self.txs);
+            let _cancels = lock(&self.cancels);
+            panic!("panic requested by __panicForTesting");
+        })
+    }
+
+    /// Test hook, not public API: a query task that panics while it runs,
+    /// on the libuv pool or (`off_pool`) on a lora actor thread.
+    #[napi(js_name = "__panicInTaskForTesting", ts_return_type = "Promise<void>")]
+    pub fn panic_in_task_for_testing(&self, env: Env, off_pool: bool) -> Result<JsObject> {
+        guard(|| tasks::spawn(&env, tasks::PanicTask, off_pool))
     }
 
     fn inner(&self) -> Result<Arc<InnerDatabase<InMemoryGraph>>> {
-        let slot = self
-            .db
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, closed_error_message()))?;
+        let slot = lock(&self.db);
         slot.as_ref()
             .cloned()
             .ok_or_else(|| NapiError::new(Status::GenericFailure, closed_error_message()))
@@ -998,8 +1051,8 @@ pub fn open_database(
         serde_json::Value,
     >,
     #[napi(ts_arg_type = "number | null | undefined")] query_timeout_ms: Option<u32>,
-) -> AsyncTask<OpenTask> {
-    AsyncTask::new(OpenTask {
+) -> AsyncTask<Guarded<OpenTask>> {
+    AsyncTask::new(Guarded(OpenTask {
         request: Some(OpenRequest {
             database_name,
             database_dir,
@@ -1012,7 +1065,7 @@ pub fn open_database(
             snapshot_options,
         }),
         query_timeout_ms,
-    })
+    }))
 }
 
 /// What to open: the arguments `Database`'s constructor and
@@ -1222,12 +1275,7 @@ fn open_persistent_database(
     };
 
     let registry = persistent_database_registry();
-    let mut registry = registry.lock().map_err(|_| {
-        NapiError::new(
-            Status::GenericFailure,
-            format!("{LORA_ERROR_CODE}: persistent database registry poisoned"),
-        )
-    })?;
+    let mut registry = lock(registry);
     if let Some(entry) = registry.get(&key) {
         if let Some(existing) = entry.db.upgrade() {
             if entry.options != open_options {
@@ -1333,6 +1381,21 @@ impl QueryLimit {
 }
 
 impl Database {
+    /// Whether `query`, run now, may wait for the writer lock while a
+    /// JS-bound writer holds it: then it must not wait on the libuv pool
+    /// (see [`tasks::spawn`]). Only classified (from the per-handle shape
+    /// cache) while such a writer exists, so the common path pays one
+    /// atomic load.
+    fn may_wait_for_js(&self, db: &InnerDatabase<InMemoryGraph>, query: &str) -> bool {
+        stream::js_bound_writers()
+            && self
+                .shapes
+                .classify(db, query)
+                .map(|shape| shape.mutating)
+                // Let the pool report the error.
+                .unwrap_or(false)
+    }
+
     fn effective_timeout(&self, timeout_ms: Option<u32>) -> Option<std::time::Duration> {
         timeout_ms
             .or(self.default_timeout_ms)
@@ -1346,12 +1409,7 @@ impl Database {
         cancel_token: Option<u32>,
     ) -> Result<QueryLimit> {
         if let Some(token) = cancel_token {
-            let handle = self
-                .cancels
-                .lock()
-                .map_err(|_| NapiError::new(Status::GenericFailure, "cancel registry poisoned"))?
-                .get(&token)
-                .cloned();
+            let handle = lock(&self.cancels).get(&token).cloned();
             if let Some(handle) = handle {
                 return Ok(QueryLimit::Cancellable(handle));
             }
@@ -1364,18 +1422,16 @@ impl Database {
 }
 
 /// How a transaction call's promise is settled on the JS thread.
-type Resolver<T> = Box<dyn FnOnce(Env) -> Result<T> + Send>;
+pub(crate) type Resolver<T> = Box<dyn FnOnce(Env) -> Result<T> + Send>;
 
 /// Whether transaction `id` is still registered (on the JS thread).
 fn tx_registered(registry: &TxRegistry, id: u32) -> bool {
-    registry.lock().is_ok_and(|txs| txs.contains_key(&id))
+    lock(registry).contains_key(&id)
 }
 
 /// Drop transaction `id` from the registry (on the JS thread).
 fn forget_tx(registry: &TxRegistry, id: u32) {
-    if let Ok(mut txs) = registry.lock() {
-        txs.remove(&id);
-    }
+    lock(registry).remove(&id);
 }
 
 fn tx_closed_message() -> String {
@@ -1384,9 +1440,7 @@ fn tx_closed_message() -> String {
 
 impl Database {
     fn tx_actor(&self, tx_id: u32) -> Result<Arc<interactive::TxActor>> {
-        self.txs
-            .lock()
-            .map_err(|_| NapiError::new(Status::GenericFailure, "transaction registry poisoned"))?
+        lock(&self.txs)
             .get(&tx_id)
             .cloned()
             .ok_or_else(|| interactive::napi_err(tx_closed_message()))

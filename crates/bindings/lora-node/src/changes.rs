@@ -20,6 +20,7 @@ use lora_database::{
 use lora_store::Properties;
 
 use crate::errors::format_lora_error;
+use crate::guard::lock;
 use crate::to_napi::lora_value_to_napi;
 
 pub(crate) type FeedRegistry = Arc<Mutex<FeedSet>>;
@@ -59,10 +60,6 @@ impl NativeFeed {
     }
 }
 
-fn lock_err() -> NapiError {
-    NapiError::new(Status::GenericFailure, "change feed registry poisoned")
-}
-
 pub(crate) fn lora_napi_error(err: &LoraError) -> NapiError {
     NapiError::new(Status::GenericFailure, format_lora_error(err))
 }
@@ -100,7 +97,7 @@ impl Task for OpenChangesTask {
             feed: Mutex::new(Some(feed)),
             deferred: Mutex::new(None),
         });
-        let mut registry = self.registry.lock().map_err(|_| lock_err())?;
+        let mut registry = lock(&self.registry);
         if registry.disposed {
             native.close();
             return Err(NapiError::new(
@@ -132,10 +129,10 @@ impl Task for PollChangesTask {
     type JsValue = JsObject;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        if let Some(err) = self.feed.deferred.lock().map_err(|_| lock_err())?.take() {
+        if let Some(err) = lock(&self.feed.deferred).take() {
             return Err(lora_napi_error(&err));
         }
-        let mut slot = self.feed.feed.lock().map_err(|_| lock_err())?;
+        let mut slot = lock(&self.feed.feed);
         let Some(feed) = slot.as_mut() else {
             return Ok(PollChangesOutput {
                 batches: Vec::new(),
@@ -157,7 +154,7 @@ impl Task for PollChangesTask {
                     if batches.is_empty() {
                         return Err(lora_napi_error(&err));
                     }
-                    *self.feed.deferred.lock().map_err(|_| lock_err())? = Some(err);
+                    *lock(&self.feed.deferred) = Some(err);
                     break;
                 }
             }

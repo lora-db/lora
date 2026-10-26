@@ -42,6 +42,7 @@ use lora_database::{
 
 use crate::actor::{self, Lifecycle};
 use crate::errors::format_lora_error;
+use crate::guard::lock;
 use crate::stream::JsBoundWriter;
 use crate::QueryLimit;
 
@@ -157,14 +158,12 @@ impl TxActor {
     /// rolls back once it has the transaction and exits.
     pub(crate) fn close(&self) {
         self.lifecycle.close();
-        if let Ok(mut commands) = self.commands.lock() {
-            commands.take();
-        }
+        lock(&self.commands).take();
         drop(take(&self.opened));
     }
 
     fn send(&self, command: Command) {
-        let sender = self.commands.lock().ok().and_then(|c| c.clone());
+        let sender = lock(&self.commands).clone();
         if let Some(sender) = sender {
             if let Err(SendError(command)) = sender.send(command) {
                 // The actor has stopped; dropping the command settles it.

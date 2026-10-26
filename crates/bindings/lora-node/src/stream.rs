@@ -69,6 +69,12 @@ pub(crate) fn timed_out() -> String {
 /// covers other handles and worker threads sharing one engine.
 static JS_BOUND_WRITERS: AtomicUsize = AtomicUsize::new(0);
 
+/// Whether any JS-bound writer exists (and so may hold the writer lock
+/// until the JS thread lets it go).
+pub(crate) fn js_bound_writers() -> bool {
+    JS_BOUND_WRITERS.load(Ordering::SeqCst) != 0
+}
+
 /// Registration in [`JS_BOUND_WRITERS`], released on drop.
 pub(crate) struct JsBoundWriter(());
 

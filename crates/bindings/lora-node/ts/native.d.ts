@@ -154,6 +154,11 @@ export declare class Database {
   nodeCount(): number;
   relationshipCount(): number;
   dispose(): void;
+  /**
+   * Roll back every open transaction and close every open stream of this
+   * handle; the database stays open. Called when the process exits.
+   */
+  closeWriters(): void;
   /** Atomic save. Synchronous under the store read lock. */
   saveSnapshot(
     path: string,
@@ -161,16 +166,23 @@ export declare class Database {
   ): NativeSnapshotMeta;
   /** Serialize the current graph into snapshot bytes. */
   saveSnapshotBuffer(options?: NativeSnapshotOptions | null): Buffer;
-  /** Replace the current graph with the snapshot at `path`. */
+  /**
+   * Replace the current graph with the snapshot at `path`. Runs off the JS
+   * thread: it takes the writer lock.
+   */
   loadSnapshot(
     path: string,
     options?: NativeSnapshotOptions | null,
-  ): NativeSnapshotMeta;
-  /** Replace the current graph with snapshot bytes. */
+  ): Promise<NativeSnapshotMeta>;
+  /** Replace the current graph with snapshot bytes, off the JS thread. */
   loadSnapshotBuffer(
     bytes: Uint8Array | Buffer,
     options?: NativeSnapshotOptions | null,
-  ): NativeSnapshotMeta;
+  ): Promise<NativeSnapshotMeta>;
+  /** Test hook: panics on the JS thread (caught, `LORA_INTERNAL`). */
+  __panicForTesting(): void;
+  /** Test hook: a task that panics on the pool or a lora thread. */
+  __panicInTaskForTesting(offPool: boolean): Promise<void>;
 }
 
 /**

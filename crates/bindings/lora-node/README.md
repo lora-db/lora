@@ -107,6 +107,12 @@ with the signal's reason at once; if the transaction opens afterwards it
 is rolled back. Both bound the wait, not the transaction: one that is
 opened and never finished holds the lock until it is disposed.
 
+A `Transaction` or row stream dropped without being finished is rolled
+back once it is garbage-collected, and a dropped change feed is closed.
+Open transactions and streams are also rolled back when the process exits.
+Collection happens at an unpredictable time, so finish them explicitly
+rather than relying on it.
+
 `db.transaction(statements)` runs a batch in one transaction and commits:
 the whole thing is one call. A read-write batch waits for the writer lock
 on a thread of its own, never on a libuv worker, so any number of queued
@@ -332,6 +338,10 @@ await db.loadSnapshot(stream);
 await db.loadSnapshot(new URL("https://example.com/graph.lorasnap"));
 ```
 
+Loading replaces the graph under the writer lock and runs off the event
+loop. Like any write, it waits for an open transaction or write stream to
+finish first.
+
 ## Typed value model
 
 | TS type                 | Runtime shape                                                                 |
@@ -459,15 +469,22 @@ See `ts/types.ts` (`LoraErrorCode`) for the full list.
   for it occupies a pool thread meanwhile, delaying other queries (never
   deadlocking: the writer holding the lock always runs). Prefer
   `await`-in-a-loop or a single batched query for heavy write workloads.
+  While an interactive transaction or a mutating stream is open (it holds
+  the lock until JavaScript finishes it), auto-commit writes, `clear()`,
+  `sync()` and `loadSnapshot()` wait on lora's own threads instead, so the
+  pool stays free for `fs`, `dns`, `zlib` and `crypto`.
   Interactive transactions wait on their own threads, not the pool, and so
   do mutating `stream()`s while the lock may be busy: one opens without
   blocking the event loop, and its first `next()` waits for the writer
   lock. A mutating stream opened while nothing else writes (no transaction,
   other mutating stream or pool query in flight) finds the lock free and
   is pulled synchronously, as cheaply as a read.
-- **Stream timeouts.** `stream()` checks its deadline between rows, so a
-  single pull that does a lot of work (a large aggregation) finishes before
-  the check fires. `execute()` and `transaction()` check throughout.
+- **Stream pulls run on the event loop.** A read-only `stream()` (and a
+  mutating one opened while nothing else writes) is pulled synchronously on
+  the JS thread. Its `timeoutMs` is enforced inside each pull, so a pull
+  that does a lot of work (a large aggregation) stops at the deadline, but
+  an `AbortSignal` cannot fire while a pull runs. Give expensive streams a
+  `timeoutMs`, or use `execute()`, which runs on the threadpool.
 - **WAL surface.** Node persistence exposes container-backed initialization,
   `syncMode: "groupSync"`, and `db.sync()`. Checkpoint, truncate,
   and status controls are not exposed yet.

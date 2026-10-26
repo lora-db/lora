@@ -23,18 +23,64 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use napi::bindgen_prelude::{Buffer, Result};
-use napi::{Env, Error as NapiError, JsUnknown, Status, Task};
+use napi::{Env, Error as NapiError, JsObject, JsUnknown, Status, Task};
 
 use lora_database::{
     Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryPlan, QueryProfile,
-    QueryResult, ResultFormat, TransactionMode,
+    QueryResult, ResultFormat, SnapshotCredentials, SnapshotMeta, TransactionMode,
 };
 
 use crate::encode::{encode_query_rows, encode_rows};
-use crate::errors::{format_lora_error, INVALID_PARAMS_CODE};
+use crate::errors::{format_lora_error, INVALID_PARAMS_CODE, LORA_ERROR_CODE};
+use crate::guard::{guard, lock, Guarded};
 use crate::json::json_value_to_params;
 use crate::to_napi::{plan_to_napi, profile_to_napi};
 use crate::QueryLimit;
+
+/// Start `task` and return its promise.
+///
+/// It normally runs on the libuv pool. A write that may have to wait for
+/// the writer lock while a JS-bound writer (an interactive transaction or
+/// a mutating stream, see [`crate::stream`]) holds it is passed
+/// `off_pool`: it then waits on one of lora's own actor threads instead.
+/// That wait lasts as long as the JS code keeps the transaction open, and
+/// on the libuv pool a few such writes would take every worker, stalling
+/// `fs`, `dns`, `zlib` and `crypto` for the whole process (and making
+/// `process.exit()` hang, as libuv joins its workers on exit).
+pub(crate) fn spawn<T>(env: &Env, task: T, off_pool: bool) -> Result<JsObject>
+where
+    T: Task + 'static,
+{
+    if !off_pool {
+        return Ok(env.spawn(Guarded(task))?.promise_object());
+    }
+    let (deferred, promise) = env.create_deferred::<T::JsValue, crate::Resolver<T::JsValue>>()?;
+    // Shared with the job so a thread that fails to start still settles
+    // the promise: a deferred dropped unsettled keeps the process alive.
+    let slot = Arc::new(std::sync::Mutex::new(Some((task, deferred))));
+    let job_slot = slot.clone();
+    let started = lora_binding_buffer::stream::run_on_actor_thread(move || {
+        let Some((mut task, deferred)) = lock(&job_slot).take() else {
+            return;
+        };
+        let output = guard(|| task.compute());
+        deferred.resolve(Box::new(move |env| {
+            guard(|| match output {
+                Ok(output) => task.resolve(env, output),
+                Err(err) => task.reject(env, err),
+            })
+        }));
+    });
+    if let Err(e) = started {
+        if let Some((_, deferred)) = lock(&slot).take() {
+            deferred.reject(NapiError::new(
+                Status::GenericFailure,
+                format!("{LORA_ERROR_CODE}: could not start a query thread: {e}"),
+            ));
+        }
+    }
+    Ok(promise)
+}
 
 pub(crate) fn encode_query_result_rowarrays(result: QueryResult) -> Result<Vec<u8>> {
     let QueryResult::RowArrays(row_arrays) = result else {
@@ -202,6 +248,63 @@ impl Task for ClearTask {
         self.db
             .try_clear()
             .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// Work unit for `Database.loadSnapshot` / `loadSnapshotBuffer`. Takes
+/// the writer lock, so it never runs on the JS thread: there it froze the
+/// process while an interactive transaction or a mutating stream held the
+/// lock, as releasing it needs the JS thread.
+pub struct LoadSnapshotTask {
+    pub(crate) db: Arc<InnerDatabase<InMemoryGraph>>,
+    pub(crate) source: SnapshotSource,
+    pub(crate) credentials: Option<SnapshotCredentials>,
+}
+
+pub(crate) enum SnapshotSource {
+    Path(String),
+    /// A buffer the TS wrapper copied for this call, so nothing on the JS
+    /// side writes to it while the worker reads it.
+    Bytes(Buffer),
+}
+
+impl Task for LoadSnapshotTask {
+    type Output = SnapshotMeta;
+    type JsValue = JsUnknown;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        // Holds or waits for the writer lock (see `crate::stream`).
+        let _work = crate::stream::PoolWork::enter();
+        match &self.source {
+            SnapshotSource::Path(path) => self
+                .db
+                .load_snapshot_from_with_credentials(path, self.credentials.as_ref()),
+            SnapshotSource::Bytes(bytes) => self.db.load_snapshot_from_bytes_with_credentials(
+                bytes.as_ref(),
+                self.credentials.as_ref(),
+            ),
+        }
+        .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))
+    }
+
+    fn resolve(&mut self, env: Env, meta: Self::Output) -> Result<Self::JsValue> {
+        env.to_js_value(&crate::snapshot_meta_to_json(meta))
+    }
+}
+
+/// Panics in `compute`: see `Database::panic_in_task_for_testing`.
+pub struct PanicTask;
+
+impl Task for PanicTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        panic!("panic requested by __panicInTaskForTesting");
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {

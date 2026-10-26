@@ -9,6 +9,14 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 
+# Release build of the Node binding (`yarn build:native`). It runs inside
+# the host's process, so a panic must unwind: the binding catches it and
+# rejects the one call with LORA_INTERNAL. With `abort` any engine panic
+# killed the whole Node process.
+[profile.release-unwind]
+inherits = "release"
+panic = "unwind"
+
 # Pin the wasm linear-memory ceiling to the wasm32 maximum (4 GiB). Without
 # this, the linker can emit a lower default `max` on the memory import,
 # which causes large in-memory graphs (e.g. multi-million-row CSV imports
