@@ -37,6 +37,7 @@ mod json;
 mod stream;
 mod tasks;
 mod to_napi;
+mod write_queue;
 
 use errors::{closed_error_message, format_lora_error, INVALID_PARAMS_CODE};
 use guard::{guard, lock, Guarded};
@@ -94,6 +95,9 @@ pub struct Database {
     /// Caps the actor threads JS code holds open (transactions, mutating
     /// streams) this handle runs at once (see [`actor`]).
     open_slots: Arc<actor::OpenSlots>,
+    /// Auto-commit writes waiting for a writer lock JS code holds (see
+    /// [`write_queue`]).
+    writes: write_queue::WriteQueue,
 }
 
 pub(crate) type TxRegistry = Arc<Mutex<BTreeMap<u32, Arc<interactive::TxActor>>>>;
@@ -180,14 +184,26 @@ impl Database {
     ) -> Result<JsObject> {
         guard(|| {
             let db = self.inner()?;
-            let off_pool = self.may_wait_for_js(&db, &query);
+            let limit = self.limit(timeout_ms, cancel_token)?;
+            if !self.may_wait_for_js(&db, &query) {
+                let task = ExecuteTask {
+                    db,
+                    query,
+                    params,
+                    limit,
+                };
+                return tasks::spawn(&env, task, false);
+            }
+            // Queued: the time it waits counts against its timeout.
+            let limit = limit.started();
+            let expiry = limit.expiry();
             let task = ExecuteTask {
                 db,
                 query,
                 params,
-                limit: self.limit(timeout_ms, cancel_token)?,
+                limit,
             };
-            tasks::spawn(&env, task, off_pool)
+            tasks::spawn_queued(&env, task, &self.writes, expiry)
         })
     }
 
@@ -217,6 +233,8 @@ impl Database {
             let handle = lock(&self.cancels).get(&token).cloned();
             if let Some(handle) = handle {
                 handle.lock().unwrap_or_else(|p| p.into_inner()).cancel();
+                // A write still queued rejects now.
+                self.writes.poke();
             }
             Ok(())
         })
@@ -269,8 +287,11 @@ impl Database {
     ) -> Result<JsObject> {
         guard(|| {
             let db = self.inner()?;
-            let off_pool = self.may_wait_for_js(&db, &query);
-            tasks::spawn(&env, ProfileTask { db, query, params }, off_pool)
+            if self.may_wait_for_js(&db, &query) {
+                let task = ProfileTask { db, query, params };
+                return tasks::spawn_queued(&env, task, &self.writes, write_queue::Expiry::Never);
+            }
+            tasks::spawn(&env, ProfileTask { db, query, params }, false)
         })
     }
 
@@ -901,6 +922,9 @@ impl Database {
     #[napi]
     pub fn close_writers(&self) -> Result<()> {
         guard(|| {
+            // Queued writes first: they would otherwise run as soon as the
+            // transactions below let the writer lock go.
+            self.writes.reject_all(closed_error_message());
             // Dropping an open transaction's actor rolls it back and releases
             // the writer lock. Close every actor before dropping any. Only idle
             // actors are joined: one still waiting for the writer lock (which a
@@ -1069,6 +1093,7 @@ impl Database {
             feeds: Arc::new(Mutex::new(changes::FeedSet::default())),
             next_feed_id: AtomicU32::new(1),
             open_slots: actor::OpenSlots::new(max_open_transactions),
+            writes: Default::default(),
         }
     }
 }
@@ -1415,13 +1440,15 @@ enum StreamKind {
     Actor(stream::StreamActor),
 }
 
-type SharedCancel = Arc<Mutex<CancellableDeadline>>;
+pub(crate) type SharedCancel = Arc<Mutex<CancellableDeadline>>;
 
 /// How long a query may run: nothing, a plain timeout, or a cancellable
 /// deadline shared with JS through a token.
 pub(crate) enum QueryLimit {
     None,
     Timeout(std::time::Duration),
+    /// A timeout whose clock already started (see [`QueryLimit::started`]).
+    Until(std::time::Instant),
     Cancellable(SharedCancel),
 }
 
@@ -1438,9 +1465,35 @@ impl QueryLimit {
                     .checked_add(*d)
                     .unwrap_or_else(std::time::Instant::now),
             ),
+            QueryLimit::Until(at) => Some(*at),
             QueryLimit::Cancellable(handle) => {
                 Some(handle.lock().unwrap_or_else(|p| p.into_inner()).deadline())
             }
+        }
+    }
+
+    /// Start a plain timeout's clock now, for a query that may wait in a
+    /// queue first: the wait then counts against it.
+    pub(crate) fn started(self) -> Self {
+        match self {
+            QueryLimit::Timeout(_) => match self.deadline() {
+                Some(at) => QueryLimit::Until(at),
+                None => QueryLimit::None,
+            },
+            other => other,
+        }
+    }
+
+    /// When a queued query with this limit gives up waiting.
+    pub(crate) fn expiry(&self) -> write_queue::Expiry {
+        match self {
+            QueryLimit::None => write_queue::Expiry::Never,
+            QueryLimit::Timeout(_) => match self.deadline() {
+                Some(at) => write_queue::Expiry::At(at),
+                None => write_queue::Expiry::Never,
+            },
+            QueryLimit::Until(at) => write_queue::Expiry::At(*at),
+            QueryLimit::Cancellable(handle) => write_queue::Expiry::Cancel(handle.clone()),
         }
     }
 }

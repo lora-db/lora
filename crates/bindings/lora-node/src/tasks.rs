@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use napi::bindgen_prelude::{Buffer, Result};
-use napi::{Env, Error as NapiError, JsObject, JsUnknown, Status, Task};
+use napi::{Env, Error as NapiError, JsDeferred, JsObject, JsUnknown, Status, Task};
 
 use lora_database::{
     Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryPlan, QueryProfile,
@@ -35,18 +35,24 @@ use crate::errors::{format_lora_error, INVALID_PARAMS_CODE, LORA_ERROR_CODE};
 use crate::guard::{guard, lock, Guarded};
 use crate::json::json_value_to_params;
 use crate::to_napi::{plan_to_napi, profile_to_napi};
+use crate::write_queue::{self, Expiry, WriteQueue};
 use crate::QueryLimit;
 
 /// Start `task` and return its promise.
 ///
-/// It normally runs on the libuv pool. A write that may have to wait for
-/// the writer lock while a JS-bound writer (an interactive transaction or
-/// a mutating stream, see [`crate::stream`]) holds it is passed
-/// `off_pool`: it then waits on one of lora's own actor threads instead.
-/// That wait lasts as long as the JS code keeps the transaction open, and
-/// on the libuv pool a few such writes would take every worker, stalling
-/// `fs`, `dns`, `zlib` and `crypto` for the whole process (and making
+/// It normally runs on the libuv pool. Work that may have to wait for the
+/// writer lock while a JS-bound writer (an interactive transaction or a
+/// mutating stream, see [`crate::stream`]) holds it is passed `off_pool`:
+/// it then waits on one of lora's own actor threads instead. That wait
+/// lasts as long as the JS code keeps the transaction open, and on the
+/// libuv pool a few such waits would take every worker, stalling `fs`,
+/// `dns`, `zlib` and `crypto` for the whole process (and making
 /// `process.exit()` hang, as libuv joins its workers on exit).
+///
+/// Auto-commit writes that may wait go to [`spawn_queued`] instead, so
+/// that many of them do not each take a thread. What remains here
+/// (`sync()`, `clear()`, snapshot loads, opening a change feed) is
+/// started by one admin call at a time and never waits behind that queue.
 pub(crate) fn spawn<T>(env: &Env, task: T, off_pool: bool) -> Result<JsObject>
 where
     T: Task + 'static,
@@ -60,16 +66,9 @@ where
     let slot = Arc::new(std::sync::Mutex::new(Some((task, deferred))));
     let job_slot = slot.clone();
     let started = lora_binding_buffer::stream::run_on_actor_thread(move || {
-        let Some((mut task, deferred)) = lock(&job_slot).take() else {
-            return;
-        };
-        let output = guard(|| task.compute());
-        deferred.resolve(Box::new(move |env| {
-            guard(|| match output {
-                Ok(output) => task.resolve(env, output),
-                Err(err) => task.reject(env, err),
-            })
-        }));
+        if let Some((task, deferred)) = lock(&job_slot).take() {
+            run_and_settle(task, deferred);
+        }
     });
     if let Err(e) = started {
         if let Some((_, deferred)) = lock(&slot).take() {
@@ -80,6 +79,50 @@ where
         }
     }
     Ok(promise)
+}
+
+/// Start `task`, an auto-commit write that may wait for a writer lock JS
+/// code holds, in the handle's write queue (see [`crate::write_queue`]),
+/// and return its promise. It rejects with `LORA_TIMEOUT` if `expiry`
+/// passes while it is still queued.
+pub(crate) fn spawn_queued<T>(
+    env: &Env,
+    task: T,
+    queue: &WriteQueue,
+    expiry: Expiry,
+) -> Result<JsObject>
+where
+    T: Task + 'static,
+{
+    let (deferred, promise) = env.create_deferred::<T::JsValue, crate::Resolver<T::JsValue>>()?;
+    let mut slot = Some((task, deferred));
+    queue.push(
+        expiry,
+        write_queue::job(move |outcome| {
+            let Some((task, deferred)) = slot.take() else {
+                return;
+            };
+            match outcome {
+                Ok(()) => run_and_settle(task, deferred),
+                Err(message) => deferred.reject(NapiError::new(Status::GenericFailure, message)),
+            }
+        }),
+    );
+    Ok(promise)
+}
+
+/// Run `task` on this (non-libuv) thread and settle its promise.
+fn run_and_settle<T>(mut task: T, deferred: JsDeferred<T::JsValue, crate::Resolver<T::JsValue>>)
+where
+    T: Task + 'static,
+{
+    let output = guard(|| task.compute());
+    deferred.resolve(Box::new(move |env| {
+        guard(|| match output {
+            Ok(output) => task.resolve(env, output),
+            Err(err) => task.reject(env, err),
+        })
+    }));
 }
 
 pub(crate) fn encode_query_result_rowarrays(result: QueryResult) -> Result<Vec<u8>> {
