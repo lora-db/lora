@@ -796,7 +796,11 @@ impl GraphStorage for InMemoryGraph {
 
         match label {
             Some(label) => {
-                let Some(ids) = indexes.node_properties.scoped_ids_for(label, key, value) else {
+                let Some(ids) =
+                    indexes
+                        .node_properties
+                        .scoped_ids_for(label, key, value, &self.node_values())
+                else {
                     return Vec::new();
                 };
                 ids.iter()
@@ -805,7 +809,7 @@ impl GraphStorage for InMemoryGraph {
             }
             None => indexes
                 .node_properties
-                .ids_for(key, value)
+                .ids_for(key, value, &self.node_values())
                 .into_iter()
                 .flat_map(|ids| ids.iter())
                 .filter_map(|id| self.node_at(id).map(|r| r.to_record()))
@@ -835,12 +839,12 @@ impl GraphStorage for InMemoryGraph {
         match label {
             Some(label) => indexes
                 .node_properties
-                .scoped_ids_for(label, key, value)
+                .scoped_ids_for(label, key, value, &self.node_values())
                 .map(|ids| ids.to_vec())
                 .unwrap_or_default(),
             None => indexes
                 .node_properties
-                .ids_for(key, value)
+                .ids_for(key, value, &self.node_values())
                 .map(|ids| ids.to_vec())
                 .unwrap_or_default(),
         }
@@ -868,10 +872,12 @@ impl GraphStorage for InMemoryGraph {
 
         match rel_type {
             Some(rel_type) => {
-                let Some(ids) = indexes
-                    .relationship_properties
-                    .scoped_ids_for(rel_type, key, value)
-                else {
+                let Some(ids) = indexes.relationship_properties.scoped_ids_for(
+                    rel_type,
+                    key,
+                    value,
+                    &self.relationship_values(),
+                ) else {
                     return Vec::new();
                 };
                 ids.iter()
@@ -880,7 +886,7 @@ impl GraphStorage for InMemoryGraph {
             }
             None => indexes
                 .relationship_properties
-                .ids_for(key, value)
+                .ids_for(key, value, &self.relationship_values())
                 .into_iter()
                 .flat_map(|ids| ids.iter())
                 .filter_map(|id| self.rel_at(id).map(|r| r.to_record()))
@@ -910,12 +916,12 @@ impl GraphStorage for InMemoryGraph {
         match rel_type {
             Some(rel_type) => indexes
                 .relationship_properties
-                .scoped_ids_for(rel_type, key, value)
+                .scoped_ids_for(rel_type, key, value, &self.relationship_values())
                 .map(|ids| ids.to_vec())
                 .unwrap_or_default(),
             None => indexes
                 .relationship_properties
-                .ids_for(key, value)
+                .ids_for(key, value, &self.relationship_values())
                 .map(|ids| ids.to_vec())
                 .unwrap_or_default(),
         }
@@ -938,7 +944,7 @@ impl GraphStorage for InMemoryGraph {
         let indexes = self.indexes_read();
         indexes
             .node_properties
-            .scoped_ids_for(label, key, value)
+            .scoped_ids_for(label, key, value, &self.node_values())
             .map(|ids| !ids.is_empty())
             .unwrap_or(false)
     }
@@ -960,7 +966,7 @@ impl GraphStorage for InMemoryGraph {
         let indexes = self.indexes_read();
         indexes
             .relationship_properties
-            .scoped_ids_for(rel_type, key, value)
+            .scoped_ids_for(rel_type, key, value, &self.relationship_values())
             .map(|ids| !ids.is_empty())
             .unwrap_or(false)
     }

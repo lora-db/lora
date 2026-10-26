@@ -423,13 +423,19 @@ fn property_index_map_bytes(values: &PropertyIndex) -> usize {
 }
 
 fn property_buckets_bytes(key: &str, buckets: &PropertyValueBuckets) -> usize {
-    let mut total = HASHMAP_PER_ENTRY + ARC_STR_BYTES + key.len() + buckets.structure_bytes();
-    for (indexed, ids) in buckets.iter() {
+    let mut total = HASHMAP_PER_ENTRY
+        + ARC_STR_BYTES
+        + key.len()
+        + buckets.exact().structure_bytes()
+        + buckets.single().structure_bytes();
+    for (indexed, ids) in buckets.exact().iter() {
         total += HASHMAP_PER_ENTRY
             + property_index_key_bytes(indexed)
             + size_of::<IdSet>()
             + ids.heap_bytes();
     }
+    // A digest and an id, in a table at most 7/8 full.
+    total += buckets.single().len() * (2 * size_of::<u64>() + 1) * 8 / 7;
     total
 }
 

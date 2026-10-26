@@ -357,7 +357,7 @@ fn node_property_index_tracks_scoped_label_buckets() {
     assert_eq!(
         g.indexes_read()
             .node_properties
-            .scoped_ids_for("Person", "name", &alice_value)
+            .scoped_ids_for("Person", "name", &alice_value, &g.node_values())
             .map(|ids| ids.to_vec())
             .unwrap_or_default(),
         vec![alice.id]

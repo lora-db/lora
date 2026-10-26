@@ -88,10 +88,22 @@ impl SortedPropertyIndex {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn insert(&mut self, label: &str, property: &str, id: u64, value: &PropertyValue) {
-        let Some(key) = PropertyIndexKey::from_value(value) else {
-            return;
-        };
+        if let Some(key) = PropertyIndexKey::from_value(value) {
+            self.insert_key(label, property, id, key);
+        }
+    }
+
+    /// Index `id` under `key`, a value already made a key (from a record
+    /// view, without decoding the value first).
+    pub(super) fn insert_key(
+        &mut self,
+        label: &str,
+        property: &str,
+        id: u64,
+        key: PropertyIndexKey,
+    ) {
         if let Some(scope) = self
             .by_scope
             .get_mut(&ScopedPropertyKey::new(label, property))

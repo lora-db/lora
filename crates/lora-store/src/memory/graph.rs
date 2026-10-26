@@ -33,7 +33,7 @@ use super::index_catalog::{
 use super::point_index::PointRegistry;
 #[cfg(test)]
 use super::property_index::PropertyIndexState;
-use super::property_index::{PropertyIndexRegistry, UNLABELLED};
+use super::property_index::{EntityValues, PropertyIndexKey, PropertyIndexRegistry, UNLABELLED};
 use super::record_slab::RecordSlab;
 use super::secondary_index_maintenance::SecondaryIndexMutation;
 use super::sorted_property_index::SortedPropertyIndex;
@@ -704,7 +704,7 @@ impl InMemoryGraph {
         key: &str,
         value: &PropertyValue,
     ) -> Option<Vec<NodeId>> {
-        super::property_index::PropertyIndexKey::from_value(value)?;
+        PropertyIndexKey::from_value(value)?;
         let indexes = self.indexes_read();
         if !indexes.node_properties.is_active(key) {
             return None;
@@ -712,7 +712,7 @@ impl InMemoryGraph {
         Some(
             indexes
                 .node_properties
-                .scoped_ids_for(label, key, value)
+                .scoped_ids_for(label, key, value, &self.node_values())
                 .map(|ids| ids.to_vec())
                 .unwrap_or_default(),
         )
@@ -725,7 +725,7 @@ impl InMemoryGraph {
         key: &str,
         value: &PropertyValue,
     ) -> Option<Vec<RelationshipId>> {
-        super::property_index::PropertyIndexKey::from_value(value)?;
+        PropertyIndexKey::from_value(value)?;
         let indexes = self.indexes_read();
         if !indexes.relationship_properties.is_active(key) {
             return None;
@@ -733,7 +733,7 @@ impl InMemoryGraph {
         Some(
             indexes
                 .relationship_properties
-                .scoped_ids_for(rel_type, key, value)
+                .scoped_ids_for(rel_type, key, value, &self.relationship_values())
                 .map(|ids| ids.to_vec())
                 .unwrap_or_default(),
         )
@@ -751,6 +751,42 @@ impl InMemoryGraph {
             .properties
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Reads node property values from their records, for the hash
+    /// property index (see [`RecordValues`]).
+    #[inline]
+    pub(super) fn node_values(&self) -> RecordValues<'_> {
+        RecordValues::nodes(&self.nodes, &self.dicts)
+    }
+
+    /// Relationship counterpart of [`Self::node_values`].
+    #[inline]
+    pub(super) fn relationship_values(&self) -> RecordValues<'_> {
+        RecordValues::relationships(&self.relationships, &self.dicts)
+    }
+
+    /// [`Self::indexes_mut`] with [`Self::node_values`], borrowed together.
+    fn node_index_parts(&mut self) -> (&mut PropertyIndexRegistry, RecordValues<'_>) {
+        let registry = self
+            .indexes
+            .properties
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (registry, RecordValues::nodes(&self.nodes, &self.dicts))
+    }
+
+    /// [`Self::indexes_mut`] with [`Self::relationship_values`].
+    fn relationship_index_parts(&mut self) -> (&mut PropertyIndexRegistry, RecordValues<'_>) {
+        let registry = self
+            .indexes
+            .properties
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (
+            registry,
+            RecordValues::relationships(&self.relationships, &self.dicts),
+        )
     }
 
     pub(super) fn indexes_mut(&mut self) -> &mut PropertyIndexRegistry {
@@ -810,7 +846,9 @@ impl InMemoryGraph {
         if self.indexes_read().node_properties.any_scope_is_active(key) {
             return;
         }
-        self.indexes_write().node_properties.activate_any_scope(key);
+        self.indexes_write()
+            .node_properties
+            .activate_any_scope(key, &self.node_values());
     }
 
     pub(super) fn ensure_any_scope_relationship_property_index(&self, key: &str) {
@@ -823,7 +861,7 @@ impl InMemoryGraph {
         }
         self.indexes_write()
             .relationship_properties
-            .activate_any_scope(key);
+            .activate_any_scope(key, &self.relationship_values());
     }
 
     pub(super) fn ensure_node_property_index(&self, key: &str) {
@@ -839,12 +877,16 @@ impl InMemoryGraph {
             return;
         }
 
-        indexes.node_properties.insert_bulk(key, || {
-            self.iter_nodes().filter_map(|(id, node)| {
-                let value = node.properties().get(key)?;
-                Some((id, node.labels().strs(), value))
-            })
-        });
+        indexes.node_properties.insert_bulk(
+            key,
+            || {
+                self.iter_nodes().filter_map(|(id, node)| {
+                    let value = node.properties().get(key)?;
+                    Some((id, node.labels().strs(), value))
+                })
+            },
+            &self.node_values(),
+        );
         if indexes.node_properties.activate(key) {
             self.indexes
                 .active_node_property_indexes
@@ -865,12 +907,16 @@ impl InMemoryGraph {
             return;
         }
 
-        indexes.relationship_properties.insert_bulk(key, || {
-            self.iter_rels().filter_map(|(id, rel)| {
-                let value = rel.properties().get(key)?;
-                Some((id, [rel.rel_type()], value))
-            })
-        });
+        indexes.relationship_properties.insert_bulk(
+            key,
+            || {
+                self.iter_rels().filter_map(|(id, rel)| {
+                    let value = rel.properties().get(key)?;
+                    Some((id, [rel.rel_type()], value))
+                })
+            },
+            &self.relationship_values(),
+        );
         if indexes.relationship_properties.activate(key) {
             self.indexes
                 .active_relationship_property_indexes
@@ -1506,8 +1552,12 @@ impl InMemoryGraph {
                     if !node.labels().strs().any(|l| l == label) {
                         continue;
                     }
-                    if let Some(value) = node.properties().get(property) {
-                        registry.insert(label, property, id, &value.to_owned());
+                    if let Some(key) = node
+                        .properties()
+                        .get(property)
+                        .and_then(PropertyIndexKey::from_value_ref)
+                    {
+                        registry.insert_key(label, property, id, key);
                     }
                 }
             }
@@ -1516,8 +1566,12 @@ impl InMemoryGraph {
                     if rel.rel_type() != label {
                         continue;
                     }
-                    if let Some(value) = rel.properties().get(property) {
-                        registry.insert(label, property, id, &value.to_owned());
+                    if let Some(key) = rel
+                        .properties()
+                        .get(property)
+                        .and_then(PropertyIndexKey::from_value_ref)
+                    {
+                        registry.insert_key(label, property, id, key);
                     }
                 }
             }
@@ -2096,11 +2150,11 @@ impl InMemoryGraph {
         if self.active_node_property_index_count() == 0 {
             return;
         }
-        let indexes = self.indexes_mut();
+        let (indexes, records) = self.node_index_parts();
         if indexes.node_properties.is_active(key) {
             indexes
                 .node_properties
-                .insert_with_scopes(node_id, labels, key, value);
+                .insert_with_scopes(node_id, labels, key, value, &records);
         }
     }
 
@@ -2113,12 +2167,16 @@ impl InMemoryGraph {
         if self.active_node_property_index_count() == 0 {
             return;
         }
-        let indexes = self.indexes_mut();
+        let (indexes, records) = self.node_index_parts();
         for (key, value) in properties {
             if indexes.node_properties.is_active(key) {
-                indexes
-                    .node_properties
-                    .insert_with_scopes(node_id, labels.clone(), key, value);
+                indexes.node_properties.insert_with_scopes(
+                    node_id,
+                    labels.clone(),
+                    key,
+                    value,
+                    &records,
+                );
             }
         }
     }
@@ -2150,12 +2208,12 @@ impl InMemoryGraph {
         if self.active_node_property_index_count() == 0 {
             return;
         }
-        let indexes = self.indexes_mut();
+        let (indexes, records) = self.node_index_parts();
         for (key, value) in properties {
             if indexes.node_properties.is_active(key) {
                 indexes
                     .node_properties
-                    .insert_scoped(node_id, scope, key, value);
+                    .insert_scoped(node_id, scope, key, value, &records);
             }
         }
     }
@@ -2208,11 +2266,11 @@ impl InMemoryGraph {
         if self.active_relationship_property_index_count() == 0 {
             return;
         }
-        let indexes = self.indexes_mut();
+        let (indexes, records) = self.relationship_index_parts();
         if indexes.relationship_properties.is_active(key) {
             indexes
                 .relationship_properties
-                .insert_with_scopes(rel_id, scopes, key, value);
+                .insert_with_scopes(rel_id, scopes, key, value, &records);
         }
     }
 
@@ -2225,7 +2283,7 @@ impl InMemoryGraph {
         if self.active_relationship_property_index_count() == 0 {
             return;
         }
-        let indexes = self.indexes_mut();
+        let (indexes, records) = self.relationship_index_parts();
         for (key, value) in properties {
             if indexes.relationship_properties.is_active(key) {
                 indexes.relationship_properties.insert_with_scopes(
@@ -2233,6 +2291,7 @@ impl InMemoryGraph {
                     scopes.clone(),
                     key,
                     value,
+                    &records,
                 );
             }
         }
@@ -2585,6 +2644,7 @@ impl InMemoryGraph {
                         node.labels().strs(),
                         key,
                         &value.to_owned(),
+                        &self.node_values(),
                     );
                 }
             }
@@ -2611,6 +2671,7 @@ impl InMemoryGraph {
                         [rel.rel_type()],
                         key,
                         &value.to_owned(),
+                        &self.relationship_values(),
                     );
                 }
             }
@@ -2623,6 +2684,44 @@ impl InMemoryGraph {
             indexes.relationship_properties.any_scope, expected_relationships.any_scope,
             "relationship property across-scopes index values diverged from scan"
         );
+    }
+}
+
+/// Property values read from a slab's records, for the hash property
+/// index's digest entries (see `PropertyValueBuckets`).
+pub(super) struct RecordValues<'g> {
+    slab: &'g RecordSlab,
+    dicts: &'g Dicts,
+    nodes: bool,
+}
+
+impl<'g> RecordValues<'g> {
+    pub(super) fn nodes(slab: &'g RecordSlab, dicts: &'g Dicts) -> Self {
+        Self {
+            slab,
+            dicts,
+            nodes: true,
+        }
+    }
+
+    pub(super) fn relationships(slab: &'g RecordSlab, dicts: &'g Dicts) -> Self {
+        Self {
+            slab,
+            dicts,
+            nodes: false,
+        }
+    }
+}
+
+impl EntityValues for RecordValues<'_> {
+    #[inline]
+    fn get(&self, id: u64, key: &str) -> Option<crate::ValueRef<'_>> {
+        let bytes = self.slab.get(usize::try_from(id).ok()?)?;
+        if self.nodes {
+            StoredNode::new(id, bytes, self.dicts).properties().get(key)
+        } else {
+            StoredRel::new(id, bytes, self.dicts).properties().get(key)
+        }
     }
 }
 
