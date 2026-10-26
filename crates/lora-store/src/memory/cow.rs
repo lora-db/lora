@@ -638,6 +638,17 @@ impl<K: Ord, V> SortedPart<K, V> {
         self.position(key).ok().map(|i| &self.entries[i].1)
     }
 
+    fn get_key_value<Q>(&self, key: &Q) -> Option<(&K, &V)>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.position(key).ok().map(|i| {
+            let (k, v) = &self.entries[i];
+            (k, v)
+        })
+    }
+
     fn get_mut<Q>(&mut self, key: &Q) -> Option<&mut V>
     where
         K: Borrow<Q>,
@@ -846,6 +857,20 @@ impl<K: Ord + Clone, V: Clone> CowOrdMap<K, V> {
         }
         let (g, p) = self.locate(key);
         self.groups[g].1[p].1.get(key)
+    }
+
+    /// The stored key and its value, so a caller can share the stored key
+    /// (an `Arc`, say) instead of keeping a copy of its own.
+    pub(super) fn get_key_value<Q>(&self, key: &Q) -> Option<(&K, &V)>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        if self.groups.is_empty() {
+            return None;
+        }
+        let (g, p) = self.locate(key);
+        self.groups[g].1[p].1.get_key_value(key)
     }
 
     pub(super) fn contains_key<Q>(&self, key: &Q) -> bool
