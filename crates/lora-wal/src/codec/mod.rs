@@ -24,7 +24,8 @@ mod tests;
 /// record. Both halves enforce it: the encoder refuses to write a deeper
 /// value and the decoder refuses to read one, because both recurse per
 /// level and an unbounded value would overflow the stack during replay.
-pub(crate) const MAX_VALUE_DEPTH: usize = 128;
+/// The same limit as the store and snapshot codecs.
+pub(crate) const MAX_VALUE_DEPTH: usize = lora_store::codec::MAX_VALUE_NESTING;
 
 pub(crate) use decode::{decode_event, decode_events};
 pub(crate) use encode::{

@@ -20,8 +20,8 @@ pub(crate) const BODY_FORMAT_VERSION_V4: u32 = 4;
 pub(crate) const BODY_FORMAT_VERSION: u32 = 5;
 /// Deepest nesting of lists and maps a property value may have, on encode
 /// and decode, so a crafted or runaway value cannot overflow the stack of
-/// the recursive codec. Matches the WAL codec's limit.
-pub(crate) const MAX_VALUE_DEPTH: usize = 128;
+/// the recursive codec. The same limit as the store and WAL codecs.
+pub(crate) const MAX_VALUE_DEPTH: usize = lora_store::codec::MAX_VALUE_NESTING;
 
 /// Depth of the values inside a list or map at `depth`.
 pub(crate) fn nested_encode_depth(depth: usize) -> Result<usize> {
