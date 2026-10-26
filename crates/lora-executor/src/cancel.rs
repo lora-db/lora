@@ -128,12 +128,18 @@ const EVAL_CHECK_STRIDE: u32 = 256;
 /// buffered sub-executors. Executors enter one at each public entry
 /// point; nesting keeps the outer deadline when the inner has none, and
 /// dropping the scope restores whatever was active before.
-pub(crate) struct DeadlineScope {
+///
+/// Public for callers that pull a stream one row at a time across calls
+/// (language bindings): entering a scope around the open and around each
+/// pull makes the stream honour its deadline inside the pull, not only
+/// between rows.
+#[must_use = "the deadline is only active while the scope is alive"]
+pub struct DeadlineScope {
     prev: Option<Instant>,
 }
 
 impl DeadlineScope {
-    pub(crate) fn enter(deadline: Option<Instant>) -> Self {
+    pub fn enter(deadline: Option<Instant>) -> Self {
         let prev = ACTIVE.with(|a| a.get());
         if prev.is_none() {
             // A new query on this thread: forget a trip left by the last.

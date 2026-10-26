@@ -189,6 +189,14 @@ export declare class Database {
    */
   dispose(): void
   /**
+   * Roll back every open interactive transaction and close every open
+   * stream of this handle, releasing the writer lock they may hold; the
+   * database stays open. The TS wrapper calls it when the process exits,
+   * so a write waiting for the lock on a libuv worker can finish and
+   * libuv's exit-time join of its workers does not hang.
+   */
+  closeWriters(): void
+  /**
    * Save the graph to a snapshot file. Atomic: the target is only
    * replaced once the whole payload has been written + fsync'd.
    * Synchronous — snapshots are usually infrequent and running on the
@@ -197,8 +205,29 @@ export declare class Database {
   saveSnapshot(path: string, options?: Record<string, any> | null | undefined): { formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }
   /** Serialize the current graph into snapshot bytes. */
   saveSnapshotBuffer(options?: Record<string, any> | null | undefined): Buffer
-  /** Replace the current graph state with a snapshot loaded from disk. */
-  loadSnapshot(path: string, options?: Record<string, any> | null | undefined): { formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }
-  /** Replace the current graph state with a snapshot loaded from bytes. */
-  loadSnapshotBuffer(bytes: Uint8Array | Buffer, options?: Record<string, any> | null | undefined): { formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }
+  /**
+   * Replace the current graph state with a snapshot loaded from disk.
+   *
+   * Runs off the JS thread: it takes the writer lock, which an
+   * interactive transaction or a mutating stream may hold until the JS
+   * thread lets it go.
+   */
+  loadSnapshot(path: string, options?: Record<string, any> | null | undefined): Promise<{ formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }>
+  /**
+   * Replace the current graph state with a snapshot loaded from bytes.
+   * Runs off the JS thread, like [`Self::load_snapshot`].
+   */
+  loadSnapshotBuffer(bytes: Uint8Array | Buffer, options?: Record<string, any> | null | undefined): Promise<{ formatVersion: number; nodeCount: number; relationshipCount: number; walLsn: number | null }>
+  /**
+   * Test hook, not public API: panic on the JS thread while holding
+   * the handle's registry locks. Lets the test suite check that a panic
+   * in the binding rejects the call with `LORA_INTERNAL` instead of
+   * aborting the process, and leaves the handle usable.
+   */
+  __panicForTesting(): void
+  /**
+   * Test hook, not public API: a query task that panics while it runs,
+   * on the libuv pool or (`off_pool`) on a lora actor thread.
+   */
+  __panicInTaskForTesting(offPool: boolean): Promise<void>
 }

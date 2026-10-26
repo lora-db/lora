@@ -100,7 +100,7 @@ impl Hasher for QueryHasher {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use actor::{write_streams_active, OpeningStream, WriteStream};
+pub use actor::{run_on_actor_thread, write_streams_active, OpeningStream, WriteStream};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod actor {
@@ -466,6 +466,15 @@ mod actor {
     }
 
     type Job = Box<dyn FnOnce() + Send>;
+
+    /// Run `job` on one of the pooled actor threads [`WriteStream`] uses,
+    /// starting a new one when none is idle. For work that may wait for
+    /// the writer lock as long as another holder keeps it, which must not
+    /// occupy a thread of the host's own pool meanwhile. A panic in `job`
+    /// is caught; the thread survives it.
+    pub fn run_on_actor_thread(job: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
+        run_pooled(Box::new(job))
+    }
 
     /// Idle actor threads kept for reuse.
     const MAX_IDLE: usize = 8;

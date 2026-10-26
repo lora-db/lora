@@ -197,6 +197,80 @@ export interface TransactionStatement {
   params?: LoraParams | null;
 }
 
+/**
+ * Native cleanup for handles a program drops without closing them: a
+ * stream never drained or closed, a transaction never committed or rolled
+ * back, a change feed never closed. A mutating stream or a read-write
+ * transaction holds the database's writer lock, so before this an
+ * abandoned one blocked every later write for good.
+ *
+ * Each cleanup is built by a module-level function so that it captures
+ * only what it needs, never the handle it cleans up after (a closure that
+ * kept the handle alive would keep it from being collected).
+ */
+const finalizers = new FinalizationRegistry<() => void>((cleanup) => {
+  try {
+    cleanup();
+  } catch {
+    // Already gone: the database was disposed.
+  }
+});
+
+function streamCleanup(
+  inner: NativeDatabase,
+  streamId: number,
+  release: (() => void) | undefined,
+): () => void {
+  return () => {
+    release?.();
+    inner.streamClose(streamId);
+  };
+}
+
+function transactionCleanup(inner: NativeDatabase, id: number): () => void {
+  return () => {
+    inner.txFinish(id, false).catch(() => undefined);
+  };
+}
+
+function feedCleanup(native: {
+  inner: NativeDatabase;
+  id: number | undefined;
+}): () => void {
+  return () => {
+    if (native.id !== undefined) native.inner.changesClose(native.id);
+  };
+}
+
+/**
+ * Native handles still alive, so that their transactions and streams can be
+ * closed when the process exits. Otherwise a write still waiting for the
+ * writer lock on a libuv worker would wait forever, and libuv joins its
+ * workers on exit: `process.exit()` hung.
+ */
+const liveDatabases = new Set<WeakRef<NativeDatabase>>();
+const forgetDatabase = new FinalizationRegistry<WeakRef<NativeDatabase>>(
+  (ref) => liveDatabases.delete(ref),
+);
+let exitHookInstalled = false;
+
+function trackDatabase(inner: NativeDatabase): void {
+  const ref = new WeakRef(inner);
+  liveDatabases.add(ref);
+  forgetDatabase.register(inner, ref);
+  if (exitHookInstalled) return;
+  exitHookInstalled = true;
+  process.once("exit", () => {
+    for (const live of liveDatabases) {
+      try {
+        live.deref()?.closeWriters();
+      } catch {
+        // Disposed.
+      }
+    }
+  });
+}
+
 export interface RowStream<
   T extends Record<string, LoraValue> = Record<string, LoraValue>,
 > extends AsyncIterableIterator<T> {
@@ -230,10 +304,12 @@ class NativeRowStream<
     this.#signal = signal;
     this.#release = release;
     this.#async = inner.streamIsAsync(streamId);
+    finalizers.register(this, streamCleanup(inner, streamId, release), this);
   }
 
   #finish(): void {
     this.#closed = true;
+    finalizers.unregister(this);
     const release = this.#release;
     this.#release = undefined;
     release?.();
@@ -343,13 +419,36 @@ export interface ChangeFeed extends AsyncIterableIterator<LoraChangeBatch> {
 
 const CHANGES_POLL_MAX = 256;
 
+const WAKE = Symbol("wake");
+
+/**
+ * Feeds whose consumer waits in `next()` for new batches. Only the native
+ * waker can resume such a consumer, and it holds its feed weakly (see
+ * `weakWaker`), so the feed is kept here meanwhile: otherwise a consumer
+ * loop parked on a quiet database could be collected with its feed.
+ */
+const parkedFeeds = new Set<NativeChangeFeed>();
+
+/**
+ * The callback the native feed calls when it may have something new. It
+ * holds the feed weakly: the native side keeps the callback alive for as
+ * long as the feed is open, and a strong reference would keep the feed,
+ * and through it the whole database handle, from ever being collected.
+ */
+function weakWaker(feed: WeakRef<NativeChangeFeed>): () => void {
+  return () => feed.deref()?.[WAKE]();
+}
+
 class NativeChangeFeed implements ChangeFeed {
   readonly #inner: NativeDatabase;
   readonly #signal: AbortSignal | undefined;
-  readonly #onDone: (feed: NativeChangeFeed) => void;
+  readonly #onDone: (feed: WeakRef<NativeChangeFeed>) => void;
   readonly #opened: Promise<number>;
   readonly ready: Promise<void>;
-  #id: number | undefined;
+  /** @internal How the database handle refers to this feed. */
+  readonly self = new WeakRef<NativeChangeFeed>(this);
+  /** The native feed, shared with the cleanup that closes a dropped feed. */
+  readonly #native: { inner: NativeDatabase; id: number | undefined };
   #buffer: LoraChangeBatch[] = [];
   #done = false;
   #error: unknown = undefined;
@@ -362,9 +461,10 @@ class NativeChangeFeed implements ChangeFeed {
   constructor(
     inner: NativeDatabase,
     options: ChangesOptions | undefined,
-    onDone: (feed: NativeChangeFeed) => void,
+    onDone: (feed: WeakRef<NativeChangeFeed>) => void,
   ) {
     this.#inner = inner;
+    this.#native = { inner, id: undefined };
     this.#signal = options?.signal;
     this.#onDone = onDone;
     const fromLsn = normalizeLsn(options?.fromLsn);
@@ -379,15 +479,16 @@ class NativeChangeFeed implements ChangeFeed {
       // issued after `changes()` returns are never missed.
       let opening: Promise<number>;
       try {
-        opening = inner.openChanges(fromLsn, bufferSize, () => this.#onWake());
+        opening = inner.openChanges(fromLsn, bufferSize, weakWaker(this.self));
       } catch (err) {
         opening = Promise.reject(err);
       }
       this.#opened = opening.then((id) => {
-        this.#id = id;
+        this.#native.id = id;
         if (this.#done) this.#closeNative();
         return id;
       });
+      finalizers.register(this, feedCleanup(this.#native), this);
       if (this.#signal) {
         const signal = this.#signal;
         this.#onAbort = () => {
@@ -434,7 +535,7 @@ class NativeChangeFeed implements ChangeFeed {
 
   /** Called by `dispose()`: the native side already dropped the feed. */
   disposed(): void {
-    this.#id = undefined;
+    this.#native.id = undefined;
     this.#end(undefined);
   }
 
@@ -473,6 +574,7 @@ class NativeChangeFeed implements ChangeFeed {
         continue;
       }
       if (polled.batches.length === 0 && seq === this.#wakeSeq && !this.#done) {
+        parkedFeeds.add(this);
         await new Promise<void>((resolve) => {
           this.#wake = resolve;
         });
@@ -480,7 +582,13 @@ class NativeChangeFeed implements ChangeFeed {
     }
   }
 
+  /** @internal Called by the native waker. */
+  [WAKE](): void {
+    this.#onWake();
+  }
+
   #onWake(): void {
+    parkedFeeds.delete(this);
     this.#wakeSeq += 1;
     const wake = this.#wake;
     this.#wake = undefined;
@@ -499,14 +607,15 @@ class NativeChangeFeed implements ChangeFeed {
       this.#onAbort = undefined;
     }
     this.#closeNative();
-    this.#onDone(this);
+    finalizers.unregister(this);
+    this.#onDone(this.self);
     this.#onWake();
   }
 
   #closeNative(): void {
-    const id = this.#id;
+    const id = this.#native.id;
     if (id === undefined) return;
-    this.#id = undefined;
+    this.#native.id = undefined;
     try {
       this.#inner.changesClose(id);
     } catch {
@@ -730,10 +839,12 @@ function normalizeSnapshotLoadOptions(
  */
 class DatabaseImpl {
   readonly #inner: NativeDatabase;
-  readonly #feeds = new Set<NativeChangeFeed>();
+  /** Open feeds, held weakly so a dropped feed can be collected. */
+  readonly #feeds = new Set<WeakRef<NativeChangeFeed>>();
 
   constructor(inner: NativeDatabase) {
     this.#inner = inner;
+    trackDatabase(inner);
   }
 
   /**
@@ -1015,7 +1126,7 @@ class DatabaseImpl {
     } catch (err) {
       throw wrapError(err);
     } finally {
-      for (const feed of [...this.#feeds]) feed.disposed();
+      for (const feed of [...this.#feeds]) feed.deref()?.disposed();
       this.#feeds.clear();
     }
   }
@@ -1039,10 +1150,13 @@ class DatabaseImpl {
    * alive on its own.
    */
   changes(options?: ChangesOptions): ChangeFeed {
+    const feeds = this.#feeds;
+    // Forget feeds collected without being closed.
+    for (const ref of feeds) if (ref.deref() === undefined) feeds.delete(ref);
     const feed = new NativeChangeFeed(this.#inner, options, (done) =>
-      this.#feeds.delete(done),
+      feeds.delete(done),
     );
-    this.#feeds.add(feed);
+    feeds.add(feed.self);
     return feed;
   }
 
@@ -1136,9 +1250,11 @@ class DatabaseImpl {
   }
 
   /**
-   * Replace the current graph state with a snapshot loaded from `path`.
-   * Concurrent `execute()` calls block on the store write lock until the
-   * load completes.
+   * Replace the current graph state with a snapshot loaded from `source`.
+   * The load runs off the event loop and waits for the writer lock like
+   * any write: while an interactive transaction or a mutating stream is
+   * open, it resolves once that finishes. Concurrent writes wait for the
+   * load.
    */
   async loadSnapshot(
     source: NodeSnapshotSource,
@@ -1147,13 +1263,18 @@ class DatabaseImpl {
     try {
       const resolved = await resolveNodeSnapshotSource(source);
       const loadOptions = normalizeSnapshotLoadOptions(options);
+      // Off the JS thread: the load takes the writer lock, which an open
+      // transaction or write stream may hold until this thread lets go.
       if (typeof resolved === "string") {
-        return this.#inner.loadSnapshot(resolved, loadOptions) as SnapshotMeta;
+        return (await this.#inner.loadSnapshot(
+          resolved,
+          loadOptions,
+        )) as SnapshotMeta;
       }
-      return this.#inner.loadSnapshotBuffer(
+      return (await this.#inner.loadSnapshotBuffer(
         resolved,
         loadOptions,
-      ) as SnapshotMeta;
+      )) as SnapshotMeta;
     } catch (err) {
       throw wrapError(err);
     }
@@ -1195,6 +1316,8 @@ export class Transaction {
   constructor(inner: NativeDatabase, id: number) {
     this.#inner = inner;
     this.#id = id;
+    // Dropped while open: roll back and release the writer lock.
+    finalizers.register(this, transactionCleanup(inner, id), this);
   }
 
   /** Whether the transaction can still run statements. */
@@ -1295,6 +1418,7 @@ export class Transaction {
   async #finish(commit: boolean): Promise<void> {
     this.#assertOpen();
     this.#open = false;
+    finalizers.unregister(this);
     try {
       await this.#inner.txFinish(this.#id, commit);
     } catch (err) {
@@ -1311,6 +1435,7 @@ export class Transaction {
    */
   async #abandon(): Promise<void> {
     this.#open = false;
+    finalizers.unregister(this);
     try {
       await this.#inner.txFinish(this.#id, false);
     } catch {

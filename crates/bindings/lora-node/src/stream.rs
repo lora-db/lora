@@ -34,7 +34,8 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 use lora_database::{
-    Database as InnerDatabase, InMemoryGraph, LoraError, LoraErrorCode, LoraValue, QueryStream, Row,
+    Database as InnerDatabase, DeadlineScope, InMemoryGraph, LoraError, LoraErrorCode, LoraValue,
+    QueryStream, Row,
 };
 
 use crate::actor::{self, Lifecycle};
@@ -67,6 +68,12 @@ pub(crate) fn timed_out() -> String {
 /// lock go) and mutating streams (until dropped). Process-wide, so it also
 /// covers other handles and worker threads sharing one engine.
 static JS_BOUND_WRITERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether any JS-bound writer exists (and so may hold the writer lock
+/// until the JS thread lets it go).
+pub(crate) fn js_bound_writers() -> bool {
+    JS_BOUND_WRITERS.load(Ordering::SeqCst) != 0
+}
 
 /// Registration in [`JS_BOUND_WRITERS`], released on drop.
 pub(crate) struct JsBoundWriter(());
@@ -126,8 +133,11 @@ pub(crate) struct LocalStream {
     // Declared (and so dropped) before the database it borrows from: Rust
     // drops fields in declaration order, and if this `Arc` were the last
     // reference, dropping the stream after it would read freed memory.
-    pub(crate) stream: QueryStream<'static>,
+    stream: QueryStream<'static>,
     _db: Db,
+    /// The stream's deadline, made active around the open and every pull
+    /// so the engine stops inside a long pull, not only between rows.
+    deadline: Option<Instant>,
     /// Held by a mutating stream until it has released the writer lock.
     _writer: Option<JsBoundWriter>,
 }
@@ -139,17 +149,46 @@ impl LocalStream {
         db: Db,
         query: &str,
         params: BTreeMap<String, LoraValue>,
+        deadline: Option<Instant>,
         writer: Option<JsBoundWriter>,
     ) -> Result<Self, LoraError> {
+        let _scope = DeadlineScope::enter(deadline);
         // SAFETY: `stream` is dropped before `_db`, the exact `Arc` it
         // borrows from.
         let stream = unsafe { db.stream_with_params_owned(query, params) }?;
         Ok(Self {
             stream,
             _db: db,
+            deadline,
             _writer: writer,
         })
     }
+
+    pub(crate) fn columns(&self) -> &[String] {
+        self.stream.columns()
+    }
+
+    /// Pull the next row under the stream's deadline.
+    pub(crate) fn next_row(&mut self) -> Result<Option<Row>, String> {
+        pull_row(&mut self.stream, self.deadline)
+    }
+}
+
+/// Pull one row with `deadline` active, so a pull that runs past it (one
+/// aggregating a large match, say) stops with `LORA_TIMEOUT` inside the
+/// engine instead of running to completion first.
+fn pull_row(
+    stream: &mut QueryStream<'_>,
+    deadline: Option<Instant>,
+) -> Result<Option<Row>, String> {
+    if deadline.is_some_and(lora_database::deadline_reached) {
+        return Err(timed_out());
+    }
+    // Only entered with a deadline: a pull without one pays nothing.
+    let _scope = deadline.map(|deadline| DeadlineScope::enter(Some(deadline)));
+    stream
+        .next_row()
+        .map_err(|e| format_lora_error(&LoraError::from_anyhow(e)))
 }
 
 /// Handle to a mutating stream's actor thread.
@@ -225,7 +264,10 @@ fn run(
 ) {
     // SAFETY: `db` is declared before `stream`, so it is dropped after it,
     // and the stream (with its writer lock guard) never leaves this thread.
-    let opened = unsafe { db.stream_with_params_owned(&query, params) };
+    let opened = {
+        let _scope = DeadlineScope::enter(deadline);
+        unsafe { db.stream_with_params_owned(&query, params) }
+    };
     if !lifecycle.opened() {
         // Closed while waiting for the lock: an open stream rolls back here.
         lifecycle.ending();
@@ -248,13 +290,7 @@ fn run(
         if !lifecycle.begin_command() {
             break;
         }
-        let pulled = if deadline.is_some_and(lora_database::deadline_reached) {
-            Err(timed_out())
-        } else {
-            stream
-                .next_row()
-                .map_err(|e| format_lora_error(&LoraError::from_anyhow(e)))
-        };
+        let pulled = pull_row(&mut stream, deadline);
         if matches!(pulled, Ok(Some(_))) {
             done.call(pulled);
             lifecycle.idle();
