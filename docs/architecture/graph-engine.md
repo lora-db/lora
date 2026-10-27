@@ -77,6 +77,7 @@ payload:      null / false / true   nothing
               int                   zigzag varint
               float                 8 bytes
               string                length, UTF-8 bytes
+              numbered string       its number in the value dictionary
               other                 length, `codec` bytes (lists, maps,
                                     temporals, points, vectors, binary)
 ```
@@ -92,6 +93,15 @@ Integers are varints. Labels, relationship types and property keys are stored
 as numbers from the graph's dictionaries (`dict.rs`), assigned in first-use
 order and never reused. A clone shares the dictionaries until one side meets a
 new name. The numbers are not persisted: snapshots and the WAL store names.
+
+Short string values of a key that repeats a few of them (a source, a kind, a
+run id) are numbered the same way, in a value dictionary. A key's first 64
+string values of up to 32 bytes are stored in full while their distinct
+hashes are counted; a key that showed at most 8 distinct values has its short
+values stored by number from then on, up to 64 new ones per key and 4,096 in
+all. `source: 'musicbrainz'` then costs a byte instead of twelve. Other keys
+are never numbered, so a column of unique short ids does not fill the
+dictionary.
 
 Readers never see the bytes. `with_node` and `with_relationship` pass a
 `NodeRef` / `RelRef` view (`types/view.rs`) that reads labels and properties in

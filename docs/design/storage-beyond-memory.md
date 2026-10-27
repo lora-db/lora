@@ -632,17 +632,58 @@ bulk `UNWIND` create 4.3 → 3.3 µs per node, a key change by `SET` 21.8 →
 0.79 µs each, a lookup of a value 50,000 nodes share 18.0 → 18.1 ms, a
 keyset page of 100 by `key` 69 → 69 µs. `perf_smoke` unchanged.
 
+Then, on top of `festimap/g70-g62` (WAL replay in parts of at most 4 MiB,
+segments streamed into the container), short repeated string values are
+stored by number (`dict.rs` `ValueDict`, see the graph engine docs): a key's
+first 64 short values are stored in full while their distinct hashes are
+counted, and a key that showed at most 8 has its values numbered from then
+on. The phase-1 record went from 240 to 148 bytes. Writes, lookups and a
+scan that decodes the numbered values measured unchanged (three interleaved
+pairs: bulk create 3.3 µs per node either way, a decoding scan of 200k
+records 47 ms either way).
+
+`node_memory_probe` after both, macOS arm64, load average 4 to 13, bytes per
+node over the process before the open:
+
+| Layout | 50k: live | footprint | RSS | 200k: live | footprint | RSS |
+|---|---|---|---|---|---|---|
+| `phase3` | 223 | 416 | 470 | 218 | 293 | 306 |
+| `phase1` | 372 | 892 | 945 | 372 | 562 | 576 |
+
+The open's fixed cost, measured as an open of a one-record database in the
+same probe: 3.0 MB RSS (0.34 MB physical footprint: most of it is code pages
+the open touches) in the Rust probe, 3.7 MB through the Node binding. That is
+60 to 75 bytes per node at 50k and 15 to 19 at 200k. The rest of the gap at
+50k is malloc's: `vmmap` after a `phase3` open at 50k shows 11.2 MB allocated
+and 7.8 MB (41%) of free space in partly used pages, most of it left by the
+replay's transient high-water mark (about 3 MB, the decoded part of a
+transaction), which macOS's allocator keeps. `malloc_zone_pressure_relief`
+returns none of it. Tables do not over-reserve: the record segments' spare
+room after an open is 18 KB at 200k nodes and the sorted index's partitions
+are 96.5% full, so a `shrink_to_fit` pass would return nothing.
+
+**Sharing the key between the record and the sorted index** was built and
+measured, and is not kept. A string a sorted scope covers (24 bytes or
+more) left the record for a per-segment table of `Arc<str>`s keyed by slot
+and key, and the index entry held the same `Arc`; a snapshot load moved the
+strings out before it declared the indexes. It saved 36 bytes per `phase3`
+node (live 218 to 182, RSS at 200k 306 to 266) and passed the model tests,
+but every read of a shared key followed two more pointers (the segment's
+table, then the string) where the bytes had been in the record: a key lookup
+went from 1.55 to 1.85-2.0 µs, `MERGE` on an existing key from 2.1 to 2.5
+µs, a key change from 14 to 16.5-20.7 µs, 1,000 `UNWIND` lookups from 0.78 to
+0.87-1.0 µs each. Every lookup by key reads the key twice (the digest's
+confirmation and the executor's refilter), so the indirection is paid on the
+hottest path. Keeping the pointer in the record bytes instead of a table
+would save one of the two hops but makes the slab track reference counts in
+raw bytes through clones, rebuilds and garbage, unsafe code across the whole
+record store.
+
 Not done:
-- The sorted index's copy of the key. Sharing a string arena per partition
-  saves the 16-byte `Arc` header and the rounding but not the copy;
-  reading keys through the records would make every range comparison a
-  record read.
-- Interning repeated short strings in records. They are already stored
-  inline (no allocation each); a per-graph value dictionary would save
-  about 10 bytes per repeated value.
-- WAL replay decodes a whole transaction's events before applying them;
-  the transient allocations are much of the allocator's retained free
-  space after an open (`lora-wal`).
+- The sorted index's copy of the key, above.
+- macOS keeps the replay's freed transients resident; `release_free_memory`
+  (from `festimap/g70-g62`) trims glibc and jemalloc, and has no macOS
+  counterpart that helps.
 
 ---
 
