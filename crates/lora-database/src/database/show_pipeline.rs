@@ -187,6 +187,14 @@ fn eval_usize(expr: &Expr, params: &BTreeMap<String, LoraValue>, label: &str) ->
 // ---------- Expression evaluation against a flat catalog row ----------
 
 fn eval_expr(expr: &Expr, row: &Row, params: &BTreeMap<String, LoraValue>) -> Result<LoraValue> {
+    lora_ast::stack::guard(|| eval_expr_inner(expr, row, params))
+}
+
+fn eval_expr_inner(
+    expr: &Expr,
+    row: &Row,
+    params: &BTreeMap<String, LoraValue>,
+) -> Result<LoraValue> {
     match expr {
         Expr::Variable(v) => lookup_column(row, &v.name, ColumnLookupContext::ShowPipeline),
         Expr::Integer(n, _) => Ok(LoraValue::Int(*n)),
@@ -380,6 +388,10 @@ fn compare_values(l: &LoraValue, r: &LoraValue) -> Ordering {
 }
 
 fn render_expr_label(expr: &Expr) -> String {
+    lora_ast::stack::guard(|| render_expr_label_inner(expr))
+}
+
+fn render_expr_label_inner(expr: &Expr) -> String {
     match expr {
         Expr::Variable(v) => v.name.clone(),
         Expr::Property {

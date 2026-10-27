@@ -7,9 +7,11 @@
 //! overflowing the stack (which aborts the whole process) or exhausting
 //! memory.
 //!
-//! The numbers are sized so that a query at every limit at once still runs
-//! on a 1 MiB thread stack in release builds, the smallest stack a host is
-//! likely to call in on (WebAssembly's default, Ruby threads). The user
+//! The recursion itself does not depend on the caller's thread stack: each
+//! recursive step runs through [`crate::stack::guard`], which continues on
+//! a fresh stack segment when the thread's stack runs low. On wasm32, where
+//! the stack cannot be switched, the numbers are sized so that a query at
+//! every limit at once still fits the 1 MiB stack wasm builds get. The user
 //! docs list them in `apps/loradb.com/docs/limitations.md`.
 
 /// Deepest a list or map value may nest, counting the outermost container

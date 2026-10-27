@@ -489,6 +489,10 @@ fn validate_hnsw_int(
 }
 
 fn evaluate_literal_expr(expr: &Expr) -> Result<IndexConfigValue> {
+    lora_ast::stack::guard(|| evaluate_literal_expr_inner(expr))
+}
+
+fn evaluate_literal_expr_inner(expr: &Expr) -> Result<IndexConfigValue> {
     match expr {
         Expr::Integer(v, _) => Ok(IndexConfigValue::Integer(*v)),
         Expr::Float(v, _) => Ok(IndexConfigValue::Number(*v)),

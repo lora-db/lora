@@ -55,6 +55,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "ar_archive_writer"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73cd58deff2140a0a8eae87e417bd01db68a33e148aa93d1e8cd837e55e312b6"
+dependencies = [
+ "object",
+]
+
+[[package]]
 name = "argon2"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -854,7 +863,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lora-analyzer"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "lora-ast",
  "lora-builtins-meta",
@@ -865,14 +874,15 @@ dependencies = [
 
 [[package]]
 name = "lora-ast"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "smallvec 2.0.0-alpha.12",
+ "stacker",
 ]
 
 [[package]]
 name = "lora-binding-buffer"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "lora-database",
  "lora-store",
@@ -880,11 +890,11 @@ dependencies = [
 
 [[package]]
 name = "lora-builtins-meta"
-version = "0.30.0"
+version = "0.31.0"
 
 [[package]]
 name = "lora-compiler"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "lora-analyzer",
  "lora-ast",
@@ -893,7 +903,7 @@ dependencies = [
 
 [[package]]
 name = "lora-database"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "anyhow",
  "chacha20poly1305",
@@ -918,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "lora-executor"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "blake3",
  "crc32fast",
@@ -941,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "lora-ffi"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "anyhow",
  "lora-binding-buffer",
@@ -953,7 +963,7 @@ dependencies = [
 
 [[package]]
 name = "lora-io"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "lora-executor",
  "lora-store",
@@ -964,7 +974,7 @@ dependencies = [
 
 [[package]]
 name = "lora-node"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "anyhow",
  "lora-binding-buffer",
@@ -979,7 +989,7 @@ dependencies = [
 
 [[package]]
 name = "lora-parser"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "lora-ast",
  "pest",
@@ -990,7 +1000,7 @@ dependencies = [
 
 [[package]]
 name = "lora-python"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "anyhow",
  "lora-binding-buffer",
@@ -1003,7 +1013,7 @@ dependencies = [
 
 [[package]]
 name = "lora-query-wasm"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "console_error_panic_hook",
  "js-sys",
@@ -1017,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "lora-server"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1034,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "lora-snapshot"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "argon2",
  "blake3",
@@ -1049,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "lora-store"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "crc32fast",
  "jiff",
@@ -1064,7 +1074,7 @@ dependencies = [
 
 [[package]]
 name = "lora-wal"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "crc32fast",
  "lora-store",
@@ -1075,7 +1085,7 @@ dependencies = [
 
 [[package]]
 name = "lora-wasm"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -1091,7 +1101,7 @@ dependencies = [
 
 [[package]]
 name = "lora_ruby"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "anyhow",
  "lora-database",
@@ -1260,6 +1270,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.39.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1420,6 +1439,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "psm"
+version = "0.1.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dcd034599e63b970727f70d79e02d62390a4a84f7c6b827c27c46d5ac3fa622"
+dependencies = [
+ "ar_archive_writer",
+ "cc",
 ]
 
 [[package]]
@@ -1752,6 +1781,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
+ "windows-sys",
+]
+
+[[package]]
+name = "stacker"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "707f49d46706bacf8a2b00d51dace3f9de527c13eec3778f570c411f89e69967"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "psm",
  "windows-sys",
 ]
 

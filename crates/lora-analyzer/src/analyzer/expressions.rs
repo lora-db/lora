@@ -106,6 +106,10 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
     }
 
     pub(super) fn analyze_expr(&mut self, expr: &Expr) -> Result<ResolvedExpr, SemanticError> {
+        lora_ast::stack::guard(|| self.analyze_expr_inner(expr))
+    }
+
+    fn analyze_expr_inner(&mut self, expr: &Expr) -> Result<ResolvedExpr, SemanticError> {
         match expr {
             Expr::Variable(v) => {
                 let id = self.resolve_required_variable(&v.name)?;
@@ -446,6 +450,10 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
 /// hand it only those bindings without walking the expression per row, and
 /// the WHERE conjuncts it can seek a node by.
 fn fill_subquery_reads(expr: &mut ResolvedExpr) {
+    lora_ast::stack::guard(|| fill_subquery_reads_inner(expr))
+}
+
+fn fill_subquery_reads_inner(expr: &mut ResolvedExpr) {
     let mut vars = std::collections::BTreeSet::new();
     expr.collect_vars(&mut vars);
     if let ResolvedExpr::ExistsSubquery {
@@ -687,6 +695,10 @@ fn validate_arity(
 
 /// Returns true if the resolved expression contains any aggregate function call.
 pub(super) fn expr_contains_aggregate(expr: &ResolvedExpr) -> bool {
+    lora_ast::stack::guard(|| expr_contains_aggregate_inner(expr))
+}
+
+fn expr_contains_aggregate_inner(expr: &ResolvedExpr) -> bool {
     match expr {
         ResolvedExpr::Function { function, args, .. } => {
             if function.is_aggregate() {

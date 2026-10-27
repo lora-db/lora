@@ -114,6 +114,14 @@ impl Database<InMemoryGraph> {
     pub fn stream_with_params(
         &self,
         query: &str,
+        params: BTreeMap<String, LoraValue>,
+    ) -> Result<QueryStream<'_>, LoraError> {
+        lora_ast::stack::guard(|| self.stream_with_params_inner(query, params))
+    }
+
+    fn stream_with_params_inner(
+        &self,
+        query: &str,
         mut params: BTreeMap<String, LoraValue>,
     ) -> Result<QueryStream<'_>, LoraError> {
         super::check_parameter_values(&mut params)?;

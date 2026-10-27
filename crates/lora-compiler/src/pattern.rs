@@ -557,6 +557,10 @@ fn conjunct_vars(expr: &ResolvedExpr) -> Option<BTreeSet<VarId>> {
 }
 
 fn collect_expr_vars(expr: &ResolvedExpr, out: &mut BTreeSet<VarId>) -> bool {
+    lora_ast::stack::guard(|| collect_expr_vars_inner(expr, out))
+}
+
+fn collect_expr_vars_inner(expr: &ResolvedExpr, out: &mut BTreeSet<VarId>) -> bool {
     match expr {
         ResolvedExpr::Variable(v) => {
             out.insert(*v);

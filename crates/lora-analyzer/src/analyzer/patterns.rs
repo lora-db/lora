@@ -88,6 +88,14 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
         el: &PatternElement,
         context: PatternContext,
     ) -> Result<ResolvedPatternElement, SemanticError> {
+        lora_ast::stack::guard(|| self.analyze_pattern_element_inner(el, context))
+    }
+
+    fn analyze_pattern_element_inner(
+        &mut self,
+        el: &PatternElement,
+        context: PatternContext,
+    ) -> Result<ResolvedPatternElement, SemanticError> {
         match el {
             PatternElement::NodeChain { head, chain, .. } => {
                 if chain.is_empty() {

@@ -15,6 +15,17 @@ pub fn plan_result_columns(plan: &PhysicalPlan) -> Vec<String> {
 }
 
 fn plan_columns_at(plan: &PhysicalPlan, node: PhysicalNodeId) -> Option<Vec<String>> {
+    plan_columns_at_depth(plan, node, 1)
+}
+
+fn plan_columns_at_depth(
+    plan: &PhysicalPlan,
+    node: PhysicalNodeId,
+    depth: usize,
+) -> Option<Vec<String>> {
+    if lora_ast::stack::check_due(depth) {
+        return lora_ast::stack::guard(|| plan_columns_at_depth(plan, node, depth + 1));
+    }
     match &plan.nodes[node] {
         PhysicalOp::Projection(p) => Some(p.items.iter().map(|i| i.name.to_string()).collect()),
         PhysicalOp::HashAggregation(p) => Some(
@@ -24,21 +35,21 @@ fn plan_columns_at(plan: &PhysicalPlan, node: PhysicalNodeId) -> Option<Vec<Stri
                 .map(|i| i.name.to_string())
                 .collect(),
         ),
-        PhysicalOp::Limit(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Sort(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::PathBuild(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::OptionalMatch(p) => plan_columns_at(plan, p.input),
+        PhysicalOp::Limit(p) => plan_columns_at_depth(plan, p.input, depth + 1),
+        PhysicalOp::Sort(p) => plan_columns_at_depth(plan, p.input, depth + 1),
+        PhysicalOp::PathBuild(p) => plan_columns_at_depth(plan, p.input, depth + 1),
+        PhysicalOp::OptionalMatch(p) => plan_columns_at_depth(plan, p.input, depth + 1),
         // CALL { ... } emits an outer×inner row pair; the visible result
         // columns are still whatever the surrounding pipeline named.
-        PhysicalOp::CallSubquery(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Filter(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Unwind(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Create(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Merge(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Delete(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Set(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Remove(p) => plan_columns_at(plan, p.input),
-        PhysicalOp::Foreach(p) => plan_columns_at(plan, p.input),
+        PhysicalOp::CallSubquery(p) => plan_columns_at_depth(plan, p.input, depth + 1),
+        PhysicalOp::Filter(p) => plan_columns_at_depth(plan, p.input, depth + 1),
+        PhysicalOp::Unwind(p) => plan_columns_at_depth(plan, p.input, depth + 1),
+        PhysicalOp::Create(p) => plan_columns_at_depth(plan, p.input, depth + 1),
+        PhysicalOp::Merge(p) => plan_columns_at_depth(plan, p.input, depth + 1),
+        PhysicalOp::Delete(p) => plan_columns_at_depth(plan, p.input, depth + 1),
+        PhysicalOp::Set(p) => plan_columns_at_depth(plan, p.input, depth + 1),
+        PhysicalOp::Remove(p) => plan_columns_at_depth(plan, p.input, depth + 1),
+        PhysicalOp::Foreach(p) => plan_columns_at_depth(plan, p.input, depth + 1),
         PhysicalOp::Argument(_)
         | PhysicalOp::NodeScan(_)
         | PhysicalOp::NodeByLabelScan(_)

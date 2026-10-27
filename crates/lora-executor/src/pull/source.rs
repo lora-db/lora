@@ -71,6 +71,47 @@ impl RowSource for ArgumentSource {
     }
 }
 
+/// Checks the stack inside a deep pull pipeline. Each source pulls from
+/// the one below it, so pulling a row recurses as deep as the pipeline
+/// (a long pattern plans one expand per hop). Every
+/// [`lora_ast::stack::CHECK_INTERVAL`]th source of a chain is wrapped, so
+/// the rows of a shallow pipeline never pass through one, and a deep one
+/// continues on a fresh stack segment when the thread's runs low.
+pub(crate) struct StackSource<'a> {
+    /// Taken out only by `drop`, which frees the rest of the chain under a
+    /// stack guard as well: freeing a source frees its upstream first.
+    inner: std::mem::ManuallyDrop<Box<dyn RowSource + 'a>>,
+}
+
+impl<'a> StackSource<'a> {
+    /// Wrap `inner`, built at `depth`, when a check falls there. The
+    /// sources between two checks, and the expressions they evaluate, stay
+    /// well inside a stack guard's red zone.
+    pub(crate) fn wrap(inner: Box<dyn RowSource + 'a>, depth: usize) -> Box<dyn RowSource + 'a> {
+        if lora_ast::stack::check_due(depth) {
+            Box::new(Self {
+                inner: std::mem::ManuallyDrop::new(inner),
+            })
+        } else {
+            inner
+        }
+    }
+}
+
+impl RowSource for StackSource<'_> {
+    fn next_row(&mut self) -> ExecResult<Option<Row>> {
+        lora_ast::stack::guard(|| self.inner.next_row())
+    }
+}
+
+impl Drop for StackSource<'_> {
+    fn drop(&mut self) {
+        // SAFETY: `inner` is not used again after this.
+        let inner = unsafe { std::mem::ManuallyDrop::take(&mut self.inner) };
+        lora_ast::stack::guard(|| drop(inner));
+    }
+}
+
 /// Enforces a query deadline inside a pull pipeline. Wrapped around every
 /// source when the query has a deadline, so even a loop that never yields
 /// a row (a filter rejecting a cartesian product, say) keeps checking:

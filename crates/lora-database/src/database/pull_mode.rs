@@ -28,6 +28,19 @@ fn plan_has_early_limit(plan: &PhysicalPlan) -> bool {
 }
 
 fn subtree_contains_blocking_limit_input(plan: &PhysicalPlan, node_id: PhysicalNodeId) -> bool {
+    subtree_contains_blocking_limit_input_at(plan, node_id, 1)
+}
+
+fn subtree_contains_blocking_limit_input_at(
+    plan: &PhysicalPlan,
+    node_id: PhysicalNodeId,
+    depth: usize,
+) -> bool {
+    if lora_ast::stack::check_due(depth) {
+        return lora_ast::stack::guard(|| {
+            subtree_contains_blocking_limit_input_at(plan, node_id, depth + 1)
+        });
+    }
     match &plan.nodes[node_id] {
         PhysicalOp::Sort(_)
         | PhysicalOp::HashAggregation(_)
@@ -48,12 +61,24 @@ fn subtree_contains_blocking_limit_input(plan: &PhysicalPlan, node_id: PhysicalN
         | PhysicalOp::NodeByPropertyScan(_)
         | PhysicalOp::NodeByIdSeek(_)
         | PhysicalOp::RelByIdSeek(_) => false,
-        PhysicalOp::Expand(op) => subtree_contains_blocking_limit_input(plan, op.input),
-        PhysicalOp::Filter(op) => subtree_contains_blocking_limit_input(plan, op.input),
-        PhysicalOp::Projection(op) => subtree_contains_blocking_limit_input(plan, op.input),
-        PhysicalOp::Unwind(op) => subtree_contains_blocking_limit_input(plan, op.input),
-        PhysicalOp::Limit(op) => subtree_contains_blocking_limit_input(plan, op.input),
-        PhysicalOp::PathBuild(op) => subtree_contains_blocking_limit_input(plan, op.input),
+        PhysicalOp::Expand(op) => {
+            subtree_contains_blocking_limit_input_at(plan, op.input, depth + 1)
+        }
+        PhysicalOp::Filter(op) => {
+            subtree_contains_blocking_limit_input_at(plan, op.input, depth + 1)
+        }
+        PhysicalOp::Projection(op) => {
+            subtree_contains_blocking_limit_input_at(plan, op.input, depth + 1)
+        }
+        PhysicalOp::Unwind(op) => {
+            subtree_contains_blocking_limit_input_at(plan, op.input, depth + 1)
+        }
+        PhysicalOp::Limit(op) => {
+            subtree_contains_blocking_limit_input_at(plan, op.input, depth + 1)
+        }
+        PhysicalOp::PathBuild(op) => {
+            subtree_contains_blocking_limit_input_at(plan, op.input, depth + 1)
+        }
         PhysicalOp::Create(_)
         | PhysicalOp::Merge(_)
         | PhysicalOp::Delete(_)

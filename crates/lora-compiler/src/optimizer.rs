@@ -1084,6 +1084,10 @@ fn is_tautological_point(candidate: &PointCandidate) -> bool {
 /// integer literal: peel one such layer so the box checks below work on
 /// natural query forms.
 fn const_number(expr: &ResolvedExpr) -> Option<f64> {
+    lora_ast::stack::guard(|| const_number_inner(expr))
+}
+
+fn const_number_inner(expr: &ResolvedExpr) -> Option<f64> {
     match expr {
         ResolvedExpr::Literal(LiteralValue::Float(v)) => Some(*v),
         ResolvedExpr::Literal(LiteralValue::Integer(v)) => Some(*v as f64),
@@ -1314,6 +1318,10 @@ fn compare_literal_bounds(lhs: &ResolvedExpr, rhs: &ResolvedExpr) -> Option<std:
 }
 
 fn literal_number(expr: &ResolvedExpr) -> Option<f64> {
+    lora_ast::stack::guard(|| literal_number_inner(expr))
+}
+
+fn literal_number_inner(expr: &ResolvedExpr) -> Option<f64> {
     match expr {
         ResolvedExpr::Literal(LiteralValue::Integer(v)) => Some(*v as f64),
         ResolvedExpr::Literal(LiteralValue::Float(v)) => Some(*v),
@@ -1330,6 +1338,13 @@ fn literal_number(expr: &ResolvedExpr) -> Option<f64> {
 }
 
 fn walk_and_for_range<F>(predicate: &ResolvedExpr, var: VarId, visit: &mut F)
+where
+    F: FnMut(&str, RangeSide, ResolvedExpr, bool),
+{
+    lora_ast::stack::guard(|| walk_and_for_range_inner(predicate, var, visit))
+}
+
+fn walk_and_for_range_inner<F>(predicate: &ResolvedExpr, var: VarId, visit: &mut F)
 where
     F: FnMut(&str, RangeSide, ResolvedExpr, bool),
 {
@@ -1386,6 +1401,10 @@ struct PointCandidate {
 }
 
 fn point_predicate_for_var(predicate: &ResolvedExpr, var: VarId) -> Option<PointCandidate> {
+    lora_ast::stack::guard(|| point_predicate_for_var_inner(predicate, var))
+}
+
+fn point_predicate_for_var_inner(predicate: &ResolvedExpr, var: VarId) -> Option<PointCandidate> {
     if let ResolvedExpr::Binary {
         lhs,
         op: BinaryOp::And,
@@ -1456,6 +1475,10 @@ fn point_predicate_for_var(predicate: &ResolvedExpr, var: VarId) -> Option<Point
 }
 
 fn text_predicate_for_var(predicate: &ResolvedExpr, var: VarId) -> Option<TextCandidate> {
+    lora_ast::stack::guard(|| text_predicate_for_var_inner(predicate, var))
+}
+
+fn text_predicate_for_var_inner(predicate: &ResolvedExpr, var: VarId) -> Option<TextCandidate> {
     let ResolvedExpr::Binary { lhs, op, rhs } = predicate else {
         return None;
     };
