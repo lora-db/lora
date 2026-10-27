@@ -80,7 +80,12 @@ const LAYOUTS: [(&str, &str); 4] = [
 ];
 
 fn options(dir: &Path) -> DatabaseOpenOptions {
-    DatabaseOpenOptions::default().with_database_dir(dir)
+    let mut options = DatabaseOpenOptions::default().with_database_dir(dir);
+    if std::env::var_os("PROBE_NO_COMPACT").is_some() {
+        // Replay without the open's checkpoint of a long WAL.
+        options.compact_on_open_wal_bytes = u64::MAX;
+    }
+    options
 }
 
 fn rows() -> Option<ExecuteOptions> {
@@ -161,6 +166,11 @@ fn measure(name: &str, dir: &Path, n: usize) {
     let peak = PEAK.load(Ordering::Relaxed) - before;
     let (rss, footprint) = resident();
     let report = db.with_store(|g: &InMemoryGraph| g.memory_estimate());
+    if let Ok(secs) = std::env::var("PROBE_PAUSE_SECS") {
+        // Time to inspect the open process (`vmmap`, `heap`).
+        eprintln!("pid {}", std::process::id());
+        std::thread::sleep(std::time::Duration::from_secs(secs.parse().unwrap()));
+    }
     let per = |b: f64| b / n as f64;
     println!(
         "{name:<10} n={n} rss={:.0} footprint={:.0} live={:.0} peak={:.0} | estimate: total={:.0} \
