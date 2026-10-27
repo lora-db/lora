@@ -175,15 +175,18 @@ impl GraphStats {
     /// when the optimizer should fall back to its conservative default.
     pub fn estimate_node_property_equality(&self, label: &str, property: &str) -> Option<u64> {
         let total = self.nodes_by_label.get(label).copied()? as u64;
-        let distinct = self
+        // No distinct count: no node of the label holds the key (G-75), so
+        // an equality on it finds nothing. Read as the whole label, it lost
+        // to any other indexed equality beside it.
+        let Some(&distinct) = self
             .node_distinct_values
             .get(&(label.to_string(), property.to_string()))
-            .copied()
-            .unwrap_or(1)
-            .max(1) as u64;
+        else {
+            return Some(0);
+        };
         // Uniform-distribution heuristic: each value owns
         // ⌈total / distinct⌉ rows.
-        Some(total.div_ceil(distinct))
+        Some(total.div_ceil(distinct.max(1) as u64))
     }
 
     /// Rows an element seek `$x IN label.property` finds, from the RANGE
