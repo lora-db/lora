@@ -447,6 +447,10 @@ impl ResolvedExpr {
     /// caller (it only ever keeps a predicate in place, or a binding in a
     /// row).
     pub fn collect_vars(&self, out: &mut BTreeSet<VarId>) {
+        lora_ast::stack::guard(|| self.collect_vars_inner(out))
+    }
+
+    fn collect_vars_inner(&self, out: &mut BTreeSet<VarId>) {
         let expr = self;
         match expr {
             ResolvedExpr::Variable(v) => {
@@ -583,6 +587,10 @@ impl ResolvedExpr {
     /// parents first, including the property maps, WHERE and projection of
     /// pattern subqueries.
     pub fn walk(&self, visit: &mut dyn FnMut(&ResolvedExpr)) {
+        lora_ast::stack::guard(|| self.walk_inner(visit))
+    }
+
+    fn walk_inner(&self, visit: &mut dyn FnMut(&ResolvedExpr)) {
         visit(self);
         let mut go = |e: &ResolvedExpr| e.walk(visit);
         match self {

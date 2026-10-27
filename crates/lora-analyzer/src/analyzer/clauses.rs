@@ -664,6 +664,16 @@ fn lift_aggregates_in(
     lifted: &mut Vec<ResolvedProjection>,
     span: Span,
 ) {
+    lora_ast::stack::guard(|| lift_aggregates_in_inner(expr, keys, new_var, lifted, span))
+}
+
+fn lift_aggregates_in_inner(
+    expr: &mut ResolvedExpr,
+    keys: &[(String, VarId)],
+    new_var: &mut dyn FnMut() -> VarId,
+    lifted: &mut Vec<ResolvedProjection>,
+    span: Span,
+) {
     if is_bare_aggregate(expr) {
         let output = new_var();
         let call = std::mem::replace(expr, ResolvedExpr::Variable(output));

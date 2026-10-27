@@ -53,6 +53,10 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
     }
 
     fn analyze_query(&mut self, query: &Query) -> Result<ResolvedQuery, SemanticError> {
+        lora_ast::stack::guard(|| self.analyze_query_inner(query))
+    }
+
+    fn analyze_query_inner(&mut self, query: &Query) -> Result<ResolvedQuery, SemanticError> {
         let mut clauses = Vec::new();
         let mut unions = Vec::new();
 
