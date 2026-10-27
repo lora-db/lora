@@ -311,12 +311,12 @@ impl<'db> Transaction<'db> {
         options: Option<ExecuteOptions>,
         timeout: Duration,
     ) -> Result<QueryResult, LoraError> {
-        let rows = self.execute_rows_with_params_deadline(
+        self.execute_projected(
             query,
             BTreeMap::new(),
             Some(deadline_after(timeout)),
-        )?;
-        Ok(project_rows(rows, options.unwrap_or_default()))
+            options,
+        )
     }
 
     /// Execute a parameterised query inside the transaction.
@@ -326,8 +326,7 @@ impl<'db> Transaction<'db> {
         options: Option<ExecuteOptions>,
         params: BTreeMap<String, LoraValue>,
     ) -> Result<QueryResult, LoraError> {
-        let rows = self.execute_rows_with_params_deadline(query, params, None)?;
-        Ok(project_rows(rows, options.unwrap_or_default()))
+        self.execute_projected(query, params, None, options)
     }
 
     /// Execute a parameterised query inside the transaction with a cooperative
@@ -339,9 +338,7 @@ impl<'db> Transaction<'db> {
         params: BTreeMap<String, LoraValue>,
         timeout: Duration,
     ) -> Result<QueryResult, LoraError> {
-        let rows =
-            self.execute_rows_with_params_deadline(query, params, Some(deadline_after(timeout)))?;
-        Ok(project_rows(rows, options.unwrap_or_default()))
+        self.execute_projected(query, params, Some(deadline_after(timeout)), options)
     }
 
     /// Execute a parameterised query inside the transaction that stops at an
@@ -355,8 +352,7 @@ impl<'db> Transaction<'db> {
         params: BTreeMap<String, LoraValue>,
         deadline: Instant,
     ) -> Result<QueryResult, LoraError> {
-        let rows = self.execute_rows_with_params_deadline(query, params, Some(deadline))?;
-        Ok(project_rows(rows, options.unwrap_or_default()))
+        self.execute_projected(query, params, Some(deadline), options)
     }
 
     /// Execute a query inside the transaction and return hydrated rows before
@@ -372,7 +368,22 @@ impl<'db> Transaction<'db> {
         query: &str,
         params: BTreeMap<String, LoraValue>,
     ) -> Result<Vec<Row>, LoraError> {
-        Ok(self.execute_rows_with_params_deadline(query, params, None)?)
+        lora_ast::stack::guard(|| Ok(self.execute_rows_with_params_deadline(query, params, None)?))
+    }
+
+    /// Run a query and project its rows, under one stack guard (see
+    /// [`lora_ast::stack`]).
+    fn execute_projected(
+        &mut self,
+        query: &str,
+        params: BTreeMap<String, LoraValue>,
+        deadline: Option<Instant>,
+        options: Option<ExecuteOptions>,
+    ) -> Result<QueryResult, LoraError> {
+        lora_ast::stack::guard(|| {
+            let rows = self.execute_rows_with_params_deadline(query, params, deadline)?;
+            Ok(project_rows(rows, options.unwrap_or_default()))
+        })
     }
 
     fn execute_rows_with_params_deadline(
@@ -663,6 +674,14 @@ impl<'db> Transaction<'db> {
         query: &str,
         params: Option<BTreeMap<String, LoraValue>>,
     ) -> Result<QueryPlan, LoraError> {
+        lora_ast::stack::guard(|| self.explain_inner(query, params))
+    }
+
+    fn explain_inner(
+        &self,
+        query: &str,
+        params: Option<BTreeMap<String, LoraValue>>,
+    ) -> Result<QueryPlan, LoraError> {
         let mut params = params.unwrap_or_default();
         crate::database::check_parameter_values(&mut params).map_err(LoraError::from_anyhow)?;
         let compiled = self
@@ -679,6 +698,14 @@ impl<'db> Transaction<'db> {
     /// usual `commit` point. Use [`Transaction::explain`] to inspect a
     /// plan without running it.
     pub fn profile(
+        &mut self,
+        query: &str,
+        params: Option<BTreeMap<String, LoraValue>>,
+    ) -> Result<QueryProfile, LoraError> {
+        lora_ast::stack::guard(|| self.profile_inner(query, params))
+    }
+
+    fn profile_inner(
         &mut self,
         query: &str,
         params: Option<BTreeMap<String, LoraValue>>,
@@ -736,6 +763,14 @@ impl<'db> Transaction<'db> {
     /// Execute a parameterised query inside the transaction and return an
     /// owning row stream.
     pub fn stream_with_params(
+        &mut self,
+        query: &str,
+        params: BTreeMap<String, LoraValue>,
+    ) -> Result<QueryStream<'static>, LoraError> {
+        lora_ast::stack::guard(|| self.stream_with_params_inner(query, params))
+    }
+
+    fn stream_with_params_inner(
         &mut self,
         query: &str,
         mut params: BTreeMap<String, LoraValue>,

@@ -161,9 +161,17 @@ or memory of the process it runs in.
 | Compiled size of a regular expression (the regex engine's default) | 10 MiB | `LORA_VALIDATION` |
 | Character pairs `text.distance` and `text.similarity` compare (the product of both lengths, except for `'hamming'`) | 2^28 | `LORA_VALIDATION` |
 
-A query at every limit at once still runs on a 1 MiB thread stack in a
-release build. For example, a long chain of `OR` tests is better written
-with `IN`:
+Queries do not need a large thread stack. When a deep query runs low on
+the stack of the thread that called the engine, the engine continues on a
+separately allocated stack segment instead of overflowing, so any thread
+works: a 128 KiB musl thread, a 512 KiB macOS secondary thread, a Ruby or
+Go thread. On a thread with less than about 512 KiB of stack, each query,
+and each row pulled from a stream, allocates such a segment, which adds a
+few microseconds. WebAssembly builds cannot switch stacks; there, a query
+at every limit at once fits the 1 MiB stack a wasm build gets.
+
+Staying well inside the limits is still better. For example, a long chain
+of `OR` tests is better written with `IN`:
 
 ```cypher
 // 300 alternatives is past the operator-chain limit:

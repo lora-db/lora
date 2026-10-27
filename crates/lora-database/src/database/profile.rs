@@ -55,6 +55,15 @@ where
         params: Option<BTreeMap<String, LoraValue>>,
         deadline: Option<Instant>,
     ) -> Result<QueryProfile, LoraError> {
+        lora_ast::stack::guard(|| self.profile_with_deadline_inner(query, params, deadline))
+    }
+
+    fn profile_with_deadline_inner(
+        &self,
+        query: &str,
+        params: Option<BTreeMap<String, LoraValue>>,
+        deadline: Option<Instant>,
+    ) -> Result<QueryProfile, LoraError> {
         let mut params = params.unwrap_or_default();
         super::check_parameter_values(&mut params).map_err(LoraError::from_anyhow)?;
 
