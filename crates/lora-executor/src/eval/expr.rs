@@ -1190,8 +1190,14 @@ fn where_seek_candidates<S: GraphStorage>(
             let LoraValue::List(_) = &value else {
                 return None;
             };
-            crate::executor::property_scan_candidates(ctx.storage, labels, &seek.key, &value, true)
-                .ids
+            crate::executor::property_scan_candidates(
+                ctx.storage,
+                labels,
+                &seek.key,
+                &value,
+                lora_compiler::PropertySeek::In,
+            )
+            .ids
         }
         PatternSeekKind::StartsWith => {
             let LoraValue::String(_) = &value else {

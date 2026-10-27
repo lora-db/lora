@@ -89,6 +89,9 @@ export function rootMatch(
         access: "range",
         reason: `keyset on ${node.name}.${sort[0]!.field.name}`,
       };
+    } else if (expectation?.access === "element") {
+      // The planner may walk the sort key's index from the cursor instead.
+      expectation = { ...expectation, access: "any" };
     }
   }
 
@@ -252,6 +255,31 @@ function findRelatedAnchor(
 }
 
 function seekFromWhere(
+  node: NodeType,
+  where: Where,
+): Omit<SeekExpectation, "statement"> | undefined {
+  const label = node.labels[0]!;
+  // A list `includes` seeks the list's elements in its RANGE index (G-63).
+  const includes = Object.entries(where).find(([key, value]) => {
+    const field = node.fields.get(key);
+    return (
+      field?.kind === "scalar" &&
+      field.list &&
+      value != null &&
+      (value as Where)["includes"] != null
+    );
+  });
+  const other = seekFromOps(node, where);
+  if (includes) {
+    const reason = `${node.name}.${includes[0]} includes`;
+    return other
+      ? { label, access: "any", reason: `${other.reason} or ${reason}` }
+      : { label, access: "element", reason };
+  }
+  return other;
+}
+
+function seekFromOps(
   node: NodeType,
   where: Where,
 ): Omit<SeekExpectation, "statement"> | undefined {

@@ -12,8 +12,8 @@ use lora_compiler::physical::{
     CallSubqueryExec, ExpandExec, FilterExec, HashAggregationExec, LimitExec, NodeByIdSeekExec,
     NodeByLabelScanExec, NodeByPointScanExec, NodeByPropertyRangeScanExec, NodeByPropertyScanExec,
     NodeByTextScanExec, NodeScanExec, OptionalMatchExec, PathBuildExec, PhysicalNodeId, PhysicalOp,
-    PhysicalPlan, ProjectionExec, RelByIdSeekExec, RelByPointScanExec, RelByPropertyRangeScanExec,
-    RelByTextScanExec, SortExec, UnwindExec,
+    PhysicalPlan, ProjectionExec, RelByIdSeekExec, RelByListElementScanExec, RelByPointScanExec,
+    RelByPropertyRangeScanExec, RelByTextScanExec, SortExec, UnwindExec,
 };
 use lora_compiler::CompiledQuery;
 use lora_store::GraphStorage;
@@ -128,6 +128,7 @@ pub(super) fn is_streaming_op(op: &PhysicalOp) -> bool {
         | PhysicalOp::RelByPropertyRangeScan(_)
         | PhysicalOp::RelByTextScan(_)
         | PhysicalOp::RelByPointScan(_)
+        | PhysicalOp::RelByListElementScan(_)
         | PhysicalOp::Filter(_)
         | PhysicalOp::Unwind(_)
         | PhysicalOp::Limit(_)
@@ -195,6 +196,7 @@ pub(crate) fn subtree_is_fully_streaming(plan: &PhysicalPlan, node_id: PhysicalN
         PhysicalOp::RelByPropertyRangeScan(o) => o.input,
         PhysicalOp::RelByTextScan(o) => o.input,
         PhysicalOp::RelByPointScan(o) => o.input,
+        PhysicalOp::RelByListElementScan(o) => o.input,
         PhysicalOp::Filter(o) => Some(o.input),
         PhysicalOp::Unwind(o) => Some(o.input),
         PhysicalOp::Limit(o) => Some(o.input),
@@ -240,6 +242,7 @@ pub(crate) fn subtree_has_write(plan: &PhysicalPlan, node_id: PhysicalNodeId) ->
         PhysicalOp::RelByPropertyRangeScan(o) => (o.input, None),
         PhysicalOp::RelByTextScan(o) => (o.input, None),
         PhysicalOp::RelByPointScan(o) => (o.input, None),
+        PhysicalOp::RelByListElementScan(o) => (o.input, None),
         PhysicalOp::Expand(o) => (Some(o.input), None),
         PhysicalOp::Filter(o) => (Some(o.input), None),
         PhysicalOp::Projection(o) => (Some(o.input), None),
@@ -329,12 +332,12 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             labels,
             key,
             value,
-            in_list,
+            seek,
         }) => {
             let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(NodeByPropertyScanSource::new(
-                upstream, ctx, *var, labels, key, value, *in_list,
+                upstream, ctx, *var, labels, key, value, *seek,
             )))
         }
 
@@ -393,6 +396,14 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(BufferedIndexScanSource::rel_text(
+                upstream, ctx, op,
+            )))
+        }
+
+        PhysicalOp::RelByListElementScan(op @ RelByListElementScanExec { input, .. }) => {
+            let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
+            let ctx = StreamCtx::new(storage, params);
+            Ok(Box::new(BufferedIndexScanSource::rel_element(
                 upstream, ctx, op,
             )))
         }

@@ -45,6 +45,7 @@ use lora_compiler::physical::{
     ExpandExec, HashAggregationExec, LimitExec, NodeByLabelScanExec, NodeByPropertyScanExec,
     NodeScanExec, PhysicalNodeId, PhysicalOp, PhysicalPlan, ProjectionExec, UnwindExec,
 };
+use lora_compiler::PropertySeek;
 use lora_store::{GraphStorage, NodeId, Properties, PropertyValue, RelationshipId};
 
 use crate::errors::{value_kind, ExecResult, ExecutorError};
@@ -621,19 +622,18 @@ pub(super) fn node_by_property_scan_rows<S: GraphStorage>(
                 &op.labels,
                 &op.key,
                 &expected,
-                op.in_list,
+                op.seek,
             ) {
                 out.push(row);
             }
             continue;
         }
 
-        let candidates =
-            property_scan_candidates(storage, &op.labels, &op.key, &expected, op.in_list);
+        let candidates = property_scan_candidates(storage, &op.labels, &op.key, &expected, op.seek);
         for id in candidates.ids {
             check_deadline_or_discard!(deadline, out);
             if !candidates.prefiltered
-                && !property_scan_matches(storage, id, &op.labels, &op.key, &expected, op.in_list)
+                && !property_scan_matches(storage, id, &op.labels, &op.key, &expected, op.seek)
             {
                 continue;
             }
@@ -2047,6 +2047,9 @@ fn range_comparison(actual: &LoraValue, bound: &LoraValue) -> Option<Ordering> {
         (LoraValue::Duration(a), LoraValue::Duration(b)) => a
             .total_seconds_approx()
             .partial_cmp(&b.total_seconds_approx()),
+        // Lists compare element by element and booleans `false < true`,
+        // as the comparison operators do; a RANGE index seeks both.
+        (LoraValue::List(_) | LoraValue::Bool(_), _) => crate::eval::compare_values(actual, bound),
         _ => actual.as_f64()?.partial_cmp(&bound.as_f64()?),
     }
 }
@@ -2244,20 +2247,26 @@ pub(crate) fn indexed_node_property_candidates<S: GraphStorage>(
     }
 }
 
-/// Candidate ids for a `NodeByPropertyScan`. With `in_list` the scan
-/// seeks `key IN expected`: one lookup per distinct list element, the
-/// union deduplicated. A `null` list matches nothing. Any other non-list
-/// value yields every labelled node unfiltered, so the `Filter` kept
-/// above the scan evaluates (and reports) the predicate itself.
+/// Candidate ids for a `NodeByPropertyScan`. With [`PropertySeek::In`]
+/// the scan seeks `key IN expected`: one lookup per distinct list element,
+/// the union deduplicated. A `null` list matches nothing. Any other
+/// non-list value yields every labelled node unfiltered, so the `Filter`
+/// kept above the scan evaluates (and reports) the predicate itself. With
+/// [`PropertySeek::Element`] it seeks `expected IN key` (see
+/// [`list_element_candidates`]).
 pub(crate) fn property_scan_candidates<S: GraphStorage>(
     storage: &S,
     labels: &[Vec<String>],
     key: &str,
     expected: &LoraValue,
-    in_list: bool,
+    seek: PropertySeek,
 ) -> NodePropertyCandidates {
-    if !in_list {
-        return indexed_node_property_candidates(storage, labels, key, expected);
+    match seek {
+        PropertySeek::Equal => {
+            return indexed_node_property_candidates(storage, labels, key, expected)
+        }
+        PropertySeek::Element => return list_element_candidates(storage, labels, key, expected),
+        PropertySeek::In => {}
     }
     match expected {
         LoraValue::Null => NodePropertyCandidates {
@@ -2305,18 +2314,22 @@ pub(crate) fn property_scan_candidates<S: GraphStorage>(
 }
 
 /// Whether `node_id` passes a `NodeByPropertyScan` (labels plus
-/// `key = expected`, or `key IN expected` when `in_list`). Mirrors
-/// [`property_scan_candidates`], including its non-list fallback.
+/// `key = expected`, `key IN expected` or `expected IN key`, by `seek`).
+/// Mirrors [`property_scan_candidates`], including its non-list fallback.
 pub(crate) fn property_scan_matches<S: GraphStorage>(
     storage: &S,
     node_id: NodeId,
     labels: &[Vec<String>],
     key: &str,
     expected: &LoraValue,
-    in_list: bool,
+    seek: PropertySeek,
 ) -> bool {
-    if !in_list {
-        return node_matches_property_filter(storage, node_id, labels, key, expected);
+    match seek {
+        PropertySeek::Equal => {
+            return node_matches_property_filter(storage, node_id, labels, key, expected)
+        }
+        PropertySeek::Element => return node_list_holds(storage, node_id, labels, key, expected),
+        PropertySeek::In => {}
     }
     match expected {
         LoraValue::Null => false,
@@ -2328,6 +2341,77 @@ pub(crate) fn property_scan_matches<S: GraphStorage>(
             .with_node(node_id, |n| node_matches_label_groups(n.labels(), labels))
             .unwrap_or(false),
     }
+}
+
+/// Candidates for `expected IN key`: the nodes whose list in `key` holds
+/// an element equal to `expected`, each once. Read from the RANGE index of
+/// the first label group when that group is one label; the other groups,
+/// and the integers beyond 2^53 that share the `f64` image the index keys
+/// numbers by, are checked per candidate. Without an index (or for a value
+/// it cannot seek) every labelled node is checked. A `null` value matches
+/// nothing.
+fn list_element_candidates<S: GraphStorage>(
+    storage: &S,
+    labels: &[Vec<String>],
+    key: &str,
+    expected: &LoraValue,
+) -> NodePropertyCandidates {
+    if matches!(expected, LoraValue::Null) {
+        return NodePropertyCandidates {
+            ids: Vec::new(),
+            prefiltered: true,
+        };
+    }
+    let label = labels
+        .first()
+        .filter(|group| group.len() == 1)
+        .map(|group| group[0].as_str());
+    let indexed = label
+        .zip(lora_value_to_property(expected.clone()).ok())
+        .and_then(|(label, element)| storage.node_list_element_candidates(label, key, &element));
+    match indexed {
+        Some(ids) => {
+            let exact = !matches!(expected, LoraValue::Int(i) if i.unsigned_abs() > 1 << 53);
+            NodePropertyCandidates {
+                ids,
+                prefiltered: labels.len() == 1 && exact,
+            }
+        }
+        None => NodePropertyCandidates {
+            ids: scan_node_ids_for_label_groups(storage, labels),
+            prefiltered: false,
+        },
+    }
+}
+
+/// Whether `node_id` has `labels` and its list in `key` holds an element
+/// equal to `expected` (`expected IN n.key` is true).
+fn node_list_holds<S: GraphStorage>(
+    storage: &S,
+    node_id: NodeId,
+    labels: &[Vec<String>],
+    key: &str,
+    expected: &LoraValue,
+) -> bool {
+    if matches!(expected, LoraValue::Null) {
+        return false;
+    }
+    storage
+        .with_node(node_id, |node| {
+            if !node_matches_label_groups(node.labels(), labels) {
+                return false;
+            }
+            let Some(lora_store::ValueRef::Other(value)) = node.properties().get(key) else {
+                return false;
+            };
+            match &*value.get() {
+                PropertyValue::List(items) => items
+                    .iter()
+                    .any(|item| value_matches_property_value(expected, item)),
+                _ => false,
+            }
+        })
+        .unwrap_or(false)
 }
 
 /// Build a LoraPath from the node and relationship variables currently in a row.
@@ -3085,6 +3169,60 @@ pub(crate) fn rel_by_property_range_scan_rows<S: GraphStorage>(
                     hi_value.as_ref(),
                     hi_inclusive,
                 ) {
+                    return Ok(());
+                }
+                emit_rel_rows(op.direction, op.src, op.rel, op.dst, rel, &row, &mut out)
+            }) {
+                result?;
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+/// `value IN r.key` from the list elements of the RANGE index on each
+/// type (a scan of the type where none covers it). Each candidate is
+/// checked for the element, as [`node_list_holds`] does for nodes.
+pub(crate) fn rel_by_list_element_scan_rows<S: GraphStorage>(
+    storage: &S,
+    params: &BTreeMap<String, LoraValue>,
+    base_rows: Vec<Row>,
+    op: &lora_compiler::RelByListElementScanExec,
+    deadline: Option<Instant>,
+) -> ExecResult<Vec<Row>> {
+    let eval_ctx = EvalContext { storage, params };
+    let mut out = Vec::new();
+
+    for row in base_rows {
+        check_optional_deadline(deadline)?;
+        let expected = eval_expr(&op.value, &row, &eval_ctx);
+        if matches!(expected, LoraValue::Null) {
+            continue;
+        }
+        let element = lora_value_to_property(expected.clone()).ok();
+        let candidate_ids = rel_candidate_ids(storage, &op.types, |ty| {
+            storage.relationship_list_element_candidates(ty, &op.key, element.as_ref()?)
+        });
+
+        for rel_id in candidate_ids {
+            check_optional_deadline(deadline)?;
+            if let Some(result) = storage.with_relationship(rel_id, |rel| {
+                if !op.types.is_empty() && !op.types.iter().any(|t| t == rel.rel_type()) {
+                    return Ok(());
+                }
+                let Some(lora_store::ValueRef::Other(value)) =
+                    rel.properties().get(op.key.as_str())
+                else {
+                    return Ok(());
+                };
+                let holds = match &*value.get() {
+                    PropertyValue::List(items) => items
+                        .iter()
+                        .any(|item| value_matches_property_value(&expected, item)),
+                    _ => false,
+                };
+                if !holds {
                     return Ok(());
                 }
                 emit_rel_rows(op.direction, op.src, op.rel, op.dst, rel, &row, &mut out)

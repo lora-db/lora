@@ -58,6 +58,29 @@ pub struct GraphStats {
     /// through a flat per-query scan rather than a dedicated structure.
     pub node_vector_indexes: BTreeSet<(String, String)>,
     pub relationship_vector_indexes: BTreeSet<(String, String)>,
+    /// List elements held by the RANGE index scopes whose property holds
+    /// lists, by `(label_or_type, property)`: what an element seek
+    /// (`$x IN n.list`) is costed from. Exact counts, kept on every write.
+    pub node_list_elements: BTreeMap<(String, String), ListElementStats>,
+    pub relationship_list_elements: BTreeMap<(String, String), ListElementStats>,
+}
+
+/// List elements in one RANGE index scope (see
+/// [`GraphStats::node_list_elements`]).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ListElementStats {
+    /// Distinct elements across every list.
+    pub distinct: usize,
+    /// `(element, entity)` pairs: each list counts each distinct element
+    /// it holds once.
+    pub postings: usize,
+}
+
+impl ListElementStats {
+    /// Entities one element seek finds, on average.
+    pub fn per_element(&self) -> u64 {
+        (self.postings as u64).div_ceil(self.distinct.max(1) as u64)
+    }
 }
 
 /// Builds a [`GraphStats::plan_signature`]: a hash of every input the
@@ -122,6 +145,25 @@ impl PlanSignature {
         (5u8, entity, kind.as_str(), label, property).hash(&mut self.hasher);
     }
 
+    /// A RANGE index scope holding list elements, by the entities one
+    /// element seek finds on average.
+    pub fn list_elements(
+        &mut self,
+        entity: StoredIndexEntity,
+        label: &str,
+        property: &str,
+        stats: ListElementStats,
+    ) {
+        (
+            6u8,
+            entity,
+            label,
+            property,
+            Self::bucket(stats.per_element() as usize),
+        )
+            .hash(&mut self.hasher);
+    }
+
     pub fn finish(&self) -> u64 {
         self.hasher.finish()
     }
@@ -142,6 +184,38 @@ impl GraphStats {
         // Uniform-distribution heuristic: each value owns
         // ⌈total / distinct⌉ rows.
         Some(total.div_ceil(distinct))
+    }
+
+    /// Rows an element seek `$x IN label.property` finds, from the RANGE
+    /// index on the pair: the average entities per element, or 0 when
+    /// the indexed values hold no list element. `None` without the index.
+    pub fn estimate_node_list_element(&self, label: &str, property: &str) -> Option<u64> {
+        let scope = (label.to_owned(), property.to_owned());
+        if !self.node_range_indexes.contains(&scope) {
+            return None;
+        }
+        Some(
+            self.node_list_elements
+                .get(&scope)
+                .map_or(0, ListElementStats::per_element),
+        )
+    }
+
+    /// Mirror of [`Self::estimate_node_list_element`] for relationships.
+    pub fn estimate_relationship_list_element(
+        &self,
+        rel_type: &str,
+        property: &str,
+    ) -> Option<u64> {
+        let scope = (rel_type.to_owned(), property.to_owned());
+        if !self.relationship_range_indexes.contains(&scope) {
+            return None;
+        }
+        Some(
+            self.relationship_list_elements
+                .get(&scope)
+                .map_or(0, ListElementStats::per_element),
+        )
     }
 
     pub fn label_count(&self, label: &str) -> Option<u64> {
@@ -171,6 +245,8 @@ impl GraphStats {
         self.relationship_point_indexes.hash(&mut hasher);
         self.node_vector_indexes.hash(&mut hasher);
         self.relationship_vector_indexes.hash(&mut hasher);
+        self.node_list_elements.hash(&mut hasher);
+        self.relationship_list_elements.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -241,6 +317,17 @@ impl GraphStats {
         for (entity, kind, set) in scopes {
             for (label, property) in set {
                 sig.index(entity, kind, label, property);
+            }
+        }
+        for (entity, elements) in [
+            (StoredIndexEntity::Node, &self.node_list_elements),
+            (
+                StoredIndexEntity::Relationship,
+                &self.relationship_list_elements,
+            ),
+        ] {
+            for ((label, property), stats) in elements {
+                sig.list_elements(entity, label, property, *stats);
             }
         }
         sig.finish()

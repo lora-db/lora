@@ -41,6 +41,13 @@ const SEEK_OPERATORS: Record<SeekExpectation["access"], string[]> = {
   range: ["NodeByPropertyRangeScan", "NodeByPropertyScan"],
   text: ["NodeByTextScan"],
   point: ["NodeByPointScan"],
+  element: ["NodeByPropertyScan"],
+  any: [
+    "NodeByPropertyScan",
+    "NodeByPropertyRangeScan",
+    "NodeByTextScan",
+    "NodeByPointScan",
+  ],
 };
 
 export async function checkPlans(

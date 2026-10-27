@@ -37,7 +37,6 @@ next, **P2** planned, **P3** when convenient.
 
 ## Engine — performance
 
-- [ ] P2 A list-membership filter uses no index: `$v IN n.list` is a label scan plus filter even with `CREATE INDEX … ON (n.list)`; a RANGE (or list) index should seek by element, and lora-graphql should infer it for `@filterable(byValue: [INCLUDES])` (Festimap G-63).
 - [ ] P2 Composite multi-property seeks (`optimizer.rs:1085-1088`); composite RANGE indexes are catalog-only.
 - [ ] P2 Index-ordered scan for an order-only or unbounded range (`ORDER BY key LIMIT k` over a bounded range already streams, `optimizer.rs:70-124`); count a range from the index.
 - [ ] P2 Join ordering and global cardinality estimation (`estimatedRows` exist for scans and seeks, not for Expand, Filter, joins or aggregates, `database/explain.rs:61-110`).

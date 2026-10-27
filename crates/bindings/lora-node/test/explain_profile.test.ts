@@ -35,6 +35,45 @@ describe("explain", () => {
     expect(plan.query).toBe("MATCH (p:Person) RETURN p");
   });
 
+  // G-63 (Festimap): a list-membership filter seeks the RANGE index's
+  // list elements instead of scanning the label.
+  it("seeks list elements for `$g IN n.list`", async () => {
+    const db = await newDb();
+    await db.execute("CREATE INDEX ev_gl FOR (n:Event) ON (n.genreLineage)");
+    await db.execute(
+      "UNWIND range(1, 5000) AS i CREATE (:Event {genreLineage: CASE WHEN i % 50 = 0 THEN ['electronic','techno'] ELSE ['rock-metal'] END})",
+    );
+    const query = "MATCH (e:Event) WHERE $g IN e.genreLineage RETURN e";
+    const plan = await db.explain(query, { g: "techno" });
+    type PlanNode = {
+      operator: string;
+      details: Record<string, string>;
+      estimatedRows: number | null;
+      children: PlanNode[];
+    };
+    const ops: PlanNode[] = [];
+    const walk = (n: PlanNode) => {
+      ops.push(n);
+      n.children.forEach(walk);
+    };
+    walk(plan.tree as unknown as PlanNode);
+    expect(ops.map((n) => n.operator)).toEqual([
+      "Projection",
+      "Filter",
+      "NodeByPropertyScan",
+    ]);
+    expect(ops[2]!.details).toMatchObject({
+      key: "genreLineage",
+      mode: "element",
+    });
+    expect(ops[2]!.estimatedRows).toBe(1700);
+    const { rows } = await db.execute(
+      "MATCH (e:Event) WHERE $g IN e.genreLineage RETURN count(*) AS n",
+      { g: "techno" },
+    );
+    expect(rows).toEqual([{ n: 100 }]);
+  });
+
   it("forwards parameters", async () => {
     const db = await newDb();
     const plan = await db.explain(

@@ -68,7 +68,8 @@ where
 /// * `NodeScan` → `node_count`
 /// * `NodeByLabelScan` → sum of per-label counts (handles `:A|B`)
 /// * `NodeByPropertyScan` → uniform-distribution heuristic from
-///   distinct-value count, when both label and property are recorded
+///   distinct-value count, when both label and property are recorded; an
+///   element seek, the average entities per list element
 /// * `NodeByIdSeek` / `RelByIdSeek` on `id(x) = value` → 1 (2 for an
 ///   undirected relationship, one row per orientation)
 /// * `NodeByPropertyRangeScan`, `NodeByTextScan`, `NodeByPointScan` → a
@@ -109,6 +110,7 @@ fn annotate_node(node: &mut PlanTreeNode, stats: &GraphStats) {
             labels_estimate(node, stats).map(|n| n.div_ceil(denom))
         }
         "NodeByPointScan" => labels_estimate(node, stats).map(|n| n.div_ceil(5)),
+        "RelByListElementScan" => rel_list_element_estimate(node, stats),
         _ => None,
     };
     for child in &mut node.children {
@@ -125,10 +127,29 @@ fn labels_estimate(node: &PlanTreeNode, stats: &GraphStats) -> Option<u64> {
     stats.label_count(bare)
 }
 
+/// Entities per list element, summed over the scan's types; twice that
+/// for an undirected scan, which emits both orientations.
+fn rel_list_element_estimate(node: &PlanTreeNode, stats: &GraphStats) -> Option<u64> {
+    let property = node.details.get("key")?;
+    let mut rows: u64 = 0;
+    for ty in node.details.get("types")?.split('|') {
+        rows = rows.saturating_add(stats.estimate_relationship_list_element(ty, property)?);
+    }
+    Some(match node.details.get("direction").map(String::as_str) {
+        Some("-") => rows.saturating_mul(2),
+        _ => rows,
+    })
+}
+
 fn property_equality_estimate(node: &PlanTreeNode, stats: &GraphStats) -> Option<u64> {
     let property = node.details.get("key")?;
     let labels = node.details.get("labels")?;
     let trimmed = labels.trim_start_matches(':');
     let bare = trimmed.split('|').next()?.trim();
+    // An element seek (`$x IN n.list`) is costed by the entities per list
+    // element in the RANGE index, as the optimizer scores it.
+    if node.details.get("mode").map(String::as_str) == Some("element") {
+        return stats.estimate_node_list_element(bare, property);
+    }
     stats.estimate_node_property_equality(bare, property)
 }

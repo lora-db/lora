@@ -15,7 +15,12 @@ export type RootKind =
 export interface SeekExpectation {
   statement: number;
   label: string;
-  access: "exact" | "range" | "text" | "point";
+  /**
+   * `element`: a list `includes`, sought by its elements. `any`: an
+   * `includes` beside another seekable test; the planner seeks whichever
+   * finds fewer rows.
+   */
+  access: "exact" | "range" | "text" | "point" | "element" | "any";
   reason: string;
 }
 

@@ -11,8 +11,10 @@ use lora_analyzer::symbols::VarId;
 use lora_analyzer::ResolvedExpr;
 use lora_compiler::physical::{
     NodeByIdSeekExec, NodeByPointScanExec, NodeByPropertyRangeScanExec, NodeByTextScanExec,
-    RelByIdSeekExec, RelByPointScanExec, RelByPropertyRangeScanExec, RelByTextScanExec,
+    RelByIdSeekExec, RelByListElementScanExec, RelByPointScanExec, RelByPropertyRangeScanExec,
+    RelByTextScanExec,
 };
+use lora_compiler::PropertySeek;
 use lora_store::{GraphStorage, NodeId};
 
 use crate::errors::{ExecResult, ExecutorError};
@@ -21,8 +23,9 @@ use crate::executor::{
     bound_node_id_for_expand, label_group_candidates_prefiltered, node_by_id_seek_rows,
     node_by_point_scan_rows, node_by_property_range_scan_rows, node_by_text_scan_rows,
     node_matches_label_groups, property_scan_candidates, property_scan_matches,
-    rel_by_id_seek_rows, rel_by_point_scan_rows, rel_by_property_range_scan_rows,
-    rel_by_text_scan_rows, scan_node_ids_for_label_groups, NodePropertyCandidates,
+    rel_by_id_seek_rows, rel_by_list_element_scan_rows, rel_by_point_scan_rows,
+    rel_by_property_range_scan_rows, rel_by_text_scan_rows, scan_node_ids_for_label_groups,
+    NodePropertyCandidates,
 };
 use crate::value::{LoraValue, Row};
 
@@ -363,7 +366,7 @@ pub struct NodeByPropertyScanSource<'a, S: GraphStorage> {
     labels: &'a [Vec<String>],
     key: &'a str,
     value: &'a ResolvedExpr,
-    in_list: bool,
+    seek: PropertySeek,
     cur_row: Option<Row>,
     cur_expected: Option<LoraValue>,
     cur_ids: Vec<NodeId>,
@@ -380,7 +383,7 @@ impl<'a, S: GraphStorage> NodeByPropertyScanSource<'a, S> {
         labels: &'a [Vec<String>],
         key: &'a str,
         value: &'a ResolvedExpr,
-        in_list: bool,
+        seek: PropertySeek,
     ) -> Self {
         Self {
             upstream,
@@ -389,7 +392,7 @@ impl<'a, S: GraphStorage> NodeByPropertyScanSource<'a, S> {
             labels,
             key,
             value,
-            in_list,
+            seek,
             cur_row: None,
             cur_expected: None,
             cur_ids: Vec::new(),
@@ -428,7 +431,7 @@ impl<'a, S: GraphStorage> RowSource for NodeByPropertyScanSource<'a, S> {
                                 self.labels,
                                 self.key,
                                 &expected,
-                                self.in_list,
+                                self.seek,
                             )
                         };
                         self.cur_ids = candidates.ids;
@@ -461,7 +464,7 @@ impl<'a, S: GraphStorage> RowSource for NodeByPropertyScanSource<'a, S> {
                     self.labels,
                     self.key,
                     expected,
-                    self.in_list,
+                    self.seek,
                 ) {
                     let Some(row) = self.cur_row.take() else {
                         self.clear_current();
@@ -488,7 +491,7 @@ impl<'a, S: GraphStorage> RowSource for NodeByPropertyScanSource<'a, S> {
                         self.labels,
                         self.key,
                         expected,
-                        self.in_list,
+                        self.seek,
                     )
                 {
                     continue;
@@ -523,6 +526,7 @@ enum BufferedIndexScanOp<'a> {
     RelRange(&'a RelByPropertyRangeScanExec),
     RelText(&'a RelByTextScanExec),
     RelPoint(&'a RelByPointScanExec),
+    RelElement(&'a RelByListElementScanExec),
 }
 
 impl<'a, S: GraphStorage> BufferedIndexScanSource<'a, S> {
@@ -590,6 +594,14 @@ impl<'a, S: GraphStorage> BufferedIndexScanSource<'a, S> {
         Self::new(upstream, ctx, BufferedIndexScanOp::RelPoint(op))
     }
 
+    pub(super) fn rel_element(
+        upstream: Box<dyn RowSource + 'a>,
+        ctx: StreamCtx<'a, S>,
+        op: &'a RelByListElementScanExec,
+    ) -> Self {
+        Self::new(upstream, ctx, BufferedIndexScanOp::RelElement(op))
+    }
+
     fn new(
         upstream: Box<dyn RowSource + 'a>,
         ctx: StreamCtx<'a, S>,
@@ -637,6 +649,13 @@ impl<'a, S: GraphStorage> BufferedIndexScanSource<'a, S> {
             BufferedIndexScanOp::RelPoint(op) => {
                 rel_by_point_scan_rows(self.ctx.storage, &self.ctx.params, vec![row], op, None)?
             }
+            BufferedIndexScanOp::RelElement(op) => rel_by_list_element_scan_rows(
+                self.ctx.storage,
+                &self.ctx.params,
+                vec![row],
+                op,
+                None,
+            )?,
         };
         self.pending = rows.into_iter();
         Ok(())
