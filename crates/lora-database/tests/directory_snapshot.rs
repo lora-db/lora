@@ -244,6 +244,8 @@ fn a_snapshot_taken_during_writes_holds_the_transactions_up_to_its_lsn() {
     stop.store(true, Ordering::Relaxed);
     let written = writer.join().unwrap();
     assert!(written > 0);
+    // A feed hands out a commit once it is durable: sync the last ones.
+    db.wal().unwrap().force_fsync().unwrap();
 
     // Nodes created by the batches at or below each LSN.
     let mut created: Vec<(u64, u64)> = Vec::new();
