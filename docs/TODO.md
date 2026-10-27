@@ -47,7 +47,7 @@ next, **P2** planned, **P3** when convenient.
 
 ## Engine — memory
 
-- [ ] P2 A keyed node (58-byte key, a hash, two integers) costs 279 B resident after an open at 200k nodes and 352 B at 50k, of which 77 B is the open's fixed 3.8 MB (Festimap G-64; was 456 and 610 in 0.30.0). Left: the sorted index's 80 B copy of the key (sharing it with the record cost 20% on key lookups), and the open's fixed cost (`lora-database/examples/node_memory_probe.rs`).
+- [ ] P2 A keyed node (58-byte key, a hash, two integers) costs 274 B resident after an open at 200k nodes (Festimap G-64; was 456 in 0.30.0), 157 B with `OPTIONS { indexProvider: 'hash' }` on its constraint (0.33.0). Left for the default range backing: the sorted index's ~110 B copy of the key (sharing it with the record cost 20% on key lookups; front-coding shared prefixes in `SortedScope::by_value` partitions is the next try, budget at most 5% on key lookups), and malloc fragmentation after a replay (RSS 56-81 B a node over live heap on macOS; `malloc_zone_pressure_relief` did not help) (`lora-database/examples/node_memory_probe.rs`).
 
 ## Writer lock and durability
 

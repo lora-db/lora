@@ -57,6 +57,13 @@ convert is an error.
        datetime('2026-10-01') AS midnight,                   // 2026-10-01T00:00:00Z
        time({hour: 9, minute: 30, timezone: '+01:00'}) AS t`} />
 
+A map of only a `timezone` is the current value in that zone, for every
+type: `date({timezone: $tz})` is the reader's local day. At 23:30 UTC on
+2026-10-24 it is `2026-10-25` in `Europe/Amsterdam`.
+
+<QueryCodeBlock code={String.raw`RETURN date({timezone: 'Europe/Amsterdam'}) AS todayThere,
+       localtime({timezone: '+09:00'}) AS clockInTokyo`} />
+
 `date.transaction()`, `date.statement()` and `date.realtime()` (and the
 same on `time`, `localtime`, `datetime` and `localdatetime`) return the
 current value too. LoraDB has one clock, so the three agree.

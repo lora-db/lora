@@ -70,6 +70,22 @@ parentheses:
 FOR ()-[r:LINE_ITEM]-()
 REQUIRE (r.orderId, r.lineNo) IS UNIQUE;`} />
 
+A uniqueness or key constraint is backed by a RANGE index of the same
+name. For a key that is only ever looked up by value (`{key: $k}`,
+`MERGE`), `OPTIONS { indexProvider: 'hash' }` keeps the hash index that
+enforcement and lookups read and drops the sorted copy of each value:
+about 110 bytes less per node for a 58-character string key. Range,
+`STARTS WITH` and `ORDER BY` reads on the key still work, by scanning
+the label.
+
+<QueryCodeBlock code={String.raw`CREATE CONSTRAINT record_key
+FOR (r:Record)
+REQUIRE r.key IS UNIQUE
+OPTIONS { indexProvider: 'hash' };`} />
+
+`'range'` (Neo4j's `'range-1.0'` is accepted too) is the default. To
+change the backing, drop the constraint and create it again.
+
 Existence constraints are single-property only:
 
 <QueryCodeBlock code={String.raw`CREATE CONSTRAINT published_at
@@ -136,6 +152,7 @@ Rows contain:
 | `labelsOrTypes` | Label or relationship type scope |
 | `properties` | Constrained property keys |
 | `ownedIndex` | Backing index name for uniqueness and key constraints; `null` otherwise |
+| `indexProvider` | `range` or `hash` for uniqueness and key constraints; `null` otherwise |
 | `propertyType` | Type expression for property type constraints; `null` otherwise |
 
 `SHOW CONSTRAINTS` accepts the same `YIELD`-anchored catalog pipeline
