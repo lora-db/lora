@@ -26,8 +26,9 @@ use napi::bindgen_prelude::{Buffer, Result};
 use napi::{Env, Error as NapiError, JsDeferred, JsObject, JsUnknown, Status, Task};
 
 use lora_database::{
-    Database as InnerDatabase, ExecuteOptions, InMemoryGraph, LoraValue, QueryPlan, QueryProfile,
-    QueryResult, ResultFormat, SnapshotCredentials, SnapshotMeta, TransactionMode,
+    Database as InnerDatabase, DirectorySnapshot, ExecuteOptions, InMemoryGraph, LoraValue,
+    QueryPlan, QueryProfile, QueryResult, ResultFormat, SnapshotCredentials, SnapshotMeta,
+    TransactionMode,
 };
 
 use crate::encode::{encode_query_rows, encode_rows};
@@ -274,6 +275,58 @@ impl Task for SyncTask {
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
         Ok(output)
+    }
+}
+
+/// Work unit for `Database::snapshot`: an online copy of a named
+/// database into an empty directory.
+pub struct SnapshotDirTask {
+    pub(crate) db: Arc<InnerDatabase<InMemoryGraph>>,
+    pub(crate) target_dir: String,
+}
+
+impl Task for SnapshotDirTask {
+    type Output = DirectorySnapshot;
+    type JsValue = JsUnknown;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        // Waits for the writer lock while it takes the graph.
+        let _work = crate::stream::PoolWork::enter();
+        self.db
+            .snapshot_to_dir(&self.target_dir)
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))
+    }
+
+    fn resolve(&mut self, env: Env, snapshot: Self::Output) -> Result<Self::JsValue> {
+        env.to_js_value(&serde_json::json!({
+            "path": snapshot.path.to_string_lossy(),
+            "bytes": snapshot.bytes,
+            "lsn": snapshot.lsn,
+            "nodeCount": snapshot.node_count,
+            "relationshipCount": snapshot.relationship_count,
+        }))
+    }
+}
+
+/// Work unit for `Database::checkpoint`.
+pub struct CheckpointTask {
+    pub(crate) db: Arc<InnerDatabase<InMemoryGraph>>,
+}
+
+impl Task for CheckpointTask {
+    type Output = SnapshotMeta;
+    type JsValue = JsUnknown;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        // Waits for the writer lock while it takes the graph.
+        let _work = crate::stream::PoolWork::enter();
+        self.db
+            .checkpoint()
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))
+    }
+
+    fn resolve(&mut self, env: Env, meta: Self::Output) -> Result<Self::JsValue> {
+        env.to_js_value(&crate::snapshot_meta_to_json(meta))
     }
 }
 

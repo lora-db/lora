@@ -896,7 +896,7 @@ fn newest_checkpoint_marker_matches_full_replay() {
 }
 
 fn open_truncating_corruption(dir: &Path, target: u64) -> (Arc<Wal>, Vec<MutationEvent>) {
-    let mut events = Vec::new();
+    let mut collected = crate::replay::CollectEvents::default();
     let wal = Wal::open_replaying_with(
         dir,
         SyncMode::GroupSync {
@@ -905,13 +905,13 @@ fn open_truncating_corruption(dir: &Path, target: u64) -> (Arc<Wal>, Vec<Mutatio
         target,
         Lsn::ZERO,
         true,
-        &mut |committed| {
-            events.extend(committed);
+        &mut |step| {
+            collected.step(step);
             Ok(())
         },
     )
     .unwrap();
-    (wal, events)
+    (wal, collected.events)
 }
 
 fn files_containing(dir: &Path, needle: &str) -> Vec<std::path::PathBuf> {
@@ -1091,4 +1091,164 @@ fn growth_listener_fires_once_the_threshold_is_reached() {
     write_txs(&wal, id..id + 1);
     assert_eq!(fired.load(std::sync::atomic::Ordering::SeqCst), 1);
     wal.set_growth_listener(0, None);
+}
+
+/// A node event whose WAL record is about 64 KiB.
+fn big_ev(id: u64) -> MutationEvent {
+    let mut p = Properties::new();
+    p.insert("blob".into(), PropertyValue::String("x".repeat(64 * 1024)));
+    MutationEvent::CreateNode {
+        id,
+        labels: vec!["N".into()],
+        properties: p,
+    }
+}
+
+/// Events for twice the replay buffer.
+const BIG_TX_EVENTS: u64 = (2 * crate::PENDING_BUDGET_BYTES / (64 * 1024)) as u64;
+
+#[derive(Debug, PartialEq)]
+enum Step {
+    Commit(usize),
+    Partial(usize),
+    Discard,
+}
+
+/// Replay `dir`, recording the steps the sink sees and the events it
+/// keeps.
+fn replay_steps(dir: &Path) -> (Vec<Step>, Vec<MutationEvent>) {
+    let mut steps = Vec::new();
+    let mut collected = crate::replay::CollectEvents::default();
+    Wal::open_replaying(
+        dir,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        8 * 1024 * 1024,
+        Lsn::ZERO,
+        &mut |step| {
+            steps.push(match &step {
+                crate::ReplayStep::Commit(events) => Step::Commit(events.len()),
+                crate::ReplayStep::Partial(events) => Step::Partial(events.len()),
+                crate::ReplayStep::Discard => Step::Discard,
+            });
+            collected.step(step);
+            Ok(())
+        },
+    )
+    .unwrap();
+    (steps, collected.events)
+}
+
+/// Collapse runs of partial steps into one, summing their events.
+fn merge_partials(steps: Vec<Step>) -> Vec<Step> {
+    let mut merged: Vec<Step> = Vec::new();
+    for step in steps {
+        match (merged.last_mut(), step) {
+            (Some(Step::Partial(total)), Step::Partial(n)) => *total += n,
+            (_, step) => merged.push(step),
+        }
+    }
+    merged
+}
+
+#[test]
+fn a_transaction_past_the_replay_buffer_reaches_the_sink_in_parts() {
+    let dir = TmpDir::new("big-commit");
+    let big: Vec<_> = (0..BIG_TX_EVENTS).map(big_ev).collect();
+    {
+        let (wal, _) = open_default(&dir.path);
+        write_txs(&wal, 0..1);
+        wal.commit_tx(big.clone()).unwrap();
+        write_txs(&wal, 1..2);
+    }
+    let (steps, events) = replay_steps(&dir.path);
+    let merged = merge_partials(steps);
+    let Step::Partial(streamed) = merged[1] else {
+        panic!("expected the large transaction in parts, got {merged:?}");
+    };
+    assert_eq!(merged[0], Step::Commit(1));
+    assert_eq!(
+        merged[2],
+        Step::Commit(BIG_TX_EVENTS as usize - streamed),
+        "the commit carries the rest"
+    );
+    assert_eq!(merged[3], Step::Commit(1));
+    assert_eq!(merged.len(), 4);
+    let mut expected = vec![ev(0)];
+    expected.extend(big);
+    expected.push(ev(1));
+    assert_eq!(events, expected);
+}
+
+#[test]
+fn a_large_transaction_without_its_commit_is_withdrawn() {
+    let dir = TmpDir::new("big-uncommitted");
+    {
+        let (wal, _) = open_default(&dir.path);
+        write_txs(&wal, 0..1);
+        let begin = wal.begin().unwrap();
+        for id in 1..=BIG_TX_EVENTS {
+            wal.append(begin, &big_ev(id)).unwrap();
+        }
+        wal.flush().unwrap();
+    }
+    let (steps, events) = replay_steps(&dir.path);
+    let merged = merge_partials(steps);
+    assert_eq!(merged.first(), Some(&Step::Commit(1)));
+    assert!(matches!(merged[1], Step::Partial(_)), "{merged:?}");
+    assert_eq!(merged.last(), Some(&Step::Discard));
+    assert_eq!(merged.len(), 3);
+    assert_eq!(events, vec![ev(0)]);
+}
+
+#[test]
+fn a_large_transaction_followed_by_another_is_withdrawn_before_it() {
+    let dir = TmpDir::new("big-abandoned");
+    {
+        let (wal, _) = open_default(&dir.path);
+        let begin = wal.begin().unwrap();
+        for id in 0..BIG_TX_EVENTS {
+            wal.append(begin, &big_ev(id)).unwrap();
+        }
+        // A failed append leaves this shape: the next transaction starts
+        // after records of one that never commits.
+        write_txs(&wal, 100..101);
+        wal.abort(begin).unwrap();
+        wal.flush().unwrap();
+    }
+    let (steps, events) = replay_steps(&dir.path);
+    let merged = merge_partials(steps);
+    assert!(matches!(merged[0], Step::Partial(_)), "{merged:?}");
+    assert_eq!(merged[1..], [Step::Discard, Step::Commit(1)]);
+    assert_eq!(events, vec![ev(100)]);
+}
+
+#[test]
+fn a_withdrawn_large_transaction_that_commits_fails_replay() {
+    let dir = TmpDir::new("big-interleaved");
+    {
+        let (wal, _) = open_default(&dir.path);
+        let begin = wal.begin().unwrap();
+        for id in 0..BIG_TX_EVENTS {
+            wal.append(begin, &big_ev(id)).unwrap();
+        }
+        write_txs(&wal, 100..101);
+        wal.commit(begin).unwrap();
+        wal.flush().unwrap();
+    }
+    let err = Wal::open(
+        &dir.path,
+        SyncMode::GroupSync {
+            interval_ms: 60_000,
+        },
+        8 * 1024 * 1024,
+        Lsn::ZERO,
+    )
+    .err()
+    .expect("an interleaved large transaction cannot be replayed in parts");
+    assert!(
+        err.to_string().contains("came between its own"),
+        "unexpected error: {err}"
+    );
 }

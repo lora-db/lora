@@ -255,15 +255,25 @@ impl Database<InMemoryGraph> {
     pub fn sync(&self) -> Result<(), LoraError> {
         if let Some(wal) = &self.wal {
             if let Some(archive) = &self.named_archive {
-                checkpoint_named(archive, &self.writer, wal, &self.store)?;
-                if let Some(auto) = &self.auto_checkpoint {
-                    auto.refresh_threshold();
-                }
+                self.checkpoint_named(wal, archive)?;
             } else {
                 wal.force_fsync()?;
             }
         }
         Ok(())
+    }
+
+    /// The checkpoint [`Self::sync`] takes on a named database.
+    pub(crate) fn checkpoint_named(
+        &self,
+        wal: &WalRecorder,
+        archive: &WalArchive,
+    ) -> Result<lora_snapshot::SnapshotInfo, LoraError> {
+        let info = checkpoint_named(archive, &self.writer, wal, &self.store)?;
+        if let Some(auto) = &self.auto_checkpoint {
+            auto.refresh_threshold();
+        }
+        Ok(info)
     }
 }
 
@@ -275,7 +285,7 @@ pub(crate) fn checkpoint_named(
     writer: &Mutex<()>,
     wal: &WalRecorder,
     store: &LiveStore<InMemoryGraph>,
-) -> Result<(), LoraError> {
+) -> Result<lora_snapshot::SnapshotInfo, LoraError> {
     let _checkpoint = archive.checkpoint_lock()?;
     let (graph, snapshot_lsn) = {
         let _commit_lock = writer
@@ -286,7 +296,7 @@ pub(crate) fn checkpoint_named(
     };
     let staged = archive.staged_snapshot_path();
     let staged_guard = crate::snapshot::TempFileGuard::new(staged.clone());
-    crate::snapshot::write_graph_snapshot_file(
+    let info = crate::snapshot::write_graph_snapshot_file(
         &staged,
         &graph,
         Some(snapshot_lsn.raw()),
@@ -295,7 +305,8 @@ pub(crate) fn checkpoint_named(
     drop(graph);
     archive.install_snapshot(|| wal.truncate_covered_by_mirror(snapshot_lsn))?;
     staged_guard.commit();
-    Ok(())
+    crate::release_memory::release_free_memory();
+    Ok(info)
 }
 
 impl<S> Database<S>

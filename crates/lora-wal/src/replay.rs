@@ -4,13 +4,21 @@
 //!
 //! The walk is deliberately a single forward sweep over the segments in
 //! ascending id order. Per-transaction events are buffered in a
-//! `BTreeMap<tx_begin_lsn, Vec<MutationEvent>>` and handed to the
-//! caller's sink on the corresponding [`WalRecord::TxCommit`], so replay
-//! holds the open transactions, never the whole log; an
-//! [`WalRecord::TxAbort`] (or a missing commit at end-of-log) causes the
-//! bucket to be dropped without emission. This is the contract the WAL plan calls
-//! "per-mutation log, per-query commit": the recorder writes one record
-//! per primitive mutation but replay only ever reapplies whole queries.
+//! `BTreeMap<tx_begin_lsn, _>` and handed to the caller's sink on the
+//! corresponding [`WalRecord::TxCommit`], so replay holds the open
+//! transactions, never the whole log; an [`WalRecord::TxAbort`] (or a
+//! missing commit at end-of-log) causes the bucket to be dropped without
+//! emission. This is the contract the WAL plan calls "per-mutation log,
+//! per-query commit": the recorder writes one record per primitive
+//! mutation but replay only ever reapplies whole queries.
+//!
+//! A transaction is buffered only up to [`PENDING_BUDGET_BYTES`] of its
+//! encoded records. Past that its events go to the sink as they are read
+//! ([`ReplayStep::Partial`]), and the sink applies them provisionally: the
+//! commit confirms them, and an abort, a missing commit or a record of
+//! another transaction withdraws them ([`ReplayStep::Discard`]). An open
+//! then holds one buffer's worth of a large transaction instead of all of
+//! it decoded, which can be several times the graph it builds.
 //!
 //! Replay walks past `checkpoint_lsn`: any record whose LSN is at or
 //! below it is already represented in the loaded snapshot and is
@@ -101,9 +109,58 @@ pub struct TornTailInfo {
     pub cause: WalError,
 }
 
-/// Receives each committed transaction's events, in commit order. An
-/// error stops the replay and is returned from it.
-pub type ReplaySink<'a> = dyn FnMut(Vec<MutationEvent>) -> Result<(), WalError> + 'a;
+/// How much of one transaction replay buffers, in encoded record bytes,
+/// before it hands the transaction's events to the sink as they arrive.
+pub const PENDING_BUDGET_BYTES: usize = 4 * 1024 * 1024;
+
+/// What replay hands its sink, in log order.
+#[derive(Debug)]
+pub enum ReplayStep {
+    /// A committed transaction: its events, or the rest of them after
+    /// [`Self::Partial`] steps.
+    Commit(Vec<MutationEvent>),
+    /// Events of a transaction larger than [`PENDING_BUDGET_BYTES`] whose
+    /// commit has not been read yet. Apply them provisionally: a
+    /// [`Self::Commit`] or a [`Self::Discard`] follows, with no step of
+    /// another transaction in between.
+    Partial(Vec<MutationEvent>),
+    /// The transaction of the preceding [`Self::Partial`] steps did not
+    /// commit: undo them.
+    Discard,
+}
+
+/// Collects replayed events into one list: a sink body for callers that
+/// want the whole log.
+#[derive(Default)]
+pub(crate) struct CollectEvents {
+    pub(crate) events: Vec<MutationEvent>,
+    /// Where the provisional events of a streaming transaction start.
+    provisional_from: Option<usize>,
+}
+
+impl CollectEvents {
+    pub(crate) fn step(&mut self, step: ReplayStep) {
+        match step {
+            ReplayStep::Commit(events) => {
+                self.events.extend(events);
+                self.provisional_from = None;
+            }
+            ReplayStep::Partial(events) => {
+                self.provisional_from.get_or_insert(self.events.len());
+                self.events.extend(events);
+            }
+            ReplayStep::Discard => {
+                if let Some(from) = self.provisional_from.take() {
+                    self.events.truncate(from);
+                }
+            }
+        }
+    }
+}
+
+/// Receives the committed transactions, in commit order (see
+/// [`ReplayStep`]). An error stops the replay and is returned from it.
+pub type ReplaySink<'a> = dyn FnMut(ReplayStep) -> Result<(), WalError> + 'a;
 
 /// Walk every segment in `paths` (already in ascending id order), handing
 /// each committed transaction to `sink` as its commit is read.
@@ -153,6 +210,7 @@ pub(crate) fn replay_segments(
                     // The frame's CRC matched, so these are the bytes that
                     // were written: a payload that does not decode is never
                     // a torn tail.
+                    let encoded_len = raw.encoded_len();
                     let record = match raw.decode() {
                         Ok(record) => record,
                         Err(err) => {
@@ -162,7 +220,7 @@ pub(crate) fn replay_segments(
                             break 'outer;
                         }
                     };
-                    state.accept_record(record, segment_base, checkpoint_lsn, path)?;
+                    state.accept_record(record, encoded_len, segment_base, checkpoint_lsn, path)?;
                     last_good_offset = reader.position();
                 }
                 Ok(None) => break,
@@ -203,7 +261,7 @@ pub(crate) fn replay_segments(
         }
     }
 
-    Ok(state.finish(torn_tail, corrupt_cut, last_good_offset))
+    state.finish(torn_tail, corrupt_cut, last_good_offset)
 }
 
 /// `err` (a [`WalError::Corrupt`]) as the point to cut the log at, when
@@ -271,8 +329,24 @@ fn check_log_start(base: Lsn, checkpoint_lsn: Lsn, path: &Path) -> Result<(), Wa
     Ok(())
 }
 
+/// A transaction read but not yet committed or aborted.
+#[derive(Default)]
+struct PendingTx {
+    events: Vec<MutationEvent>,
+    /// Encoded size of the records behind `events`.
+    bytes: usize,
+}
+
 struct ReplayState<'s, 'a> {
-    pending: BTreeMap<Lsn, Vec<MutationEvent>>,
+    pending: BTreeMap<Lsn, PendingTx>,
+    /// The transaction whose events went to the sink as
+    /// [`ReplayStep::Partial`] steps, until its commit or discard.
+    streaming: Option<Lsn>,
+    /// Transactions withdrawn with [`ReplayStep::Discard`] because a
+    /// record of another one came between theirs. Only a log written
+    /// through the low-level `begin`/`append`/`commit` primitives can
+    /// interleave transactions; one of these that commits fails replay.
+    withdrawn: Vec<Lsn>,
     sink: &'s mut ReplaySink<'a>,
     max_lsn: Lsn,
     last_lsn: Lsn,
@@ -284,6 +358,8 @@ impl<'s, 'a> ReplayState<'s, 'a> {
     fn new(sink: &'s mut ReplaySink<'a>) -> Self {
         Self {
             pending: BTreeMap::new(),
+            streaming: None,
+            withdrawn: Vec::new(),
             sink,
             max_lsn: Lsn::ZERO,
             last_lsn: Lsn::ZERO,
@@ -318,6 +394,7 @@ impl<'s, 'a> ReplayState<'s, 'a> {
     fn accept_record(
         &mut self,
         record: WalRecord,
+        encoded_len: usize,
         segment_base: Lsn,
         checkpoint_lsn: Lsn,
         path: &Path,
@@ -331,7 +408,7 @@ impl<'s, 'a> ReplayState<'s, 'a> {
             return Ok(());
         }
 
-        self.apply_record(record, lsn)
+        self.apply_record(record, encoded_len, lsn)
     }
 
     fn validate_record_lsn(
@@ -378,29 +455,51 @@ impl<'s, 'a> ReplayState<'s, 'a> {
         }
     }
 
-    fn apply_record(&mut self, record: WalRecord, lsn: Lsn) -> Result<(), WalError> {
+    fn apply_record(
+        &mut self,
+        record: WalRecord,
+        encoded_len: usize,
+        lsn: Lsn,
+    ) -> Result<(), WalError> {
         match record {
             WalRecord::Mutation {
                 tx_begin_lsn,
                 event,
                 ..
-            } => self
-                .pending_events_mut(tx_begin_lsn, lsn, "mutation")?
-                .push(event),
+            } => self.add_events(tx_begin_lsn, lsn, "mutation", encoded_len, |events| {
+                events.push(event)
+            })?,
             WalRecord::MutationBatch {
                 tx_begin_lsn,
-                events,
+                events: batch,
                 ..
-            } => self
-                .pending_events_mut(tx_begin_lsn, lsn, "mutation batch")?
-                .extend(events),
-            WalRecord::TxBegin { lsn } => self.begin_transaction(lsn)?,
+            } => self.add_events(tx_begin_lsn, lsn, "mutation batch", encoded_len, |events| {
+                events.extend(batch)
+            })?,
+            WalRecord::TxBegin { lsn } => {
+                self.withdraw_other_than(lsn)?;
+                self.begin_transaction(lsn)?;
+            }
             WalRecord::TxCommit { tx_begin_lsn, .. } => {
-                let events = self.take_pending(tx_begin_lsn, lsn, "commit")?;
-                (self.sink)(events)?;
+                self.withdraw_other_than(tx_begin_lsn)?;
+                let pending = self.take_pending(tx_begin_lsn, lsn, "commit")?;
+                if self.withdrawn.contains(&tx_begin_lsn) {
+                    return Err(WalError::Malformed(format!(
+                        "transaction {} commits at lsn {} after records of another \
+                         transaction came between its own, past the replay buffer",
+                        tx_begin_lsn.raw(),
+                        lsn.raw()
+                    )));
+                }
+                self.streaming = None;
+                (self.sink)(ReplayStep::Commit(pending.events))?;
             }
             WalRecord::TxAbort { tx_begin_lsn, .. } => {
                 let _ = self.take_pending(tx_begin_lsn, lsn, "abort")?;
+                if self.streaming == Some(tx_begin_lsn) {
+                    self.streaming = None;
+                    (self.sink)(ReplayStep::Discard)?;
+                }
             }
             WalRecord::Checkpoint { snapshot_lsn, .. } => {
                 self.observe_checkpoint(lsn, snapshot_lsn)?;
@@ -412,7 +511,7 @@ impl<'s, 'a> ReplayState<'s, 'a> {
     fn begin_transaction(&mut self, lsn: Lsn) -> Result<(), WalError> {
         // Materialise the bucket eagerly so begin-without-mutations
         // transactions still get a deterministic commit/abort.
-        if self.pending.insert(lsn, Vec::new()).is_some() {
+        if self.pending.insert(lsn, PendingTx::default()).is_some() {
             return Err(WalError::Malformed(format!(
                 "duplicate tx begin at lsn {}",
                 lsn.raw()
@@ -421,15 +520,45 @@ impl<'s, 'a> ReplayState<'s, 'a> {
         Ok(())
     }
 
-    fn pending_events_mut(
+    /// Buffer a mutation record's events with its transaction, and hand
+    /// them on as a [`ReplayStep::Partial`] once the transaction has
+    /// outgrown [`PENDING_BUDGET_BYTES`].
+    fn add_events(
         &mut self,
         tx_begin_lsn: Lsn,
         record_lsn: Lsn,
         kind: &str,
-    ) -> Result<&mut Vec<MutationEvent>, WalError> {
-        self.pending
+        encoded_len: usize,
+        add: impl FnOnce(&mut Vec<MutationEvent>),
+    ) -> Result<(), WalError> {
+        self.withdraw_other_than(tx_begin_lsn)?;
+        let pending = self
+            .pending
             .get_mut(&tx_begin_lsn)
-            .ok_or_else(|| missing_tx_begin(kind, record_lsn, tx_begin_lsn))
+            .ok_or_else(|| missing_tx_begin(kind, record_lsn, tx_begin_lsn))?;
+        add(&mut pending.events);
+        pending.bytes = pending.bytes.saturating_add(encoded_len);
+        if pending.bytes >= PENDING_BUDGET_BYTES && !self.withdrawn.contains(&tx_begin_lsn) {
+            let events = std::mem::take(&mut pending.events);
+            pending.bytes = 0;
+            self.streaming = Some(tx_begin_lsn);
+            (self.sink)(ReplayStep::Partial(events))?;
+        }
+        Ok(())
+    }
+
+    /// A record of a transaction other than the one streaming to the sink
+    /// came: withdraw the streaming one, whose events the sink would
+    /// otherwise hold provisionally under the other's.
+    fn withdraw_other_than(&mut self, tx_begin_lsn: Lsn) -> Result<(), WalError> {
+        match self.streaming {
+            Some(streaming) if streaming != tx_begin_lsn => {
+                self.streaming = None;
+                self.withdrawn.push(streaming);
+                (self.sink)(ReplayStep::Discard)
+            }
+            _ => Ok(()),
+        }
     }
 
     fn take_pending(
@@ -437,7 +566,7 @@ impl<'s, 'a> ReplayState<'s, 'a> {
         tx_begin_lsn: Lsn,
         record_lsn: Lsn,
         kind: &str,
-    ) -> Result<Vec<MutationEvent>, WalError> {
+    ) -> Result<PendingTx, WalError> {
         self.pending
             .remove(&tx_begin_lsn)
             .ok_or_else(|| missing_tx_begin(kind, record_lsn, tx_begin_lsn))
@@ -469,17 +598,20 @@ impl<'s, 'a> ReplayState<'s, 'a> {
         torn_tail: Option<TornTailInfo>,
         corrupt_cut: Option<CorruptCut>,
         last_good_offset: u64,
-    ) -> ReplayOutcome {
+    ) -> Result<ReplayOutcome, WalError> {
         // Any transaction still in `pending` at end-of-log was started
         // but never committed (and never explicitly aborted). Treat as
         // crashed mid-query and discard.
-        ReplayOutcome {
+        if self.streaming.is_some() {
+            (self.sink)(ReplayStep::Discard)?;
+        }
+        Ok(ReplayOutcome {
             max_lsn: self.max_lsn,
             torn_tail,
             checkpoint_lsn_observed: self.checkpoint_lsn_observed,
             last_good_offset,
             corrupt_cut,
-        }
+        })
     }
 }
 

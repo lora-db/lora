@@ -1113,6 +1113,85 @@ fn replay_preserves_ids_after_aborted_create_gap() {
     assert_eq!(row_array[0]["name"], serde_json::json!("survivor"));
 }
 
+/// A node event whose WAL record is about 64 KiB.
+fn big_node(id: u64) -> MutationEvent {
+    let mut properties = Properties::new();
+    properties.insert("blob".into(), PropertyValue::String("x".repeat(64 * 1024)));
+    MutationEvent::CreateNode {
+        id,
+        labels: vec!["Big".into()],
+        properties,
+    }
+}
+
+#[test]
+fn replay_withdraws_a_large_transaction_it_applied_in_parts_without_a_commit() {
+    let dir = TmpDir::new("big-withdrawn");
+    // Enough 64 KiB records to pass what replay buffers of a transaction.
+    let big = (2 * lora_wal::PENDING_BUDGET_BYTES / (64 * 1024)) as u64;
+    {
+        let (wal, _) = Wal::open(
+            dir.path(),
+            SyncMode::GroupSync {
+                interval_ms: 60_000,
+            },
+            8 * 1024 * 1024,
+            Lsn::ZERO,
+        )
+        .unwrap();
+        let mut name = Properties::new();
+        name.insert("name".into(), PropertyValue::String("before".into()));
+        wal.commit_tx(vec![MutationEvent::CreateNode {
+            id: 0,
+            labels: vec!["Kept".into()],
+            properties: name,
+        }])
+        .unwrap();
+
+        // Replay applies this one in parts before it knows it never
+        // commits: the open must put the graph back, the property set on
+        // the committed node included.
+        let lost = wal.begin().unwrap();
+        wal.append(
+            lost,
+            &MutationEvent::SetNodeProperty {
+                node_id: 0,
+                key: "name".into(),
+                value: PropertyValue::String("lost".into()),
+            },
+        )
+        .unwrap();
+        for id in 1..=big {
+            wal.append(lost, &big_node(id)).unwrap();
+        }
+        wal.abort(lost).unwrap();
+
+        // And this one in parts too, then commits.
+        let kept: Vec<_> = (big + 1..=2 * big).map(big_node).collect();
+        wal.commit_tx(kept).unwrap();
+
+        // The last one never commits, as a crash mid-append leaves it.
+        let torn = wal.begin().unwrap();
+        for id in 2 * big + 1..=3 * big {
+            wal.append(torn, &big_node(id)).unwrap();
+        }
+        wal.flush().unwrap();
+    }
+
+    let db = Database::open_with_wal(enabled(dir.path())).unwrap();
+    assert_eq!(db.node_count(), 1 + big as usize);
+    let names = json_rows(&db, "MATCH (n:Kept) RETURN n.name AS name");
+    assert_eq!(names, vec![serde_json::json!({"name": "before"})]);
+    let range = json_rows(
+        &db,
+        "MATCH (n:Big) RETURN min(id(n)) AS first, max(id(n)) AS last",
+    );
+    assert_eq!(
+        range,
+        vec![serde_json::json!({"first": big + 1, "last": 2 * big})]
+    );
+}
+
 #[test]
 fn replay_rejects_relationship_with_missing_endpoint() {
     let dir = TmpDir::new("missing-endpoint");

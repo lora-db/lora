@@ -445,6 +445,43 @@ What to know:
   requests on another.
 - Call `lora.close()` in each thread on shutdown.
 
+## Backups
+
+A process that serves GraphQL owns its database directory: another
+process cannot open it (`LORA_LOCKED`), and a file copy taken during
+writes is not a database. `lora.snapshot(targetDir)` writes an online
+copy from inside the serving process, while requests keep running:
+
+```ts
+import { createDatabase } from "@loradb/lora-node";
+import { LoraGraphQL, loraDriver } from "@loradb/lora-graphql";
+
+const db = await createDatabase("festimap", { databaseDir: "./data" });
+const lora = new LoraGraphQL({ typeDefs, driver: loraDriver(db) });
+
+// Nightly, from a timer or an admin route:
+const snapshot = await lora.snapshot(`./backups/${new Date().toISOString().slice(0, 10)}`);
+// {
+//   bytes: 69283,
+//   lsn: 3,
+//   nodeCount: 100000,
+//   path: './backups/2026-10-26/festimap.loradb',
+//   relationshipCount: 0
+// }
+```
+
+The copy is `<targetDir>/festimap.loradb`, the graph as of one committed
+transaction (every write up to `lsn`), and opens with
+`createDatabase("festimap", { databaseDir: targetDir })`. Mutations wait
+only while the graph is taken, not while it is written, and the
+`.loradb` appears only once it is complete, so ship the directory
+off-host after the promise resolves. `targetDir` must be missing or
+empty. It needs a driver with `snapshot()`: `loraDriver(db)` over a
+lora-node database opened with a name and `databaseDir`. See
+[online backups](/docs/wal#online-backups-of-a-named-database) for what
+the copy guarantees and the `lora snapshot` command for a closed
+directory.
+
 ## Production checklist
 
 - Verify tokens in the server; put only verified claims in `jwt`.
@@ -464,6 +501,8 @@ What to know:
 - Size the worker pool for your read load: see
   [limits and scaling](/docs/graphql/limitations#scaling).
 - Call `lora.close()` on shutdown when `changeFeed` is on.
+- Back the database up with `lora.snapshot(targetDir)`, not a copy of
+  its directory: see [Backups](#backups).
 
 The [authorization](/docs/graphql/authorization#before-you-deploy) page
 covers each of these in more depth.

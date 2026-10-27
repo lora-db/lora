@@ -175,7 +175,7 @@ impl AutoCheckpoint {
                 .map(|_| ())
                 .map_err(LoraError::from_anyhow),
             CheckpointTarget::Named(archive) => {
-                checkpoint_named(archive, &self.writer, &self.wal, &self.store)
+                checkpoint_named(archive, &self.writer, &self.wal, &self.store).map(|_| ())
             }
         };
         // The snapshot just written (or kept) sets the next trigger.

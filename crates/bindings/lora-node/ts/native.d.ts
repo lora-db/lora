@@ -151,6 +151,16 @@ export declare class Database {
   changesClose(feedId: number): void;
   /** Force pending WAL bytes and the portable container mirror to disk. */
   sync(): Promise<void>;
+  /** Online copy of a named database into a missing or empty directory. */
+  snapshot(targetDir: string): Promise<{
+    path: string;
+    bytes: number;
+    lsn: number;
+    nodeCount: number;
+    relationshipCount: number;
+  }>;
+  /** Checkpoint now (named database or managed snapshots). */
+  checkpoint(): Promise<NativeSnapshotMeta>;
   clear(): Promise<void>;
   nodeCount(): number;
   relationshipCount(): number;

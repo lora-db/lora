@@ -434,6 +434,15 @@ writes atomically to disk and returns `SnapshotMeta`. `loadSnapshot`
 accepts a path string / `URL`, `Buffer`, `Uint8Array`, `ArrayBuffer`,
 Node `Readable`, Web `ReadableStream`, or async iterable.
 
+To back up a database opened with a name and `databaseDir` while it
+serves traffic, call `db.snapshot(targetDir)` from the process that owns
+it: it writes `<targetDir>/<name>.loradb` as of one committed
+transaction while reads and writes continue, and resolves with
+`{ path, bytes, lsn, nodeCount, relationshipCount }`. For a directory no
+process has open, `npx lora snapshot <databaseDir> <targetDir>` does the
+same. `db.checkpoint()` checkpoints on demand. See
+[online backups](../wal#online-backups-of-a-named-database).
+
 See the canonical [Snapshots guide](../snapshot) for the full
 metadata shape, atomic-rename guarantees, and boundaries.
 

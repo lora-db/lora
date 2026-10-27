@@ -21,8 +21,8 @@ together.
 
 | Surface | How to enable it | What you get |
 |---|---|---|
-| Rust (`lora-database`) | `Database::open_with_wal(...)`, `Database::recover(...)` | Full WAL config, recovery, checkpoints, status, truncation |
-| Node (`@loradb/lora-node`) | `createDatabase("app", { databaseDir })` or `openWalDatabase({ walDir, snapshotDir })` | Archive-backed `.loradb` files, or explicit WAL directories with managed commit-count snapshots and sync-mode control |
+| Rust (`lora-database`) | `Database::open_with_wal(...)`, `Database::recover(...)`, `Database::open_named(...)` | Full WAL config, recovery, checkpoints, status, truncation; `snapshot_to_dir` online backups of a named database |
+| Node (`@loradb/lora-node`) | `createDatabase("app", { databaseDir })` or `openWalDatabase({ walDir, snapshotDir })` | Archive-backed `.loradb` files, or explicit WAL directories with managed commit-count snapshots and sync-mode control; `db.snapshot()` online backups and `db.checkpoint()` |
 | Python (`lora_python`) | `Database.create("app", {"database_dir": ...})` or `Database.open_wal(wal_dir, options)`; async mirrors both | Archive-backed `.loradb` files, or explicit WAL directories with managed commit-count snapshots |
 | Go (`lora-go`) | `lora.New("app", lora.Options{DatabaseDir: ...})` or `lora.OpenWal(lora.WalOptions{...})` | Archive-backed `.loradb` files, or explicit WAL directories with managed commit-count snapshots |
 | Ruby (`lora-ruby`) | `LoraRuby::Database.create("app", { database_dir: ... })` or `LoraRuby::Database.open_wal(wal_dir, options)` | Archive-backed `.loradb` files, or explicit WAL directories with managed commit-count snapshots |
@@ -255,6 +255,111 @@ a marker implies the snapshot existed at the time of the checkpoint.
 If recovery sees a newer checkpoint marker than the snapshot you
 supplied, it prints a warning and still replays from the snapshot's own
 fence. That is safe, but it may do more replay work than necessary.
+
+## Online backups of a named database
+
+A named database (`createDatabase("app", { databaseDir })`,
+`Database::open_named`) belongs to the process that opened it. Copying
+its directory while that process writes does not give a database: the
+WAL can be cut inside a record and the `.loradb` container lags the
+WAL. A second process cannot open the directory to copy it either,
+because the directory lock refuses it with `LORA_LOCKED`.
+
+Take the copy from the owning process instead. `db.snapshot(targetDir)`
+writes a self-contained `<targetDir>/<name>.loradb` while reads and
+writes keep running:
+
+```ts
+import { createDatabase } from '@loradb/lora-node';
+
+const db = await createDatabase('festimap', { databaseDir: './data' });
+await db.execute('UNWIND range(1, 100000) AS i CREATE (:N {i: i})');
+
+const snapshot = await db.snapshot('./backups/2026-10-26');
+console.log(snapshot);
+// {
+//   bytes: 69283,
+//   lsn: 3,
+//   nodeCount: 100000,
+//   path: './backups/2026-10-26/festimap.loradb',
+//   relationshipCount: 0
+// }
+
+// The copy opens like any database directory.
+const copy = await createDatabase('festimap', { databaseDir: './backups/2026-10-26' });
+await copy.execute('MATCH (n:N) RETURN count(n) AS nodes'); // [{ nodes: 100000 }]
+```
+
+What the copy holds and what it costs:
+
+- **One committed transaction.** The snapshot holds every transaction
+  committed at or below `lsn` and none above it, never part of one. The
+  change feed batch with that `lsn` is the last write in it.
+- **Writers do not wait for the copy.** The call takes the writer lock
+  only to fsync the WAL and take the graph; the graph's storage is
+  shared copy-on-write, so later writes copy what they change and the
+  snapshot keeps reading the version it took. It runs off the JS thread
+  and streams, so memory stays bounded by its buffers plus whatever the
+  concurrent writes change.
+- **Complete or absent.** The container is written under a temporary
+  name, fsynced, and renamed into place. If the process dies mid-copy
+  (even `kill -9`), the target holds no `.loradb`, only a temporary
+  `<name>.loradb.<pid>.<time>.<n>.tmp` that the next open of that
+  directory removes. A copy whose promise resolved is durable.
+- **The target must be missing or empty** (`LORA_VALIDATION`
+  otherwise) and may be on another filesystem: only the rename stays
+  inside it. Ship the directory off-host with any tool once the call
+  resolves.
+- **Named databases only.** An in-memory database, or one opened with
+  `openWalDatabase`, rejects with `LORA_CONFIG`: save those with
+  `saveSnapshot`.
+
+`db.checkpoint()` checkpoints now and reports the snapshot it wrote. On
+a named database it does what `sync()` does (the container becomes a
+snapshot of the graph plus the WAL since); with `walDir` and
+`snapshotDir` it writes a managed snapshot:
+
+```ts
+await db.checkpoint();
+// { formatVersion: 2, nodeCount: 100000, relationshipCount: 0, walLsn: 3 }
+```
+
+In Rust the same calls are `Database::snapshot_to_dir`, which returns a
+`DirectorySnapshot { path, bytes, lsn, node_count, relationship_count }`,
+and `Database::checkpoint`, which returns a `SnapshotMeta`:
+
+```rust
+use lora_database::{Database, DatabaseOpenOptions};
+
+let db = Database::open_named("festimap", DatabaseOpenOptions::default().with_database_dir("./data"))?;
+let snapshot = db.snapshot_to_dir("./backups/2026-10-26")?;
+println!("{} bytes up to LSN {}", snapshot.bytes, snapshot.lsn);
+```
+
+A GraphQL server built on `@loradb/lora-graphql` exposes the same copy
+as `lora.snapshot(targetDir)`; see [Serving](./graphql/serving#backups).
+
+### A closed directory: `lora snapshot`
+
+For a database no process has open, `@loradb/lora-node` ships a `lora`
+command:
+
+```bash
+npx lora snapshot ./data ./backups/offline
+# ./backups/offline/festimap.loradb: 69283 bytes, 100000 nodes, 0 relationships, at LSN 3
+```
+
+It opens the database, which takes the directory lock, then writes the
+same snapshot. A directory another process owns is refused rather than
+copied mid-write:
+
+```text
+lora: database `festimap` in `./data` is open in another process; snapshot it from that process with `await db.snapshot(targetDir)`
+```
+
+When the directory holds several databases, pick one with
+`--name <name>`. Opening also recovers a directory a crash left behind
+before the copy is taken.
 
 ## Corrupt WAL: incident procedure
 
