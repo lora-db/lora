@@ -259,19 +259,23 @@ function seekFromWhere(
   where: Where,
 ): Omit<SeekExpectation, "statement"> | undefined {
   const label = node.labels[0]!;
-  // A list `includes` seeks the list's elements in its RANGE index (G-63).
+  // A list `includes` (or `includesAny`, G-72) seeks the list's elements
+  // in its RANGE index (G-63).
   const includes = Object.entries(where).find(([key, value]) => {
     const field = node.fields.get(key);
     return (
       field?.kind === "scalar" &&
       field.list &&
       value != null &&
-      (value as Where)["includes"] != null
+      ((value as Where)["includes"] != null ||
+        (value as Where)["includesAny"] != null)
     );
   });
   const other = seekFromOps(node, where);
   if (includes) {
-    const reason = `${node.name}.${includes[0]} includes`;
+    const op =
+      (includes[1] as Where)["includes"] != null ? "includes" : "includesAny";
+    const reason = `${node.name}.${includes[0]} ${op}`;
     return other
       ? { label, access: "any", reason: `${other.reason} or ${reason}` }
       : { label, access: "element", reason };

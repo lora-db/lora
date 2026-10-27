@@ -178,6 +178,13 @@ export function buildFilters(model: GraphModel, base: BaseTypes) {
           type = base;
       }
       fields[name] = { type, description: OPERATOR_DOCS[op] };
+      if (op === "INCLUDES") {
+        fields["includesAny"] = {
+          type: listOf(nonNull(base)),
+          description:
+            "The list contains any of these values. Seeks each value in the list's index.",
+        };
+      }
     }
     return new GraphQLInputObjectType({
       name: names.fieldFilter(owner, f.name),

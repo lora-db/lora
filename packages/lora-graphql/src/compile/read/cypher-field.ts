@@ -31,7 +31,10 @@ export function compileCypherRoot(
     imports: [],
     body: [{ kind: "raw", text: bindStatement(ctx, field, args) }],
   };
-  ctx.cost += field.cost;
+  // Declared, or estimated from the statement's plan by `analyze()`.
+  ctx.cost +=
+    field.cost ||
+    (ctx.statistics?.cypher?.[`${field.owner}.${field.name}`] ?? 0);
   const column = field.columnName;
   const clauses: Clause[] = [call];
   if (field.node) {
