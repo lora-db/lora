@@ -133,21 +133,22 @@ fn bytes_per_record(tag: &str, create: &str) -> f64 {
 
 /// The phase-3 record: a 58-byte key, a hash and two integers. The key's
 /// hash index entry is a digest and an id, not a second copy of the key;
-/// the record and the key's sorted (RANGE) entry are the rest. It held
-/// 341 bytes in 0.30.0, when the hash index kept its own copy of every
-/// key (104 bytes) in a 32-byte entry.
+/// the record and the key's sorted (RANGE) entry are the rest, and the
+/// hash, the same in every record here, is stored by number. It held 353
+/// bytes in 0.30.0, when the hash index kept its own copy of every key
+/// (104 bytes) in a 32-byte entry.
 #[test]
 fn a_keyed_record_costs_its_payload_and_one_copy_of_its_key() {
     let per = bytes_per_record("phase3", PHASE3);
-    assert!(per < 260.0, "a phase-3 record holds {per:.0} bytes");
+    assert!(per < 250.0, "a phase-3 record holds {per:.0} bytes");
 }
 
-/// The phase-1 record: ten properties and two relationships. 568 bytes in
-/// 0.30.0.
+/// The phase-1 record: ten properties, the short ones repeating a few
+/// values (stored by number), and two relationships. 572 bytes in 0.30.0.
 #[test]
-fn a_wide_record_with_two_relationships_stays_under_500_bytes() {
+fn a_wide_record_with_two_relationships_stays_under_400_bytes() {
     let per = bytes_per_record("phase1", PHASE1);
-    assert!(per < 500.0, "a phase-1 record holds {per:.0} bytes");
+    assert!(per < 400.0, "a phase-1 record holds {per:.0} bytes");
 }
 
 /// A fifth small property costs a few bytes in the record, not a bigger
