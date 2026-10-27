@@ -905,10 +905,7 @@ fn open_truncating_corruption(dir: &Path, target: u64) -> (Arc<Wal>, Vec<Mutatio
         target,
         Lsn::ZERO,
         true,
-        &mut |step| {
-            collected.step(step);
-            Ok(())
-        },
+        &mut |step| collected.step(step),
     )
     .unwrap();
     (wal, collected.events)
@@ -1132,8 +1129,7 @@ fn replay_steps(dir: &Path) -> (Vec<Step>, Vec<MutationEvent>) {
                 crate::ReplayStep::Partial(events) => Step::Partial(events.len()),
                 crate::ReplayStep::Discard => Step::Discard,
             });
-            collected.step(step);
-            Ok(())
+            collected.step(step)
         },
     )
     .unwrap();

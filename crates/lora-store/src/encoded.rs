@@ -18,13 +18,16 @@
 //!               int                   zigzag varint
 //!               float                 8 bytes, little-endian
 //!               string                length, UTF-8 bytes
+//!               numbered string       its number in the value dictionary
 //!               other                 length, `codec` bytes
 //! ```
 //!
-//! Label, type and key ids come from the graph's [`Dicts`]. A record's
-//! own id is its slot index and is not stored.
+//! Label, type and key ids come from the graph's [`Dicts`], and so do the
+//! numbers of short string values a key repeats (see
+//! [`crate::dict::ValueDict`]). A record's own id is its slot index and
+//! is not stored.
 
-use crate::dict::{Dicts, NameDict};
+use crate::dict::{Dicts, NameDict, ValueDict};
 use crate::varint;
 use crate::{
     Labels, NodeId, NodeRecord, OtherValue, Properties, PropertyValue, RelationshipId,
@@ -42,6 +45,7 @@ const TAG_INT: u8 = 3;
 const TAG_FLOAT: u8 = 4;
 const TAG_STRING: u8 = 5;
 const TAG_OTHER: u8 = 6;
+const TAG_NUMBERED: u8 = 7;
 
 #[inline]
 fn zigzag(value: i64) -> u64 {
@@ -57,7 +61,7 @@ fn unzigzag(value: u64) -> i64 {
 #[inline]
 fn skip_payload(bytes: &[u8], tag: u8, pos: &mut usize) {
     match tag {
-        TAG_INT => {
+        TAG_INT | TAG_NUMBERED => {
             while bytes[*pos] >= 0x80 {
                 *pos += 1;
             }
@@ -92,8 +96,14 @@ impl EncodedOther<'_> {
 }
 
 #[inline]
-fn read_value<'a>(bytes: &'a [u8], tag: u8, pos: &mut usize) -> ValueRef<'a> {
+fn read_value<'a>(
+    bytes: &'a [u8],
+    tag: u8,
+    pos: &mut usize,
+    values: &'a ValueDict,
+) -> ValueRef<'a> {
     match tag {
+        TAG_NUMBERED => ValueRef::String(values.string(varint::read(bytes, pos) as u32)),
         TAG_NULL => ValueRef::Null,
         TAG_FALSE => ValueRef::Bool(false),
         TAG_TRUE => ValueRef::Bool(true),
@@ -119,8 +129,21 @@ fn read_value<'a>(bytes: &'a [u8], tag: u8, pos: &mut usize) -> ValueRef<'a> {
     }
 }
 
-fn write_value(out: &mut Vec<u8>, value: &PropertyValue) {
+/// Write `value`, the value of key `key`, numbering it in `values` when
+/// its key repeats a few short strings.
+fn write_value(out: &mut Vec<u8>, key: u32, value: &PropertyValue, values: &mut ValueDict) {
     match value {
+        PropertyValue::String(v) => match values.number(key, v) {
+            Some(id) => {
+                out.push(TAG_NUMBERED);
+                varint::push(out, u64::from(id));
+            }
+            None => {
+                out.push(TAG_STRING);
+                varint::push(out, v.len() as u64);
+                out.extend_from_slice(v.as_bytes());
+            }
+        },
         PropertyValue::Null => out.push(TAG_NULL),
         PropertyValue::Bool(false) => out.push(TAG_FALSE),
         PropertyValue::Bool(true) => out.push(TAG_TRUE),
@@ -131,11 +154,6 @@ fn write_value(out: &mut Vec<u8>, value: &PropertyValue) {
         PropertyValue::Float(v) => {
             out.push(TAG_FLOAT);
             out.extend_from_slice(&v.to_le_bytes());
-        }
-        PropertyValue::String(v) => {
-            out.push(TAG_STRING);
-            varint::push(out, v.len() as u64);
-            out.extend_from_slice(v.as_bytes());
         }
         other => {
             let encoded = crate::codec::encode_stored_property_value(other)
@@ -177,6 +195,7 @@ pub(crate) struct StoredProps<'a> {
     /// From the property count to the end of the record.
     bytes: &'a [u8],
     keys: &'a NameDict,
+    values: &'a ValueDict,
 }
 
 impl<'a> StoredProps<'a> {
@@ -198,7 +217,7 @@ impl<'a> StoredProps<'a> {
             let tag = bytes[pos];
             pos += 1;
             if id == wanted {
-                return Some(read_value(bytes, tag, &mut pos));
+                return Some(read_value(bytes, tag, &mut pos, self.values));
             }
             skip_payload(bytes, tag, &mut pos);
         }
@@ -212,6 +231,7 @@ impl<'a> StoredProps<'a> {
         StoredPropsIter {
             bytes: self.bytes,
             keys: self.keys,
+            values: self.values,
             pos,
             remaining,
         }
@@ -230,6 +250,7 @@ impl<'a> StoredProps<'a> {
 pub(crate) struct StoredPropsIter<'a> {
     bytes: &'a [u8],
     keys: &'a NameDict,
+    values: &'a ValueDict,
     pos: usize,
     remaining: usize,
 }
@@ -246,7 +267,7 @@ impl<'a> Iterator for StoredPropsIter<'a> {
         let id = varint::read(self.bytes, &mut self.pos) as u32;
         let tag = self.bytes[self.pos];
         self.pos += 1;
-        let value = read_value(self.bytes, tag, &mut self.pos);
+        let value = read_value(self.bytes, tag, &mut self.pos, self.values);
         Some((self.keys.name(id), value))
     }
 
@@ -257,13 +278,15 @@ impl<'a> Iterator for StoredPropsIter<'a> {
 
 impl ExactSizeIterator for StoredPropsIter<'_> {}
 
-fn write_props(out: &mut Vec<u8>, properties: &Properties, keys: &mut NameDict) {
+fn write_props(out: &mut Vec<u8>, properties: &Properties, dicts: &mut Dicts) {
     varint::push(out, properties.len() as u64);
     // `Properties` iterates in key order, which is the stored order.
     for (key, value) in properties.iter() {
-        let id = keys.id_or_insert_with(key, || crate::Name::from_arc(key.clone()));
+        let id = dicts
+            .keys
+            .id_or_insert_with(key, || crate::Name::from_arc(key.clone()));
         varint::push(out, u64::from(id));
-        write_value(out, value);
+        write_value(out, id, value, &mut dicts.values);
     }
 }
 
@@ -362,6 +385,7 @@ impl<'a> StoredNode<'a> {
         StoredProps {
             bytes: &self.bytes[pos..],
             keys: &self.dicts.keys,
+            values: &self.dicts.values,
         }
     }
 
@@ -413,6 +437,7 @@ impl<'a> StoredRel<'a> {
         StoredProps {
             bytes: self.props,
             keys: &self.dicts.keys,
+            values: &self.dicts.values,
         }
     }
 
@@ -464,11 +489,12 @@ fn props_offset(bytes: &[u8], kind: RecordKind) -> usize {
 pub(crate) fn edit_property(
     bytes: &[u8],
     kind: RecordKind,
-    keys: &mut NameDict,
+    dicts: &mut Dicts,
     key: &str,
     edit: PropEdit<'_>,
     out: &mut Vec<u8>,
 ) -> Option<Option<PropertyValue>> {
+    let keys = &dicts.keys;
     let props_at = props_offset(bytes, kind);
     let mut pos = props_at;
     let count = varint::read(bytes, &mut pos);
@@ -484,7 +510,7 @@ pub(crate) fn edit_property(
         let tag = bytes[pos];
         pos += 1;
         if Some(id) == wanted {
-            let old = read_value(bytes, tag, &mut pos).to_owned();
+            let old = read_value(bytes, tag, &mut pos, &dicts.values).to_owned();
             found = Some((start, pos, old));
             break;
         }
@@ -520,10 +546,12 @@ pub(crate) fn edit_property(
         if let PropEdit::Set(value) = edit {
             let id = match wanted {
                 Some(id) => id,
-                None => keys.id_or_insert_with(key, || crate::Name::from_arc(crate::intern(key))),
+                None => dicts
+                    .keys
+                    .id_or_insert_with(key, || crate::Name::from_arc(crate::intern(key))),
             };
             varint::push(out, u64::from(id));
-            write_value(out, value);
+            write_value(out, id, value, &mut dicts.values);
         }
         out.extend_from_slice(&bytes[end..]);
     }
@@ -587,7 +615,7 @@ pub(crate) fn encode_node(node: &NodeRecord, dicts: &mut Dicts, out: &mut Vec<u8
     for label in node.labels.iter() {
         varint::push(out, u64::from(dicts.labels.id_or_insert(label)));
     }
-    write_props(out, &node.properties, &mut dicts.keys);
+    write_props(out, &node.properties, dicts);
 }
 
 /// Encode `rel` into `out`, replacing what it held.
@@ -596,7 +624,7 @@ pub(crate) fn encode_rel(rel: &RelationshipRecord, dicts: &mut Dicts, out: &mut 
     varint::push(out, rel.src);
     varint::push(out, rel.dst);
     varint::push(out, u64::from(dicts.types.id_or_insert(&rel.rel_type)));
-    write_props(out, &rel.properties, &mut dicts.keys);
+    write_props(out, &rel.properties, dicts);
 }
 
 /// `node` encoded into a new buffer.
@@ -630,12 +658,12 @@ mod tests {
     fn edit_property(
         bytes: &[u8],
         kind: RecordKind,
-        keys: &mut NameDict,
+        dicts: &mut Dicts,
         key: &str,
         edit: PropEdit<'_>,
     ) -> Option<(Vec<u8>, Option<PropertyValue>)> {
         let mut out = Vec::new();
-        let old = super::edit_property(bytes, kind, keys, key, edit, &mut out)?;
+        let old = super::edit_property(bytes, kind, dicts, key, edit, &mut out)?;
         Some((out, old))
     }
     use crate::{intern, LoraDate, LoraPoint};
@@ -806,14 +834,8 @@ mod tests {
                 Some(value) => PropEdit::Set(value),
                 None => PropEdit::Remove,
             };
-            let edited = edit_property(&node_blob, RecordKind::Node, &mut dicts.keys, key, op());
-            let edited_rel = edit_property(
-                &rel_blob,
-                RecordKind::Relationship,
-                &mut dicts.keys,
-                key,
-                op(),
-            );
+            let edited = edit_property(&node_blob, RecordKind::Node, dicts, key, op());
+            let edited_rel = edit_property(&rel_blob, RecordKind::Relationship, dicts, key, op());
             if edit.is_none() && expected_old.is_none() {
                 assert!(edited.is_none() && edited_rel.is_none());
                 return;

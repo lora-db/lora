@@ -54,6 +54,6 @@ pub use recorder::{
 };
 pub use replay::{
     newest_checkpoint_marker, replay_dir, CorruptCut, ReplayOutcome, ReplaySink, ReplayStep,
-    TornTailInfo, PENDING_BUDGET_BYTES,
+    TornTailInfo, TxEvents, PENDING_BUDGET_BYTES,
 };
 pub use wal::{DurableListener, GrowthListener, Wal};

@@ -105,6 +105,8 @@ impl SortedPropertyIndex {
         }
     }
 
+    /// Index `id` under a whole value: its key and, for a list, each
+    /// of its elements.
     pub(super) fn insert(&mut self, label: &str, property: &str, id: u64, value: &PropertyValue) {
         if let Some(scope) = self
             .by_scope
@@ -116,6 +118,24 @@ impl SortedPropertyIndex {
                 insert_id(scope, key, id);
             }
             insert_elements(scope, value, id);
+        }
+    }
+
+    /// Index `id` under `key`, a value already made a key (from a record
+    /// view, without decoding the value first). Only for values with no
+    /// list elements: a list goes through [`Self::insert`].
+    pub(super) fn insert_key(
+        &mut self,
+        label: &str,
+        property: &str,
+        id: u64,
+        key: PropertyIndexKey,
+    ) {
+        if let Some(scope) = self
+            .by_scope
+            .get_mut(&ScopedPropertyKey::new(label, property))
+        {
+            insert_id(scope, key, id);
         }
     }
 

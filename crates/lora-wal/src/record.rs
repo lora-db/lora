@@ -270,6 +270,189 @@ pub(crate) fn framed_len(payload_len: usize) -> Result<usize, WalError> {
     Ok(total)
 }
 
+/// A record as replay reads it: a mutation batch still encoded (see
+/// [`RawRecord::decode_for_replay`]), anything else decoded.
+pub(crate) enum ReplayRecord {
+    Batch {
+        lsn: Lsn,
+        tx_begin_lsn: Lsn,
+        batch: EncodedBatch,
+    },
+    Decoded(WalRecord),
+}
+
+/// A mutation batch's payload, checked to decode, and its event count.
+#[derive(Debug)]
+pub(crate) struct EncodedBatch {
+    /// The frame after its length prefix.
+    rest: FrameBuf,
+    /// The payload's range in `rest`.
+    start: usize,
+    end: usize,
+    count: usize,
+}
+
+impl EncodedBatch {
+    pub(crate) fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Decode the events one at a time, handing each to `f`.
+    pub(crate) fn for_each<E: From<WalError>>(
+        &self,
+        f: impl FnMut(MutationEvent) -> Result<(), E>,
+    ) -> Result<(), E> {
+        codec::for_each_event(&self.rest[self.start..self.end], f)
+    }
+}
+
+/// The bytes of one frame as replay reads it.
+///
+/// On macOS a frame of [`FrameBuf::MAPPED_MIN`] bytes or more is read into
+/// pages of its own, mapped for it and unmapped when it is dropped: macOS's
+/// malloc keeps freed large blocks resident for reuse, and replay frees
+/// one per mutation batch (a transaction of a few thousand writes is a
+/// frame of megabytes), which an open then held until the process exited.
+/// Elsewhere (and for smaller frames) it is a `Vec`: glibc maps blocks this
+/// large itself and returns them when freed.
+pub(crate) struct FrameBuf {
+    #[cfg(target_os = "macos")]
+    mapped: Option<mapped::Pages>,
+    heap: Vec<u8>,
+}
+
+impl FrameBuf {
+    #[cfg(target_os = "macos")]
+    const MAPPED_MIN: usize = 128 << 10;
+
+    /// `len` zeroed bytes, or `None` when they cannot be allocated.
+    fn zeroed(len: usize) -> Option<Self> {
+        #[cfg(target_os = "macos")]
+        if len >= Self::MAPPED_MIN {
+            // Fresh anonymous pages read as zero.
+            return mapped::Pages::new(len).map(|pages| FrameBuf {
+                mapped: Some(pages),
+                heap: Vec::new(),
+            });
+        }
+        let mut heap = Vec::new();
+        heap.try_reserve_exact(len).ok()?;
+        heap.resize(len, 0);
+        Some(FrameBuf {
+            #[cfg(target_os = "macos")]
+            mapped: None,
+            heap,
+        })
+    }
+}
+
+impl std::ops::Deref for FrameBuf {
+    type Target = [u8];
+
+    #[inline]
+    fn deref(&self) -> &[u8] {
+        #[cfg(target_os = "macos")]
+        if let Some(pages) = &self.mapped {
+            return pages.as_slice();
+        }
+        &self.heap
+    }
+}
+
+impl std::ops::DerefMut for FrameBuf {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [u8] {
+        #[cfg(target_os = "macos")]
+        if let Some(pages) = &mut self.mapped {
+            return pages.as_mut_slice();
+        }
+        &mut self.heap
+    }
+}
+
+impl std::fmt::Debug for FrameBuf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FrameBuf({} bytes)", self.len())
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod mapped {
+    use std::ffi::{c_int, c_void};
+    use std::ptr::NonNull;
+
+    const PROT_READ: c_int = 0x1;
+    const PROT_WRITE: c_int = 0x2;
+    const MAP_PRIVATE: c_int = 0x2;
+    const MAP_ANON: c_int = 0x1000;
+    const MAP_FAILED: *mut c_void = !0 as *mut c_void;
+
+    unsafe extern "C" {
+        fn mmap(
+            addr: *mut c_void,
+            len: usize,
+            prot: c_int,
+            flags: c_int,
+            fd: c_int,
+            offset: i64,
+        ) -> *mut c_void;
+        fn munmap(addr: *mut c_void, len: usize) -> c_int;
+    }
+
+    /// Anonymous private pages holding `len` bytes, unmapped on drop.
+    pub(super) struct Pages {
+        ptr: NonNull<u8>,
+        len: usize,
+    }
+
+    // SAFETY: `Pages` owns its mapping exclusively, like a `Vec<u8>`.
+    unsafe impl Send for Pages {}
+    unsafe impl Sync for Pages {}
+
+    impl Pages {
+        pub(super) fn new(len: usize) -> Option<Self> {
+            // SAFETY: a fresh anonymous private mapping; no existing memory
+            // is touched. Checked against `MAP_FAILED` before use.
+            let ptr = unsafe {
+                mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANON,
+                    -1,
+                    0,
+                )
+            };
+            if ptr == MAP_FAILED {
+                return None;
+            }
+            Some(Pages {
+                ptr: NonNull::new(ptr.cast())?,
+                len,
+            })
+        }
+
+        pub(super) fn as_slice(&self) -> &[u8] {
+            // SAFETY: `len` mapped, readable bytes owned by `self`.
+            unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+        }
+
+        pub(super) fn as_mut_slice(&mut self) -> &mut [u8] {
+            // SAFETY: as above, and `&mut self` makes the access exclusive.
+            unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+        }
+    }
+
+    impl Drop for Pages {
+        fn drop(&mut self) {
+            // SAFETY: the mapping `new` made, unmapped once.
+            unsafe {
+                munmap(self.ptr.as_ptr().cast(), self.len);
+            }
+        }
+    }
+}
+
 /// A record whose framing checked out (length in bounds, every byte
 /// present, CRC matches) but whose payload is not decoded yet.
 ///
@@ -282,7 +465,7 @@ pub(crate) struct RawRecord {
     lsn: Lsn,
     tx_begin_lsn: Lsn,
     /// Everything after the length prefix, CRC trailer included.
-    rest: Vec<u8>,
+    rest: FrameBuf,
 }
 
 impl RawRecord {
@@ -323,11 +506,9 @@ impl RawRecord {
         // the record into a single buffer so the CRC can be checked over
         // [length..crc) without seeking back.
         let remaining = length - 4;
-        let mut rest = Vec::new();
-        rest.try_reserve_exact(remaining).map_err(|_| {
+        let mut rest = FrameBuf::zeroed(remaining).ok_or_else(|| {
             WalError::Decode(format!("record length {length} is too large to allocate"))
         })?;
-        rest.resize(remaining, 0);
         match read_exact_or_eof(&mut reader, &mut rest)? {
             ReadOutcome::Full => {}
             ReadOutcome::Eof => {
@@ -371,6 +552,30 @@ impl RawRecord {
     /// Size of the whole frame, length prefix and checksum included.
     pub(crate) fn encoded_len(&self) -> usize {
         4 + self.rest.len()
+    }
+
+    /// [`Self::decode`] for replay, which keeps a mutation batch encoded
+    /// until its transaction is applied: the batch is checked here, an
+    /// event at a time, and decoded again an event at a time as it is
+    /// applied, so neither step holds the batch decoded. Errors are those
+    /// of [`Self::decode`], at the same record.
+    pub(crate) fn decode_for_replay(self) -> Result<ReplayRecord, WalError> {
+        if self.kind != RecordKind::MutationBatch as u8 {
+            return self.decode().map(ReplayRecord::Decoded);
+        }
+        let crc_offset = self.rest.len() - RECORD_TRAILER_LEN;
+        let start = RECORD_HEADER_LEN - 4;
+        let count = codec::validate_events(&self.rest[start..crc_offset])?;
+        Ok(ReplayRecord::Batch {
+            lsn: self.lsn,
+            tx_begin_lsn: self.tx_begin_lsn,
+            batch: EncodedBatch {
+                rest: self.rest,
+                start,
+                end: crc_offset,
+                count,
+            },
+        })
     }
 
     /// Decode the payload. Errors here mean the frame was intact, so the

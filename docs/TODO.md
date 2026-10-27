@@ -47,7 +47,7 @@ next, **P2** planned, **P3** when convenient.
 
 ## Engine — memory
 
-- [ ] P1 A small node costs ~1 KB resident and the property map's capacity doubles at 4, 8 and 16 properties (a fifth integer costs ~270 B, not ~16 B). Target: a node with a key, a 16-char hash and two integers under ~300 B including its unique-index entry; maps sized to their properties; short repeated strings interned or inline (Festimap G-64, `apps/ingest/tools/probe-record-layouts.ts` in Festimap). Measure reads and writes before and after.
+- [ ] P2 A keyed node (58-byte key, a hash, two integers) costs 279 B resident after an open at 200k nodes and 352 B at 50k, of which 77 B is the open's fixed 3.8 MB (Festimap G-64; was 456 and 610 in 0.30.0). Left: the sorted index's 80 B copy of the key (sharing it with the record cost 20% on key lookups), and the open's fixed cost (`lora-database/examples/node_memory_probe.rs`).
 
 ## Writer lock and durability
 

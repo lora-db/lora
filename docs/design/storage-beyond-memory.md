@@ -579,6 +579,134 @@ allocation and the record leaves, the two modules with `unsafe` code.
 **Not done yet from Stage 0.**
 - Removing the lazy implicit indexes (D3 options b and c).
 
+### Follow-up: digest entries in the hash index (G-64)
+
+Festimap's sync tracker keeps one `Record` per source item under a
+uniqueness constraint on a 58-byte `key`. The record itself was 96 bytes;
+its two index entries were 241: the exact-match index and the sorted one
+each held their own copy of the key (an `Arc<str>`, 80 bytes after the
+allocator's rounding) beside a 32-byte entry.
+
+A value with a heap image (string, byte string, list, map) that one entity
+holds is now kept in the exact-match index as a 64-bit digest and the
+entity's id, 16 bytes (`memory/property_index.rs`, `PropertyValueBuckets`).
+A lookup confirms the entity by reading the value from its record. A
+second holder moves the value to an ordinary entry, so a lookup of a shared
+value reads no record; losing it moves the value back. A value whose digest
+another value's entry already uses keeps an ordinary entry, so a collision
+costs memory, never a wrong answer. Numbers, booleans, null and temporals
+stay ordinary entries: a digest is no smaller. The sorted index keeps its
+copy, which its order needs. Nothing changes in Cypher, the bindings, the
+WAL or the snapshot format.
+
+Per node, opening a named database in a fresh process (WAL replay, as
+Festimap's probe does), `node_memory_probe`, macOS arm64, 0.30.0 against
+the branch, load average 12 to 19:
+
+| Layout | 50k nodes: live | RSS | 200k nodes: live | RSS |
+|---|---|---|---|---|
+| `phase3`: key, hash, two integers | 344 → **240** | 608 → **468** | 335 → **234** | 456 → **321** |
+| `phase1`: ten properties, two relationships | 567 → **464** | 1,150 → **1,016** | 565 → **464** | 831 → **707** |
+| four integers and a short key | 162 → 114 | 435 → 351 | 154 → 109 | 289 → 202 |
+
+The exact-match index went from 132 to 20 bytes per unique key. Through the
+Node binding (Festimap's probe, two interleaved runs each) `phase3` went
+from 607 to 455 to 611 to 461 bytes per node at 50k and from 456 to 319 to
+322 at 200k; `phase1` from about 1,135 to 950 to 990 at 50k and 830 to 695
+to 702 at 200k.
+
+Where the rest goes, `phase3` at 200k: the record 96, the sorted entry
+109 (its 80-byte key copy and a 32-byte slot), the exact-match entry 20,
+about 10 for the label index and the tables above. Between live heap and
+RSS: code pages the open touches (about 4 MB, fixed, which is most of the
+gap at 50k), malloc's free space in partly used pages after the replay's
+transient allocations (about 18% of the heap in `vmmap`), and freed large
+blocks macOS keeps cached (13.5 MB after a `phase1` open at 200k; the
+growth of the two hubs' adjacency and the replay's decode buffers). For
+`phase1` the record is the largest part (240 bytes, ten properties).
+
+Latency, interleaved, three pairs, 200k `Record` nodes with a UNIQUE key:
+bulk `UNWIND` create 4.3 → 3.3 µs per node, a key change by `SET` 21.8 →
+14.1 µs, `MERGE` on an existing key 2.32 → 2.15 µs, a key lookup 1.73 →
+1.68 µs (noisy, within 10% either way), 1,000 lookups by `UNWIND` 0.81 →
+0.79 µs each, a lookup of a value 50,000 nodes share 18.0 → 18.1 ms, a
+keyset page of 100 by `key` 69 → 69 µs. `perf_smoke` unchanged.
+
+Then, on top of `festimap/g70-g62` (WAL replay in parts of at most 4 MiB,
+segments streamed into the container), short repeated string values are
+stored by number (`dict.rs` `ValueDict`, see the graph engine docs): a key's
+first 64 short values are stored in full while their distinct hashes are
+counted, and a key that showed at most 8 has its values numbered from then
+on. The phase-1 record went from 240 to 148 bytes. Writes, lookups and a
+scan that decodes the numbered values measured unchanged (three interleaved
+pairs: bulk create 3.3 µs per node either way, a decoding scan of 200k
+records 47 ms either way).
+
+`node_memory_probe` after both, macOS arm64, load average 4 to 13, bytes per
+node over the process before the open:
+
+| Layout | 50k: live | footprint | RSS | 200k: live | footprint | RSS |
+|---|---|---|---|---|---|---|
+| `phase3` | 223 | 416 | 470 | 218 | 293 | 306 |
+| `phase1` | 372 | 892 | 945 | 372 | 562 | 576 |
+
+The open's fixed cost, measured as an open of a one-record database in the
+same probe: 3.0 MB RSS (0.34 MB physical footprint: most of it is code pages
+the open touches) in the Rust probe, 3.7 MB through the Node binding. That is
+60 to 75 bytes per node at 50k and 15 to 19 at 200k. The rest of the gap at
+50k is malloc's: `vmmap` after a `phase3` open at 50k shows 11.2 MB allocated
+and 7.8 MB (41%) of free space in partly used pages, most of it left by the
+replay's transient high-water mark (about 3 MB, the decoded part of a
+transaction), which macOS's allocator keeps. `malloc_zone_pressure_relief`
+returns none of it. Tables do not over-reserve: the record segments' spare
+room after an open is 18 KB at 200k nodes and the sorted index's partitions
+are 96.5% full, so a `shrink_to_fit` pass would return nothing.
+
+**Sharing the key between the record and the sorted index** was built and
+measured, and is not kept. A string a sorted scope covers (24 bytes or
+more) left the record for a per-segment table of `Arc<str>`s keyed by slot
+and key, and the index entry held the same `Arc`; a snapshot load moved the
+strings out before it declared the indexes. It saved 36 bytes per `phase3`
+node (live 218 to 182, RSS at 200k 306 to 266) and passed the model tests,
+but every read of a shared key followed two more pointers (the segment's
+table, then the string) where the bytes had been in the record: a key lookup
+went from 1.55 to 1.85-2.0 µs, `MERGE` on an existing key from 2.1 to 2.5
+µs, a key change from 14 to 16.5-20.7 µs, 1,000 `UNWIND` lookups from 0.78 to
+0.87-1.0 µs each. Every lookup by key reads the key twice (the digest's
+confirmation and the executor's refilter), so the indirection is paid on the
+hottest path. Keeping the pointer in the record bytes instead of a table
+would save one of the two hops but makes the slab track reference counts in
+raw bytes through clones, rebuilds and garbage, unsafe code across the whole
+record store.
+
+**Replay without its transient.** Most of the gap at 50k was the replay's
+own allocations: each transaction (one mutation batch of a few megabytes
+for 5,000 writes) was decoded where it was read and held as events until
+its commit, and macOS's malloc kept both the small allocations and the
+freed frame buffers resident. Replay now checks a batch where it reads it,
+with a parse that builds nothing (`validate_events`, which accepts exactly
+what decoding accepts: `check_matches_decode`), keeps it as its frame's
+bytes, and at the commit decodes and applies one event at a time
+(`lora_wal::TxEvents`). On macOS a frame of 128 KiB or more is read into
+pages mapped for it and unmapped when dropped. The 4 MiB pending budget,
+the order of steps and where a corrupt batch is reported are unchanged.
+Replay CPU is 3-4% higher (the check).
+
+Festimap's probe through the Node binding afterwards, interleaved with
+0.30.0, two runs each, load average 3 to 5 (bytes per node; the open's
+fixed cost is 3.8 MB, 77 bytes per node at 50k and 19 at 200k):
+
+| Layout | 50k: 0.30.0 | now | now less fixed | 200k: 0.30.0 | now | now less fixed |
+|---|---|---|---|---|---|---|
+| `phase3` | 614 / 576 | 350 / 355 | 275 | 456 / 457 | 279 / 279 | 260 |
+| `phase1` | 1,165 / 1,126 | 529 / 526 | 450 | 828 / 829 | 473 / 472 | 454 |
+
+Not done:
+- The sorted index's copy of the key, above.
+- Hub adjacency still grows by half; after this change it leaves no cached
+  blocks at 50k, and at 200k the cached blocks after a `phase1` open come
+  mostly from the checkpoint the open runs on a WAL past 64 MiB.
+
 ---
 
 ## Contents

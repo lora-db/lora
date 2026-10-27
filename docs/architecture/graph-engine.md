@@ -77,6 +77,7 @@ payload:      null / false / true   nothing
               int                   zigzag varint
               float                 8 bytes
               string                length, UTF-8 bytes
+              numbered string       its number in the value dictionary
               other                 length, `codec` bytes (lists, maps,
                                     temporals, points, vectors, binary)
 ```
@@ -92,6 +93,15 @@ Integers are varints. Labels, relationship types and property keys are stored
 as numbers from the graph's dictionaries (`dict.rs`), assigned in first-use
 order and never reused. A clone shares the dictionaries until one side meets a
 new name. The numbers are not persisted: snapshots and the WAL store names.
+
+Short string values of a key that repeats a few of them (a source, a kind, a
+run id) are numbered the same way, in a value dictionary. A key's first 64
+string values of up to 32 bytes are stored in full while their distinct
+hashes are counted; a key that showed at most 8 distinct values has its short
+values stored by number from then on, up to 64 new ones per key and 4,096 in
+all. `source: 'musicbrainz'` then costs a byte instead of twelve. Other keys
+are never numbered, so a column of unique short ids does not fill the
+dictionary.
 
 Readers never see the bytes. `with_node` and `with_relationship` pass a
 `NodeRef` / `RelRef` view (`types/view.rs`) that reads labels and properties in
@@ -200,10 +210,20 @@ rebuilt after a restart until the next such lookup. A
 sorted (RANGE) index keeps the same value-to-ids entries in sorted arrays of at
 most 256 entries under two levels of tables.
 
-An entry is a 32-byte key and a 16-byte id set, which holds a single id
+An entry is a 24-byte key and an 8-byte id set, which holds a single id
 inline. At 2M unique integer keys that comes to about 89 bytes per entry in the
 hash index and 49 in the sorted one, so a RANGE index or uniqueness constraint
 costs about 138 bytes per entry.
+
+A string, byte string, list or map that one entity holds is not kept in the
+hash index at all: its entry is a 64-bit digest of the value and the entity's
+id, 16 bytes, and a lookup confirms the entity against its record. A unique
+58-byte string key costs about 20 bytes there instead of about 130 (the key,
+its copy of the string and the table around them). A value a second entity
+takes moves to an ordinary entry, so a lookup of a shared value reads no
+record, and a value whose digest another value's entry already uses (a
+collision) keeps an ordinary entry of its own. The sorted index still keeps
+the value, which its order needs.
 
 Indexed values:
 
