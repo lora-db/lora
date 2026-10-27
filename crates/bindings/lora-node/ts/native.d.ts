@@ -151,6 +151,7 @@ export declare class Database {
   changesClose(feedId: number): void;
   /** Force pending WAL bytes and the portable container mirror to disk. */
   sync(): Promise<void>;
+  flush(): Promise<{ lsn: number | null }>;
   /** Online copy of a named database into a missing or empty directory. */
   snapshot(targetDir: string): Promise<{
     path: string;
