@@ -100,7 +100,7 @@ temp/
 *.sql
 
 # Node (if tools/scripts exist)
-node_modules/
+node_modules
 dist/
 build/
 # ...but not source directories that happen to be called `build`.
