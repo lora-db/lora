@@ -471,6 +471,16 @@ The HTTP server chooses a format from the request body's `"format"` field. The R
 | Compatibility utility functions | Functions | No compatibility layer |
 | Authentication / TLS | Server | See [`../operations/security.md`](../operations/security.md) |
 
+## 21. Persistence and backups (outside the query language)
+
+Not Cypher, but they decide what a query can rely on after a restart. Full detail: [WAL](../operations/wal.md).
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Online snapshot of a directory-backed database | **Supported** (since 0.32.0) | `db.snapshot(targetDir)` (Node), `LoraGraphQL.snapshot()`, `Database::snapshot_to_dir` (Rust) write `<target>/<name>.loradb` as of one committed transaction while reads and writes run; writers wait only for the WAL fsync. Resolves `{ path, bytes, lsn, nodeCount, relationshipCount }`. `lora snapshot <dir> <target>` copies a closed directory and refuses one another process holds. Not in the Python, Ruby, Go, FFI or WASM bindings yet (G-62) |
+| `checkpoint()` / `sync()` of a named database | **Supported** | Both write the snapshot streamed, in memory bounded by a few MiB over the graph, and keep RSS flat across calls under glibc malloc and jemalloc. Open applies the WAL in at most 4 MiB pieces per transaction and returns freed memory to the system (G-70) |
+| Automatic checkpoint by WAL size | **Supported** (since 0.31.0) | Named and managed-snapshot databases checkpoint in the background once the WAL grows by `max(checkpoint_wal_bytes, snapshot size)`; `checkpoint_wal_bytes` defaults to 64 MiB, `0` turns it off |
+
 ---
 
 *Last updated from code audit: the parser grammar lives in
