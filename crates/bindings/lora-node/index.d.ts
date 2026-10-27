@@ -173,6 +173,12 @@ export declare class Database {
   /** Force pending WAL bytes and the portable container mirror to disk. */
   sync(): Promise<void>
   /**
+   * Make every commit before the call durable in the WAL: one `fsync`,
+   * no checkpoint. Resolves with the WAL's durable LSN (`null` for an
+   * in-memory database).
+   */
+  flush(): Promise<{ lsn: number | null }>
+  /**
    * Write a self-contained copy of this named database into
    * `target_dir` (missing or empty) while queries keep running: the
    * graph as of one committed transaction, as a `.loradb` that opens

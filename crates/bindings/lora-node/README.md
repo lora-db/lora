@@ -310,6 +310,16 @@ writes the graph as the archive's base snapshot and drops the WAL that
 snapshot covers, so the archive holds the graph and the writes since the last
 `sync()`, not every write ever made.
 
+To know a write is durable without a checkpoint, `await db.flush()`: one fsync
+of the WAL (none when the group sync already covered it), at the same cost on
+any graph size. It resolves with the WAL's durable LSN, and a reopen after a
+crash, `kill -9` included, replays everything it covered:
+
+```ts
+await db.execute("CREATE (:Batch {id: $id})", { id });
+await db.flush(); // durable: safe to acknowledge
+```
+
 Node also has a container-backed convenience overload:
 
 ```ts

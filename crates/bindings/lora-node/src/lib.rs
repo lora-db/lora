@@ -900,6 +900,17 @@ impl Database {
         })
     }
 
+    /// Make every commit before the call durable in the WAL: one `fsync`,
+    /// no checkpoint. Resolves with the WAL's durable LSN (`null` for an
+    /// in-memory database).
+    #[napi(ts_return_type = "Promise<{ lsn: number | null }>")]
+    pub fn flush(&self, env: Env) -> Result<JsObject> {
+        guard(|| {
+            let task = tasks::FlushTask { db: self.inner()? };
+            tasks::spawn(&env, task, false)
+        })
+    }
+
     /// Write a self-contained copy of this named database into
     /// `target_dir` (missing or empty) while queries keep running: the
     /// graph as of one committed transaction, as a `.loradb` that opens

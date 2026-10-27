@@ -9,6 +9,9 @@
 //! * G-66: a chain anchored at both ends by a key starts from the end
 //!   whose relationship fans out least, not from the one whose seek merely
 //!   looks a row cheaper.
+//! * G-75: an equality on a key no node of the label holds yet finds
+//!   nothing, so a per-row seek on it beats a literal equality on another
+//!   indexed key; it was estimated as the whole label and lost.
 
 mod test_helpers;
 
@@ -200,4 +203,46 @@ fn a_chain_anchored_at_both_ends_expands_from_the_narrow_end() {
     let b = db.run_with_params(split, p);
     assert_eq!(a, b);
     assert_eq!(a.len(), 2);
+}
+
+/// Festimap's repro: `proposalOf` is indexed but set on no review item yet,
+/// `state` is indexed and half the items are `REJECTED`. 200 keys used to
+/// read the `state` index once each (300,000 rows).
+#[test]
+fn a_per_row_seek_on_an_unheld_key_beats_a_literal_equality() {
+    let db = TestDb::new();
+    db.run("CREATE INDEX ri_state FOR (r:ReviewItem) ON (r.state)");
+    db.run("CREATE INDEX ri_prop FOR (r:ReviewItem) ON (r.proposalOf)");
+    db.run(
+        "UNWIND range(1, 3000) AS i CREATE (:ReviewItem {key: 'r' + toString(i), \
+         state: CASE WHEN i % 2 = 0 THEN 'REJECTED' ELSE 'OPEN' END, kind: 'UNMATCHED'})",
+    );
+    let keys = list((0..200).map(|i| s(&format!("k{i}"))).collect());
+    let q = "UNWIND $keys AS k MATCH (r:ReviewItem {proposalOf: k}) \
+             WHERE r.state = 'REJECTED' AND r.kind = 'UNMATCHED' RETURN DISTINCT k AS key";
+    let p = params(&[("keys", keys.clone())]);
+    let plan = db.service.explain(q, Some(p.clone())).unwrap().tree.root;
+    let seeks = ops(&plan, "NodeByPropertyScan");
+    assert_eq!(seeks.len(), 1, "{plan:#?}");
+    assert_eq!(seeks[0].details["key"], "proposalOf");
+    assert_eq!(seeks[0].estimated_rows, Some(0));
+    assert!(db.run_with_params(q, p.clone()).is_empty());
+
+    // Once a few items hold it, the per-row seek still wins and finds them.
+    db.run(
+        "MATCH (r:ReviewItem) WHERE r.key IN ['r2', 'r4', 'r5'] \
+         SET r.proposalOf = 'k' + substring(r.key, 1)",
+    );
+    let plan = db.service.explain(q, Some(p.clone())).unwrap().tree.root;
+    assert_eq!(
+        ops(&plan, "NodeByPropertyScan")[0].details["key"],
+        "proposalOf"
+    );
+    let mut found: Vec<String> = db
+        .run_with_params(q, p)
+        .into_iter()
+        .map(|row| row["key"].as_str().unwrap().to_string())
+        .collect();
+    found.sort();
+    assert_eq!(found, ["k2", "k4"]);
 }

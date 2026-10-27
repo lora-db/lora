@@ -278,6 +278,26 @@ impl Task for SyncTask {
     }
 }
 
+/// Work unit for `Database.flush()`: an `fsync` of the WAL, no snapshot.
+pub struct FlushTask {
+    pub(crate) db: Arc<InnerDatabase<InMemoryGraph>>,
+}
+
+impl Task for FlushTask {
+    type Output = Option<u64>;
+    type JsValue = JsUnknown;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        self.db
+            .flush()
+            .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))
+    }
+
+    fn resolve(&mut self, env: Env, lsn: Self::Output) -> Result<Self::JsValue> {
+        env.to_js_value(&serde_json::json!({ "lsn": lsn }))
+    }
+}
+
 /// Work unit for `Database::snapshot`: an online copy of a named
 /// database into an empty directory.
 pub struct SnapshotDirTask {

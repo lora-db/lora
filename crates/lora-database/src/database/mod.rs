@@ -263,6 +263,19 @@ impl Database<InMemoryGraph> {
         Ok(())
     }
 
+    /// Make every commit before the call durable in the WAL, and return
+    /// the WAL's durable LSN (`None` without a WAL). One `fsync` of the
+    /// active segment, or none when the group sync already covered it:
+    /// no snapshot, no container rewrite, so it costs the same on any
+    /// graph size (G-74). A reopen after a crash replays what it covered.
+    pub fn flush(&self) -> Result<Option<u64>, LoraError> {
+        let Some(wal) = &self.wal else {
+            return Ok(None);
+        };
+        wal.force_fsync_wal_only()?;
+        Ok(Some(wal.wal().durable_lsn().raw()))
+    }
+
     /// The checkpoint [`Self::sync`] takes on a named database.
     pub(crate) fn checkpoint_named(
         &self,

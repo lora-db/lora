@@ -1240,6 +1240,29 @@ class DatabaseImpl {
   }
 
   /**
+   * Make every write committed before the call durable: one fsync of the
+   * WAL (none when the group sync already covered it), and no checkpoint,
+   * so it costs the same on any graph size. A reopen after a crash, even
+   * `kill -9`, replays what it covered. Resolves with the WAL's durable
+   * LSN, `null` for an in-memory database.
+   *
+   * ```ts
+   * await db.execute("CREATE (:Batch {id: $id})", { id });
+   * await db.flush(); // now tell the sender it is durable
+   * ```
+   *
+   * `sync()` also writes a snapshot (a checkpoint); use it before copying
+   * the `.loradb` file, not per write.
+   */
+  async flush(): Promise<{ lsn: number | null }> {
+    try {
+      return await this.#inner.flush();
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  /**
    * Write a self-contained copy of this database into `targetDir` while
    * reads and writes keep running, for an off-host backup.
    *
