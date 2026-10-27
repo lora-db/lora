@@ -37,7 +37,9 @@ use lora_store::MutationEvent;
 use crate::dir::SegmentDir;
 use crate::errors::WalError;
 use crate::lsn::Lsn;
-use crate::record::{RecordKind, WalRecord, RECORD_HEADER_LEN, RECORD_TRAILER_LEN};
+use crate::record::{
+    EncodedBatch, RecordKind, ReplayRecord, WalRecord, RECORD_HEADER_LEN, RECORD_TRAILER_LEN,
+};
 use crate::segment::{SegmentReader, SEGMENT_HEADER_LEN};
 
 /// Outcome of a full replay walk. The committed transactions went to the
@@ -118,15 +120,78 @@ pub const PENDING_BUDGET_BYTES: usize = 4 * 1024 * 1024;
 pub enum ReplayStep {
     /// A committed transaction: its events, or the rest of them after
     /// [`Self::Partial`] steps.
-    Commit(Vec<MutationEvent>),
+    Commit(TxEvents),
     /// Events of a transaction larger than [`PENDING_BUDGET_BYTES`] whose
     /// commit has not been read yet. Apply them provisionally: a
     /// [`Self::Commit`] or a [`Self::Discard`] follows, with no step of
     /// another transaction in between.
-    Partial(Vec<MutationEvent>),
+    Partial(TxEvents),
     /// The transaction of the preceding [`Self::Partial`] steps did not
     /// commit: undo them.
     Discard,
+}
+
+/// The events of (part of) one transaction, in log order. A mutation
+/// batch stays encoded until [`Self::for_each`] decodes it, an event at a
+/// time: a large transaction is held as its bytes, not as its decoded
+/// events, and each event is dropped before the next is decoded, so
+/// applying a transaction leaves no decoded copy of it among the graph's
+/// own allocations. Replay checked every batch decodes where it read it.
+#[derive(Debug, Default)]
+pub struct TxEvents {
+    parts: Vec<TxPart>,
+    len: usize,
+}
+
+#[derive(Debug)]
+enum TxPart {
+    Event(MutationEvent),
+    Batch(EncodedBatch),
+}
+
+impl TxEvents {
+    /// Number of events.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Hand each event to `f`, in order, decoding it just before.
+    pub fn for_each<E: From<WalError>>(
+        self,
+        mut f: impl FnMut(MutationEvent) -> Result<(), E>,
+    ) -> Result<(), E> {
+        for part in self.parts {
+            match part {
+                TxPart::Event(event) => f(event)?,
+                TxPart::Batch(batch) => batch.for_each(&mut f)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// The events, decoded.
+    pub fn into_vec(self) -> Result<Vec<MutationEvent>, WalError> {
+        let mut events = Vec::with_capacity(self.len);
+        self.for_each(|event| {
+            events.push(event);
+            Ok::<(), WalError>(())
+        })?;
+        Ok(events)
+    }
+
+    fn push(&mut self, event: MutationEvent) {
+        self.len += 1;
+        self.parts.push(TxPart::Event(event));
+    }
+
+    fn push_batch(&mut self, batch: EncodedBatch) {
+        self.len += batch.len();
+        self.parts.push(TxPart::Batch(batch));
+    }
 }
 
 /// Collects replayed events into one list: a sink body for callers that
@@ -139,15 +204,15 @@ pub(crate) struct CollectEvents {
 }
 
 impl CollectEvents {
-    pub(crate) fn step(&mut self, step: ReplayStep) {
+    pub(crate) fn step(&mut self, step: ReplayStep) -> Result<(), WalError> {
         match step {
             ReplayStep::Commit(events) => {
-                self.events.extend(events);
+                self.events.extend(events.into_vec()?);
                 self.provisional_from = None;
             }
             ReplayStep::Partial(events) => {
                 self.provisional_from.get_or_insert(self.events.len());
-                self.events.extend(events);
+                self.events.extend(events.into_vec()?);
             }
             ReplayStep::Discard => {
                 if let Some(from) = self.provisional_from.take() {
@@ -155,6 +220,7 @@ impl CollectEvents {
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -211,7 +277,7 @@ pub(crate) fn replay_segments(
                     // were written: a payload that does not decode is never
                     // a torn tail.
                     let encoded_len = raw.encoded_len();
-                    let record = match raw.decode() {
+                    let record = match raw.decode_for_replay() {
                         Ok(record) => record,
                         Err(err) => {
                             let err = corrupt(path, before, err.to_string());
@@ -332,7 +398,7 @@ fn check_log_start(base: Lsn, checkpoint_lsn: Lsn, path: &Path) -> Result<(), Wa
 /// A transaction read but not yet committed or aborted.
 #[derive(Default)]
 struct PendingTx {
-    events: Vec<MutationEvent>,
+    events: TxEvents,
     /// Encoded size of the records behind `events`.
     bytes: usize,
 }
@@ -393,22 +459,37 @@ impl<'s, 'a> ReplayState<'s, 'a> {
 
     fn accept_record(
         &mut self,
-        record: WalRecord,
+        record: ReplayRecord,
         encoded_len: usize,
         segment_base: Lsn,
         checkpoint_lsn: Lsn,
         path: &Path,
     ) -> Result<(), WalError> {
-        let lsn = record.lsn();
+        let lsn = match &record {
+            ReplayRecord::Batch { lsn, .. } => *lsn,
+            ReplayRecord::Decoded(record) => record.lsn(),
+        };
         self.validate_record_lsn(lsn, segment_base, path)?;
         self.observe_lsn(lsn);
 
-        if lsn.raw() <= checkpoint_lsn.raw() {
-            self.skip_fenced_record(&record);
-            return Ok(());
+        match record {
+            // Below the fence: already in the snapshot.
+            ReplayRecord::Batch { .. } if lsn.raw() <= checkpoint_lsn.raw() => Ok(()),
+            ReplayRecord::Batch {
+                tx_begin_lsn,
+                batch,
+                ..
+            } => self.add_events(tx_begin_lsn, lsn, "mutation batch", encoded_len, |events| {
+                events.push_batch(batch)
+            }),
+            ReplayRecord::Decoded(record) => {
+                if lsn.raw() <= checkpoint_lsn.raw() {
+                    self.skip_fenced_record(&record);
+                    return Ok(());
+                }
+                self.apply_record(record, encoded_len, lsn)
+            }
         }
-
-        self.apply_record(record, encoded_len, lsn)
     }
 
     fn validate_record_lsn(
@@ -474,7 +555,9 @@ impl<'s, 'a> ReplayState<'s, 'a> {
                 events: batch,
                 ..
             } => self.add_events(tx_begin_lsn, lsn, "mutation batch", encoded_len, |events| {
-                events.extend(batch)
+                for event in batch {
+                    events.push(event);
+                }
             })?,
             WalRecord::TxBegin { lsn } => {
                 self.withdraw_other_than(lsn)?;
@@ -529,7 +612,7 @@ impl<'s, 'a> ReplayState<'s, 'a> {
         record_lsn: Lsn,
         kind: &str,
         encoded_len: usize,
-        add: impl FnOnce(&mut Vec<MutationEvent>),
+        add: impl FnOnce(&mut TxEvents),
     ) -> Result<(), WalError> {
         self.withdraw_other_than(tx_begin_lsn)?;
         let pending = self

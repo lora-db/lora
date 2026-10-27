@@ -40,6 +40,42 @@ pub(crate) fn decode_events(bytes: &[u8]) -> Result<Vec<MutationEvent>, WalError
     Ok(events)
 }
 
+/// Check that a mutation-batch payload decodes, decoding its events one at
+/// a time and dropping each: replay validates a batch where it reads it
+/// without holding the batch decoded. Returns the number of events.
+pub(crate) fn validate_events(bytes: &[u8]) -> Result<usize, WalError> {
+    if !bytes.starts_with(PAYLOAD_MAGIC) {
+        return Err(WalError::Decode(
+            "WAL mutation payload has bad magic".into(),
+        ));
+    }
+    let mut reader = PayloadReader::new(&bytes[PAYLOAD_MAGIC.len()..]);
+    let len = reader.read_len_bounded("WAL event")?;
+    for _ in 0..len {
+        reader.check_event()?;
+    }
+    reader.finish()?;
+    Ok(len)
+}
+
+/// Decode a mutation-batch payload's events one at a time, handing each
+/// to `f` before the next is decoded.
+pub(crate) fn for_each_event<E: From<WalError>>(
+    bytes: &[u8],
+    mut f: impl FnMut(MutationEvent) -> Result<(), E>,
+) -> Result<(), E> {
+    if !bytes.starts_with(PAYLOAD_MAGIC) {
+        return Err(WalError::Decode("WAL mutation payload has bad magic".into()).into());
+    }
+    let mut reader = PayloadReader::new(&bytes[PAYLOAD_MAGIC.len()..]);
+    let len = reader.read_len_bounded("WAL event")?;
+    for _ in 0..len {
+        f(reader.read_event()?)?;
+    }
+    reader.finish()?;
+    Ok(())
+}
+
 struct PayloadReader<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -383,6 +419,113 @@ impl<'a> PayloadReader<'a> {
             segments.push(self.read_bytes()?.to_vec());
         }
         Ok(lora_store::LoraBinary::from_segments(segments))
+    }
+
+    // Checking: the `read_*` methods' parse, building nothing, for
+    // [`validate_events`]. Each accepts exactly what its `read_*`
+    // counterpart accepts (`check_matches_decode` in the tests).
+
+    fn check_str(&mut self) -> Result<(), WalError> {
+        let bytes = self.read_bytes()?;
+        std::str::from_utf8(bytes)
+            .map(drop)
+            .map_err(|e| WalError::Decode(format!("invalid UTF-8 in WAL payload: {e}")))
+    }
+
+    fn check_string_vec(&mut self) -> Result<(), WalError> {
+        let len = self.read_len_bounded("string")?;
+        for _ in 0..len {
+            self.check_str()?;
+        }
+        Ok(())
+    }
+
+    fn check_properties(&mut self) -> Result<(), WalError> {
+        let len = self.read_len_bounded("property")?;
+        for _ in 0..len {
+            self.check_str()?;
+            self.check_value()?;
+        }
+        Ok(())
+    }
+
+    fn check_value(&mut self) -> Result<(), WalError> {
+        match self.read_u8()? {
+            VALUE_LIST => {
+                self.enter_container()?;
+                let len = self.read_len_bounded("property list value")?;
+                for _ in 0..len {
+                    self.check_value()?;
+                }
+                self.depth -= 1;
+            }
+            VALUE_MAP => {
+                self.enter_container()?;
+                let len = self.read_len_bounded("property map entry")?;
+                for _ in 0..len {
+                    self.check_str()?;
+                    self.check_value()?;
+                }
+                self.depth -= 1;
+            }
+            VALUE_STRING => self.check_str()?,
+            tag @ (VALUE_DATE_TIME | VALUE_ZONED_DATE_TIME) => {
+                // year, month .. nanosecond, offset: eight 4-byte fields.
+                self.read_exact(32)?;
+                if tag == VALUE_ZONED_DATE_TIME {
+                    let bytes = self.read_bytes()?;
+                    let name = std::str::from_utf8(bytes).map_err(|e| {
+                        WalError::Decode(format!("invalid UTF-8 in WAL payload: {e}"))
+                    })?;
+                    if ZoneId::lookup(name).is_none() {
+                        return Err(WalError::Decode(format!("unknown time zone `{name}`")));
+                    }
+                }
+            }
+            // The other scalars hold no strings or collections: reading
+            // one builds nothing on the heap but vectors and binaries,
+            // which are rare and bounded by the payload.
+            tag => drop(self.read_scalar(tag)?),
+        }
+        Ok(())
+    }
+
+    fn check_event(&mut self) -> Result<(), WalError> {
+        match self.read_u8()? {
+            TAG_CREATE_NODE => {
+                self.read_u64()?;
+                self.check_string_vec()?;
+                self.check_properties()?;
+            }
+            TAG_CREATE_RELATIONSHIP => {
+                self.read_exact(24)?;
+                self.check_str()?;
+                self.check_properties()?;
+            }
+            TAG_SET_NODE_PROPERTY | TAG_SET_RELATIONSHIP_PROPERTY => {
+                self.read_u64()?;
+                self.check_str()?;
+                self.check_value()?;
+            }
+            TAG_REMOVE_NODE_PROPERTY
+            | TAG_ADD_NODE_LABEL
+            | TAG_REMOVE_NODE_LABEL
+            | TAG_REMOVE_RELATIONSHIP_PROPERTY => {
+                self.read_u64()?;
+                self.check_str()?;
+            }
+            TAG_DELETE_RELATIONSHIP | TAG_DELETE_NODE | TAG_DETACH_DELETE_NODE => {
+                self.read_u64()?;
+            }
+            TAG_CLEAR => {}
+            // Schema events are rare, and an unknown tag fails as
+            // decoding fails: decode them.
+            _ => {
+                self.offset -= 1;
+                drop(self.read_event()?);
+            }
+        }
+        Ok(())
     }
 
     fn read_event(&mut self) -> Result<MutationEvent, WalError> {

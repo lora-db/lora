@@ -18,7 +18,7 @@ use lora_store::{
     DeletedRecordSink, GraphStorage, GraphStorageMut, InMemoryGraph, MutationEvent,
     MutationRecorder,
 };
-use lora_wal::{Lsn, ReplayStep, SyncMode, Wal, WalError};
+use lora_wal::{Lsn, ReplayStep, SyncMode, TxEvents, Wal, WalError};
 
 use crate::error::{LoraError, LoraErrorCode};
 
@@ -110,7 +110,7 @@ pub(crate) fn open_wal_into(
                     }
                     if provisional_failure.is_none() {
                         let count = events.len();
-                        match replay_from(graph, applied, events) {
+                        match replay_tx(graph, applied, events) {
                             Ok(()) => applied += count,
                             Err(err) => provisional_failure = Some(err),
                         }
@@ -123,7 +123,7 @@ pub(crate) fn open_wal_into(
                         return Err(fail(err, &mut failure));
                     }
                     let count = events.len();
-                    replay_from(graph, applied, events).map_err(|err| fail(err, &mut failure))?;
+                    replay_tx(graph, applied, events).map_err(|err| fail(err, &mut failure))?;
                     applied += count;
                     Ok(())
                 }
@@ -160,123 +160,141 @@ fn replay_from(
     events: Vec<MutationEvent>,
 ) -> Result<()> {
     for (idx, event) in (first_idx..).zip(events) {
-        match event {
-            MutationEvent::CreateNode {
-                id,
-                labels,
-                properties,
-            } => {
-                graph
-                    .replay_create_node(id, labels, properties)
-                    .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
+        apply_event(graph, idx, event)?;
+    }
+    Ok(())
+}
+
+/// [`replay_from`] for a transaction as replay hands it over: each event
+/// is decoded just before it is applied and dropped after, so the
+/// decoded transaction is never held beside the graph it builds.
+fn replay_tx(graph: &mut InMemoryGraph, first_idx: usize, events: TxEvents) -> Result<()> {
+    let mut idx = first_idx;
+    events.for_each(|event| {
+        apply_event(graph, idx, event)?;
+        idx += 1;
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
+/// Apply the `idx`-th replayed event to `graph`.
+fn apply_event(graph: &mut InMemoryGraph, idx: usize, event: MutationEvent) -> Result<()> {
+    match event {
+        MutationEvent::CreateNode {
+            id,
+            labels,
+            properties,
+        } => {
+            graph
+                .replay_create_node(id, labels, properties)
+                .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
+        }
+        MutationEvent::CreateRelationship {
+            id,
+            src,
+            dst,
+            rel_type,
+            properties,
+        } => {
+            graph
+                .replay_create_relationship(id, src, dst, &rel_type, properties)
+                .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
+        }
+        MutationEvent::SetNodeProperty {
+            node_id,
+            key,
+            value,
+        } => {
+            if !graph.set_node_property(node_id, key, value) {
+                return Err(anyhow!(
+                    "WAL replay failed at event {idx}: missing node {node_id} for property set"
+                ));
             }
-            MutationEvent::CreateRelationship {
-                id,
-                src,
-                dst,
-                rel_type,
-                properties,
-            } => {
-                graph
-                    .replay_create_relationship(id, src, dst, &rel_type, properties)
-                    .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
+        }
+        MutationEvent::RemoveNodeProperty { node_id, key } => {
+            if !graph.remove_node_property(node_id, &key) {
+                return Err(anyhow!(
+                    "WAL replay failed at event {idx}: missing node {node_id} for property removal"
+                ));
             }
-            MutationEvent::SetNodeProperty {
-                node_id,
-                key,
-                value,
-            } => {
-                if !graph.set_node_property(node_id, key, value) {
-                    return Err(anyhow!(
-                        "WAL replay failed at event {idx}: missing node {node_id} for property set"
-                    ));
-                }
+        }
+        MutationEvent::AddNodeLabel { node_id, label } => {
+            if !graph.add_node_label(node_id, &label) {
+                return Err(anyhow!(
+                    "WAL replay failed at event {idx}: missing node {node_id} for label add"
+                ));
             }
-            MutationEvent::RemoveNodeProperty { node_id, key } => {
-                if !graph.remove_node_property(node_id, &key) {
-                    return Err(anyhow!(
-                        "WAL replay failed at event {idx}: missing node {node_id} for property removal"
-                    ));
-                }
+        }
+        MutationEvent::RemoveNodeLabel { node_id, label } => {
+            if !graph.remove_node_label(node_id, &label) {
+                return Err(anyhow!(
+                    "WAL replay failed at event {idx}: missing node {node_id} for label removal"
+                ));
             }
-            MutationEvent::AddNodeLabel { node_id, label } => {
-                if !graph.add_node_label(node_id, &label) {
-                    return Err(anyhow!(
-                        "WAL replay failed at event {idx}: missing node {node_id} for label add"
-                    ));
-                }
-            }
-            MutationEvent::RemoveNodeLabel { node_id, label } => {
-                if !graph.remove_node_label(node_id, &label) {
-                    return Err(anyhow!(
-                        "WAL replay failed at event {idx}: missing node {node_id} for label removal"
-                    ));
-                }
-            }
-            MutationEvent::SetRelationshipProperty { rel_id, key, value } => {
-                if !graph.set_relationship_property(rel_id, key, value) {
-                    return Err(anyhow!(
+        }
+        MutationEvent::SetRelationshipProperty { rel_id, key, value } => {
+            if !graph.set_relationship_property(rel_id, key, value) {
+                return Err(anyhow!(
                         "WAL replay failed at event {idx}: missing relationship {rel_id} for property set"
                     ));
-                }
             }
-            MutationEvent::RemoveRelationshipProperty { rel_id, key } => {
-                if !graph.remove_relationship_property(rel_id, &key) {
-                    return Err(anyhow!(
+        }
+        MutationEvent::RemoveRelationshipProperty { rel_id, key } => {
+            if !graph.remove_relationship_property(rel_id, &key) {
+                return Err(anyhow!(
                         "WAL replay failed at event {idx}: missing relationship {rel_id} for property removal"
                     ));
-                }
             }
-            MutationEvent::DeleteRelationship { rel_id } => {
-                if !graph.delete_relationship(rel_id) {
-                    return Err(anyhow!(
-                        "WAL replay failed at event {idx}: missing relationship {rel_id} for delete"
-                    ));
-                }
+        }
+        MutationEvent::DeleteRelationship { rel_id } => {
+            if !graph.delete_relationship(rel_id) {
+                return Err(anyhow!(
+                    "WAL replay failed at event {idx}: missing relationship {rel_id} for delete"
+                ));
             }
-            MutationEvent::DeleteNode { node_id } => {
-                if !graph.delete_node(node_id) {
-                    return Err(anyhow!(
+        }
+        MutationEvent::DeleteNode { node_id } => {
+            if !graph.delete_node(node_id) {
+                return Err(anyhow!(
                         "WAL replay failed at event {idx}: missing or attached node {node_id} for delete"
                     ));
-                }
             }
-            MutationEvent::DetachDeleteNode { node_id } => {
-                // After the cascading DeleteRelationship +
-                // DeleteNode events have already replayed, the node
-                // is gone and this becomes a no-op. Calling it
-                // anyway is harmless.
-                graph.detach_delete_node(node_id);
-            }
-            MutationEvent::Clear => {
-                graph.clear();
-            }
-            MutationEvent::CreateIndex {
-                request,
-                if_not_exists,
-            } => {
-                graph
-                    .replay_create_index(request, if_not_exists)
-                    .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
-            }
-            MutationEvent::DropIndex { name, if_exists } => {
-                graph
-                    .replay_drop_index(&name, if_exists)
-                    .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
-            }
-            MutationEvent::CreateConstraint {
-                request,
-                if_not_exists,
-            } => {
-                graph
-                    .replay_create_constraint(request, if_not_exists)
-                    .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
-            }
-            MutationEvent::DropConstraint { name, if_exists } => {
-                graph
-                    .replay_drop_constraint(&name, if_exists)
-                    .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
-            }
+        }
+        MutationEvent::DetachDeleteNode { node_id } => {
+            // After the cascading DeleteRelationship +
+            // DeleteNode events have already replayed, the node
+            // is gone and this becomes a no-op. Calling it
+            // anyway is harmless.
+            graph.detach_delete_node(node_id);
+        }
+        MutationEvent::Clear => {
+            graph.clear();
+        }
+        MutationEvent::CreateIndex {
+            request,
+            if_not_exists,
+        } => {
+            graph
+                .replay_create_index(request, if_not_exists)
+                .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
+        }
+        MutationEvent::DropIndex { name, if_exists } => {
+            graph
+                .replay_drop_index(&name, if_exists)
+                .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
+        }
+        MutationEvent::CreateConstraint {
+            request,
+            if_not_exists,
+        } => {
+            graph
+                .replay_create_constraint(request, if_not_exists)
+                .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
+        }
+        MutationEvent::DropConstraint { name, if_exists } => {
+            graph
+                .replay_drop_constraint(&name, if_exists)
+                .map_err(|e| anyhow!("WAL replay failed at event {idx}: {e}"))?;
         }
     }
     Ok(())

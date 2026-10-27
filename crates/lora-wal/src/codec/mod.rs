@@ -27,7 +27,7 @@ mod tests;
 /// The same limit as the store and snapshot codecs.
 pub(crate) const MAX_VALUE_DEPTH: usize = lora_store::codec::MAX_VALUE_NESTING;
 
-pub(crate) use decode::{decode_event, decode_events};
+pub(crate) use decode::{decode_event, decode_events, for_each_event, validate_events};
 pub(crate) use encode::{
     batch_payload_len, encode_event_into, encode_events_into, encoded_batch_event_len,
     encoded_event_len, encoded_events_len,

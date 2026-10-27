@@ -280,3 +280,86 @@ fn encode_rejects_values_nested_past_the_limit() {
     );
     assert!(encode_event(&event).is_err());
 }
+
+/// One event of every kind replay checks without building it.
+fn events_of_every_kind() -> Vec<MutationEvent> {
+    let mut rel_props = Properties::new();
+    rel_props.insert("since".into(), PropertyValue::Int(2020));
+    vec![
+        sample_event(),
+        all_extension_values_event(),
+        MutationEvent::CreateRelationship {
+            id: 3,
+            src: 1,
+            dst: 2,
+            rel_type: "KNOWS".into(),
+            properties: rel_props,
+        },
+        MutationEvent::SetRelationshipProperty {
+            rel_id: 3,
+            key: "w".into(),
+            value: PropertyValue::Float(0.5),
+        },
+        MutationEvent::RemoveNodeProperty {
+            node_id: 7,
+            key: "name".into(),
+        },
+        MutationEvent::RemoveRelationshipProperty {
+            rel_id: 3,
+            key: "w".into(),
+        },
+        MutationEvent::AddNodeLabel {
+            node_id: 7,
+            label: "X".into(),
+        },
+        MutationEvent::RemoveNodeLabel {
+            node_id: 7,
+            label: "X".into(),
+        },
+        MutationEvent::DeleteRelationship { rel_id: 3 },
+        MutationEvent::DeleteNode { node_id: 2 },
+        MutationEvent::DetachDeleteNode { node_id: 1 },
+        MutationEvent::DropIndex {
+            name: "i".into(),
+            if_exists: true,
+        },
+        MutationEvent::Clear,
+    ]
+}
+
+/// Replay checks a batch where it reads it without building its events
+/// (`validate_events`); that check accepts exactly what decoding accepts,
+/// on every prefix of a batch and with any one byte changed.
+#[test]
+fn check_matches_decode() {
+    use super::decode::validate_events;
+    let events = events_of_every_kind();
+    let encoded = encode_events(&events).unwrap();
+    assert_eq!(validate_events(&encoded).unwrap(), events.len());
+    for end in 0..encoded.len() {
+        assert_eq!(
+            validate_events(&encoded[..end]).is_ok(),
+            decode_events(&encoded[..end]).is_ok(),
+            "prefix of {end} bytes"
+        );
+    }
+    for at in 0..encoded.len() {
+        for flip in [0x01u8, 0x80, 0xFF] {
+            let mut bytes = encoded.clone();
+            bytes[at] ^= flip;
+            assert_eq!(
+                validate_events(&bytes).is_ok(),
+                decode_events(&bytes).is_ok(),
+                "byte {at} ^ {flip:#x}"
+            );
+        }
+    }
+    let nested = |depth| {
+        let mut batch = PAYLOAD_MAGIC.to_vec();
+        batch.extend_from_slice(&1u64.to_le_bytes());
+        batch.extend_from_slice(&deeply_nested_create_node(depth)[PAYLOAD_MAGIC.len()..]);
+        batch
+    };
+    validate_events(&nested(super::MAX_VALUE_DEPTH)).unwrap();
+    assert!(validate_events(&nested(super::MAX_VALUE_DEPTH + 1)).is_err());
+}

@@ -150,10 +150,7 @@ impl Wal {
             sync_mode,
             segment_target_bytes,
             checkpoint_lsn,
-            &mut |step| {
-                collected.step(step);
-                Ok(())
-            },
+            &mut |step| collected.step(step),
         )?;
         Ok((wal, collected.events))
     }
