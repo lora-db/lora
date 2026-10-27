@@ -645,6 +645,10 @@ fn sort_keys_on_projected_reads(
 ) -> Vec<ResolvedSortItem> {
     /// Whether `a` and `b` are the same property read: `v.k`, `v.k.j`, ...
     fn same_property_read(a: &ResolvedExpr, b: &ResolvedExpr) -> bool {
+        lora_ast::stack::guard(|| same_property_read_inner(a, b))
+    }
+
+    fn same_property_read_inner(a: &ResolvedExpr, b: &ResolvedExpr) -> bool {
         match (a, b) {
             (
                 ResolvedExpr::Property {
@@ -716,6 +720,10 @@ fn pattern_binders(pattern: &ResolvedPattern) -> Vec<VarId> {
 }
 
 fn expr_contains_aggregate(expr: &ResolvedExpr) -> bool {
+    lora_ast::stack::guard(|| expr_contains_aggregate_inner(expr))
+}
+
+fn expr_contains_aggregate_inner(expr: &ResolvedExpr) -> bool {
     match expr {
         ResolvedExpr::Function { function, args, .. } => {
             if function.is_aggregate() {

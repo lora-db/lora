@@ -306,6 +306,14 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         plan: &PhysicalPlan,
         node_id: PhysicalNodeId,
     ) -> ExecResult<Vec<Row>> {
+        lora_ast::stack::guard(|| self.execute_node_inner(plan, node_id))
+    }
+
+    fn execute_node_inner(
+        &mut self,
+        plan: &PhysicalPlan,
+        node_id: PhysicalNodeId,
+    ) -> ExecResult<Vec<Row>> {
         self.check_deadline()?;
         let saved_caps = self.caps.enter_operator(plan, node_id);
         trace!("mutable execute_node start: node_id={node_id:?}");
@@ -1185,6 +1193,16 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         chain: &[lora_analyzer::ResolvedChain],
         walked: &mut Vec<(u64, NodeId)>,
     ) -> ExecResult<bool> {
+        lora_ast::stack::guard(|| self.match_merge_chain_inner(row, current, chain, walked))
+    }
+
+    fn match_merge_chain_inner(
+        &self,
+        row: &mut Row,
+        current: NodeId,
+        chain: &[lora_analyzer::ResolvedChain],
+        walked: &mut Vec<(u64, NodeId)>,
+    ) -> ExecResult<bool> {
         let Some((step, rest)) = chain.split_first() else {
             return Ok(true);
         };
@@ -1445,6 +1463,14 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     /// Delete / Set / Remove / nested Foreach) are legal here; the
     /// analyzer guarantees that.
     fn apply_foreach_body_clause(
+        &mut self,
+        row: &mut Row,
+        clause: &lora_analyzer::ResolvedClause,
+    ) -> ExecResult<()> {
+        lora_ast::stack::guard(|| self.apply_foreach_body_clause_inner(row, clause))
+    }
+
+    fn apply_foreach_body_clause_inner(
         &mut self,
         row: &mut Row,
         clause: &lora_analyzer::ResolvedClause,

@@ -187,15 +187,22 @@ fn create_properties_cannot_fail(pattern: &ResolvedPattern) -> bool {
 /// an error, and functions can reject their arguments, so anything else
 /// counts as able to fail.
 fn expr_cannot_fail(expr: &ResolvedExpr) -> bool {
+    expr_cannot_fail_at(expr, 1)
+}
+
+fn expr_cannot_fail_at(expr: &ResolvedExpr, depth: usize) -> bool {
+    if lora_ast::stack::check_due(depth) {
+        return lora_ast::stack::guard(|| expr_cannot_fail_at(expr, depth + 1));
+    }
     match expr {
         ResolvedExpr::Variable(_) | ResolvedExpr::Literal(_) | ResolvedExpr::Parameter(_) => true,
-        ResolvedExpr::Property { expr, .. } => expr_cannot_fail(expr),
+        ResolvedExpr::Property { expr, .. } => expr_cannot_fail_at(expr, depth + 1),
         ResolvedExpr::List(items) => items.iter().all(expr_cannot_fail),
-        ResolvedExpr::Map(items) => items.iter().all(|(_, v)| expr_cannot_fail(v)),
+        ResolvedExpr::Map(items) => items.iter().all(|(_, v)| expr_cannot_fail_at(v, depth + 1)),
         ResolvedExpr::Unary {
             op: UnaryOp::Not,
             expr,
-        } => expr_cannot_fail(expr),
+        } => expr_cannot_fail_at(expr, depth + 1),
         ResolvedExpr::Binary { lhs, op, rhs } => {
             matches!(
                 op,
@@ -206,8 +213,8 @@ fn expr_cannot_fail(expr: &ResolvedExpr) -> bool {
                     | BinaryOp::Ne
                     | BinaryOp::IsNull
                     | BinaryOp::IsNotNull
-            ) && expr_cannot_fail(lhs)
-                && expr_cannot_fail(rhs)
+            ) && expr_cannot_fail_at(lhs, depth + 1)
+                && expr_cannot_fail_at(rhs, depth + 1)
         }
         _ => false,
     }

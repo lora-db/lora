@@ -285,6 +285,10 @@ impl<'a> QueryStream<'a> {
     }
 
     fn advance(&mut self, commit: bool) -> Result<Option<Row>> {
+        lora_ast::stack::guard(|| self.advance_inner(commit))
+    }
+
+    fn advance_inner(&mut self, commit: bool) -> Result<Option<Row>> {
         match &mut self.inner {
             StreamInner::Live { state, cursor, .. } => match *state {
                 StreamState::Errored => Err(anyhow!("query stream errored")),

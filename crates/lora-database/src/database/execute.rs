@@ -58,9 +58,7 @@ where
         let deadline = Instant::now()
             .checked_add(timeout)
             .unwrap_or_else(Instant::now);
-        let rows =
-            self.execute_rows_with_params_deadline(query, BTreeMap::new(), Some(deadline))?;
-        Ok(project_rows(rows, options.unwrap_or_default()))
+        self.execute_projected(query, BTreeMap::new(), Some(deadline), options)
     }
 
     /// Execute a query with bound parameters.
@@ -91,8 +89,7 @@ where
         options: Option<ExecuteOptions>,
         params: BTreeMap<String, LoraValue>,
     ) -> Result<QueryResult, LoraError> {
-        let rows = self.execute_rows_with_params_deadline(query, params, None)?;
-        Ok(project_rows(rows, options.unwrap_or_default()))
+        self.execute_projected(query, params, None, options)
     }
 
     /// Execute a parameterised query with a cooperative deadline.
@@ -106,8 +103,7 @@ where
         let deadline = Instant::now()
             .checked_add(timeout)
             .unwrap_or_else(Instant::now);
-        let rows = self.execute_rows_with_params_deadline(query, params, Some(deadline))?;
-        Ok(project_rows(rows, options.unwrap_or_default()))
+        self.execute_projected(query, params, Some(deadline), options)
     }
 
     /// Execute a parameterised query that stops at an absolute `deadline`.
@@ -123,8 +119,7 @@ where
         params: BTreeMap<String, LoraValue>,
         deadline: Instant,
     ) -> Result<QueryResult, LoraError> {
-        let rows = self.execute_rows_with_params_deadline(query, params, Some(deadline))?;
-        Ok(project_rows(rows, options.unwrap_or_default()))
+        self.execute_projected(query, params, Some(deadline), options)
     }
 
     /// [`Self::execute_with_params_deadline`] that refuses a result of more
@@ -159,7 +154,22 @@ where
         query: &str,
         params: BTreeMap<String, LoraValue>,
     ) -> Result<Vec<Row>, LoraError> {
-        Ok(self.execute_rows_with_params_deadline(query, params, None)?)
+        lora_ast::stack::guard(|| Ok(self.execute_rows_with_params_deadline(query, params, None)?))
+    }
+
+    /// Run a query and project its rows, under one stack guard (see
+    /// [`lora_ast::stack`]).
+    fn execute_projected(
+        &self,
+        query: &str,
+        params: BTreeMap<String, LoraValue>,
+        deadline: Option<Instant>,
+        options: Option<ExecuteOptions>,
+    ) -> Result<QueryResult, LoraError> {
+        lora_ast::stack::guard(|| {
+            let rows = self.execute_rows_with_params_deadline(query, params, deadline)?;
+            Ok(project_rows(rows, options.unwrap_or_default()))
+        })
     }
 
     pub(crate) fn execute_rows_with_params_deadline(

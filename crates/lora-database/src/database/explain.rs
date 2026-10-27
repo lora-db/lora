@@ -40,6 +40,14 @@ where
         query: &str,
         params: Option<BTreeMap<String, LoraValue>>,
     ) -> Result<QueryPlan, LoraError> {
+        lora_ast::stack::guard(|| self.explain_inner(query, params))
+    }
+
+    fn explain_inner(
+        &self,
+        query: &str,
+        params: Option<BTreeMap<String, LoraValue>>,
+    ) -> Result<QueryPlan, LoraError> {
         let mut params = params.unwrap_or_default();
         super::check_parameter_values(&mut params).map_err(LoraError::from_anyhow)?;
         let (store, store_epoch) = self.read_store_with_epoch_deadline(None)?;
@@ -82,6 +90,10 @@ pub(crate) fn annotate_estimated_rows(tree: &mut PlanTree, stats: &GraphStats) {
 }
 
 fn annotate_node(node: &mut PlanTreeNode, stats: &GraphStats) {
+    lora_ast::stack::guard(|| annotate_node_inner(node, stats))
+}
+
+fn annotate_node_inner(node: &mut PlanTreeNode, stats: &GraphStats) {
     node.estimated_rows = match node.operator.as_str() {
         "NodeScan" => Some(stats.node_count as u64),
         "NodeByLabelScan" => labels_estimate(node, stats),

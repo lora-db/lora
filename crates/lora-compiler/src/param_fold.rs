@@ -243,6 +243,10 @@ fn fold_calls(expr: &mut ResolvedExpr, fold: FoldCall<'_>) {
 }
 
 fn mentions_null_test(expr: &ResolvedExpr) -> bool {
+    lora_ast::stack::guard(|| mentions_null_test_inner(expr))
+}
+
+fn mentions_null_test_inner(expr: &ResolvedExpr) -> bool {
     match expr {
         ResolvedExpr::Binary { lhs, op, rhs } => match op {
             BinaryOp::IsNull | BinaryOp::IsNotNull => {
@@ -275,6 +279,14 @@ fn lit(b: bool) -> ResolvedExpr {
 /// `true OR x` are decided whatever `x` is, `true AND x` and `false OR x`
 /// are `x`.
 fn fold(
+    expr: ResolvedExpr,
+    nullness: NullnessOf<'_>,
+    assumed: &mut BTreeMap<String, Option<bool>>,
+) -> ResolvedExpr {
+    lora_ast::stack::guard(|| fold_inner(expr, nullness, assumed))
+}
+
+fn fold_inner(
     expr: ResolvedExpr,
     nullness: NullnessOf<'_>,
     assumed: &mut BTreeMap<String, Option<bool>>,

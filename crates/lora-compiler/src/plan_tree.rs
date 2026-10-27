@@ -36,6 +36,18 @@ pub struct PlanTreeNode {
     pub children: Vec<PlanTreeNode>,
 }
 
+/// A plan is as deep as its operator chain, which a long pattern makes as
+/// long as it likes: free the children one level at a time instead of
+/// recursing.
+impl Drop for PlanTreeNode {
+    fn drop(&mut self) {
+        let mut pending = std::mem::take(&mut self.children);
+        while let Some(mut node) = pending.pop() {
+            pending.append(&mut node.children);
+        }
+    }
+}
+
 /// Top-level plan tree.
 #[derive(Debug, Clone)]
 pub struct PlanTree {
@@ -85,6 +97,10 @@ fn build_union_branch(branch: &CompiledUnionBranch) -> PlanTreeNode {
 }
 
 fn build_node(plan: &PhysicalPlan, id: PhysicalNodeId) -> PlanTreeNode {
+    lora_ast::stack::guard(|| build_node_inner(plan, id))
+}
+
+fn build_node_inner(plan: &PhysicalPlan, id: PhysicalNodeId) -> PlanTreeNode {
     let op = &plan.nodes[id];
     let description = describe(op);
     let children = description

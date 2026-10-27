@@ -319,6 +319,10 @@ where
 
     /// Parse a query string into an AST without executing it.
     pub fn parse(&self, query: &str) -> Result<Document, LoraError> {
+        lora_ast::stack::guard(|| self.parse_inner(query))
+    }
+
+    fn parse_inner(&self, query: &str) -> Result<Document, LoraError> {
         Ok(parse_query(query)?)
     }
 

@@ -664,7 +664,19 @@ fn eval_call<S: GraphStorage>(
     eval_function(function, &args, ctx)
 }
 
+#[inline(never)]
 fn eval_exists_subquery<S: GraphStorage>(
+    pattern: &lora_analyzer::ResolvedPattern,
+    where_: Option<&ResolvedExpr>,
+    reads: &[VarId],
+    seeks: &[PatternSeek],
+    row: &Row,
+    ctx: &EvalContext<'_, S>,
+) -> LoraValue {
+    lora_ast::stack::guard(|| eval_exists_subquery_inner(pattern, where_, reads, seeks, row, ctx))
+}
+
+fn eval_exists_subquery_inner<S: GraphStorage>(
     pattern: &lora_analyzer::ResolvedPattern,
     where_: Option<&ResolvedExpr>,
     reads: &[VarId],
@@ -724,7 +736,22 @@ fn exists_candidate_matches<S: GraphStorage>(
         .unwrap_or(true)
 }
 
+#[inline(never)]
 fn eval_pattern_comprehension<S: GraphStorage>(
+    pattern: &lora_analyzer::ResolvedPattern,
+    where_: Option<&ResolvedExpr>,
+    map_expr: &ResolvedExpr,
+    reads: &[VarId],
+    seeks: &[PatternSeek],
+    row: &Row,
+    ctx: &EvalContext<'_, S>,
+) -> LoraValue {
+    lora_ast::stack::guard(|| {
+        eval_pattern_comprehension_inner(pattern, where_, map_expr, reads, seeks, row, ctx)
+    })
+}
+
+fn eval_pattern_comprehension_inner<S: GraphStorage>(
     pattern: &lora_analyzer::ResolvedPattern,
     where_: Option<&ResolvedExpr>,
     map_expr: &ResolvedExpr,
