@@ -47,6 +47,10 @@ pub struct CreateConstraint {
     pub label: String,
     pub properties: Vec<String>,
     pub kind: ConstraintKind,
+    /// `OPTIONS { indexProvider: 'hash' }`: a uniqueness or key
+    /// constraint backed by the hash index alone (no sorted copy of the
+    /// key, so no range, prefix or ordered seeks on it).
+    pub options: Option<IndexOptions>,
     pub span: Span,
 }
 

@@ -9,11 +9,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::{
-    ConstraintDefinition, ConstraintRequest, IndexConfigValue, IndexDefinition, IndexRequest,
-    LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
-    LoraTime, LoraVector, PropertyValue, StoredConstraintKind, StoredIndexEntity, StoredIndexKind,
-    StoredIndexState, StoredPropertyType, StoredPropertyTypeTerm, StoredScalarType,
-    StoredVectorCoordType, VectorValues, ZoneId,
+    ConstraintBacking, ConstraintDefinition, ConstraintRequest, IndexConfigValue, IndexDefinition,
+    IndexRequest, LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime,
+    LoraLocalTime, LoraPoint, LoraTime, LoraVector, PropertyValue, StoredConstraintKind,
+    StoredIndexEntity, StoredIndexKind, StoredIndexState, StoredPropertyType,
+    StoredPropertyTypeTerm, StoredScalarType, StoredVectorCoordType, VectorValues, ZoneId,
 };
 
 type Result<T> = std::result::Result<T, StoreCodecError>;
@@ -200,6 +200,9 @@ const CONSTRAINT_KIND_EXISTENCE: u8 = 2;
 const CONSTRAINT_KIND_NODE_KEY: u8 = 3;
 const CONSTRAINT_KIND_RELATIONSHIP_KEY: u8 = 4;
 const CONSTRAINT_KIND_PROPERTY_TYPE: u8 = 5;
+/// Set on a uniqueness or key tag for a hash-backed constraint
+/// ([`ConstraintBacking::Hash`]); records without it decode as before.
+const CONSTRAINT_BACKING_HASH: u8 = 0x80;
 
 const PROPERTY_TYPE_TERM_SCALAR: u8 = 1;
 const PROPERTY_TYPE_TERM_LIST: u8 = 2;
@@ -275,7 +278,7 @@ fn write_index_state(out: &mut Vec<u8>, state: StoredIndexState) {
 
 fn write_constraint_request(out: &mut Vec<u8>, request: &ConstraintRequest) -> Result<()> {
     write_string(out, &request.name)?;
-    write_constraint_kind(out, &request.kind)?;
+    write_constraint_kind(out, &request.kind, request.backing)?;
     write_index_entity(out, request.entity);
     write_string(out, &request.label)?;
     write_string_vec(out, &request.properties)
@@ -283,19 +286,27 @@ fn write_constraint_request(out: &mut Vec<u8>, request: &ConstraintRequest) -> R
 
 fn write_constraint_definition(out: &mut Vec<u8>, def: &ConstraintDefinition) -> Result<()> {
     write_string(out, &def.name)?;
-    write_constraint_kind(out, &def.kind)?;
+    write_constraint_kind(out, &def.kind, def.backing)?;
     write_index_entity(out, def.entity);
     write_string(out, &def.label)?;
     write_string_vec(out, &def.properties)?;
     write_optional_string(out, def.owned_index.as_deref())
 }
 
-fn write_constraint_kind(out: &mut Vec<u8>, kind: &StoredConstraintKind) -> Result<()> {
+fn write_constraint_kind(
+    out: &mut Vec<u8>,
+    kind: &StoredConstraintKind,
+    backing: ConstraintBacking,
+) -> Result<()> {
+    let hash = match backing {
+        ConstraintBacking::Range => 0,
+        ConstraintBacking::Hash => CONSTRAINT_BACKING_HASH,
+    };
     match kind {
-        StoredConstraintKind::Unique => out.push(CONSTRAINT_KIND_UNIQUE),
+        StoredConstraintKind::Unique => out.push(CONSTRAINT_KIND_UNIQUE | hash),
         StoredConstraintKind::Existence => out.push(CONSTRAINT_KIND_EXISTENCE),
-        StoredConstraintKind::NodeKey => out.push(CONSTRAINT_KIND_NODE_KEY),
-        StoredConstraintKind::RelationshipKey => out.push(CONSTRAINT_KIND_RELATIONSHIP_KEY),
+        StoredConstraintKind::NodeKey => out.push(CONSTRAINT_KIND_NODE_KEY | hash),
+        StoredConstraintKind::RelationshipKey => out.push(CONSTRAINT_KIND_RELATIONSHIP_KEY | hash),
         StoredConstraintKind::PropertyType(t) => {
             out.push(CONSTRAINT_KIND_PROPERTY_TYPE);
             write_property_type(out, t)?;
@@ -896,28 +907,50 @@ impl<'a> Reader<'a> {
     }
 
     fn read_constraint_request(&mut self) -> Result<ConstraintRequest> {
+        let name = self.read_string()?;
+        let (kind, backing) = self.read_constraint_kind()?;
         Ok(ConstraintRequest {
-            name: self.read_string()?,
-            kind: self.read_constraint_kind()?,
+            name,
+            kind,
             entity: self.read_index_entity()?,
             label: self.read_string()?,
             properties: self.read_string_vec()?,
+            backing,
         })
     }
 
     fn read_constraint_definition(&mut self) -> Result<ConstraintDefinition> {
+        let name = self.read_string()?;
+        let (kind, backing) = self.read_constraint_kind()?;
         Ok(ConstraintDefinition {
-            name: self.read_string()?,
-            kind: self.read_constraint_kind()?,
+            name,
+            kind,
             entity: self.read_index_entity()?,
             label: self.read_string()?,
             properties: self.read_string_vec()?,
             owned_index: self.read_optional_string()?,
+            backing,
         })
     }
 
-    fn read_constraint_kind(&mut self) -> Result<StoredConstraintKind> {
-        match self.read_u8()? {
+    fn read_constraint_kind(&mut self) -> Result<(StoredConstraintKind, ConstraintBacking)> {
+        let tag = self.read_u8()?;
+        let backing = if tag & CONSTRAINT_BACKING_HASH != 0
+            && matches!(
+                tag & !CONSTRAINT_BACKING_HASH,
+                CONSTRAINT_KIND_UNIQUE
+                    | CONSTRAINT_KIND_NODE_KEY
+                    | CONSTRAINT_KIND_RELATIONSHIP_KEY
+            ) {
+            ConstraintBacking::Hash
+        } else {
+            ConstraintBacking::Range
+        };
+        let tag = match backing {
+            ConstraintBacking::Hash => tag & !CONSTRAINT_BACKING_HASH,
+            ConstraintBacking::Range => tag,
+        };
+        let kind = match tag {
             CONSTRAINT_KIND_UNIQUE => Ok(StoredConstraintKind::Unique),
             CONSTRAINT_KIND_EXISTENCE => Ok(StoredConstraintKind::Existence),
             CONSTRAINT_KIND_NODE_KEY => Ok(StoredConstraintKind::NodeKey),
@@ -928,7 +961,8 @@ impl<'a> Reader<'a> {
             tag => Err(StoreCodecError::Decode(format!(
                 "invalid constraint kind tag {tag}"
             ))),
-        }
+        }?;
+        Ok((kind, backing))
     }
 
     fn read_property_type(&mut self) -> Result<StoredPropertyType> {
@@ -1212,6 +1246,54 @@ fn read_vec<T>(
 mod tests {
     use super::*;
     use crate::{IndexConfigValue, StoredIndexEntity, StoredIndexKind};
+
+    /// A hash-backed constraint (G-64) round-trips, and a record written
+    /// before backings existed (no high bit) still reads as range-backed.
+    #[test]
+    fn constraint_backing_round_trips_and_old_records_read_as_range() {
+        for (kind, backing) in [
+            (StoredConstraintKind::Unique, ConstraintBacking::Hash),
+            (StoredConstraintKind::NodeKey, ConstraintBacking::Hash),
+            (
+                StoredConstraintKind::RelationshipKey,
+                ConstraintBacking::Hash,
+            ),
+            (StoredConstraintKind::Unique, ConstraintBacking::Range),
+            (StoredConstraintKind::Existence, ConstraintBacking::Range),
+        ] {
+            let request = ConstraintRequest {
+                name: "c".into(),
+                kind: kind.clone(),
+                entity: StoredIndexEntity::Node,
+                label: "R".into(),
+                properties: vec!["k".into()],
+                backing,
+            };
+            let bytes = encode_constraint_request(&request).unwrap();
+            assert_eq!(decode_constraint_request(&bytes).unwrap(), request);
+            let def = ConstraintDefinition {
+                name: "c".into(),
+                kind,
+                entity: StoredIndexEntity::Node,
+                label: "R".into(),
+                properties: vec!["k".into()],
+                owned_index: Some("c".into()),
+                backing,
+            };
+            let bytes = encode_constraint_definitions(std::slice::from_ref(&def)).unwrap();
+            assert_eq!(decode_constraint_definitions(&bytes).unwrap(), vec![def]);
+        }
+        // The bytes 0.32 wrote for a uniqueness constraint.
+        let mut old = Vec::new();
+        write_string(&mut old, "c").unwrap();
+        old.push(CONSTRAINT_KIND_UNIQUE);
+        write_index_entity(&mut old, StoredIndexEntity::Node);
+        write_string(&mut old, "R").unwrap();
+        write_string_vec(&mut old, &["k".to_string()]).unwrap();
+        let read = decode_constraint_request(&old).unwrap();
+        assert_eq!(read.kind, StoredConstraintKind::Unique);
+        assert_eq!(read.backing, ConstraintBacking::Range);
+    }
 
     fn nested_list(depth: usize) -> PropertyValue {
         (0..depth).fold(PropertyValue::Null, |inner, _| {

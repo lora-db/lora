@@ -290,6 +290,7 @@ impl SnapshotGraphBuilder {
                         entity: def.entity,
                         label: def.label.clone(),
                         properties: def.properties.clone(),
+                        backing: def.backing,
                     },
                     /*if_not_exists*/ true,
                 )

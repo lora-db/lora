@@ -72,11 +72,15 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-const LAYOUTS: [(&str, &str); 4] = [
+const LAYOUTS: [(&str, &str); 6] = [
     ("phase3", "CREATE (:Record {key: 'musicbrainz:release-group:' + toString(i) + '-0000-0000-0000-000000000000', hash: '0123456789abcdef', seenIn: 7, changedIn: 5})"),
     ("phase1", "MATCH (s:Source {name: 'musicbrainz'}), (k:Kind {name: 'release-group'}) CREATE (r:Record {key: 'musicbrainz:release-group:' + toString(i) + '-0000-0000-0000-000000000000', source: 'musicbrainz', kind: 'release-group', externalId: toString(i), url: 'https://musicbrainz.org/release-group/' + toString(i), hash: '0123456789abcdef', resolvedHash: 'fedcba9876543210', retrievedAt: '2026-10-22T10:00:00Z', seenIn: '20261022', changedIn: '20261015'}), (r)-[:FROM]->(s), (r)-[:OF]->(k)"),
     ("four_props", "CREATE (:Record {key: 'k' + toString(i), a: 1, b: 2, c: 3})"),
     ("five_props", "CREATE (:Record {key: 'k' + toString(i), a: 1, b: 2, c: 3, d: 4})"),
+    // The same records under `OPTIONS { indexProvider: 'hash' }` (a layout
+    // name ending in `_hash`): no sorted copy of the key.
+    ("phase3_hash", "CREATE (:Record {key: 'musicbrainz:release-group:' + toString(i) + '-0000-0000-0000-000000000000', hash: '0123456789abcdef', seenIn: 7, changedIn: 5})"),
+    ("phase1_hash", "MATCH (s:Source {name: 'musicbrainz'}), (k:Kind {name: 'release-group'}) CREATE (r:Record {key: 'musicbrainz:release-group:' + toString(i) + '-0000-0000-0000-000000000000', source: 'musicbrainz', kind: 'release-group', externalId: toString(i), url: 'https://musicbrainz.org/release-group/' + toString(i), hash: '0123456789abcdef', resolvedHash: 'fedcba9876543210', retrievedAt: '2026-10-22T10:00:00Z', seenIn: '20261022', changedIn: '20261015'}), (r)-[:FROM]->(s), (r)-[:OF]->(k)"),
 ];
 
 fn options(dir: &Path) -> DatabaseOpenOptions {
@@ -94,7 +98,7 @@ fn rows() -> Option<ExecuteOptions> {
     })
 }
 
-fn build(dir: &Path, n: usize, create: &str) {
+fn build(dir: &Path, n: usize, name: &str, create: &str) {
     let _ = std::fs::remove_dir_all(dir);
     let db = Database::open_named("probe", options(dir)).unwrap();
     db.execute(
@@ -102,8 +106,15 @@ fn build(dir: &Path, n: usize, create: &str) {
         rows(),
     )
     .unwrap();
+    let backing = if name.ends_with("_hash") {
+        " OPTIONS { indexProvider: 'hash' }"
+    } else {
+        ""
+    };
     db.execute(
-        "CREATE CONSTRAINT rk IF NOT EXISTS FOR (r:Record) REQUIRE r.key IS UNIQUE",
+        &format!(
+            "CREATE CONSTRAINT rk IF NOT EXISTS FOR (r:Record) REQUIRE r.key IS UNIQUE{backing}"
+        ),
         rows(),
     )
     .unwrap();
@@ -206,7 +217,7 @@ fn main() {
         if only.as_deref().is_some_and(|o| o != name) {
             continue;
         }
-        build(&dir, n, create);
+        build(&dir, n, name, create);
         let out = std::process::Command::new(std::env::current_exe().unwrap())
             .args([dir.to_str().unwrap(), &n.to_string(), name])
             .output()

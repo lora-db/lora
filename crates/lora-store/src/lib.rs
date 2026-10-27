@@ -68,10 +68,10 @@ pub use memory::{
 
 // ---------- Constraint catalog (CREATE CONSTRAINT surface) ----------
 pub use memory::{
-    ConstraintCatalog, ConstraintDefinition, ConstraintRequest, ConstraintViolation,
-    CreateConstraintError, CreateConstraintOutcome, DropConstraintError, DropConstraintOutcome,
-    StoredConstraintKind, StoredPropertyType, StoredPropertyTypeTerm, StoredScalarType,
-    StoredVectorCoordType,
+    ConstraintBacking, ConstraintCatalog, ConstraintDefinition, ConstraintRequest,
+    ConstraintViolation, CreateConstraintError, CreateConstraintOutcome, DropConstraintError,
+    DropConstraintOutcome, StoredConstraintKind, StoredPropertyType, StoredPropertyTypeTerm,
+    StoredScalarType, StoredVectorCoordType,
 };
 
 // ---------- Mutation stream vocabulary ----------

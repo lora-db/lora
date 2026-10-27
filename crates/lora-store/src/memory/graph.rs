@@ -16,8 +16,8 @@ use crate::{
 use super::adjacency::{self, AdjEntry, AdjSide, Adjacency, Side, TypeFilter};
 use super::chunked_vec::ChunkedVec;
 use super::constraint_catalog::{
-    ConstraintCatalog, ConstraintRequest, CreateConstraintError, CreateConstraintOutcome,
-    DropConstraintError, DropConstraintOutcome,
+    ConstraintBacking, ConstraintCatalog, ConstraintRequest, CreateConstraintError,
+    CreateConstraintOutcome, DropConstraintError, DropConstraintOutcome,
 };
 use super::distinct_stats::DistinctStatsRegistry;
 use super::entity_index_store::{
@@ -28,7 +28,8 @@ use super::hnsw::HnswParams;
 use super::id_bitmap::IdBitmap;
 use super::index_catalog::{
     CreateIndexError, CreateIndexOutcome, DropIndexError, DropIndexOutcome, IndexCatalog,
-    IndexDefinition, IndexRequest, StoredIndexEntity, StoredIndexKind, StoredIndexState,
+    IndexConfigValue, IndexDefinition, IndexRequest, StoredIndexEntity, StoredIndexKind,
+    StoredIndexState,
 };
 use super::point_index::PointRegistry;
 #[cfg(test)]
@@ -1185,6 +1186,11 @@ impl InMemoryGraph {
                 // Register a backing RANGE index under the same name. This
                 // is an implementation detail of the constraint, so WAL and
                 // snapshot replay record only the constraint mutation.
+                // A hash-backed constraint keeps the hash index only.
+                let mut options = BTreeMap::new();
+                if def.backing == ConstraintBacking::Hash {
+                    options.insert(SORTED_OPTION.to_string(), IndexConfigValue::Bool(false));
+                }
                 let idx_request = IndexRequest {
                     explicit_name: Some(def.name.clone()),
                     kind: StoredIndexKind::Range,
@@ -1192,7 +1198,7 @@ impl InMemoryGraph {
                     label: Some(def.label.clone()),
                     additional_labels: Vec::new(),
                     properties: def.properties.clone(),
-                    options: Default::default(),
+                    options,
                 };
                 // Errors from the backing-index registration unwind the
                 // constraint registration to keep the two catalogs in
@@ -1313,7 +1319,7 @@ impl InMemoryGraph {
                     }
                 }
                 StoredIndexKind::Range => {
-                    if let Some(label) = def.label.as_deref() {
+                    if let Some(label) = def.label.as_deref().filter(|_| is_sorted(def)) {
                         for prop in &def.properties {
                             self.deactivate_sorted_scope(def.entity, label, prop);
                         }
@@ -1398,7 +1404,7 @@ impl InMemoryGraph {
                             self.ensure_relationship_property_index(key)
                         }
                     }
-                    if let Some(label) = def.label.as_deref() {
+                    if let Some(label) = def.label.as_deref().filter(|_| is_sorted(def)) {
                         self.activate_sorted_scope(def.entity, label, key);
                     }
                 }
@@ -1878,6 +1884,11 @@ impl InMemoryGraph {
 
         for def in self.index_catalog_read().list() {
             if def.state != StoredIndexState::Online {
+                continue;
+            }
+            // A hash-backed constraint's index answers equality only, which
+            // the planner assumes of every key.
+            if def.kind == StoredIndexKind::Range && !is_sorted(&def) {
                 continue;
             }
             let Some(label) = def.label else {
@@ -2853,4 +2864,16 @@ fn edit_record_property(
     let old = encoded::edit_property(bytes, kind, dicts, key, edit, &mut out)?;
     slab.set(idx, &out);
     Some(old)
+}
+
+/// Option of a constraint's backing RANGE index: `false` when it keeps the
+/// hash index only (see [`ConstraintBacking::Hash`]).
+pub(super) const SORTED_OPTION: &str = "sorted";
+
+/// Whether a RANGE index keeps a sorted copy of its values.
+pub(super) fn is_sorted(def: &IndexDefinition) -> bool {
+    !matches!(
+        def.options.get(SORTED_OPTION),
+        Some(IndexConfigValue::Bool(false))
+    )
 }

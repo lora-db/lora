@@ -535,6 +535,7 @@ fn lower_create_constraint(pair: Pair<Rule>) -> Result<CreateConstraint, ParseEr
     let mut properties: Vec<String> = Vec::new();
     let mut composite = false;
     let mut requirement: Option<ConstraintKind> = None;
+    let mut options = None;
 
     for p in pair.into_inner() {
         match p.as_rule() {
@@ -555,6 +556,7 @@ fn lower_create_constraint(pair: Pair<Rule>) -> Result<CreateConstraint, ParseEr
             Rule::constraint_requirement => {
                 requirement = Some(lower_constraint_requirement(p)?);
             }
+            Rule::index_options => options = Some(lower_index_options(p)?),
             _ => return Err(unexpected_rule("create_constraint_command", p)),
         }
     }
@@ -639,6 +641,7 @@ fn lower_create_constraint(pair: Pair<Rule>) -> Result<CreateConstraint, ParseEr
         label,
         properties,
         kind,
+        options,
         span,
     })
 }

@@ -59,9 +59,10 @@ mod test_util;
 mod tests;
 
 pub use constraint_catalog::{
-    ConstraintCatalog, ConstraintDefinition, ConstraintRequest, CreateConstraintError,
-    CreateConstraintOutcome, DropConstraintError, DropConstraintOutcome, StoredConstraintKind,
-    StoredPropertyType, StoredPropertyTypeTerm, StoredScalarType, StoredVectorCoordType,
+    ConstraintBacking, ConstraintCatalog, ConstraintDefinition, ConstraintRequest,
+    CreateConstraintError, CreateConstraintOutcome, DropConstraintError, DropConstraintOutcome,
+    StoredConstraintKind, StoredPropertyType, StoredPropertyTypeTerm, StoredScalarType,
+    StoredVectorCoordType,
 };
 pub use constraint_enforce::ConstraintViolation;
 pub use graph::InMemoryGraph;
