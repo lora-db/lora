@@ -48,7 +48,7 @@ next, **P2** planned, **P3** when convenient.
 
 ## Engine — memory
 
-- [ ] P1 A keyed node still costs about 305 B resident after an open at 200k nodes, 455 B at 50k. The exact-match index keeps a digest instead of a copy of a value one entity holds, and short values a key repeats are stored by number (2026-10-27): a node with a 58-byte key, a hash and two integers holds 218 B of heap (was 335), a ten-property record 372 (was 565). Left: the sorted index's 80 B copy of the key (sharing it with the record was measured and costs 20% on key lookups), allocator retention after replay on macOS, the open's fixed 3.7 MB (Festimap G-64, `lora-database/examples/node_memory_probe.rs`).
+- [ ] P2 A keyed node (58-byte key, a hash, two integers) costs 279 B resident after an open at 200k nodes and 352 B at 50k, of which 77 B is the open's fixed 3.8 MB (Festimap G-64; was 456 and 610 in 0.30.0). Left: the sorted index's 80 B copy of the key (sharing it with the record cost 20% on key lookups), and the open's fixed cost (`lora-database/examples/node_memory_probe.rs`).
 
 ## Writer lock and durability
 

@@ -679,11 +679,33 @@ would save one of the two hops but makes the slab track reference counts in
 raw bytes through clones, rebuilds and garbage, unsafe code across the whole
 record store.
 
+**Replay without its transient.** Most of the gap at 50k was the replay's
+own allocations: each transaction (one mutation batch of a few megabytes
+for 5,000 writes) was decoded where it was read and held as events until
+its commit, and macOS's malloc kept both the small allocations and the
+freed frame buffers resident. Replay now checks a batch where it reads it,
+with a parse that builds nothing (`validate_events`, which accepts exactly
+what decoding accepts: `check_matches_decode`), keeps it as its frame's
+bytes, and at the commit decodes and applies one event at a time
+(`lora_wal::TxEvents`). On macOS a frame of 128 KiB or more is read into
+pages mapped for it and unmapped when dropped. The 4 MiB pending budget,
+the order of steps and where a corrupt batch is reported are unchanged.
+Replay CPU is 3-4% higher (the check).
+
+Festimap's probe through the Node binding afterwards, interleaved with
+0.30.0, two runs each, load average 3 to 5 (bytes per node; the open's
+fixed cost is 3.8 MB, 77 bytes per node at 50k and 19 at 200k):
+
+| Layout | 50k: 0.30.0 | now | now less fixed | 200k: 0.30.0 | now | now less fixed |
+|---|---|---|---|---|---|---|
+| `phase3` | 614 / 576 | 350 / 355 | 275 | 456 / 457 | 279 / 279 | 260 |
+| `phase1` | 1,165 / 1,126 | 529 / 526 | 450 | 828 / 829 | 473 / 472 | 454 |
+
 Not done:
 - The sorted index's copy of the key, above.
-- macOS keeps the replay's freed transients resident; `release_free_memory`
-  (from `festimap/g70-g62`) trims glibc and jemalloc, and has no macOS
-  counterpart that helps.
+- Hub adjacency still grows by half; after this change it leaves no cached
+  blocks at 50k, and at 200k the cached blocks after a `phase1` open come
+  mostly from the checkpoint the open runs on a WAL past 64 MiB.
 
 ---
 
