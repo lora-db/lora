@@ -81,6 +81,10 @@ pub(super) fn lower_shortest_path_pattern(pair: Pair<Rule>) -> Result<PatternEle
 }
 
 pub(super) fn lower_pattern_element(pair: Pair<Rule>) -> Result<PatternElement, ParseError> {
+    lora_ast::stack::guard(|| lower_pattern_element_inner(pair))
+}
+
+fn lower_pattern_element_inner(pair: Pair<Rule>) -> Result<PatternElement, ParseError> {
     let span = pair_span(&pair);
     let mut inners = pair.into_inner().peekable();
 

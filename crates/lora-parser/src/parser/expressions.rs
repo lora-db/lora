@@ -11,6 +11,10 @@ use lora_ast::*;
 use pest::iterators::Pair;
 
 pub(super) fn lower_expression(pair: Pair<Rule>) -> Result<Expr, ParseError> {
+    lora_ast::stack::guard(|| lower_expression_inner(pair))
+}
+
+fn lower_expression_inner(pair: Pair<Rule>) -> Result<Expr, ParseError> {
     match pair.as_rule() {
         Rule::expression => lower_expression(single_inner(pair)?),
         Rule::case_expression => lower_expression(single_inner(pair)?),

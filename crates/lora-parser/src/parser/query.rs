@@ -10,6 +10,10 @@ use lora_ast::*;
 use pest::iterators::Pair;
 
 pub(super) fn lower_regular_query(pair: Pair<Rule>) -> Result<RegularQuery, ParseError> {
+    lora_ast::stack::guard(|| lower_regular_query_inner(pair))
+}
+
+fn lower_regular_query_inner(pair: Pair<Rule>) -> Result<RegularQuery, ParseError> {
     let span = pair_span(&pair);
     let mut inner = pair.into_inner();
 

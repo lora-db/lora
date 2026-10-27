@@ -48,15 +48,19 @@ pub(super) struct LoraParser;
 
 pub fn parse_query(input: &str) -> Result<Document, ParseError> {
     limits::reset_budgets();
-    limits::check_nesting(input)?;
-    let mut pairs = LoraParser::parse(Rule::query, input)
-        .map_err(|e| ParseError::new(e.to_string(), 0, input.len()))?;
+    let nesting = limits::check_nesting(input)?;
+    // pest's recursive descent has no stack guards of its own: make room
+    // for all of it up front.
+    lora_ast::stack::guard_with(limits::parse_stack(nesting), || {
+        let mut pairs = LoraParser::parse(Rule::query, input)
+            .map_err(|e| ParseError::new(e.to_string(), 0, input.len()))?;
 
-    let pair = pairs
-        .next()
-        .ok_or_else(|| ParseError::new("expected query", 0, input.len()))?;
+        let pair = pairs
+            .next()
+            .ok_or_else(|| ParseError::new("expected query", 0, input.len()))?;
 
-    lower_query(pair)
+        lower_query(pair)
+    })
 }
 
 fn lower_query(pair: Pair<Rule>) -> Result<Document, ParseError> {

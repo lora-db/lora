@@ -18,10 +18,11 @@ use crate::errors::ParseError;
 /// expressions or `LIST<...>` types nest deeper than
 /// [`MAX_QUERY_NESTING`]. String literals, escaped names and comments are
 /// skipped. The count errs high, never low: a closer only lowers it when
-/// it can close something.
-pub(super) fn check_nesting(input: &str) -> Result<(), ParseError> {
+/// it can close something. Returns the deepest nesting found.
+pub(super) fn check_nesting(input: &str) -> Result<usize, ParseError> {
     let bytes = input.as_bytes();
     let mut depth = 0usize;
+    let mut deepest = 0usize;
     // Open `LIST<` types, closed by `>`.
     let mut list_types = 0usize;
     // The last significant byte and, when it ended a word, that word.
@@ -66,6 +67,7 @@ pub(super) fn check_nesting(input: &str) -> Result<(), ParseError> {
                 if depth > MAX_QUERY_NESTING {
                     return Err(too_deep(i));
                 }
+                deepest = deepest.max(depth);
             }
             b')' | b']' | b'}' => depth = depth.saturating_sub(1),
             b'<' if prev_word.eq_ignore_ascii_case(b"LIST") => {
@@ -74,6 +76,7 @@ pub(super) fn check_nesting(input: &str) -> Result<(), ParseError> {
                 if depth > MAX_QUERY_NESTING {
                     return Err(too_deep(i));
                 }
+                deepest = deepest.max(depth);
             }
             b'>' if list_types > 0 => {
                 list_types -= 1;
@@ -93,6 +96,7 @@ pub(super) fn check_nesting(input: &str) -> Result<(), ParseError> {
                         if depth > MAX_QUERY_NESTING {
                             return Err(too_deep(start));
                         }
+                        deepest = deepest.max(depth);
                     } else if word.eq_ignore_ascii_case(b"END") && closes_case(prev_byte, prev_word)
                     {
                         depth = depth.saturating_sub(1);
@@ -112,7 +116,21 @@ pub(super) fn check_nesting(input: &str) -> Result<(), ParseError> {
         prev_word = b"";
         i += 1;
     }
-    Ok(())
+    Ok(deepest)
+}
+
+/// Stack the grammar may use on input nesting `nesting` levels deep. pest
+/// recurses through a dozen rules per level and has no stack guards of its
+/// own, so [`super::parse_query`] makes room for all of it before it
+/// starts. Measured at the nesting limit: about 15 KiB a level in release
+/// builds and 85 KiB unoptimised; these leave twice that.
+pub(super) fn parse_stack(nesting: usize) -> usize {
+    let (base, per_level) = if cfg!(debug_assertions) {
+        (1 << 20, 160 << 10)
+    } else {
+        (128 << 10, 32 << 10)
+    };
+    base + nesting * per_level
 }
 
 /// Whether an `END` after `prev_byte` / `prev_word` can close a `CASE`:
