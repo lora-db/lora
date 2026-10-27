@@ -198,6 +198,8 @@ pub struct RelByListElementScanExec {
     pub direction: Direction,
     pub key: String,
     pub value: ResolvedExpr,
+    /// See [`crate::RelByListElementScan::any`].
+    pub any: bool,
 }
 
 #[derive(Debug, Clone)]

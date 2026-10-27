@@ -146,6 +146,10 @@ pub enum PropertySeek {
     /// `value IN key`: `key` holds lists, and the scan seeks the elements
     /// equal to `value` in the RANGE index on `(label, key)`.
     Element,
+    /// `v1 IN key OR v2 IN key …`, or `any(x IN value WHERE x IN key)`:
+    /// `value` evaluates to a list, and the scan seeks each distinct
+    /// element as [`PropertySeek::Element`] does, each node once.
+    AnyElement,
 }
 
 /// Range-bounded property scan rewritten from `Filter(NodeScan, var.prop CMP value)`
@@ -280,6 +284,9 @@ pub struct RelByListElementScan {
     pub direction: Direction,
     pub key: String,
     pub value: ResolvedExpr,
+    /// `value` is a list, any of whose elements the list in `key` holds
+    /// (as [`PropertySeek::AnyElement`]).
+    pub any: bool,
 }
 
 /// Spatial-index relationship scan. Mirror of [`NodeByPointScan`].
