@@ -203,6 +203,16 @@ export declare class Database {
    */
   dispose(): void
   /**
+   * Dispose the handle and resolve once it is closed: every operation
+   * started on it has settled and, unless another handle in this
+   * process still has the same database open, its directory is
+   * unlocked, so an open of the same path (in this process or another)
+   * does not find it locked. Queued writes and open transactions reject
+   * as closed, as with `dispose()`; queries already running finish.
+   * Rejects with `LORA_TIMEOUT` if they have not after 60 s.
+   */
+  close(): Promise<void>
+  /**
    * Roll back every open interactive transaction and close every open
    * stream of this handle, releasing the writer lock they may hold; the
    * database stays open. The TS wrapper calls it when the process exits,

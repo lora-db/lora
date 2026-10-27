@@ -1311,8 +1311,11 @@ class DatabaseImpl {
   /**
    * Release the native database handle. Idempotent.
    *
-   * Call this when a container-backed database needs to be reopened in the same
-   * process. New operations after disposal reject with `database is closed`.
+   * New operations after disposal reject with `database is closed`.
+   * Queries already running finish on their own; the directory of a named
+   * database is unlocked when the last of them does. Opening the same
+   * database again in this process waits for that; another process may
+   * find it locked meanwhile. Use `close()` to wait for it.
    */
   dispose(): void {
     try {
@@ -1320,9 +1323,46 @@ class DatabaseImpl {
     } catch (err) {
       throw wrapError(err);
     } finally {
-      for (const feed of [...this.#feeds]) feed.deref()?.disposed();
-      this.#feeds.clear();
+      this.#feedsDisposed();
     }
+  }
+
+  /**
+   * Dispose the handle and resolve once it is closed: every operation
+   * started on it has settled and, unless another handle in this process
+   * has the same database open, its directory is unlocked. Queued writes
+   * and open transactions reject as closed; queries already running
+   * finish. Rejects with `LORA_TIMEOUT` if they still run after 60 s.
+   * Idempotent. `await using db = await createDatabase(...)` calls it.
+   *
+   * ```ts
+   * await db.close();
+   * const reopened = await createDatabase("app", { databaseDir });
+   * ```
+   */
+  async close(): Promise<void> {
+    let closed: Promise<void>;
+    try {
+      closed = this.#inner.close();
+    } catch (err) {
+      throw wrapError(err);
+    } finally {
+      this.#feedsDisposed();
+    }
+    try {
+      await closed;
+    } catch (err) {
+      throw wrapError(err);
+    }
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.close();
+  }
+
+  #feedsDisposed(): void {
+    for (const feed of [...this.#feeds]) feed.deref()?.disposed();
+    this.#feeds.clear();
   }
 
   /**

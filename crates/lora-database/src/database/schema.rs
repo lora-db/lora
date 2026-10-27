@@ -29,11 +29,11 @@ use lora_ast::{
 };
 use lora_executor::{LoraValue, Row};
 use lora_store::{
-    ConstraintDefinition, ConstraintRequest, CreateConstraintError, CreateIndexError,
-    CreateIndexOutcome, DropConstraintError, DropIndexError, GraphStorage, GraphStorageMut,
-    IndexConfigValue, IndexDefinition, IndexRequest, StoredConstraintKind, StoredIndexEntity,
-    StoredIndexKind, StoredPropertyType, StoredPropertyTypeTerm, StoredScalarType,
-    StoredVectorCoordType,
+    ConstraintBacking, ConstraintDefinition, ConstraintRequest, CreateConstraintError,
+    CreateIndexError, CreateIndexOutcome, DropConstraintError, DropIndexError, GraphStorage,
+    GraphStorageMut, IndexConfigValue, IndexDefinition, IndexRequest, StoredConstraintKind,
+    StoredIndexEntity, StoredIndexKind, StoredPropertyType, StoredPropertyTypeTerm,
+    StoredScalarType, StoredVectorCoordType,
 };
 
 use crate::database::{
@@ -617,13 +617,57 @@ fn build_constraint_request(
             StoredConstraintKind::PropertyType(lower_property_type(expr)?)
         }
     };
+    let backing = constraint_backing(cmd, &kind)?;
     Ok(ConstraintRequest {
         name,
         kind,
         entity,
         label: cmd.label.clone(),
         properties: cmd.properties.clone(),
+        backing,
     })
+}
+
+/// `OPTIONS { indexProvider: 'hash' }` on a uniqueness or key constraint
+/// (G-64): the backing index keeps the hash index alone. `'range'` (or
+/// Neo4j's `'range-1.0'`) is the default.
+fn constraint_backing(
+    cmd: &CreateConstraint,
+    kind: &StoredConstraintKind,
+) -> Result<ConstraintBacking> {
+    let Some(opts) = cmd.options.as_ref() else {
+        return Ok(ConstraintBacking::Range);
+    };
+    let mut backing = ConstraintBacking::Range;
+    for (key, value) in evaluate_options(opts)? {
+        match (key.as_str(), &value) {
+            ("indexProvider", IndexConfigValue::String(p)) if p == "hash" => {
+                backing = ConstraintBacking::Hash;
+            }
+            ("indexProvider", IndexConfigValue::String(p)) if p == "range" || p == "range-1.0" => {
+                backing = ConstraintBacking::Range;
+            }
+            ("indexProvider", _) => {
+                return Err(DatabaseOperationError::validation(
+                    "constraint option `indexProvider` must be 'range' or 'hash'",
+                )
+                .into());
+            }
+            (other, _) => {
+                return Err(DatabaseOperationError::validation(format!(
+                    "unknown constraint option `{other}`; expected `indexProvider`"
+                ))
+                .into());
+            }
+        }
+    }
+    if backing == ConstraintBacking::Hash && !kind.requires_backing_index() {
+        return Err(DatabaseOperationError::validation(
+            "`indexProvider: 'hash'` applies to uniqueness and key constraints only",
+        )
+        .into());
+    }
+    Ok(backing)
 }
 
 fn lower_property_type(expr: &AstPropertyTypeExpr) -> Result<StoredPropertyType> {
@@ -702,8 +746,13 @@ fn constraint_to_row(def: ConstraintDefinition) -> Row {
         label,
         properties,
         owned_index,
+        backing,
     } = def;
     let entity_str = entity.as_str().to_string();
+    let index_provider = owned_index.as_ref().map(|_| match backing {
+        ConstraintBacking::Range => "range",
+        ConstraintBacking::Hash => "hash",
+    });
     let type_tag = kind.type_tag(entity).to_string();
     let property_type = property_type_display(&kind);
     let owned_index = owned_index
@@ -723,6 +772,12 @@ fn constraint_to_row(def: ConstraintDefinition) -> Row {
             LoraValue::List(properties.into_iter().map(LoraValue::String).collect()),
         ),
         NamedColumn::new("ownedIndex", owned_index),
+        NamedColumn::new(
+            "indexProvider",
+            index_provider
+                .map(|p| LoraValue::String(p.to_string()))
+                .unwrap_or(LoraValue::Null),
+        ),
         NamedColumn::new(
             "propertyType",
             property_type

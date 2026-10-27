@@ -5,12 +5,18 @@
 // - a root filter no index answers (CONTAINS, ENDS_WITH, case-insensitive,
 //   NOT, OR, a quantifier, a computed field) examines every node of the
 //   label: its count from `analyze()`, or the page size without statistics;
+// - a root filter an index answers by value (`eq`, `in`, `includes`,
+//   `includesAny`) examines the nodes holding those values, from the
+//   per-value counts `analyze()` keeps (G-73): an AND its narrowest test,
+//   an OR of `includes` on one list (which the engine seeks per element,
+//   G-72) the sum of its branches; the label without them;
 // - every relationship a filter follows visits each candidate's related
 //   nodes, once per level: the mean degree when the candidates are a scan
 //   of the label, the maximum when the caller picked them (by key, or as
 //   the parents of a nested list), and the page size without statistics.
 
 import { RANGE_UNINDEXABLE } from "../analyze/indexes.js";
+import { valueKey } from "../analyze/statistics.js";
 import type {
   AbstractType,
   NodeType,
@@ -33,8 +39,9 @@ const SEEK_OPS = new Set([
   "startsWith",
   "withinBBox",
   "distance",
-  // A list's elements, in the RANGE index inferred for it (G-63).
+  // A list's elements, in the RANGE index inferred for it (G-63, G-72).
   "includes",
+  "includesAny",
 ]);
 const RANGE_OPS = new Set(["lt", "lte", "gt", "gte"]);
 
@@ -186,7 +193,11 @@ export function rootFilterCost(
   if (keyed !== undefined)
     return keyed * (1 + perRowCost(ctx, node, where, true));
   const label = labelRows(ctx, node, fallback);
-  const rows = Math.min(label, anchoredRows(ctx, node, where) ?? label);
+  const rows = Math.min(
+    label,
+    anchoredRows(ctx, node, where) ?? label,
+    valueRows(ctx, node, where) ?? label,
+  );
   const scan = all || (hasPredicate(where) && !seeks(ctx, node, where!));
   return (scan ? rows : 0) + rows * perRowCost(ctx, node, where);
 }
@@ -218,6 +229,91 @@ function anchoredRows(
     if (stats) return anchor.count * Math.max(stats.max, 1);
   }
   return undefined;
+}
+
+/**
+ * Nodes a `where` selects by indexed value, from the per-value counts of
+ * `analyze()`: a test the narrowest of its operators, an AND (or one
+ * where's fields) the narrowest of its tests, an OR of `includes` on one
+ * list the sum of its branches. Any other OR is a label scan in the
+ * engine and narrows nothing. Undefined without statistics.
+ */
+function valueRows(
+  ctx: CompileContext,
+  node: NodeType,
+  where: Where | null | undefined,
+): number | undefined {
+  if (!ctx.statistics?.values) return undefined;
+  let rows: number | undefined;
+  const narrow = (n: number | undefined) => {
+    if (n !== undefined) rows = rows === undefined ? n : Math.min(rows, n);
+  };
+  for (const [key, value] of Object.entries(where ?? {})) {
+    if (value === null || value === undefined) continue;
+    if (key === "AND") {
+      for (const w of value as Where[]) narrow(valueRows(ctx, node, w));
+    } else if (key === "OR") {
+      if (!includesOr(node, value as Where[])) continue;
+      const branches = (value as Where[]).map((w) => valueRows(ctx, node, w));
+      if (branches.every((n) => n !== undefined)) {
+        narrow(branches.reduce((a, b) => a! + b!, 0));
+      }
+    } else {
+      narrow(fieldRows(ctx, node, key, value as Where));
+    }
+  }
+  return rows;
+}
+
+/**
+ * Whether an OR's branches each test one list field, the same one, with
+ * `includes` or `includesAny` only: the engine seeks it element by element
+ * (G-72).
+ */
+function includesOr(node: NodeType, branches: Where[]): boolean {
+  let field: string | undefined;
+  return (
+    branches.length > 0 &&
+    branches.every((branch) => {
+      const tests = Object.entries(branch).filter(([, v]) => v != null);
+      if (tests.length !== 1) return false;
+      const [key, ops] = tests[0]!;
+      const f = node.fields.get(key);
+      if (f?.kind !== "scalar" || !f.list) return false;
+      if ((field ??= key) !== key) return false;
+      const used = Object.entries(ops as Where).filter(([, v]) => v != null);
+      return (
+        used.length > 0 &&
+        used.every(([op]) => op === "includes" || op === "includesAny")
+      );
+    })
+  );
+}
+
+/** Nodes one field's operators select by value, from its counts. */
+function fieldRows(
+  ctx: CompileContext,
+  node: NodeType,
+  key: string,
+  ops: Where,
+): number | undefined {
+  const values = ctx.statistics?.values?.[`${node.name}.${key}`];
+  if (!values) return undefined;
+  const held = (v: unknown) => values.counts[valueKey(v)] ?? values.rest;
+  const sum = (vs: unknown) =>
+    Array.isArray(vs) ? vs.reduce((n: number, v) => n + held(v), 0) : undefined;
+  let rows: number | undefined;
+  for (const [op, operand] of Object.entries(ops)) {
+    if (operand === null || operand === undefined) continue;
+    const n =
+      op === "eq" || op === "includes"
+        ? held(operand)
+        : op === "in" || op === "includesAny"
+          ? sum(operand)
+          : undefined;
+    if (n !== undefined) rows = rows === undefined ? n : Math.min(rows, n);
+  }
+  return rows;
 }
 
 /** A relationship filter naming related nodes by key, as the root seeks it. */
@@ -286,6 +382,8 @@ function seeks(ctx: CompileContext, node: NodeType, where: Where): boolean {
         if (SEEK_OPS.has(op)) return true;
         if (RANGE_OPS.has(op) && !RANGE_UNINDEXABLE.has(f.type)) return true;
       }
+    } else if (key === "OR" && includesOr(node, value as Where[])) {
+      return true;
     } else if (anchorOf(ctx, node, key, value)) {
       return true;
     }

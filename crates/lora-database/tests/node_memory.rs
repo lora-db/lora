@@ -97,6 +97,11 @@ fn options(dir: &Path) -> DatabaseOpenOptions {
 /// `key`, close the database, and return the heap its reopening holds per
 /// record (the WAL is replayed, as Festimap's probe opens it).
 fn bytes_per_record(tag: &str, create: &str) -> f64 {
+    bytes_per_record_under(tag, create, "")
+}
+
+/// [`bytes_per_record`] with the constraint's `OPTIONS` clause.
+fn bytes_per_record_under(tag: &str, create: &str, constraint_options: &str) -> f64 {
     let _guard = MEASURE.lock().unwrap_or_else(|p| p.into_inner());
     let dir = TmpDir::new(tag);
     {
@@ -107,7 +112,9 @@ fn bytes_per_record(tag: &str, create: &str) -> f64 {
         )
         .unwrap();
         db.execute(
-            "CREATE CONSTRAINT rk FOR (r:Record) REQUIRE r.key IS UNIQUE",
+            &format!(
+                "CREATE CONSTRAINT rk FOR (r:Record) REQUIRE r.key IS UNIQUE {constraint_options}"
+            ),
             rows(),
         )
         .unwrap();
@@ -161,4 +168,21 @@ fn a_fifth_property_costs_a_few_bytes() {
         five - four < 20.0,
         "four properties hold {four:.0} bytes a record, five {five:.0}"
     );
+}
+
+/// A key under `OPTIONS { indexProvider: 'hash' }` keeps the hash index
+/// alone: no sorted copy of the key (about 80 bytes for a 58-byte key).
+#[test]
+fn a_hash_backed_key_costs_no_sorted_copy() {
+    let range = bytes_per_record("phase3-range", PHASE3);
+    let hash = bytes_per_record_under("phase3-hash", PHASE3, "OPTIONS { indexProvider: 'hash' }");
+    assert!(
+        range - hash > 60.0,
+        "range-backed {range:.0} bytes a record, hash-backed {hash:.0}"
+    );
+    assert!(
+        hash < 200.0,
+        "a hash-backed phase-3 record holds {hash:.0} bytes"
+    );
+    eprintln!("phase3: range-backed {range:.0} B, hash-backed {hash:.0} B");
 }

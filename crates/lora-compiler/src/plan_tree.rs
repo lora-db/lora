@@ -209,6 +209,9 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
                 PropertySeek::Element => {
                     d.insert("mode".to_string(), "element".to_string());
                 }
+                PropertySeek::AnyElement => {
+                    d.insert("mode".to_string(), "any-element".to_string());
+                }
             }
             PlanDescription::with_children("NodeByPropertyScan", d, opt_input(n.input))
         }
@@ -336,6 +339,9 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
             );
             d.insert("key".to_string(), n.key.clone());
             d.insert("value".to_string(), expr_str(&n.value));
+            if n.any {
+                d.insert("mode".to_string(), "any-element".to_string());
+            }
             PlanDescription::with_children("RelByListElementScan", d, opt_input(n.input))
         }
         PhysicalOp::RelByPointScan(n) => {

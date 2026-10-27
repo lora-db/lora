@@ -312,3 +312,56 @@ fn sorting_and_aggregating_mixed_kinds_still_works() {
         1
     );
 }
+
+/// `date({timezone: $tz})` and its siblings: the current value in a zone,
+/// as in Neo4j (Festimap G-61: the reader's local day without the
+/// `datetime({datetime: datetime(), timezone: $tz})` detour).
+#[test]
+fn a_map_of_only_a_timezone_is_now_in_that_zone() {
+    let db = TestDb::new();
+    for (call, ty) in [
+        ("date", "DATE"),
+        ("datetime", "DATETIME"),
+        ("localdatetime", "LOCAL_DATETIME"),
+        ("time", "TIME"),
+        ("localtime", "LOCAL_TIME"),
+    ] {
+        assert_eq!(
+            db.scalar(&format!(
+                "RETURN type.of({call}({{timezone: 'Europe/Amsterdam'}}))"
+            )),
+            json!(ty),
+            "{call}"
+        );
+    }
+    // The long form it replaces, in a named zone and at a fixed offset.
+    for zone in ["Europe/Amsterdam", "Pacific/Kiritimati", "-11:00", "Z"] {
+        let q = format!(
+            "WITH '{zone}' AS tz RETURN date({{timezone: tz}}) = \
+             date(datetime({{datetime: datetime(), timezone: tz}}))"
+        );
+        assert_eq!(db.scalar(&q), json!(true), "{zone}");
+    }
+    // +14:00 is 25 hours ahead of -11:00: one or (for an hour a day) two
+    // days later.
+    assert_eq!(
+        db.scalar(
+            "RETURN duration.inDays(date({timezone: '-11:00'}), \
+             date({timezone: '+14:00'})).days IN [1, 2]"
+        ),
+        json!(true)
+    );
+    assert_eq!(
+        db.scalar("RETURN datetime({timezone: 'Europe/Amsterdam'}).timezone"),
+        json!("Europe/Amsterdam")
+    );
+    // Beside other components a timezone still must fit the type, and an
+    // unknown zone fails.
+    for q in [
+        "RETURN date({year: 2026, timezone: 'Europe/Amsterdam'})",
+        "RETURN date({timezone: 'Mars/Olympus'})",
+    ] {
+        let err = db.run_err(q);
+        assert!(err.contains("cannot cast"), "{q}: {err}");
+    }
+}

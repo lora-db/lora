@@ -101,7 +101,7 @@ if_exists = { IF ~ EXISTS }
 create_constraint_command = {
     CREATE ~ CONSTRAINT ~ constraint_name_spec ~ if_not_exists?
     ~ FOR ~ constraint_pattern
-    ~ REQUIRE ~ constraint_property_spec ~ constraint_requirement
+    ~ REQUIRE ~ constraint_property_spec ~ constraint_requirement ~ index_options?
 }
 
 constraint_name_spec = { !(FOR | IF) ~ (parameter | symbolic_name) }

@@ -2267,7 +2267,8 @@ pub(crate) fn indexed_node_property_candidates<S: GraphStorage>(
 /// non-list value yields every labelled node unfiltered, so the `Filter`
 /// kept above the scan evaluates (and reports) the predicate itself. With
 /// [`PropertySeek::Element`] it seeks `expected IN key` (see
-/// [`list_element_candidates`]).
+/// [`list_element_candidates`]), and with [`PropertySeek::AnyElement`]
+/// that for each element of the list `expected`, each node once.
 pub(crate) fn property_scan_candidates<S: GraphStorage>(
     storage: &S,
     labels: &[Vec<String>],
@@ -2280,6 +2281,9 @@ pub(crate) fn property_scan_candidates<S: GraphStorage>(
             return indexed_node_property_candidates(storage, labels, key, expected)
         }
         PropertySeek::Element => return list_element_candidates(storage, labels, key, expected),
+        PropertySeek::AnyElement => {
+            return any_list_element_candidates(storage, labels, key, expected)
+        }
         PropertySeek::In => {}
     }
     match expected {
@@ -2343,6 +2347,17 @@ pub(crate) fn property_scan_matches<S: GraphStorage>(
             return node_matches_property_filter(storage, node_id, labels, key, expected)
         }
         PropertySeek::Element => return node_list_holds(storage, node_id, labels, key, expected),
+        PropertySeek::AnyElement => {
+            return match expected {
+                LoraValue::List(items) => items
+                    .iter()
+                    .any(|item| node_list_holds(storage, node_id, labels, key, item)),
+                LoraValue::Null => false,
+                _ => storage
+                    .with_node(node_id, |n| node_matches_label_groups(n.labels(), labels))
+                    .unwrap_or(false),
+            }
+        }
         PropertySeek::In => {}
     }
     match expected {
@@ -2395,6 +2410,55 @@ fn list_element_candidates<S: GraphStorage>(
             ids: scan_node_ids_for_label_groups(storage, labels),
             prefiltered: false,
         },
+    }
+}
+
+/// Candidates for `any(x IN expected WHERE x IN key)`: the union of
+/// [`list_element_candidates`] over the distinct elements of `expected`,
+/// each node once. A `null` list matches nothing; any other non-list value
+/// yields every labelled node, for the `Filter` above to evaluate.
+fn any_list_element_candidates<S: GraphStorage>(
+    storage: &S,
+    labels: &[Vec<String>],
+    key: &str,
+    expected: &LoraValue,
+) -> NodePropertyCandidates {
+    let items = match expected {
+        LoraValue::List(items) => items,
+        LoraValue::Null => {
+            return NodePropertyCandidates {
+                ids: Vec::new(),
+                prefiltered: true,
+            }
+        }
+        _ => {
+            return NodePropertyCandidates {
+                ids: scan_node_ids_for_label_groups(storage, labels),
+                prefiltered: false,
+            }
+        }
+    };
+    let mut seen = BTreeSet::new();
+    let mut ids = Vec::new();
+    for item in items {
+        if matches!(item, LoraValue::Null) {
+            continue;
+        }
+        let candidates = list_element_candidates(storage, labels, key, item);
+        for id in candidates.ids {
+            if seen.contains(&id) {
+                continue;
+            }
+            if !candidates.prefiltered && !node_list_holds(storage, id, labels, key, item) {
+                continue;
+            }
+            seen.insert(id);
+            ids.push(id);
+        }
+    }
+    NodePropertyCandidates {
+        ids,
+        prefiltered: true,
     }
 }
 
@@ -3210,14 +3274,44 @@ pub(crate) fn rel_by_list_element_scan_rows<S: GraphStorage>(
 
     for row in base_rows {
         check_optional_deadline(deadline)?;
-        let expected = eval_expr(&op.value, &row, &eval_ctx);
-        if matches!(expected, LoraValue::Null) {
-            continue;
+        let value = eval_expr(&op.value, &row, &eval_ctx);
+        // The values sought: one, or (`op.any`) each element of a list.
+        let wanted: Vec<LoraValue> = match (op.any, value) {
+            (_, LoraValue::Null) => continue,
+            (false, value) => vec![value],
+            (true, LoraValue::List(items)) => items
+                .into_iter()
+                .filter(|item| !matches!(item, LoraValue::Null))
+                .collect(),
+            // Not a list: every relationship of the types, for the
+            // `Filter` above to evaluate (and report) the predicate.
+            (true, _) => {
+                for rel_id in rel_candidate_ids(storage, &op.types, |_| None) {
+                    check_optional_deadline(deadline)?;
+                    if let Some(result) = storage.with_relationship(rel_id, |rel| {
+                        if !op.types.is_empty() && !op.types.iter().any(|t| t == rel.rel_type()) {
+                            return Ok(());
+                        }
+                        emit_rel_rows(op.direction, op.src, op.rel, op.dst, rel, &row, &mut out)
+                    }) {
+                        result?;
+                    }
+                }
+                continue;
+            }
+        };
+        let mut candidate_ids = Vec::new();
+        let mut seen = BTreeSet::new();
+        for expected in &wanted {
+            let element = lora_value_to_property(expected.clone()).ok();
+            for id in rel_candidate_ids(storage, &op.types, |ty| {
+                storage.relationship_list_element_candidates(ty, &op.key, element.as_ref()?)
+            }) {
+                if seen.insert(id) {
+                    candidate_ids.push(id);
+                }
+            }
         }
-        let element = lora_value_to_property(expected.clone()).ok();
-        let candidate_ids = rel_candidate_ids(storage, &op.types, |ty| {
-            storage.relationship_list_element_candidates(ty, &op.key, element.as_ref()?)
-        });
 
         for rel_id in candidate_ids {
             check_optional_deadline(deadline)?;
@@ -3231,9 +3325,11 @@ pub(crate) fn rel_by_list_element_scan_rows<S: GraphStorage>(
                     return Ok(());
                 };
                 let holds = match &*value.get() {
-                    PropertyValue::List(items) => items
-                        .iter()
-                        .any(|item| value_matches_property_value(&expected, item)),
+                    PropertyValue::List(items) => items.iter().any(|item| {
+                        wanted
+                            .iter()
+                            .any(|expected| value_matches_property_value(expected, item))
+                    }),
                     _ => false,
                 };
                 if !holds {

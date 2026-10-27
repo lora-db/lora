@@ -1,5 +1,6 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use lora_wal::{SyncMode, WalConfig};
 
@@ -240,6 +241,22 @@ fn looks_like_windows_absolute(value: &str) -> bool {
         && bytes[0].is_ascii_alphabetic()
         && bytes[1] == b':'
         && matches!(bytes[2], b'/' | b'\\')
+}
+
+/// Wait until no handle in this process holds the database at
+/// `database_path` (as [`DatabaseOpenOptions::database_path_for`] gives
+/// it) open, for at most `timeout`; returns whether it was released.
+///
+/// A handle whose last reference was just dropped releases the directory
+/// lock only after its WAL and container close, on whichever thread
+/// dropped it. An opener that knows the previous handle is gone waits
+/// here instead of failing with `LORA_LOCKED` in that moment. Another
+/// process's lock is not seen and returns at once.
+pub fn wait_for_release(database_path: &Path, timeout: Duration) -> bool {
+    lora_wal::wait_until_released(
+        &crate::wal::archive::container_lock_paths(database_path),
+        timeout,
+    )
 }
 
 #[cfg(test)]

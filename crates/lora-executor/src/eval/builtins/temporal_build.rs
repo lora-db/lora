@@ -489,6 +489,14 @@ impl<'a> Given<'a> {
 
 /// `date({…})`, `datetime({…})`, … for the target `kind`.
 pub(super) fn from_map(m: &BTreeMap<String, LoraValue>, kind: Kind) -> Result<LoraValue, String> {
+    // `date({timezone: 'Europe/Amsterdam'})`: the current value in that
+    // zone, for every kind, as in Neo4j (the reader's "today").
+    if let (1, Some(zone)) = (
+        m.len(),
+        m.get("timezone").filter(|v| !matches!(v, LoraValue::Null)),
+    ) {
+        return now_in_zone(parse_zone(zone)?, kind);
+    }
     let given = Given::collect(m, kind, false)?;
     if let Some(epoch) = given.first_of(&[Field::EpochSeconds, Field::EpochMillis]) {
         return from_epoch_map(&given, epoch);
@@ -513,6 +521,19 @@ pub(super) fn from_map(m: &BTreeMap<String, LoraValue>, kind: Kind) -> Result<Lo
         base.set_zone(parse_zone(zone)?, true)?;
     }
     apply_fields(&given, base, kind, false)
+}
+
+/// The current instant in `zone`, as `kind`: its date, its wall clock,
+/// or the zoned value.
+fn now_in_zone(zone: Zone, kind: Kind) -> Result<LoraValue, String> {
+    let utc = LoraDateTime::now();
+    let here = match zone {
+        Zone::Offset(offset) => utc.to_offset(offset),
+        Zone::Named(zone) => utc.to_zone(zone),
+    }
+    .ok_or("datetime out of range")?;
+    convert(&LoraValue::DateTime(Box::new(here)), kind)
+        .ok_or_else(|| "datetime out of range".into())
 }
 
 /// `datetime({epochSeconds[, nanosecond]})`, `datetime({epochMillis})`,

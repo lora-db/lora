@@ -1317,6 +1317,10 @@ The operators, and the index each one gets:
 - `INCLUDES`: lists. A RANGE index on the list: it keeps each list's
   elements, so `{ includes: "techno" }` (compiled to `$v IN this.genres`)
   seeks the nodes whose list holds the value instead of scanning the label.
+  It also adds `includesAny`, for several picks: `{ includesAny: ["techno",
+  "house"] }` (compiled to `any(v IN $values WHERE v IN this.genres)`)
+  seeks each value and returns each node once. An `OR` of `includes` on
+  the same list seeks the same way.
 - `WITHIN_BBOX`, `DISTANCE`: `Point` and `CartesianPoint`. A POINT index.
 
 Each operator is checked against the field's type at startup, so

@@ -1,4 +1,6 @@
 //! G-63: `$x IN n.list` seeks the list elements of a RANGE index.
+//! G-72: so does an OR of such tests on one list, or `any(x IN $list WHERE
+//! x IN n.list)`, one seek per element.
 //!
 //! A RANGE index on a property that holds lists keeps each list whole (for
 //! `n.list = [..]`) and by its distinct elements (for `$x IN n.list` and
@@ -64,6 +66,15 @@ fn element_seeks(root: &PlanTreeNode) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The any-element seeks of a plan (G-72), as `(key, value)`.
+fn any_seeks(root: &PlanTreeNode) -> Vec<(String, String)> {
+    ops(root, "NodeByPropertyScan")
+        .into_iter()
+        .filter(|n| n.details.get("mode").map(String::as_str) == Some("any-element"))
+        .map(|n| (n.details["key"].clone(), n.details["value"].clone()))
+        .collect()
+}
+
 fn sorted_rows(
     db: &Database<InMemoryGraph>,
     query: &str,
@@ -103,6 +114,7 @@ fn assert_same_as_scan(
     let reference_plan = plan_of(db, &reference, p);
     assert!(
         element_seeks(&reference_plan).is_empty()
+            && any_seeks(&reference_plan).is_empty()
             && ops(&reference_plan, "RelByListElementScan").is_empty(),
         "the reference must not seek"
     );
@@ -355,12 +367,21 @@ fn shapes_that_cannot_seek_keep_the_scan() {
         "MATCH (e:Event) WHERE any(x IN e.genreLineage WHERE x = e.city) RETURN e",
         // all() / none() are not membership.
         "MATCH (e:Event) WHERE all(x IN e.genreLineage WHERE x = $g) RETURN e",
-        // A disjunction is not a conjunct.
+        // A disjunction with another test is not an element seek.
         "MATCH (e:Event) WHERE $g IN e.genreLineage OR e.key = 1 RETURN e",
+        // An OR over two list properties, or two nodes.
+        "MATCH (e:Event) WHERE $g IN e.genreLineage OR $g IN e.tags RETURN e",
+        "MATCH (e:Event), (f:Event) WHERE $g IN e.genreLineage OR $g IN f.genreLineage RETURN e",
+        // A disjunct that is itself a conjunction.
+        "MATCH (e:Event) WHERE $g IN e.genreLineage OR ($g IN e.genreLineage AND e.key = 1) RETURN e",
+        // any() whose list depends on the node, or whose test is not membership.
+        "MATCH (e:Event) WHERE any(x IN [e.city] WHERE x IN e.genreLineage) RETURN e",
+        "MATCH (e:Event) WHERE any(x IN $gs WHERE x STARTS WITH e.city) RETURN e",
     ] {
+        let root = plan_of(&db.service, q, &p);
         assert!(
-            element_seeks(&plan_of(&db.service, q, &p)).is_empty(),
-            "{q} must not seek"
+            element_seeks(&root).is_empty() && any_seeks(&root).is_empty(),
+            "{q} must not seek: {root:#?}"
         );
     }
     // Without a RANGE index the element test scans, as before.
@@ -747,4 +768,136 @@ fn relationship_element_test_seeks_its_type() {
         &p,
     );
     assert!(rows.len() >= 20, "{rows:?}");
+}
+
+// ---------- G-72: an OR of element tests ----------
+
+#[test]
+fn an_or_of_element_tests_seeks_each_element() {
+    let db = repro();
+    let p = params(&[
+        ("g", s("techno")),
+        ("h", s("house")),
+        ("gs", LoraValue::List(vec![s("techno"), s("house")])),
+    ]);
+    // Average entities per element: 5,100 postings over 3 elements.
+    for (q, value) in [
+        (
+            "MATCH (e:Event) WHERE $g IN e.genreLineage OR $h IN e.genreLineage RETURN e.key AS k",
+            "List([Parameter(\"g\"), Parameter(\"h\")])",
+        ),
+        (
+            "MATCH (e:Event) WHERE $g IN e.genreLineage \
+             OR any(x IN e.genreLineage WHERE x = 'acid') RETURN e.key AS k",
+            "List([Parameter(\"g\"), Literal(String(\"acid\"))])",
+        ),
+        (
+            "MATCH (e:Event) WHERE any(x IN $gs WHERE x IN e.genreLineage) RETURN e.key AS k",
+            "Parameter(\"gs\")",
+        ),
+        (
+            "MATCH (e:Event) WHERE any(x IN e.genreLineage WHERE x IN $gs) RETURN e.key AS k",
+            "Parameter(\"gs\")",
+        ),
+        (
+            "MATCH (e:Event) WHERE e.key > 0 AND ($g IN e.genreLineage OR $h IN e.genreLineage) \
+             RETURN e.key AS k",
+            "List([Parameter(\"g\"), Parameter(\"h\")])",
+        ),
+    ] {
+        let root = plan_of(&db.service, q, &p);
+        let seeks = any_seeks(&root);
+        assert_eq!(seeks.len(), 1, "{q}: {root:#?}");
+        assert_eq!(seeks[0].0, "genreLineage");
+        assert_eq!(seeks[0].1, value, "{q}");
+        assert!(ops(&root, "NodeByLabelScan").is_empty(), "{q}: {root:#?}");
+        let seek = ops(&root, "NodeByPropertyScan")[0];
+        // EXPLAIN shows the per-element estimate; the planner's score
+        // multiplies it by the literal list's length.
+        assert_eq!(seek.estimated_rows, Some(1700), "{q}");
+        // Every event holding techno, once although it holds two picks.
+        assert_eq!(assert_same_as_scan(&db.service, q, &p).len(), 100, "{q}");
+    }
+    // Three picks average 5,100 rows here, more than the 5,000 events: the
+    // label scan stays.
+    let q = "MATCH (e:Event) WHERE $g IN e.genreLineage OR $h IN e.genreLineage \
+             OR 'acid' IN e.genreLineage RETURN e.key AS k";
+    let root = plan_of(&db.service, q, &p);
+    assert!(any_seeks(&root).is_empty(), "{root:#?}");
+    assert_eq!(assert_same_as_scan(&db.service, q, &p).len(), 100);
+}
+
+#[test]
+fn an_or_of_element_tests_matches_the_scan_over_random_lists() {
+    let db = indexed_db();
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    seed_random(&db, &mut rng, 400);
+    let needles = needles();
+    let queries = [
+        "MATCH (n:E) WHERE $g IN n.l OR $h IN n.l RETURN n.id AS id",
+        "MATCH (n:E) WHERE any(x IN $gs WHERE x IN n.l) RETURN n.id AS id",
+        "MATCH (n:E) WHERE any(x IN n.l WHERE x IN $gs) RETURN n.id AS id",
+        "MATCH (n:E) WHERE $g IN n.l OR any(x IN n.l WHERE x = $h) OR 'rock' IN n.l \
+         RETURN n.id AS id",
+    ];
+    for _ in 0..60 {
+        let g = needles[rng.below(needles.len() as u64) as usize].clone();
+        let h = needles[rng.below(needles.len() as u64) as usize].clone();
+        // Duplicates and nulls in the list of picks, or none at all.
+        let gs = match rng.below(6) {
+            0 => LoraValue::List(vec![]),
+            1 => LoraValue::Null,
+            _ => LoraValue::List(vec![g.clone(), h.clone(), g.clone(), LoraValue::Null]),
+        };
+        let p = params(&[("g", g), ("h", h), ("gs", gs)]);
+        for q in queries {
+            assert_eq!(any_seeks(&plan_of(&db, q, &p)).len(), 1, "{q} must seek");
+            let rows = assert_same_as_scan(&db, q, &p);
+            let mut ids = rows.clone();
+            ids.dedup();
+            assert_eq!(ids.len(), rows.len(), "a node came back twice: {q} {p:?}");
+        }
+    }
+}
+
+#[test]
+fn a_relationship_or_of_element_tests_seeks_its_type() {
+    let db = Database::in_memory();
+    run(&db, "CREATE INDEX t_tags FOR ()-[r:T]-() ON (r.tags)");
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    let pool = pool();
+    for i in 0..150i64 {
+        run_p(
+            &db,
+            "CREATE (:A {id: $i})-[:T {id: $i, tags: $l}]->(:B {id: $i})",
+            params(&[
+                ("i", LoraValue::Int(i)),
+                ("l", random_list(&mut rng, &pool)),
+            ]),
+        );
+    }
+    let needles = needles();
+    for q in [
+        "MATCH (a)-[r:T]->(b) WHERE $g IN r.tags OR $h IN r.tags RETURN a.id AS a, r.id AS r",
+        "MATCH (a)-[r:T]-(b) WHERE any(x IN $gs WHERE x IN r.tags) RETURN a.id AS a, r.id AS r",
+        "MATCH (a)<-[r:T]-(b) WHERE any(x IN r.tags WHERE x IN $gs) RETURN r.id AS r",
+    ] {
+        for _ in 0..30 {
+            let g = needles[rng.below(needles.len() as u64) as usize].clone();
+            let h = needles[rng.below(needles.len() as u64) as usize].clone();
+            let p = params(&[
+                ("g", g.clone()),
+                ("h", h.clone()),
+                ("gs", LoraValue::List(vec![g, h, LoraValue::Null])),
+            ]);
+            let root = plan_of(&db, q, &p);
+            let scans = ops(&root, "RelByListElementScan");
+            assert_eq!(scans.len(), 1, "{q}: {root:#?}");
+            assert_eq!(
+                scans[0].details.get("mode").map(String::as_str),
+                Some("any-element")
+            );
+            assert_same_as_scan(&db, q, &p);
+        }
+    }
 }

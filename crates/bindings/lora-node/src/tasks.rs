@@ -351,6 +351,66 @@ impl Task for ClearTask {
     }
 }
 
+/// What `close()` waits for once its handle is detached.
+pub(crate) enum CloseWait {
+    /// Already disposed, or another handle keeps the engine open.
+    Nothing,
+    /// An engine no other handle shares: until the operations still
+    /// holding it finish.
+    Engine(std::sync::Weak<InnerDatabase<InMemoryGraph>>),
+    /// The last handle of a named database: until its directory is
+    /// unlocked, which happens once the operations still holding the
+    /// engine finish and it closes its WAL and container.
+    Directory(std::path::PathBuf),
+}
+
+/// Work unit for `Database.close()`.
+pub struct CloseTask {
+    pub(crate) wait: CloseWait,
+    pub(crate) timeout: std::time::Duration,
+}
+
+impl Task for CloseTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let closed = match &self.wait {
+            CloseWait::Nothing => true,
+            CloseWait::Engine(engine) => {
+                let deadline = std::time::Instant::now() + self.timeout;
+                let mut backoff = std::time::Duration::from_micros(100);
+                loop {
+                    if engine.strong_count() == 0 {
+                        break true;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        break false;
+                    }
+                    std::thread::sleep(backoff);
+                    backoff = (backoff * 2).min(std::time::Duration::from_millis(10));
+                }
+            }
+            CloseWait::Directory(path) => lora_database::wait_for_release(path, self.timeout),
+        };
+        if closed {
+            Ok(())
+        } else {
+            Err(NapiError::new(
+                Status::GenericFailure,
+                format!(
+                    "LORA_TIMEOUT: close() waited {} s for operations still running on the database",
+                    self.timeout.as_secs()
+                ),
+            ))
+        }
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
 /// Work unit for `Database.loadSnapshot` / `loadSnapshotBuffer`. Takes
 /// the writer lock, so it never runs on the JS thread: there it froze the
 /// process while an interactive transaction or a mutating stream held the

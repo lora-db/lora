@@ -549,7 +549,12 @@ type Festival @node {
 ```
 
 `cost` is the rows one run of the statement examines (here, the
-festivals of a genre). It is charged once for a root field and once per
+festivals of a genre). A root field (on `Query`) without `cost` is
+charged its statement's own plan estimate once
+[`analyze()`](/docs/graphql/smart-layer#s6-statistics-and-cost) has run:
+the largest row estimate of any operator, planned with each argument's
+default. A walk of variable length estimates poorly, so declare `cost`
+for those. It is charged once for a root field and once per
 parent row for a field of a type: a page of 25 festivals selecting
 `similar` costs 25 × 2000 on top of the page, and is refused with
 `COST_EXCEEDED` before it runs when that is over `maxCost`. A filter on

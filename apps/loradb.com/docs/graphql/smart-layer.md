@@ -268,6 +268,17 @@ const lora = new LoraGraphQL({
   graph came to 22,621 rows for a query that returned 537,790 objects when
   rooted at a hub. Run it in production, on a schedule, or load a saved
   result with `lora.useStatistics()`.
+- `analyze()` also counts the nodes holding each value of every field
+  filterable by `EQ`, `IN` or `INCLUDES` (`statistics.values`): every
+  value's count when a field has at most 1,024 of them, else the 64 most
+  common and, for any other value, the largest count among the rest. A
+  root filter an index answers is then charged the nodes it seeks, not the
+  label: `{ genres: { includes: "acid" } }` on 500k events costs the 1,200
+  that hold `acid`, `includesAny` (or an `OR` of `includes` on one list)
+  the sum of its values, an `AND` its narrowest test. Counts per value
+  and not an average, since values are skewed: a root genre is on most
+  events. An `OR` across fields is still charged the label, as the engine
+  scans for it.
 
 Statistics also shape plans: a relationship filter that names a related
 node by key starts from that node and expands instead of scanning the

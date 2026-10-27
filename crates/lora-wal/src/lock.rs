@@ -10,6 +10,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::errors::WalError;
+use crate::held::HeldLock;
 
 const LOCK_FILE_NAME: &str = ".lora-wal.lock";
 
@@ -27,6 +28,14 @@ pub(crate) struct DirLock {
     _file: File,
     #[cfg(not(any(unix, windows)))]
     path: std::path::PathBuf,
+    /// Declared after `_file`, so it leaves the held table only once the
+    /// OS lock is released (see [`crate::held`]).
+    _held: HeldLock,
+}
+
+/// The lock file of the WAL directory `dir`.
+pub fn wal_lock_path(dir: &Path) -> std::path::PathBuf {
+    dir.join(LOCK_FILE_NAME)
 }
 
 impl DirLock {
@@ -44,7 +53,10 @@ impl DirLock {
             retry_on_contention(dir, || {
                 lock_exclusive_nonblocking(&file).map_err(classify_unix_lock_err)
             })?;
-            Ok(Self { _file: file })
+            Ok(Self {
+                _file: file,
+                _held: HeldLock::new(&lock_path),
+            })
         }
 
         #[cfg(windows)]
@@ -58,7 +70,10 @@ impl DirLock {
             retry_on_contention(dir, || {
                 lock_exclusive_nonblocking(&file).map_err(classify_windows_lock_err)
             })?;
-            Ok(Self { _file: file })
+            Ok(Self {
+                _file: file,
+                _held: HeldLock::new(&lock_path),
+            })
         }
 
         #[cfg(not(any(unix, windows)))]
@@ -84,6 +99,7 @@ impl DirLock {
             })?;
             Ok(Self {
                 _file: file,
+                _held: HeldLock::new(&lock_path),
                 path: lock_path,
             })
         }

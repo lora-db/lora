@@ -426,6 +426,7 @@ fn lower_logical_op(op: LogicalOp) -> PhysicalOp {
                 direction: scan.direction,
                 key: scan.key,
                 value: scan.value,
+                any: scan.any,
             })
         }
 
@@ -636,6 +637,21 @@ fn collect_index_candidates(
                 seek: PropertySeek::Element,
             }));
         }
+        // An OR of element tests on one key (`$g IN n.k OR $h IN n.k`, or
+        // `any(x IN $list WHERE x IN n.k)`): one seek per element.
+        for (key, values) in any_element_tests_for_var(predicate, scan.var) {
+            if !stats.has_node_range_index(label, &key) {
+                continue;
+            }
+            out.push(LogicalOp::NodeByPropertyScan(NodeByPropertyScan {
+                input: scan.input,
+                var: scan.var,
+                labels: scan.labels.clone(),
+                key,
+                value: values,
+                seek: PropertySeek::AnyElement,
+            }));
+        }
     }
 
     let text = text_predicate_for_var(predicate, scan.var);
@@ -796,6 +812,25 @@ fn collect_rel_index_candidates(
             direction: expand.direction,
             key,
             value,
+            any: false,
+        }));
+    }
+    for (key, values) in any_element_tests_for_var(predicate, rel_var) {
+        if !rel_types_have_index(&expand.types, |ty| {
+            stats.has_relationship_range_index(ty, &key)
+        }) {
+            continue;
+        }
+        out.push(LogicalOp::RelByListElementScan(RelByListElementScan {
+            input,
+            src: expand.src,
+            rel: rel_var,
+            dst: expand.dst,
+            types: expand.types.clone(),
+            direction: expand.direction,
+            key,
+            value: values,
+            any: true,
         }));
     }
 
@@ -906,14 +941,9 @@ fn score_logical_op(op: &LogicalOp, stats: &GraphStats) -> Option<u64> {
                     return stats.estimate_node_property_equality(label, &scan.key);
                 }
                 PropertySeek::In => stats.estimate_node_property_equality(label, &scan.key)?,
+                PropertySeek::AnyElement => stats.estimate_node_list_element(label, &scan.key)?,
             };
-            // A literal list costs one seek per element; a parameter or
-            // other list-valued expression is assumed short.
-            let elements = match &scan.value {
-                ResolvedExpr::List(items) => items.len().max(1) as u64,
-                _ => 1,
-            };
-            Some(per_value.saturating_mul(elements))
+            Some(per_value.saturating_mul(list_elements_estimate(&scan.value)))
         }
         LogicalOp::NodeByPropertyRangeScan(scan) => {
             // Conservative one-third selectivity: a one-sided range
@@ -997,6 +1027,9 @@ fn score_logical_op(op: &LogicalOp, stats: &GraphStats) -> Option<u64> {
             let mut est: u64 = 0;
             for ty in &scan.types {
                 est = est.saturating_add(stats.estimate_relationship_list_element(ty, &scan.key)?);
+            }
+            if scan.any {
+                est = est.saturating_mul(list_elements_estimate(&scan.value));
             }
             Some(match scan.direction {
                 lora_ast::Direction::Undirected => est.saturating_mul(2),
@@ -1677,6 +1710,113 @@ fn list_element_tests_for_var(predicate: &ResolvedExpr, var: VarId) -> Vec<(Stri
                 }
             }
             _ => {}
+        }
+    }
+    out
+}
+
+/// Seeks a list-valued scan value makes: one per element of a literal
+/// list; a parameter or other list-valued expression is assumed short.
+fn list_elements_estimate(value: &ResolvedExpr) -> u64 {
+    match value {
+        ResolvedExpr::List(items) => items.len().max(1) as u64,
+        _ => 1,
+    }
+}
+
+/// Conjuncts of `predicate` that hold when the list in `var.key` holds any
+/// of several values, as `(key, list of the values)`:
+///
+/// - an OR whose every disjunct is one element test on the same key
+///   (`$g IN n.k OR $h IN n.k`, or `any(x IN n.k WHERE x = $g)` forms);
+/// - `any(x IN values WHERE x IN n.k)`;
+/// - `any(x IN n.k WHERE x IN values)`.
+///
+/// The values must not depend on `var`. The `Filter` stays above the seek,
+/// so the predicate is still evaluated as written on each candidate.
+fn any_element_tests_for_var(predicate: &ResolvedExpr, var: VarId) -> Vec<(String, ResolvedExpr)> {
+    let mut out = Vec::new();
+    for conjunct in and_conjuncts(predicate) {
+        match conjunct {
+            ResolvedExpr::Binary {
+                op: BinaryOp::Or, ..
+            } => {
+                let mut key = None;
+                let mut values = Vec::new();
+                let all_element_tests = or_disjuncts(conjunct).into_iter().all(|disjunct| {
+                    if and_conjuncts(disjunct).len() != 1 {
+                        return false;
+                    }
+                    let mut tests = list_element_tests_for_var(disjunct, var);
+                    let Some((k, value)) = tests.pop().filter(|_| tests.is_empty()) else {
+                        return false;
+                    };
+                    if key.get_or_insert_with(|| k.clone()) != &k {
+                        return false;
+                    }
+                    values.push(value);
+                    true
+                });
+                if let (true, Some(key)) = (all_element_tests, key) {
+                    out.push((key, ResolvedExpr::List(values)));
+                }
+            }
+            ResolvedExpr::ListPredicate {
+                kind: lora_ast::ListPredicateKind::Any,
+                variable,
+                list,
+                predicate,
+            } => {
+                let ResolvedExpr::Binary {
+                    lhs,
+                    op: BinaryOp::In,
+                    rhs,
+                } = &**predicate
+                else {
+                    continue;
+                };
+                if !matches!(&**lhs, ResolvedExpr::Variable(v) if v == variable) {
+                    continue;
+                }
+                let independent = |e: &ResolvedExpr| {
+                    let vars = collect_vars(e);
+                    !vars.contains(&var) && !vars.contains(variable)
+                };
+                // `any(x IN values WHERE x IN n.k)`
+                if let Some(key) = property_access_for_var(rhs, var) {
+                    if independent(list) {
+                        out.push((key, (**list).clone()));
+                    }
+                    continue;
+                }
+                // `any(x IN n.k WHERE x IN values)`
+                if let Some(key) = property_access_for_var(list, var) {
+                    if independent(rhs) {
+                        out.push((key, (**rhs).clone()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Flatten an OR-tree into its disjuncts, left to right.
+fn or_disjuncts(predicate: &ResolvedExpr) -> Vec<&ResolvedExpr> {
+    let mut out = Vec::new();
+    let mut stack = vec![predicate];
+    while let Some(expr) = stack.pop() {
+        match expr {
+            ResolvedExpr::Binary {
+                lhs,
+                op: BinaryOp::Or,
+                rhs,
+            } => {
+                stack.push(rhs);
+                stack.push(lhs);
+            }
+            other => out.push(other),
         }
     }
     out

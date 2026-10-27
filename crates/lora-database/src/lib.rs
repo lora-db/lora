@@ -48,7 +48,7 @@ pub use lora_io::{
     StreamingJsonlDecoder, StreamingRowDecoder,
 };
 pub use named::{
-    resolve_database_path, DatabaseName, DatabaseNameError, DatabaseOpenOptions,
+    resolve_database_path, wait_for_release, DatabaseName, DatabaseNameError, DatabaseOpenOptions,
     DEFAULT_COMPACT_ON_OPEN_WAL_BYTES, DEFAULT_DATABASE_MAX_BYTES,
 };
 pub use snapshot::{

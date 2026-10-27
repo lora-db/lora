@@ -325,9 +325,25 @@ directory. This is a Node-only initialization convenience; the query surface,
 shared types, and async method signatures still match `lora-wasm`.
 
 Persistent opens for the same resolved archive path in one Node process share a
-single live native engine. Call `db.dispose()` when you need to release a handle
-eagerly; cross-process opens of the same archive are blocked to prevent
-split-brain writers.
+single live native engine. Cross-process opens of the same archive are blocked
+to prevent split-brain writers.
+
+To release a handle, `await db.close()` (or `await using db = await
+createDatabase(...)`). It resolves once every operation started on the handle
+has settled and, unless another handle in the process still has the same
+database open, the directory is unlocked, so a restart, a restore or another
+process can open it at once:
+
+```ts
+await db.close();
+const reopened = await createDatabase("app", { databaseDir: "./data" });
+```
+
+`db.dispose()` does the same without waiting: queries already running finish on
+their own and the directory unlocks when the last one does. Opening the same
+database again in this process waits for that (up to 60 s); another process may
+find it locked meanwhile. `close()` rejects with `LORA_TIMEOUT` if work on the
+handle still runs after 60 s.
 
 For explicit WAL directories with managed snapshots, use `openWalDatabase`:
 
@@ -571,4 +587,4 @@ See `ts/types.ts` (`LoraErrorCode`) for the full list.
 - **Archive ownership.** One archive can only be open by one writer process at a
   time. Multiple Node handles in the same process share the same live engine;
   a second process is rejected with `LORA_LOCKED` while the first holds the
-  archive lock, which `dispose()` releases.
+  archive lock, which `close()` releases (and resolves once it has).

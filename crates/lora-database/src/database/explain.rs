@@ -160,7 +160,10 @@ fn property_equality_estimate(node: &PlanTreeNode, stats: &GraphStats) -> Option
     let bare = trimmed.split('|').next()?.trim();
     // An element seek (`$x IN n.list`) is costed by the entities per list
     // element in the RANGE index, as the optimizer scores it.
-    if node.details.get("mode").map(String::as_str) == Some("element") {
+    if matches!(
+        node.details.get("mode").map(String::as_str),
+        Some("element" | "any-element")
+    ) {
         return stats.estimate_node_list_element(bare, property);
     }
     stats.estimate_node_property_equality(bare, property)

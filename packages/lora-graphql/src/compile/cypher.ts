@@ -53,6 +53,8 @@ export type Expr =
       where: Expr | undefined;
       projection: Expr | undefined;
     }
+  /** `any(v IN list WHERE …)` */
+  | { kind: "any"; variable: string; list: Expr; where: Expr }
   /** `reduce(acc = init, v IN list | step)` */
   | {
       kind: "reduce";
@@ -292,6 +294,8 @@ export function printExpr(e: Expr): string {
     }
     case "listComprehension":
       return `[${name(e.variable)} IN ${printExpr(e.list)}${e.where ? ` WHERE ${printExpr(e.where)}` : ""}${e.projection ? ` | ${printExpr(e.projection)}` : ""}]`;
+    case "any":
+      return `any(${name(e.variable)} IN ${printExpr(e.list)} WHERE ${printExpr(e.where)})`;
     case "reduce":
       return `reduce(${name(e.accumulator)} = ${printExpr(e.init)}, ${name(e.variable)} IN ${printExpr(e.list)} | ${printExpr(e.step)})`;
     case "hasLabels":

@@ -41,6 +41,23 @@ pub struct ConstraintDefinition {
     /// Name of the backing RANGE index, if any. Same as `name` for
     /// uniqueness and key constraints; `None` for existence/type.
     pub owned_index: Option<String>,
+    /// What the backing index keeps (uniqueness and key constraints).
+    #[serde(default)]
+    pub backing: ConstraintBacking,
+}
+
+/// What a uniqueness or key constraint's backing index keeps.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConstraintBacking {
+    /// The hash index the uniqueness check reads and a sorted copy of each
+    /// value, which also answers range, prefix and ordered seeks (the
+    /// default, as a RANGE index).
+    #[default]
+    Range,
+    /// The hash index alone (`OPTIONS { indexProvider: 'hash' }`): about
+    /// 80 bytes less per entity for a string key, and no range, prefix or
+    /// ordered seeks on it (G-64).
+    Hash,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -240,6 +257,9 @@ pub struct ConstraintRequest {
     pub entity: StoredIndexEntity,
     pub label: String,
     pub properties: Vec<String>,
+    /// See [`ConstraintDefinition::backing`].
+    #[serde(default)]
+    pub backing: ConstraintBacking,
 }
 
 #[derive(Debug, Clone)]
@@ -424,6 +444,7 @@ impl ConstraintCatalog {
             label: request.label,
             properties: request.properties,
             owned_index,
+            backing: request.backing,
         };
         self.by_name.insert(def.name.clone(), def.clone());
         Ok(CreateConstraintOutcome::Created(def))
@@ -482,6 +503,7 @@ mod tests {
 
     fn unique_req(name: &str, label: &str, props: &[&str]) -> ConstraintRequest {
         ConstraintRequest {
+            backing: Default::default(),
             name: name.into(),
             kind: StoredConstraintKind::Unique,
             entity: StoredIndexEntity::Node,
@@ -583,6 +605,7 @@ mod tests {
     fn existence_does_not_back_index() {
         let mut cat = ConstraintCatalog::default();
         let req = ConstraintRequest {
+            backing: Default::default(),
             name: "e".into(),
             kind: StoredConstraintKind::Existence,
             entity: StoredIndexEntity::Node,
@@ -600,6 +623,7 @@ mod tests {
     fn different_property_type_conflicts() {
         let mut cat = ConstraintCatalog::default();
         let a = ConstraintRequest {
+            backing: Default::default(),
             name: "t1".into(),
             kind: StoredConstraintKind::PropertyType(StoredPropertyType {
                 alternatives: vec![StoredPropertyTypeTerm::Scalar(StoredScalarType::Integer)],
@@ -610,6 +634,7 @@ mod tests {
         };
         cat.try_create(a, false).unwrap();
         let b = ConstraintRequest {
+            backing: Default::default(),
             name: "t2".into(),
             kind: StoredConstraintKind::PropertyType(StoredPropertyType {
                 alternatives: vec![StoredPropertyTypeTerm::Scalar(StoredScalarType::Float)],

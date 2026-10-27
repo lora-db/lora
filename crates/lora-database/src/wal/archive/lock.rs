@@ -4,17 +4,25 @@ use std::path::Path;
 #[cfg(not(any(unix, windows)))]
 use std::path::PathBuf;
 
-use lora_wal::WalError;
+use lora_wal::{HeldLock, WalError};
 
 pub(super) struct ArchiveLock {
     _file: File,
     #[cfg(not(any(unix, windows)))]
     path: PathBuf,
+    /// Declared after `_file`, so it leaves `lora_wal`'s held table only
+    /// once the OS lock is released.
+    _held: HeldLock,
+}
+
+/// The lock file of the container at `archive_path`.
+pub(crate) fn archive_lock_path(archive_path: &Path) -> std::path::PathBuf {
+    archive_path.with_extension("loradb.lock")
 }
 
 impl ArchiveLock {
     pub(super) fn acquire(archive_path: &Path) -> Result<Self, WalError> {
-        let lock_path = archive_path.with_extension("loradb.lock");
+        let lock_path = archive_lock_path(archive_path);
 
         #[cfg(unix)]
         {
@@ -33,7 +41,10 @@ impl ArchiveLock {
                     WalError::Io(err)
                 }
             })?;
-            Ok(Self { _file: file })
+            Ok(Self {
+                _file: file,
+                _held: HeldLock::new(&lock_path),
+            })
         }
 
         #[cfg(windows)]
@@ -53,7 +64,10 @@ impl ArchiveLock {
                     WalError::Io(err)
                 }
             })?;
-            Ok(Self { _file: file })
+            Ok(Self {
+                _file: file,
+                _held: HeldLock::new(&lock_path),
+            })
         }
 
         #[cfg(not(any(unix, windows)))]
@@ -66,6 +80,7 @@ impl ArchiveLock {
             {
                 Ok(file) => Ok(Self {
                     _file: file,
+                    _held: HeldLock::new(&lock_path),
                     path: lock_path,
                 }),
                 Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {

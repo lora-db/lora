@@ -348,6 +348,18 @@ function scalarPredicate(
       case "includes":
         parts.push(bin("IN", bind(ctx, value), target));
         continue;
+      case "includesAny": {
+        // `any(x IN $values WHERE x IN n.list)`: the engine seeks each
+        // value in the list's RANGE index (G-72).
+        const x = freshVar(ctx, "value");
+        parts.push({
+          kind: "any",
+          variable: x,
+          list: bind(ctx, value),
+          where: bin("IN", v(x), target),
+        });
+        continue;
+      }
       case "isNull":
         parts.push(isNull(target, value === false));
         continue;

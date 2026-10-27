@@ -1139,6 +1139,7 @@ mod tests {
 
     fn unique_on(property: &str) -> ConstraintDefinition {
         ConstraintDefinition {
+            backing: Default::default(),
             name: "u".into(),
             kind: StoredConstraintKind::Unique,
             entity: StoredIndexEntity::Node,
