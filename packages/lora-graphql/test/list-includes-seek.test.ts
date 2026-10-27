@@ -100,15 +100,18 @@ describe("G-63: INCLUDES on a list field", () => {
     const page = `query($after: String) { eventsConnection(first: 7, after: $after, where: { genreLineage: { includes: "techno" } }, sort: [{ key: ASC }]) { edges { node { key } } pageInfo { endCursor hasNextPage } } }`;
     const [pageExplained] = await h.lora.explain(page);
     expect(pageExplained!.reports[0]!.findings).toEqual([]);
+    type EventsPage = {
+      eventsConnection: {
+        edges: Array<{ node: { key: string } }>;
+        pageInfo: { endCursor: string | null; hasNextPage: boolean };
+      };
+    };
     const keys: string[] = [];
     let after: string | null = null;
     for (;;) {
-      const { eventsConnection } = await h.data<{
-        eventsConnection: {
-          edges: Array<{ node: { key: string } }>;
-          pageInfo: { endCursor: string | null; hasNextPage: boolean };
-        };
-      }>(page, { after });
+      const { eventsConnection }: EventsPage = await h.data<EventsPage>(page, {
+        after,
+      });
       keys.push(...eventsConnection.edges.map((e) => e.node.key));
       if (!eventsConnection.pageInfo.hasNextPage) break;
       after = eventsConnection.pageInfo.endCursor;
