@@ -14,8 +14,9 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::Duration;
 
 use napi::bindgen_prelude::*;
 use napi::{Env, Error as NapiError, JsObject, JsUnknown, Status, Task};
@@ -51,6 +52,26 @@ static PERSISTENT_DATABASES: OnceLock<Mutex<BTreeMap<PathBuf, PersistentDatabase
 struct PersistentDatabaseEntry {
     db: Weak<InnerDatabase<InMemoryGraph>>,
     options: PersistentOpenOptions,
+    /// JS handles sharing the engine (see [`SharedOpen`]).
+    handles: Arc<AtomicUsize>,
+}
+
+/// How long an open waits for this process's own closing handle to
+/// release the directory, and `close()` for in-flight work to settle.
+const CLOSE_WAIT: Duration = Duration::from_secs(60);
+
+/// A named database's engine, shared by every JS handle in the process
+/// that opened the same path. `close()` waits for the directory to be
+/// unlocked only when it detaches the last of them.
+pub struct SharedOpen {
+    path: PathBuf,
+    handles: Arc<AtomicUsize>,
+}
+
+/// What [`OpenRequest::open`] returns.
+pub struct Opened {
+    db: Arc<InnerDatabase<InMemoryGraph>>,
+    shared: Option<SharedOpen>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -76,6 +97,8 @@ struct PersistentOpenOptions {
 #[napi]
 pub struct Database {
     db: Mutex<Option<Arc<InnerDatabase<InMemoryGraph>>>>,
+    /// Set for a named database until the handle is disposed.
+    shared: Mutex<Option<SharedOpen>>,
     streams: Mutex<BTreeMap<u32, NativeQueryStream>>,
     next_stream_id: AtomicU32,
     /// Stream shapes per query text.
@@ -937,11 +960,49 @@ impl Database {
     #[napi]
     pub fn dispose(&self) -> Result<()> {
         guard(|| {
-            self.close_writers()?;
-            // End every change feed opened through this handle.
-            lock(&self.feeds).close_all();
-            lock(&self.db).take();
+            self.detach()?;
             Ok(())
+        })
+    }
+
+    /// Dispose the handle and resolve once it is closed: every operation
+    /// started on it has settled and, unless another handle in this
+    /// process still has the same database open, its directory is
+    /// unlocked, so an open of the same path (in this process or another)
+    /// does not find it locked. Queued writes and open transactions reject
+    /// as closed, as with `dispose()`; queries already running finish.
+    /// Rejects with `LORA_TIMEOUT` if they have not after 60 s.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn close(&self, env: Env) -> Result<JsObject> {
+        guard(|| {
+            let task = tasks::CloseTask {
+                wait: self.detach()?,
+                timeout: CLOSE_WAIT,
+            };
+            // Off the libuv pool: the wait may last as long as a query.
+            tasks::spawn(&env, task, true)
+        })
+    }
+
+    /// Release this handle's engine and say what `close()` waits for.
+    fn detach(&self) -> Result<tasks::CloseWait> {
+        self.close_writers()?;
+        // End every change feed opened through this handle.
+        lock(&self.feeds).close_all();
+        let db = lock(&self.db).take();
+        let shared = lock(&self.shared).take();
+        let Some(db) = db else {
+            return Ok(tasks::CloseWait::Nothing);
+        };
+        let engine = Arc::downgrade(&db);
+        drop(db);
+        Ok(match shared {
+            // Another handle keeps the engine, and its lock, open.
+            Some(shared) if shared.handles.fetch_sub(1, Ordering::SeqCst) > 1 => {
+                tasks::CloseWait::Nothing
+            }
+            Some(shared) => tasks::CloseWait::Directory(shared.path),
+            None => tasks::CloseWait::Engine(engine),
         })
     }
 
@@ -1107,12 +1168,13 @@ impl Database {
 
 impl Database {
     fn from_inner(
-        db: Arc<InnerDatabase<InMemoryGraph>>,
+        opened: Opened,
         query_timeout_ms: Option<u32>,
         max_open_transactions: u32,
     ) -> Self {
         Self {
-            db: Mutex::new(Some(db)),
+            db: Mutex::new(Some(opened.db)),
+            shared: Mutex::new(opened.shared),
             streams: Mutex::new(BTreeMap::new()),
             next_stream_id: AtomicU32::new(1),
             shapes: Default::default(),
@@ -1125,6 +1187,20 @@ impl Database {
             next_feed_id: AtomicU32::new(1),
             open_slots: actor::OpenSlots::new(max_open_transactions),
             writes: Default::default(),
+        }
+    }
+}
+
+impl Drop for Database {
+    /// A handle collected without `dispose()` no longer shares its engine.
+    fn drop(&mut self) {
+        let shared = self
+            .shared
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(shared) = shared {
+            shared.handles.fetch_sub(1, Ordering::SeqCst);
         }
     }
 }
@@ -1198,7 +1274,7 @@ impl OpenRequest {
     /// Validate the combination and open: in memory without a name or
     /// WAL directory, a named container with a name, an explicit WAL
     /// directory with `wal_dir`.
-    fn open(self) -> Result<Arc<InnerDatabase<InMemoryGraph>>> {
+    fn open(self) -> Result<Opened> {
         let explicit_wal = self.wal_dir.is_some()
             || self.snapshot_dir.is_some()
             || self.snapshot_every_commits.is_some()
@@ -1213,7 +1289,7 @@ impl OpenRequest {
                     ),
                 ));
             }
-            open_explicit_wal_database(
+            let db = open_explicit_wal_database(
                 self.wal_dir,
                 self.snapshot_dir,
                 self.sync_mode,
@@ -1221,10 +1297,14 @@ impl OpenRequest {
                 self.snapshot_every_commits,
                 self.snapshot_keep_old,
                 self.snapshot_options,
-            )
+            )?;
+            Ok(Opened { db, shared: None })
         } else {
             match self.database_name {
-                None => Ok(Arc::new(InnerDatabase::in_memory())),
+                None => Ok(Opened {
+                    db: Arc::new(InnerDatabase::in_memory()),
+                    shared: None,
+                }),
                 Some(name) => open_persistent_database(
                     name,
                     self.database_dir,
@@ -1244,7 +1324,7 @@ pub struct OpenTask {
 }
 
 impl Task for OpenTask {
-    type Output = Arc<InnerDatabase<InMemoryGraph>>;
+    type Output = Opened;
     type JsValue = Database;
 
     fn compute(&mut self) -> Result<Self::Output> {
@@ -1255,9 +1335,9 @@ impl Task for OpenTask {
             .open()
     }
 
-    fn resolve(&mut self, _env: Env, db: Self::Output) -> Result<Self::JsValue> {
+    fn resolve(&mut self, _env: Env, opened: Self::Output) -> Result<Self::JsValue> {
         Ok(Database::from_inner(
-            db,
+            opened,
             self.query_timeout_ms,
             max_open(self.max_open_transactions)?,
         ))
@@ -1352,7 +1432,7 @@ fn open_persistent_database(
     database_dir: Option<String>,
     sync_mode: Option<String>,
     group_sync_interval_ms: Option<u32>,
-) -> Result<Arc<InnerDatabase<InMemoryGraph>>> {
+) -> Result<Opened> {
     let name = DatabaseName::parse(&database_name).map_err(|e| {
         NapiError::new(
             Status::GenericFailure,
@@ -1394,34 +1474,61 @@ fn open_persistent_database(
     };
 
     let registry = persistent_database_registry();
-    let mut registry = lock(registry);
-    if let Some(entry) = registry.get(&key) {
-        if let Some(existing) = entry.db.upgrade() {
-            if entry.options != open_options {
-                return Err(NapiError::new(
-                    Status::InvalidArg,
-                    format!(
-                        "{INVALID_PARAMS_CODE}: database '{}' is already open with different persistence options",
-                        key.display()
-                    ),
-                ));
+    let mut waited = false;
+    let mut registry = loop {
+        let registry = lock(registry);
+        if let Some(entry) = registry.get(&key) {
+            if let Some(existing) = entry.db.upgrade() {
+                if entry.options != open_options {
+                    return Err(NapiError::new(
+                        Status::InvalidArg,
+                        format!(
+                            "{INVALID_PARAMS_CODE}: database '{}' is already open with different persistence options",
+                            key.display()
+                        ),
+                    ));
+                }
+                entry.handles.fetch_add(1, Ordering::SeqCst);
+                return Ok(Opened {
+                    db: existing,
+                    shared: Some(SharedOpen {
+                        path: key.clone(),
+                        handles: entry.handles.clone(),
+                    }),
+                });
             }
-            return Ok(existing);
         }
-    }
+        // No live engine, but this process may still hold the directory:
+        // the last reference to a disposed handle was dropped on another
+        // thread, which is closing its WAL and container. Wait for it
+        // (without the registry, so other paths open meanwhile) instead of
+        // failing with LORA_LOCKED. Another process's lock is not seen
+        // here and fails in the open below.
+        if waited || lora_database::wait_for_release(&key, Duration::ZERO) {
+            break registry;
+        }
+        drop(registry);
+        lora_database::wait_for_release(&key, CLOSE_WAIT);
+        waited = true;
+    };
     registry.retain(|_, entry| entry.db.strong_count() > 0);
 
     let db = InnerDatabase::open_named(name.as_str(), options)
         .map_err(|e| NapiError::new(Status::GenericFailure, format_lora_error(&e)))?;
     let db = Arc::new(db);
+    let handles = Arc::new(AtomicUsize::new(1));
     registry.insert(
-        key,
+        key.clone(),
         PersistentDatabaseEntry {
             db: Arc::downgrade(&db),
             options: open_options,
+            handles: handles.clone(),
         },
     );
-    Ok(db)
+    Ok(Opened {
+        db,
+        shared: Some(SharedOpen { path: key, handles }),
+    })
 }
 
 fn parse_sync_mode(

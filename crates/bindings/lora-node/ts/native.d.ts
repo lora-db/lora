@@ -165,6 +165,8 @@ export declare class Database {
   nodeCount(): number;
   relationshipCount(): number;
   dispose(): void;
+  /** Dispose, then resolve once in-flight work settled and the directory is unlocked. */
+  close(): Promise<void>;
   /**
    * Roll back every open transaction and close every open stream of this
    * handle; the database stays open. Called when the process exits.

@@ -31,6 +31,15 @@ use self::workspace::{
 /// The base snapshot lives beside the segments as `snapshot.lsnap` in the
 /// work directory, so it is on disk, not in memory, between persists; each
 /// persist streams it into the container.
+/// The lock files a container at `archive_path` holds while open: its own
+/// and its WAL work directory's.
+pub(crate) fn container_lock_paths(archive_path: &Path) -> [PathBuf; 2] {
+    [
+        lock::archive_lock_path(archive_path),
+        lora_wal::wal_lock_path(&make_work_dir(archive_path)),
+    ]
+}
+
 pub(crate) struct WalArchive {
     archive_path: PathBuf,
     /// `archive_path` under the database directory, as

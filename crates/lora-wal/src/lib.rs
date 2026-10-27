@@ -23,6 +23,7 @@ mod codec;
 mod config;
 mod dir;
 mod errors;
+mod held;
 mod history;
 mod io;
 mod lock;
@@ -47,7 +48,9 @@ mod wal;
 pub use config::{SyncMode, WalConfig};
 pub use dir::SegmentId;
 pub use errors::WalError;
+pub use held::{is_held, wait_until_released, HeldLock};
 pub use history::{oldest_retained_lsn, CommittedTx, CommittedTxReader};
+pub use lock::wal_lock_path;
 pub use lsn::Lsn;
 pub use recorder::{
     WalBufferedCommitError, WalCommitError, WalMirror, WalPoisonError, WalRecorder, WroteCommit,
