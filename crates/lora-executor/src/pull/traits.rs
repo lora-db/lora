@@ -431,7 +431,7 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
         }
 
         PhysicalOp::RelByListElementScan(op @ RelByListElementScanExec { input, .. }) => {
-            let upstream = open_input(plan, *input, storage, params.clone(), seed.clone())?;
+            let upstream = open_input(plan, *input, storage, params.clone(), seed.clone(), depth)?;
             let ctx = StreamCtx::new(storage, params);
             Ok(Box::new(BufferedIndexScanSource::rel_element(
                 upstream, ctx, op,
