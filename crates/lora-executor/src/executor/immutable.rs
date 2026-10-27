@@ -191,6 +191,14 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
     }
 
     fn execute_node(&self, plan: &PhysicalPlan, node_id: PhysicalNodeId) -> ExecResult<Vec<Row>> {
+        lora_ast::stack::guard(|| self.execute_node_inner(plan, node_id))
+    }
+
+    fn execute_node_inner(
+        &self,
+        plan: &PhysicalPlan,
+        node_id: PhysicalNodeId,
+    ) -> ExecResult<Vec<Row>> {
         self.check_deadline()?;
         trace!("read-only execute_node start: node_id={node_id:?}");
 
@@ -268,6 +276,18 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
 
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
     fn execute_node_parallel_safe(
+        &self,
+        plan: &PhysicalPlan,
+        node_id: PhysicalNodeId,
+    ) -> ExecResult<Vec<Row>>
+    where
+        S: Sync,
+    {
+        lora_ast::stack::guard(|| self.execute_node_parallel_safe_inner(plan, node_id))
+    }
+
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    fn execute_node_parallel_safe_inner(
         &self,
         plan: &PhysicalPlan,
         node_id: PhysicalNodeId,
@@ -1109,22 +1129,30 @@ fn plan_is_parallel_safe(plan: &PhysicalPlan) -> bool {
 
 #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
 fn subtree_is_parallel_safe(plan: &PhysicalPlan, node_id: PhysicalNodeId) -> bool {
+    subtree_is_parallel_safe_at(plan, node_id, 1)
+}
+
+#[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+fn subtree_is_parallel_safe_at(plan: &PhysicalPlan, node_id: PhysicalNodeId, depth: usize) -> bool {
+    if lora_ast::stack::check_due(depth) {
+        return lora_ast::stack::guard(|| subtree_is_parallel_safe_at(plan, node_id, depth + 1));
+    }
     match &plan.nodes[node_id] {
         PhysicalOp::Argument(_) => true,
         PhysicalOp::NodeScan(op) => op
             .input
-            .map(|input| subtree_is_parallel_safe(plan, input))
+            .map(|input| subtree_is_parallel_safe_at(plan, input, depth + 1))
             .unwrap_or(true),
         PhysicalOp::NodeByLabelScan(op) => op
             .input
-            .map(|input| subtree_is_parallel_safe(plan, input))
+            .map(|input| subtree_is_parallel_safe_at(plan, input, depth + 1))
             .unwrap_or(true),
         PhysicalOp::NodeByPropertyScan(op) => op
             .input
-            .map(|input| subtree_is_parallel_safe(plan, input))
+            .map(|input| subtree_is_parallel_safe_at(plan, input, depth + 1))
             .unwrap_or(true),
-        PhysicalOp::Filter(op) => subtree_is_parallel_safe(plan, op.input),
-        PhysicalOp::Projection(op) => subtree_is_parallel_safe(plan, op.input),
+        PhysicalOp::Filter(op) => subtree_is_parallel_safe_at(plan, op.input, depth + 1),
+        PhysicalOp::Projection(op) => subtree_is_parallel_safe_at(plan, op.input, depth + 1),
         PhysicalOp::NodeByPropertyRangeScan(_)
         | PhysicalOp::NodeByIdSeek(_)
         | PhysicalOp::RelByIdSeek(_)

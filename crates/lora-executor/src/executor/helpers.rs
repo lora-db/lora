@@ -743,6 +743,13 @@ fn scan_input_is_argument(plan: &PhysicalPlan, input: Option<PhysicalNodeId>) ->
 }
 
 fn op_may_need_hydration(plan: &PhysicalPlan, node_id: PhysicalNodeId) -> bool {
+    op_may_need_hydration_at(plan, node_id, 1)
+}
+
+fn op_may_need_hydration_at(plan: &PhysicalPlan, node_id: PhysicalNodeId, depth: usize) -> bool {
+    if lora_ast::stack::check_due(depth) {
+        return lora_ast::stack::guard(|| op_may_need_hydration_at(plan, node_id, depth + 1));
+    }
     match &plan.nodes[node_id] {
         PhysicalOp::Projection(op) if !op.include_existing => op
             .items
@@ -757,16 +764,23 @@ fn op_may_need_hydration(plan: &PhysicalPlan, node_id: PhysicalNodeId) -> bool {
                     .iter()
                     .any(|item| expr_may_produce_hydratable_value(&item.expr))
         }
-        PhysicalOp::Sort(op) => op_may_need_hydration(plan, op.input),
-        PhysicalOp::Limit(op) => op_may_need_hydration(plan, op.input),
-        PhysicalOp::Filter(op) => op_may_need_hydration(plan, op.input),
-        PhysicalOp::Unwind(op) => op_may_need_hydration(plan, op.input),
-        PhysicalOp::PathBuild(op) => op_may_need_hydration(plan, op.input),
+        PhysicalOp::Sort(op) => op_may_need_hydration_at(plan, op.input, depth + 1),
+        PhysicalOp::Limit(op) => op_may_need_hydration_at(plan, op.input, depth + 1),
+        PhysicalOp::Filter(op) => op_may_need_hydration_at(plan, op.input, depth + 1),
+        PhysicalOp::Unwind(op) => op_may_need_hydration_at(plan, op.input, depth + 1),
+        PhysicalOp::PathBuild(op) => op_may_need_hydration_at(plan, op.input, depth + 1),
         _ => true,
     }
 }
 
 fn expr_may_produce_hydratable_value(expr: &ResolvedExpr) -> bool {
+    expr_may_produce_hydratable_value_at(expr, 1)
+}
+
+fn expr_may_produce_hydratable_value_at(expr: &ResolvedExpr, depth: usize) -> bool {
+    if lora_ast::stack::check_due(depth) {
+        return lora_ast::stack::guard(|| expr_may_produce_hydratable_value_at(expr, depth + 1));
+    }
     match expr {
         ResolvedExpr::Variable(_) | ResolvedExpr::Parameter(_) => true,
         ResolvedExpr::Literal(_)
@@ -781,7 +795,7 @@ fn expr_may_produce_hydratable_value(expr: &ResolvedExpr) -> bool {
         ResolvedExpr::List(items) => items.iter().any(expr_may_produce_hydratable_value),
         ResolvedExpr::Map(items) => items
             .iter()
-            .any(|(_, value)| expr_may_produce_hydratable_value(value)),
+            .any(|(_, value)| expr_may_produce_hydratable_value_at(value, depth + 1)),
         ResolvedExpr::Case {
             alternatives,
             else_expr,
@@ -789,7 +803,7 @@ fn expr_may_produce_hydratable_value(expr: &ResolvedExpr) -> bool {
         } => {
             alternatives
                 .iter()
-                .any(|(_, value)| expr_may_produce_hydratable_value(value))
+                .any(|(_, value)| expr_may_produce_hydratable_value_at(value, depth + 1))
                 || else_expr
                     .as_deref()
                     .is_some_and(expr_may_produce_hydratable_value)
@@ -798,15 +812,15 @@ fn expr_may_produce_hydratable_value(expr: &ResolvedExpr) -> bool {
             .as_deref()
             .map(expr_may_produce_hydratable_value)
             .unwrap_or(true),
-        ResolvedExpr::Reduce { expr, .. } => expr_may_produce_hydratable_value(expr),
+        ResolvedExpr::Reduce { expr, .. } => expr_may_produce_hydratable_value_at(expr, depth + 1),
         ResolvedExpr::MapProjection { selectors, .. } => selectors.iter().any(|selector| {
-            matches!(selector, ResolvedMapSelector::Literal(_, expr) if expr_may_produce_hydratable_value(expr))
+            matches!(selector, ResolvedMapSelector::Literal(_, expr) if expr_may_produce_hydratable_value_at(expr, depth + 1))
         }),
         ResolvedExpr::Index { expr, .. } | ResolvedExpr::Slice { expr, .. } => {
-            expr_may_produce_hydratable_value(expr)
+            expr_may_produce_hydratable_value_at(expr, depth + 1)
         }
         ResolvedExpr::PatternComprehension { map_expr, .. } => {
-            expr_may_produce_hydratable_value(map_expr)
+            expr_may_produce_hydratable_value_at(map_expr, depth + 1)
         }
     }
 }
