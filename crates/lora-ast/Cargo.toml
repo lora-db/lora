@@ -13,3 +13,6 @@ categories = ["parser-implementations", "data-structures"]
 
 [dependencies]
 smallvec.workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+stacker.workspace = true

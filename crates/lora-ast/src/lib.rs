@@ -7,6 +7,7 @@
 
 pub mod ast;
 pub mod limits;
+pub mod stack;
 
 pub use ast::{
     BinaryOp, CallSubquery, ConstraintKind, ConstraintNameSpec, Create, CreateConstraint,

@@ -77,3 +77,6 @@ rayon = "1"
 jiff = { version = "0.2.37", default-features = false, features = ["std", "tzdb-bundle-always"] }
 
 web-time = "1"
+# Moves deep recursion onto a fresh stack segment when the caller's thread
+# runs low (MIT OR Apache-2.0). Not used on wasm32, where stacks are fixed.
+stacker = "0.1.25"
