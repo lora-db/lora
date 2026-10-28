@@ -115,7 +115,7 @@ Embedded bindings can save snapshots with codec options:
 
 | Option | Supported values |
 |---|---|
-| `compression` | `"none"`, `"gzip"`, or `{ format: "gzip", level: 0..9 }` |
+| `compression` | `"none"`, `"gzip"`, `"zstd"`, `{ format: "gzip", level: 0..9 }` or `{ format: "zstd", level: 1..22 }` (zstd: native builds; wasm reads it but cannot write it) |
 | `encryption` | Password / passphrase encryption, or a raw 32-byte key |
 
 Password encryption is the most portable shape:

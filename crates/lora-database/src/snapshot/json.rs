@@ -105,6 +105,15 @@ fn snapshot_compression_from_parts(format: &str, level: Option<u32>) -> Result<C
             }
             Ok(Compression::Gzip { level })
         }
+        "zstd" => {
+            let level = level.unwrap_or(3);
+            if !(1..=22).contains(&level) {
+                return Err(anyhow!(
+                    "zstd snapshot compression level must be between 1 and 22"
+                ));
+            }
+            Ok(Compression::Zstd { level })
+        }
         other => Err(anyhow!("unknown snapshot compression '{other}'")),
     }
 }

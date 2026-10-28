@@ -15,7 +15,7 @@ use crate::envelope::{
     decode_envelope_borrowed, encode_envelope, manifest_info, EncryptionManifest,
 };
 use crate::errors::{Result, SnapshotCodecError};
-use crate::format::FORMAT_VERSION;
+use crate::format::{FORMAT_VERSION, FORMAT_VERSION_CHUNKED};
 use crate::options::{Compression, SnapshotCredentials, SnapshotEncryption, SnapshotOptions};
 use crate::transform::{compress, decompress, decrypt_body, derive_password_key, encrypt_body};
 use crate::view::SnapshotView;
@@ -43,14 +43,25 @@ pub fn encode_snapshot_with_options(
     encode_snapshot_with_options_and_info(payload, wal_lsn, options).map(|(bytes, _)| bytes)
 }
 
+/// The column-major format (2) for gzip or no compression; zstd
+/// compresses only framed snapshots (format 3), which are written from the
+/// payload loaded into a graph.
 fn encode_snapshot_with_options_and_info(
     payload: &SnapshotPayload,
     wal_lsn: Option<u64>,
     options: &SnapshotOptions,
 ) -> Result<(Vec<u8>, SnapshotInfo)> {
+    if matches!(options.compression, Compression::Zstd { .. }) {
+        let mut graph = lora_store::InMemoryGraph::new();
+        graph
+            .load_snapshot_payload(payload.clone())
+            .map_err(|e| SnapshotCodecError::Encode(e.to_string()))?;
+        return crate::graph::encode_graph_snapshot(&graph, wal_lsn, options);
+    }
     let (body, encryption) = encode_snapshot_body(payload, wal_lsn, options)?;
 
     encode_envelope(
+        FORMAT_VERSION,
         body,
         payload.nodes.len(),
         payload.relationships.len(),
@@ -92,6 +103,11 @@ pub fn decode_snapshot(
     credentials: Option<&SnapshotCredentials>,
 ) -> Result<(SnapshotPayload, SnapshotInfo)> {
     let (manifest, body) = decode_envelope_borrowed(bytes)?;
+    if manifest.format_version == FORMAT_VERSION_CHUNKED {
+        // The framed body decodes into a graph; the payload is its copy.
+        let (graph, info) = crate::graph::read_graph_snapshot(bytes, credentials)?;
+        return Ok((graph.snapshot_payload(), info));
+    }
     ensure_supported_format(manifest.format_version)?;
 
     let body = decode_snapshot_body(

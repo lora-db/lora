@@ -25,6 +25,7 @@
 
 use std::fmt::Write as _;
 use std::hash::{BuildHasher, BuildHasherDefault};
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -32,10 +33,12 @@ use super::constraint_catalog::{
     ConstraintCatalog, ConstraintDefinition, StoredConstraintKind, StoredPropertyType,
     StoredPropertyTypeTerm, StoredScalarType, StoredVectorCoordType,
 };
-use super::cow::{FastHashMap, KeyHasher};
+use super::cow::KeyHasher;
 use super::index_catalog::StoredIndexEntity;
 use super::InMemoryGraph;
+use crate::encoded::{StoredNode, StoredRel};
 use crate::types::{NodeId, Properties, PropertyValue, RelationshipId};
+use crate::{PropsRef, ValueRef};
 
 /// Why a mutation was rejected by a constraint check. The codes match
 /// the GQLSTATUS-style shapes:
@@ -130,119 +133,325 @@ impl InMemoryGraph {
         }
     }
 
+    /// Scans the label's nodes only, and decodes only the constrained
+    /// properties of each: copying every property of every node out of
+    /// its stored form was most of the time a restart spent on a
+    /// constraint. A constraint on one property, other than a type
+    /// constraint, reads the value in place without copying it.
     fn validate_existing_nodes_for_constraint(
         &self,
         def: &ConstraintDefinition,
     ) -> Result<(), ConstraintViolation> {
-        let label = def.label.as_str();
-        let mut seen = SeenTuples::default();
-        for (id, node) in self.iter_nodes() {
-            if !node.labels().strs().any(|l| l == label) {
-                continue;
+        let Some(ids) = self.nodes_by_label.get(def.label.as_str()) else {
+            return Ok(());
+        };
+        let keys = constrained_keys(def);
+        let properties_of = |id| {
+            self.node_at(id)
+                .map(|node| constrained_properties(&keys, node.properties()))
+        };
+        let slots = self.nodes.len() as u64;
+        match single_key(def) {
+            Some(key) => {
+                let key_id = self.dicts.keys.id_of(key);
+                validate_scope(
+                    def,
+                    ids,
+                    slots,
+                    |id, buf| {
+                        let Some(bytes) = self.nodes.get(id as usize) else {
+                            return Ok(None);
+                        };
+                        let node = StoredNode::new(id, bytes, &self.dicts);
+                        let value = key_id.and_then(|key_id| node.properties().get_id(key_id));
+                        check_single(def, value, buf)
+                    },
+                    properties_of,
+                )
             }
-            let properties = node.properties().to_owned();
-            validate_record_against_constraint(def, &properties, true)?;
-            seen.insert(def, id, &properties, |other| {
-                self.node_at(other).map(|n| n.properties().to_owned())
-            })?;
+            None => validate_scope(
+                def,
+                ids,
+                slots,
+                |id, buf| check_record(def, properties_of(id), buf),
+                properties_of,
+            ),
         }
-        Ok(())
     }
 
     fn validate_existing_rels_for_constraint(
         &self,
         def: &ConstraintDefinition,
     ) -> Result<(), ConstraintViolation> {
-        let rel_type = def.label.as_str();
-        let mut seen = SeenTuples::default();
-        for (id, rel) in self.iter_rels() {
-            if rel.rel_type() != rel_type {
-                continue;
-            }
-            let properties = rel.properties().to_owned();
-            validate_record_against_constraint(def, &properties, true)?;
-            seen.insert(def, id, &properties, |other| {
-                self.rel_at(other).map(|r| r.properties().to_owned())
-            })?;
-        }
-        Ok(())
-    }
-}
-
-/// Property tuples a pre-create scan has met, for a uniqueness check.
-/// Holds a hash of each tuple's key and the record it came from, not
-/// the key itself: a 1M-node scan kept a million key strings alive at
-/// once, about three times the backing index it is about to build. A
-/// matching hash is confirmed by rebuilding the earlier record's key,
-/// so a hash collision never reads as a duplicate.
-#[derive(Default)]
-struct SeenTuples {
-    /// Key hash -> the first record with that hash.
-    first: FastHashMap<u64, u64>,
-    /// Later records whose key hashed like an earlier, different key.
-    collided: Vec<(u64, u64)>,
-    /// Reused for every key the scan builds.
-    key: String,
-}
-
-impl SeenTuples {
-    /// Record `id`'s tuple, or fail if an earlier record had the same one.
-    /// Records without the whole tuple are skipped: plain uniqueness only
-    /// applies when every constrained property is present, and a key
-    /// constraint's existence check has already failed them.
-    /// `properties_of` reads an earlier record's properties back.
-    fn insert(
-        &mut self,
-        def: &ConstraintDefinition,
-        id: u64,
-        properties: &Properties,
-        properties_of: impl Fn(u64) -> Option<Properties>,
-    ) -> Result<(), ConstraintViolation> {
-        if !def.kind.requires_uniqueness()
-            || !def
-                .properties
-                .iter()
-                .all(|p| properties.contains_key(p.as_str()))
-        {
-            return Ok(());
-        }
-        self.key.clear();
-        write_property_tuple_key(&mut self.key, def, properties);
-        let hash = BuildHasherDefault::<KeyHasher>::default().hash_one(self.key.as_str());
-        self.insert_hashed(def, hash, id, properties_of)
-    }
-
-    /// [`Self::insert`] once `self.key` holds `id`'s key and `hash` its hash.
-    fn insert_hashed(
-        &mut self,
-        def: &ConstraintDefinition,
-        hash: u64,
-        id: u64,
-        properties_of: impl Fn(u64) -> Option<Properties>,
-    ) -> Result<(), ConstraintViolation> {
-        let Some(&first) = self.first.get(&hash) else {
-            self.first.insert(hash, id);
+        let Some(ids) = self.relationships_by_type.get(def.label.as_str()) else {
             return Ok(());
         };
-        let earlier = std::iter::once(first).chain(
-            self.collided
-                .iter()
-                .filter(|(h, _)| *h == hash)
-                .map(|&(_, other)| other),
-        );
-        let mut other_key = String::new();
-        for other in earlier {
-            other_key.clear();
-            if let Some(other_properties) = properties_of(other) {
-                write_property_tuple_key(&mut other_key, def, &other_properties);
+        let keys = constrained_keys(def);
+        let properties_of = |id| {
+            self.rel_at(id)
+                .map(|rel| constrained_properties(&keys, rel.properties()))
+        };
+        let slots = self.relationships.len() as u64;
+        match single_key(def) {
+            Some(key) => {
+                let key_id = self.dicts.keys.id_of(key);
+                validate_scope(
+                    def,
+                    ids,
+                    slots,
+                    |id, buf| {
+                        let Some(bytes) = self.relationships.get(id as usize) else {
+                            return Ok(None);
+                        };
+                        let rel = StoredRel::new(id, bytes, &self.dicts);
+                        let value = key_id.and_then(|key_id| rel.properties().get_id(key_id));
+                        check_single(def, value, buf)
+                    },
+                    properties_of,
+                )
             }
-            if other_key == self.key {
-                return Err(uniqueness_violation(def));
+            None => validate_scope(
+                def,
+                ids,
+                slots,
+                |id, buf| check_record(def, properties_of(id), buf),
+                properties_of,
+            ),
+        }
+    }
+}
+
+/// The one property a constraint other than a type constraint covers,
+/// when it covers one: its records are checked without copying values.
+fn single_key(def: &ConstraintDefinition) -> Option<&str> {
+    match (&def.kind, def.properties.as_slice()) {
+        (StoredConstraintKind::PropertyType(_), _) => None,
+        (_, [key]) => Some(key.as_str()),
+        _ => None,
+    }
+}
+
+/// What a scan learns from one record: `Err` if it violates the
+/// existence or type checks, else its tuple hash when uniqueness applies
+/// to it (built in `buf`).
+type Checked = Result<Option<u64>, ConstraintViolation>;
+
+/// [`Checked`] for a record's constrained properties (`None`: no record).
+fn check_record(
+    def: &ConstraintDefinition,
+    properties: Option<Properties>,
+    buf: &mut String,
+) -> Checked {
+    let Some(properties) = properties else {
+        return Ok(None);
+    };
+    validate_record_against_constraint(def, &properties, true)?;
+    Ok(tuple_hash(def, &properties, buf))
+}
+
+/// [`check_record`] for a [`single_key`] constraint, from the stored value
+/// read in place: the same verdict and the same tuple key.
+fn check_single(
+    def: &ConstraintDefinition,
+    value: Option<ValueRef<'_>>,
+    buf: &mut String,
+) -> Checked {
+    let Some(value) = value else {
+        // The existence check's violation, as for a record without it.
+        validate_record_against_constraint(def, &Properties::new(), true)?;
+        return Ok(None);
+    };
+    if !def.kind.requires_uniqueness() {
+        return Ok(None);
+    }
+    buf.clear();
+    append_value_ref_key(buf, value);
+    Ok(Some(
+        BuildHasherDefault::<KeyHasher>::default().hash_one(buf.as_str()),
+    ))
+}
+
+/// [`append_property_value_key`] for a value read in place: a scalar is
+/// written without being copied out first.
+fn append_value_ref_key(out: &mut String, value: ValueRef<'_>) {
+    match value {
+        ValueRef::Null => out.push('N'),
+        ValueRef::Bool(b) => {
+            out.push('B');
+            out.push(if b { 'T' } else { 'F' });
+        }
+        ValueRef::Int(i) => {
+            out.push('I');
+            let _ = write!(out, "{i}");
+        }
+        ValueRef::Float(f) => {
+            out.push('F');
+            let _ = write!(out, "{f:?}");
+        }
+        ValueRef::String(s) => {
+            out.push('S');
+            append_len_prefixed_str(out, s);
+        }
+        ValueRef::Other(value) => append_property_value_key(out, &value.get()),
+    }
+}
+
+/// Ids a scan of [`validate_scope`] takes per task.
+const SCAN_IDS: u64 = 1 << 16;
+
+/// What one task of [`validate_scope`] found in its ids.
+struct ScannedRange {
+    /// The first record the existence or type checks reject.
+    rejected: Option<(u64, ConstraintViolation)>,
+    /// `(tuple hash, id)` of each record the uniqueness check applies to.
+    tuples: Vec<(u64, u64)>,
+}
+
+/// Check the records `ids` lists (all below `slots`) against `def`, on
+/// every core when the build allows, and report the violation a scan in
+/// id order would meet first: per record, the existence and type checks,
+/// then uniqueness against the records before it. `check` checks one
+/// record ([`Checked`]); `properties_of` reads a record's constrained
+/// properties, to confirm records whose tuples hash alike.
+fn validate_scope(
+    def: &ConstraintDefinition,
+    ids: &super::id_bitmap::IdBitmap,
+    slots: u64,
+    check: impl Fn(u64, &mut String) -> Checked + Sync,
+    properties_of: impl Fn(u64) -> Option<Properties> + Sync,
+) -> Result<(), ConstraintViolation> {
+    let scan = |start: u64| {
+        let mut range = ScannedRange {
+            rejected: None,
+            tuples: Vec::new(),
+        };
+        let mut buf = String::new();
+        for id in ids.iter_from(start).take_while(|&id| id < start + SCAN_IDS) {
+            match check(id, &mut buf) {
+                Err(violation) => {
+                    // Nothing after it in this range can be met first.
+                    range.rejected = Some((id, violation));
+                    break;
+                }
+                Ok(Some(hash)) => range.tuples.push((hash, id)),
+                Ok(None) => {}
             }
         }
-        self.collided.push((hash, id));
-        Ok(())
+        range
+    };
+    let starts: Vec<u64> = (0..slots.div_ceil(SCAN_IDS))
+        .map(|i| i * SCAN_IDS)
+        .collect();
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    let ranges: Vec<ScannedRange> = {
+        use rayon::prelude::*;
+        starts.into_par_iter().map(scan).collect()
+    };
+    #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
+    let ranges: Vec<ScannedRange> = starts.into_iter().map(scan).collect();
+
+    let mut rejected: Option<(u64, ConstraintViolation)> = None;
+    let mut tuples = Vec::new();
+    for range in ranges {
+        if let Some((id, violation)) = range.rejected {
+            if rejected.as_ref().is_none_or(|(first, _)| id < *first) {
+                rejected = Some((id, violation));
+            }
+        }
+        tuples.extend(range.tuples);
     }
+    let repeat = first_repeat(def, tuples, &properties_of);
+    match (repeat, rejected) {
+        // At one record the existence and type checks come first.
+        (Some(repeat), Some((first, _))) if repeat < first => Err(uniqueness_violation(def)),
+        (_, Some((_, violation))) => Err(violation),
+        (Some(_), None) => Err(uniqueness_violation(def)),
+        (None, None) => Ok(()),
+    }
+}
+
+/// The hash of `properties`' tuple key (built in `key`), or `None` when
+/// uniqueness does not apply to the record: plain uniqueness only applies
+/// when every constrained property is present, and a key constraint's
+/// existence check has already failed a record without them.
+fn tuple_hash(
+    def: &ConstraintDefinition,
+    properties: &Properties,
+    key: &mut String,
+) -> Option<u64> {
+    if !def.kind.requires_uniqueness()
+        || !def
+            .properties
+            .iter()
+            .all(|p| properties.contains_key(p.as_str()))
+    {
+        return None;
+    }
+    key.clear();
+    write_property_tuple_key(key, def, properties);
+    Some(BuildHasherDefault::<KeyHasher>::default().hash_one(key.as_str()))
+}
+
+/// The smallest id whose tuple an earlier record already has, given each
+/// record's `(tuple hash, id)`. Holds hashes, not keys: a 1M-node scan
+/// that kept the keys held about three times the backing index it was
+/// about to build. Records with one hash are confirmed by rebuilding
+/// their keys from `properties_of`, so a collision never reads as a
+/// duplicate.
+fn first_repeat(
+    def: &ConstraintDefinition,
+    mut tuples: Vec<(u64, u64)>,
+    properties_of: impl Fn(u64) -> Option<Properties>,
+) -> Option<u64> {
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    {
+        use rayon::slice::ParallelSliceMut;
+        tuples.par_sort_unstable();
+    }
+    #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
+    tuples.sort_unstable();
+
+    let key_of = |id: u64| {
+        let mut key = String::new();
+        if let Some(properties) = properties_of(id) {
+            write_property_tuple_key(&mut key, def, &properties);
+        }
+        key
+    };
+    let mut first: Option<u64> = None;
+    for run in tuples
+        .chunk_by(|a, b| a.0 == b.0)
+        .filter(|run| run.len() > 1)
+    {
+        // Ids ascend within a run: the first key equal to an earlier one
+        // is the run's earliest repeat.
+        let mut keys: Vec<String> = Vec::with_capacity(run.len());
+        for &(_, id) in run {
+            let key = key_of(id);
+            if keys.contains(&key) {
+                first = Some(first.map_or(id, |first| first.min(id)));
+                break;
+            }
+            keys.push(key);
+        }
+    }
+    first
+}
+
+/// The constraint's property keys, interned once for a scan.
+fn constrained_keys(def: &ConstraintDefinition) -> Vec<Arc<str>> {
+    def.properties
+        .iter()
+        .map(|key| crate::intern(key))
+        .collect()
+}
+
+/// The constrained properties a record holds: all a constraint check
+/// reads.
+fn constrained_properties(keys: &[Arc<str>], stored: PropsRef<'_>) -> Properties {
+    keys.iter()
+        .filter_map(|key| Some((Arc::clone(key), stored.get(key)?.to_owned())))
+        .collect()
 }
 
 fn validate_record_against_constraint(
@@ -1155,21 +1364,13 @@ mod tests {
         properties
     }
 
-    /// Records 0..n carry `values[id]` under `k`; `SeenTuples` sees them
-    /// all under one forced hash, so every insert after the first takes
-    /// the collision path.
-    fn insert_colliding(values: &[PropertyValue]) -> Result<(), ConstraintViolation> {
+    /// Records 0..n carry `values[id]` under `k`, all under one forced
+    /// hash, so every record after the first takes the collision path.
+    fn repeat_among_colliding(values: &[PropertyValue]) -> Option<u64> {
         let def = unique_on("k");
         let records: Vec<Properties> = values.iter().map(|v| with("k", v.clone())).collect();
-        let mut seen = SeenTuples::default();
-        for (id, properties) in records.iter().enumerate() {
-            seen.key.clear();
-            write_property_tuple_key(&mut seen.key, &def, properties);
-            seen.insert_hashed(&def, 7, id as u64, |other| {
-                records.get(other as usize).cloned()
-            })?;
-        }
-        Ok(())
+        let tuples = (0..records.len() as u64).map(|id| (7, id)).collect();
+        first_repeat(&def, tuples, |id| records.get(id as usize).cloned())
     }
 
     #[test]
@@ -1181,7 +1382,7 @@ mod tests {
             PropertyValue::String("1".into()),
             PropertyValue::Int(2),
         ];
-        assert!(insert_colliding(&values).is_ok());
+        assert_eq!(repeat_among_colliding(&values), None);
     }
 
     #[test]
@@ -1192,18 +1393,79 @@ mod tests {
             PropertyValue::Int(3),
             PropertyValue::Int(2),
         ];
-        let err = insert_colliding(&values).unwrap_err();
-        assert_eq!(err.gql_status(), "22N79");
+        assert_eq!(repeat_among_colliding(&values), Some(3));
+    }
+
+    #[test]
+    fn the_earliest_repeat_is_reported() {
+        let def = unique_on("k");
+        let records: Vec<Properties> = [5, 6, 6, 5]
+            .iter()
+            .map(|v| with("k", PropertyValue::Int(*v)))
+            .collect();
+        let mut key = String::new();
+        let tuples = records
+            .iter()
+            .enumerate()
+            .map(|(id, properties)| (tuple_hash(&def, properties, &mut key).unwrap(), id as u64))
+            .collect();
+        let repeat = first_repeat(&def, tuples, |id| records.get(id as usize).cloned());
+        assert_eq!(repeat, Some(2));
     }
 
     #[test]
     fn records_without_the_tuple_are_skipped() {
         let def = unique_on("k");
-        let mut seen = SeenTuples::default();
-        for id in 0..3 {
-            seen.insert(&def, id, &with("other", PropertyValue::Int(1)), |_| None)
-                .unwrap();
+        let mut key = String::new();
+        assert_eq!(
+            tuple_hash(&def, &with("other", PropertyValue::Int(1)), &mut key),
+            None
+        );
+    }
+
+    #[test]
+    fn a_value_checked_in_place_gets_the_copied_values_verdict_and_key() {
+        let values = [
+            PropertyValue::Null,
+            PropertyValue::Bool(true),
+            PropertyValue::Int(-42),
+            PropertyValue::Int(i64::MIN),
+            PropertyValue::Float(1.0),
+            PropertyValue::Float(-0.0),
+            PropertyValue::Float(f64::NAN),
+            PropertyValue::String(String::new()),
+            PropertyValue::String("héllo".into()),
+            PropertyValue::List(vec![
+                PropertyValue::Int(1),
+                PropertyValue::String("x".into()),
+            ]),
+            PropertyValue::Date(crate::LoraDate::new(2024, 2, 29).unwrap()),
+        ];
+        for kind in [
+            StoredConstraintKind::Unique,
+            StoredConstraintKind::NodeKey,
+            StoredConstraintKind::Existence,
+        ] {
+            let def = ConstraintDefinition {
+                kind: kind.clone(),
+                ..unique_on("k")
+            };
+            for value in &values {
+                let mut copied = String::new();
+                let mut in_place = String::new();
+                let properties = with("k", value.clone());
+                let slow = check_record(&def, Some(properties), &mut copied).unwrap();
+                let fast = check_single(&def, Some(ValueRef::from(value)), &mut in_place).unwrap();
+                assert_eq!(fast, slow, "{kind:?} {value:?}");
+            }
+            let mut buf = String::new();
+            let slow = check_record(&def, Some(Properties::new()), &mut buf);
+            let fast = check_single(&def, None, &mut buf);
+            assert_eq!(
+                fast.map_err(|e| e.gql_status()),
+                slow.map_err(|e| e.gql_status()),
+                "{kind:?} missing"
+            );
         }
-        assert!(seen.first.is_empty());
     }
 }

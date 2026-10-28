@@ -19,7 +19,7 @@ bench = false
 # It is default-on for native builds; wasm consumers can opt out with
 # `default-features = false`.
 default = ["parallel"]
-parallel = ["lora-executor/parallel"]
+parallel = ["lora-executor/parallel", "lora-snapshot/parallel"]
 
 [dependencies]
 anyhow.workspace = true

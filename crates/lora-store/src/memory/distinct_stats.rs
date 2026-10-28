@@ -183,6 +183,35 @@ impl DistinctSketch {
         }
     }
 
+    /// Count everything `other` counted, as if its values had been added
+    /// here. Counters add up per bucket, so the result is the sketch one
+    /// builder would have made of both value sets.
+    fn merge(&mut self, other: &DistinctSketch) {
+        if self.levels < other.levels {
+            self.levels = other.levels;
+            self.counters.resize(usize::from(other.levels));
+        }
+        for level in 0..usize::from(other.levels) {
+            if other.occupied[level] == 0 {
+                continue;
+            }
+            for bucket in 0..BUCKETS {
+                let theirs = other.counters.get(level, bucket);
+                if theirs == 0 {
+                    continue;
+                }
+                let ours = self.counters.get(level, bucket);
+                self.counters
+                    .set(level, bucket, ours.saturating_add(theirs));
+                if ours == 0 {
+                    self.occupied[level] += 1;
+                }
+            }
+        }
+        self.entries += other.entries;
+        self.estimate = self.compute_estimate();
+    }
+
     /// Undo one [`Self::add`] of `hash`. A hash that was never added is
     /// ignored (it cannot happen while every write goes through the
     /// graph's hooks).
@@ -539,6 +568,28 @@ impl DistinctBuilder {
                 i
             });
             keys[i].1.add(hash);
+        }
+    }
+
+    /// Take in what another builder counted, as if its entities had been
+    /// added here: builders filled on several threads combine into the
+    /// sketches one would have built.
+    pub(super) fn merge(&mut self, other: DistinctBuilder) {
+        for (scope, keys) in other.scopes {
+            let at = match self.scopes.binary_search_by(|(s, _)| (**s).cmp(&*scope)) {
+                Ok(i) => i,
+                Err(i) => {
+                    self.scopes.insert(i, (scope, Vec::new()));
+                    i
+                }
+            };
+            let ours = &mut self.scopes[at].1;
+            for (key, sketch) in keys {
+                match ours.binary_search_by(|(k, _)| (**k).cmp(&*key)) {
+                    Ok(i) => ours[i].1.merge(&sketch),
+                    Err(i) => ours.insert(i, (key, sketch)),
+                }
+            }
         }
     }
 

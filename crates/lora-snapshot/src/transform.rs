@@ -22,6 +22,9 @@ pub(crate) fn compress(mut bytes: Vec<u8>, compression: Compression) -> Result<V
             encoder.write_all(&bytes)?;
             Ok(encoder.finish()?)
         }
+        Compression::Zstd { .. } => Err(SnapshotCodecError::UnsupportedCompression(
+            "zstd compresses framed snapshots only",
+        )),
     }
 }
 
@@ -34,6 +37,9 @@ pub(crate) fn decompress(bytes: Vec<u8>, compression: Compression) -> Result<Vec
             decoder.read_to_end(&mut out)?;
             Ok(out)
         }
+        Compression::Zstd { .. } => Err(SnapshotCodecError::UnsupportedCompression(
+            "zstd compresses framed snapshots only",
+        )),
     }
 }
 

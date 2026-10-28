@@ -14,18 +14,55 @@ recovery replays only the records past the fence.
 
 ```
 [0..8)    magic         "LORACOL1"
-[8..12)   format        u32 — envelope format, currently 2
+[8..12)   format        u32: envelope format, 3 (framed body) or 2 (columnar body)
 [12..16)  manifest_len  u32
 [16..24)  body_len      u64
 [24..56)  checksum      BLAKE3 over manifest + body
 [56..)    manifest      explicit binary manifest
-[...]     body          columnar SnapshotPayload body
+[...]     body          framed (format 3) or columnar (format 2) body
 ```
 
 The manifest carries the snapshot format version, optional `wal_lsn`, node and
-relationship counts, compression mode, encryption metadata, and body length. The
-current body format version is tracked in `crates/lora-snapshot/src/format.rs`
-and is **v5**. Each version appends a trailer after the previous one:
+relationship counts, compression mode, encryption metadata, and body length.
+
+### Format 3: framed body
+
+Every writer emits format 3. The body starts with the id counters and the
+graph's dictionaries (labels, relationship types, property keys, and the short
+string values the graph stores by number), then holds the records in frames of
+4,096 ids each: node frames, then relationship frames, then one catalog frame
+(index definitions, constraint definitions, vector index trailer), then an end
+marker. Each frame is compressed on its own (zstd, raw deflate for gzip, or
+stored as is), so frames are built and decoded on every core:
+
+- **Writing** (`sync()`, checkpoints, `save_snapshot_to` and
+  `save_snapshot_to_with_options`) encodes and compresses
+  a round of frames on the thread pool while the calling thread writes the
+  round before.
+- **Reading** (opening a named or snapshot-backed database, `recover`) decodes a round of
+  frames into the store's record encoding on the thread pool while the calling
+  thread files the round before into the graph and reads the round after. The
+  catalogs are then registered, and every index population and constraint scan
+  runs at once, each also split over the cores (see
+  [Restart cost](#restart-cost)).
+
+A frame records its record count, raw length and stored length; the reader
+checks every length, that ids ascend within a frame, that frames come in order,
+and the envelope checksum over the whole body before the graph is used.
+Encryption seals the whole body, as in format 2. The layout is documented in
+`crates/lora-snapshot/src/chunked.rs`.
+
+Builds without threads (wasm, or `default-features = false`) write and read the
+same format on one thread.
+
+### Format 2: columnar body
+
+Snapshots written before format 3 hold one column-major body, compressed
+whole. They still load, on one thread. A named database opened from one
+checkpoints before the open returns, so its first open after an upgrade takes
+one `sync()` longer and the opens after it read format 3. Managed snapshot
+directories are rewritten as format 3 by their next checkpoint. The columnar body has its own version, tracked in
+`crates/lora-snapshot/src/format.rs`; each version appends a trailer:
 
 | Body version | Adds |
 |---|---|
@@ -34,9 +71,64 @@ and is **v5**. Each version appends a trailer after the previous one:
 | v4 | Constraint catalog trailer |
 | v5 | Vector-index backend trailer: HNSW graph state, JSON-encoded |
 
-Writers always emit v5. The reader accepts v2 through v5; a missing trailer
-loads as empty (no indexes, no constraints, vector backends rebuilt from the
-property store).
+The reader accepts v2 through v5; a missing trailer loads as empty (no indexes,
+no constraints, vector backends rebuilt from the property store). The payload
+encoder (`encode_snapshot`, `write_snapshot`, and through it
+`save_snapshot_to_bytes`) still writes format 2. `decode_snapshot` and
+`load_snapshot_from_*` read both formats, through a payload copy on one thread.
+
+### Restart cost
+
+Opening a database reads its snapshot and replays the WAL past the snapshot's
+fence. With format 3 the snapshot part scales with the cores: on a 10-core
+machine a named database of 3M nodes and 3M relationships with a uniqueness
+constraint (630 MB in memory) opened in about 0.75 s, against about 7.7 s for
+the same graph from a format 2 snapshot, and `sync()` took about 0.35 s instead
+of 4.7 s. Measure your own with
+`cargo run --release -p lora-database --example open_probe -- <dir>`.
+
+Workers decode frames into whole leaves of the record store, which the
+loading thread files by pointer, and link a round's relationships into the
+adjacency lists leaf by leaf on every core. Each declared index is built split
+over the cores, and so is a constraint's scan of the existing data; a
+constraint on one property (other than a type constraint) reads each value in
+place. What a restart still does on one thread: reading the file and checking
+its checksum, and replaying the WAL tail. Replay applies about 85 MB of WAL a
+second; a named database checkpoints once its WAL reaches 64 MB or the
+snapshot's size, whichever is larger (`open_probe <dir> wal <MB>` measures it).
+Peak memory over the graph is a few rounds of frames (a few megabytes per core)
+and, while a uniqueness constraint is checked, 16 bytes per constrained entity.
+
+A named database's container (`.loradb`) stores a format 3 snapshot as is: its
+frames are compressed already, and compressing the container frame again made
+every open inflate the whole snapshot on one thread.
+
+### Compression
+
+Snapshots are compressed with zstd level 3 by default: in the comparison below
+a quarter smaller than gzip level 1 and as fast to write and read. Gzip (levels
+0 to 9) and no compression remain available; zstd levels go from 1 to 22. Wasm
+builds read zstd snapshots (with a pure-Rust decoder) but write gzip level 1,
+their default; a snapshot written by a native build therefore loads in a
+browser. zstd compresses format 3 snapshots only: the payload encoder
+(`encode_snapshot`) writes format 3 when asked for zstd.
+
+The 3M-node database above, per codec, 4,096 ids a frame:
+
+| Codec | Size | Write | Load |
+|---|---|---|---|
+| none | 250.6 MiB | 0.49 s | 1.34 s |
+| gzip 1 | 65.5 MiB | 0.34 s | 1.27 s |
+| gzip 6 | 56.2 MiB | 1.16 s | 1.23 s |
+| zstd 1 | 57.7 MiB | 0.30 s | 1.21 s |
+| **zstd 3** (default) | **50.6 MiB** | **0.30 s** | **1.22 s** |
+| zstd 6 | 49.2 MiB | 0.50 s | 1.22 s |
+| zstd 9 | 49.1 MiB | 0.60 s | 1.23 s |
+
+(Measured before the later restore work; the codec's share of a load is the
+same.) Compare codecs on your own database with
+`cargo run --release -p lora-database --example codec_probe -- <file.loradb> <work dir>`,
+which copies the file and never opens the original.
 
 `wal_lsn` is the WAL fence: the WAL's durable LSN at the time the snapshot was
 taken, so recovery knows which records the snapshot already covers. Every
@@ -60,9 +152,11 @@ right for a seed over a new WAL directory (`lora-server --restore-from seed.bin
 --wal-dir <empty dir>`) and fails with `WalError::Gap` over a WAL whose early
 segments a checkpoint removed.
 
-Default Rust snapshot options use gzip level 1 with no encryption. The JSON
-options surfaces used by bindings/admin helpers also accept no compression or
-gzip, plus raw 32-byte key or password-based ChaCha20-Poly1305 encryption.
+Default Rust snapshot options use zstd level 3 (gzip level 1 on wasm) with no
+encryption. The JSON options surfaces used by bindings/admin helpers accept no
+compression, `"gzip"` (level 0 to 9, default 1) or `"zstd"` (level 1 to 22,
+default 3), plus raw 32-byte key or password-based ChaCha20-Poly1305
+encryption.
 
 ## API surfaces
 
@@ -95,7 +189,7 @@ All API surfaces return a `SnapshotMeta` describing the file:
 
 ```json
 {
-  "formatVersion": 2,
+  "formatVersion": 3,
   "nodeCount": 1024,
   "relationshipCount": 4096,
   "walLsn": null
@@ -208,7 +302,7 @@ replication) install a recorder via
   run several, each has its own snapshot file.
 - **Schema migration.** Snapshots are versioned, but that is the snapshot
   envelope/body format, not an application-level schema. The current reader
-  accepts the current `LORACOL1` envelope format and rejects unsupported format
+  accepts `LORACOL1` envelope formats 2 and 3 and rejects other format
   versions. Treat format changes as compatibility events that need a reader
   path or an export/import migration.
 

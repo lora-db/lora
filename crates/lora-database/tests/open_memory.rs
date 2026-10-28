@@ -191,8 +191,11 @@ fn opening_a_long_wal_history_replays_it_in_bounded_memory_and_compacts() {
     // the graph. Applying each transaction as it is read leaves the graph
     // plus one transaction and the decode buffers: about 0.7 MB here,
     // twice this small graph (5,000 nodes without relationships, 331 KB).
+    // The open then compacts, and the checkpoint compresses snapshot
+    // frames on several threads, a compressor each: a constant bounded
+    // by the threads, not the graph, so it gets the checkpoint's slack.
     assert!(
-        first.peak < 4 * graph,
+        first.peak < 4 * graph + CHECKPOINT_SLACK,
         "open peaked at {} bytes over a {graph}-byte graph",
         first.peak
     );

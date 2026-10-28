@@ -17,11 +17,14 @@
 //!   `write_snapshot` / `read_snapshot` and `SnapshotInfo`.
 //! - `envelope`, `body`, `columnar`, `transform`, `view` — the layered
 //!   on-disk format implementation.
-//! - `graph` — the same format written from and read into an
-//!   `InMemoryGraph` as a stream, without a payload copy of the records.
+//! - `graph` — snapshots written from and read into an `InMemoryGraph`
+//!   as a stream, without a payload copy of the records.
+//! - `chunked` — the framed body `graph` writes (envelope format 3): records
+//!   in frames compressed one by one, built and decoded on every core.
 //! - `errors`, `options` — public vocabulary.
 
 mod body;
+mod chunked;
 mod codec;
 mod columnar;
 mod envelope;
@@ -37,6 +40,8 @@ mod graph_tests;
 #[cfg(test)]
 mod tests;
 
+#[doc(hidden)]
+pub use chunked::set_ids_per_frame;
 pub use codec::{
     decode_snapshot, encode_snapshot, encode_snapshot_with_options, open_snapshot_view,
     read_snapshot, snapshot_info, write_snapshot, SnapshotInfo,

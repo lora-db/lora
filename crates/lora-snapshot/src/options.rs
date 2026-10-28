@@ -7,10 +7,27 @@ pub struct SnapshotOptions {
 }
 
 impl Default for SnapshotOptions {
+    /// zstd level 3: on a typical graph about a quarter smaller than gzip
+    /// level 1, and as fast to write and read. Wasm builds, which read
+    /// zstd but cannot write it, default to gzip level 1.
     fn default() -> Self {
         Self {
-            compression: Compression::Gzip { level: 1 },
+            compression: Compression::default_for_target(),
             encryption: None,
+        }
+    }
+}
+
+impl Compression {
+    /// The compression snapshots get when none is asked for.
+    pub const fn default_for_target() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Compression::Zstd { level: 3 }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Compression::Gzip { level: 1 }
         }
     }
 }
@@ -18,7 +35,14 @@ impl Default for SnapshotOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Compression {
     None,
-    Gzip { level: u32 },
+    Gzip {
+        level: u32,
+    },
+    /// Zstandard at `level` (1 to 22), the default. Framed snapshots
+    /// only. Every build reads it; wasm builds cannot write it.
+    Zstd {
+        level: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

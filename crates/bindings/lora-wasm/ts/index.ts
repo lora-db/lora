@@ -96,7 +96,8 @@ export interface SnapshotMeta {
  */
 export type SnapshotCompressionInfo =
   | { format: "none" }
-  | { format: "gzip"; level: number };
+  | { format: "gzip"; level: number }
+  | { format: "zstd"; level: number };
 
 /**
  * Header context decoded from a snapshot binary. Extends {@link SnapshotMeta}

@@ -471,6 +471,39 @@ fn empty_leaf() -> &'static Arc<Leaf> {
     EMPTY_LEAF.get_or_init(|| Arc::new(Leaf::new()))
 }
 
+/// Records in whole leaves, built apart from any slab (on another thread)
+/// for [`RecordSlab::put_leaves`]. Slots must be pushed in ascending order.
+#[derive(Default)]
+pub(super) struct BuiltLeaves {
+    leaves: Vec<(usize, Leaf)>,
+    last: Option<usize>,
+    records: usize,
+}
+
+impl BuiltLeaves {
+    /// Add `bytes` at slot `i`, above every slot pushed before.
+    pub(super) fn push(&mut self, i: usize, bytes: &[u8]) {
+        debug_assert!(self.last.is_none_or(|last| last < i));
+        let at = i >> SHIFT;
+        if self.leaves.last().is_none_or(|(l, _)| *l != at) {
+            self.leaves.push((at, Leaf::new()));
+        }
+        let (_, leaf) = self.leaves.last_mut().expect("pushed above");
+        leaf.set(i & MASK, bytes);
+        self.last = Some(i);
+        self.records += 1;
+    }
+
+    /// The highest slot pushed.
+    pub(super) fn last_slot(&self) -> Option<usize> {
+        self.last
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.records
+    }
+}
+
 /// Encoded records by slot index. Empty slots read as `None`.
 pub(super) struct RecordSlab {
     root: Arc<[Interior]>,
@@ -548,6 +581,37 @@ impl RecordSlab {
         let was_empty = !leaf.contains(i & MASK);
         leaf.set(i & MASK, bytes);
         was_empty
+    }
+
+    /// Store the records of `built` (every slot below [`Self::len`]). A
+    /// leaf position that holds no records takes its built leaf as is;
+    /// one that does takes the records one by one. Returns how many
+    /// records were stored, or the first slot that already held one.
+    pub(super) fn put_leaves(&mut self, built: BuiltLeaves) -> Result<usize, usize> {
+        let empty = empty_leaf();
+        let mut stored = 0;
+        for (at, leaf) in built.leaves {
+            let i = at * CHUNK;
+            assert!(i < self.len, "record leaf {at} out of bounds");
+            let node = &mut Arc::make_mut(&mut self.root)[i >> SPAN_SHIFT];
+            let place = &mut Arc::make_mut(node)[at & FAN_MASK];
+            if Arc::ptr_eq(place, empty) || place.live == 0 {
+                stored += leaf.live as usize;
+                *place = Arc::new(leaf);
+                continue;
+            }
+            let target = Arc::make_mut(place);
+            for slot in 0..CHUNK {
+                if let Some(bytes) = leaf.get(slot) {
+                    if target.contains(slot) {
+                        return Err(i + slot);
+                    }
+                    target.set(slot, bytes);
+                    stored += 1;
+                }
+            }
+        }
+        Ok(stored)
     }
 
     /// Empty slot `i`. Returns whether it held a record.

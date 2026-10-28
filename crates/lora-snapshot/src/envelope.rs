@@ -1,7 +1,9 @@
 use crate::body::{write_bytes, write_string, write_u32, write_u64, BodyReader};
 use crate::codec::SnapshotInfo;
 use crate::errors::{Result, SnapshotCodecError};
-use crate::format::{FORMAT_VERSION, HEADER_LEN, MAGIC};
+#[cfg(test)]
+use crate::format::FORMAT_VERSION;
+use crate::format::{is_supported_format, HEADER_LEN, MAGIC};
 use crate::options::{Compression, PasswordKdfParams};
 
 #[derive(Debug)]
@@ -31,6 +33,7 @@ pub(crate) enum EncryptionManifest {
 }
 
 pub(crate) fn encode_envelope(
+    format_version: u32,
     body: Vec<u8>,
     node_count: usize,
     relationship_count: usize,
@@ -45,7 +48,7 @@ pub(crate) fn encode_envelope(
     let body_len = u64::try_from(body.len())
         .map_err(|_| SnapshotCodecError::Encode("snapshot body too large".into()))?;
     let manifest = Manifest {
-        format_version: FORMAT_VERSION,
+        format_version,
         wal_lsn,
         node_count,
         relationship_count,
@@ -72,7 +75,7 @@ pub(crate) fn encode_envelope(
     out.try_reserve_exact(total_len)
         .map_err(|_| SnapshotCodecError::Encode("snapshot too large to allocate".into()))?;
     out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    out.extend_from_slice(&format_version.to_le_bytes());
     out.extend_from_slice(&(manifest_bytes.len() as u32).to_le_bytes());
     out.extend_from_slice(&body_len.to_le_bytes());
     out.extend_from_slice(&checksum);
@@ -91,7 +94,7 @@ pub(crate) fn decode_envelope_borrowed(bytes: &[u8]) -> Result<(Manifest, &[u8])
         return Err(SnapshotCodecError::BadMagic);
     }
     let format_version = u32::from_le_bytes(read_header_array::<4>(bytes, 8)?);
-    if format_version != FORMAT_VERSION {
+    if !is_supported_format(format_version) {
         return Err(SnapshotCodecError::UnsupportedVersion(format_version));
     }
     let manifest_len = usize::try_from(u32::from_le_bytes(read_header_array::<4>(bytes, 12)?))
@@ -132,6 +135,7 @@ pub(crate) fn decode_envelope_borrowed(bytes: &[u8]) -> Result<(Manifest, &[u8])
 
 const COMPRESSION_NONE: u8 = 0;
 const COMPRESSION_GZIP: u8 = 1;
+const COMPRESSION_ZSTD: u8 = 2;
 
 const ENCRYPTION_NONE: u8 = 0;
 const ENCRYPTION_CHACHA20_POLY1305: u8 = 1;
@@ -187,6 +191,10 @@ fn write_compression(out: &mut Vec<u8>, compression: Compression) {
             out.push(COMPRESSION_GZIP);
             write_u32(out, level);
         }
+        Compression::Zstd { level } => {
+            out.push(COMPRESSION_ZSTD);
+            write_u32(out, level);
+        }
     }
 }
 
@@ -194,6 +202,9 @@ fn read_compression(reader: &mut BodyReader<'_>) -> Result<Compression> {
     match reader.read_u8()? {
         COMPRESSION_NONE => Ok(Compression::None),
         COMPRESSION_GZIP => Ok(Compression::Gzip {
+            level: reader.read_u32()?,
+        }),
+        COMPRESSION_ZSTD => Ok(Compression::Zstd {
             level: reader.read_u32()?,
         }),
         tag => Err(SnapshotCodecError::Decode(format!(

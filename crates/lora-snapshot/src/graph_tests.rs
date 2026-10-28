@@ -93,16 +93,39 @@ fn write_to_vec(graph: &InMemoryGraph, wal_lsn: Option<u64>, options: &SnapshotO
 }
 
 #[test]
-fn streamed_snapshot_matches_the_payload_encoder_byte_for_byte() {
+fn streamed_and_in_memory_writers_agree_and_round_trip() {
     let graph = graph();
     for compression in [Compression::None, Compression::Gzip { level: 1 }] {
         let options = options(compression);
         let streamed = write_to_vec(&graph, Some(42), &options);
-        let buffered =
-            encode_snapshot_with_options(&graph.snapshot_payload(), Some(42), &options).unwrap();
-        assert_eq!(streamed, buffered, "{compression:?}");
         let (in_memory, _) = encode_graph_snapshot(&graph, Some(42), &options).unwrap();
-        assert_eq!(in_memory, buffered, "{compression:?}");
+        assert_eq!(streamed, in_memory, "{compression:?}");
+        assert_eq!(
+            u32::from_le_bytes(streamed[8..12].try_into().unwrap()),
+            crate::format::FORMAT_VERSION_CHUNKED
+        );
+        let (loaded, info) = read_graph_snapshot(streamed.as_slice(), None).unwrap();
+        assert_eq!(loaded.snapshot_payload(), graph.snapshot_payload());
+        assert_eq!(info.format_version, crate::format::FORMAT_VERSION_CHUNKED);
+        let (decoded, _) = decode_snapshot(&streamed, None).unwrap();
+        assert_eq!(decoded, graph.snapshot_payload());
+    }
+}
+
+#[test]
+fn column_major_snapshots_still_load() {
+    let graph = graph();
+    for compression in [Compression::None, Compression::Gzip { level: 1 }] {
+        let options = options(compression);
+        let legacy =
+            encode_snapshot_with_options(&graph.snapshot_payload(), Some(42), &options).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(legacy[8..12].try_into().unwrap()),
+            crate::format::FORMAT_VERSION
+        );
+        let (loaded, info) = read_graph_snapshot(legacy.as_slice(), None).unwrap();
+        assert_eq!(loaded.snapshot_payload(), graph.snapshot_payload());
+        assert_eq!(info.wal_lsn, Some(42));
     }
 }
 
@@ -223,6 +246,7 @@ fn streamed_read_accepts_properties_out_of_owner_order() {
     }
 
     let bytes = crate::envelope::encode_envelope(
+        crate::format::FORMAT_VERSION,
         body,
         2,
         0,
@@ -238,4 +262,97 @@ fn streamed_read_accepts_properties_out_of_owner_order() {
     let rank = |id: usize| decoded.nodes[id].properties.get("k").cloned();
     assert_eq!(rank(0), Some(PropertyValue::Int(10)));
     assert_eq!(rank(1), Some(PropertyValue::Int(11)));
+}
+
+/// A graph spread over many frames, with ids freed by deletes, several
+/// labels, a key whose few values the graph stores by number, and values
+/// of every shape.
+fn framed_graph() -> InMemoryGraph {
+    use lora_store::{intern, GraphStorageMut};
+    let mut graph = InMemoryGraph::new();
+    let mut ids = Vec::new();
+    for i in 0..40_000u64 {
+        let labels = match i % 4 {
+            0 => vec!["Person".to_string()],
+            1 => vec!["Person".to_string(), "Admin".to_string()],
+            2 => vec!["Place".to_string()],
+            _ => Vec::new(),
+        };
+        let mut properties = Properties::new();
+        properties.insert(intern("name"), PropertyValue::String(format!("n{i}")));
+        properties.insert(
+            intern("source"),
+            PropertyValue::String(["musicbrainz", "discogs", "manual"][(i % 3) as usize].into()),
+        );
+        properties.insert(intern("rank"), PropertyValue::Int(i as i64 - 20_000));
+        if i % 5 == 0 {
+            properties.insert(intern("score"), PropertyValue::Float(i as f64 / 7.0));
+        }
+        if i % 9 == 0 {
+            properties.insert(
+                intern("tags"),
+                PropertyValue::List(vec![
+                    PropertyValue::Int(1),
+                    PropertyValue::String("t".into()),
+                ]),
+            );
+        }
+        if i % 13 == 0 {
+            let mut map = std::collections::BTreeMap::new();
+            map.insert("k".to_string(), PropertyValue::Bool(i % 2 == 0));
+            properties.insert(intern("meta"), PropertyValue::Map(map));
+        }
+        ids.push(graph.create_node(labels, properties).id);
+    }
+    for (i, pair) in ids.windows(2).enumerate() {
+        let mut properties = Properties::new();
+        if i % 2 == 0 {
+            properties.insert(intern("weight"), PropertyValue::Int(i as i64 % 17));
+        }
+        let rel_type = if i % 3 == 0 { "NEXT" } else { "KNOWS" };
+        graph.create_relationship(pair[0], pair[1], rel_type, properties);
+    }
+    // Holes in both id spaces, some spanning a frame boundary.
+    for id in (8_000..8_400).chain(20_000..20_010) {
+        graph.detach_delete_node(id);
+    }
+    graph
+}
+
+#[test]
+fn a_graph_over_many_frames_round_trips_with_its_statistics_and_dictionaries() {
+    let graph = framed_graph();
+    for compression in [
+        Compression::None,
+        Compression::Gzip { level: 1 },
+        Compression::Zstd { level: 3 },
+    ] {
+        let bytes = write_to_vec(&graph, Some(7), &options(compression));
+        let (loaded, info) = read_graph_snapshot(bytes.as_slice(), None).unwrap();
+        assert_eq!(info.node_count, graph.snapshot_payload().nodes.len());
+        assert_eq!(loaded.snapshot_payload(), graph.snapshot_payload());
+        assert_eq!(loaded.graph_stats(), graph.graph_stats());
+        // The values the writer stored by number are stored by number again.
+        let values = loaded.snapshot_names().values;
+        assert_eq!(values, graph.snapshot_names().values);
+        assert!(!values.strings.is_empty());
+        // And a write after the restore allocates past the old ids.
+        let mut loaded = loaded;
+        use lora_store::GraphStorageMut;
+        let next = loaded.create_node(Vec::new(), Properties::new()).id;
+        assert_eq!(next, 40_000);
+    }
+}
+
+#[test]
+fn a_corrupt_frame_is_refused() {
+    let graph = framed_graph();
+    let bytes = write_to_vec(&graph, None, &options(Compression::Gzip { level: 1 }));
+    // Flip a byte in the middle of the body: the checksum catches it even
+    // when the frame still inflates.
+    let mut tampered = bytes.clone();
+    let at = tampered.len() / 2;
+    tampered[at] ^= 0x55;
+    assert!(read_graph_snapshot(tampered.as_slice(), None).is_err());
+    assert!(read_graph_snapshot(&bytes[..bytes.len() - 1], None).is_err());
 }

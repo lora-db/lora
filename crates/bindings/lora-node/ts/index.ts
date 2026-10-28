@@ -73,8 +73,10 @@ export interface DatabaseSnapshot {
 export type SnapshotCompression =
   | "none"
   | "gzip"
+  | "zstd"
   | { format: "none" }
-  | { format: "gzip"; level?: number };
+  | { format: "gzip"; level?: number }
+  | { format: "zstd"; level?: number };
 
 export interface SnapshotPasswordParams {
   memoryCostKib?: number;

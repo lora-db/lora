@@ -32,10 +32,10 @@ use super::index_catalog::{
     StoredIndexState,
 };
 use super::point_index::PointRegistry;
-#[cfg(test)]
-use super::property_index::PropertyIndexState;
-use super::property_index::{EntityValues, PropertyIndexKey, PropertyIndexRegistry, UNLABELLED};
-use super::record_slab::RecordSlab;
+use super::property_index::{
+    EntityValues, PropertyIndexKey, PropertyIndexRegistry, PropertyIndexState, UNLABELLED,
+};
+use super::record_slab::{BuiltLeaves, RecordSlab};
 use super::secondary_index_maintenance::SecondaryIndexMutation;
 use super::sorted_property_index::SortedPropertyIndex;
 use super::stats::GraphStats;
@@ -451,6 +451,139 @@ impl InMemoryGraph {
         let idx = self.ensure_rel_slot_checked(id)?;
         self.put_rel_at_slot(idx, rel);
         Ok(())
+    }
+
+    /// Store already encoded node records (labels and keys numbered by
+    /// this graph's dictionaries), built in leaves. Fails on a taken id.
+    pub(super) fn put_encoded_node_leaves(&mut self, built: BuiltLeaves) -> Result<(), String> {
+        let Some(last) = built.last_slot() else {
+            return Ok(());
+        };
+        self.ensure_node_slot_checked(last as NodeId)?;
+        self.live_node_count += self
+            .nodes
+            .put_leaves(built)
+            .map_err(|slot| format!("duplicate node id {slot} in snapshot payload"))?;
+        Ok(())
+    }
+
+    /// Store already encoded relationship records, built in leaves; `links`
+    /// holds each one's `(id, source, target, type number)`, whose
+    /// endpoints must exist. Fails on a taken id or a missing endpoint.
+    /// Linking them into the adjacency is [`Self::link_relationships`].
+    pub(super) fn put_encoded_relationship_leaves(
+        &mut self,
+        built: BuiltLeaves,
+        links: &[(RelationshipId, NodeId, NodeId, u32)],
+    ) -> Result<(), String> {
+        let Some(last) = built.last_slot() else {
+            return Ok(());
+        };
+        for &(id, src, dst, _) in links {
+            if !self.has_node_at(src) {
+                return Err(format!(
+                    "relationship {id} references missing source node {src}"
+                ));
+            }
+            if !self.has_node_at(dst) {
+                return Err(format!(
+                    "relationship {id} references missing target node {dst}"
+                ));
+            }
+        }
+        self.ensure_rel_slot_checked(last as RelationshipId)?;
+        self.live_rel_count += self
+            .relationships
+            .put_leaves(built)
+            .map_err(|slot| format!("duplicate relationship id {slot} in snapshot payload"))?;
+        Ok(())
+    }
+
+    /// Link each `(id, source, target, type number)` of `links` (in id
+    /// order, endpoints present) into its endpoints' adjacency, as one
+    /// [`Self::adjacency_push`] per end would. On every core when the build
+    /// allows: the ends are sorted by adjacency leaf (stably, so each
+    /// node's list gets them in `links` order) and each leaf is filled on
+    /// its own thread.
+    pub(super) fn link_relationships(&mut self, links: &[(RelationshipId, NodeId, NodeId, u32)]) {
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        {
+            use rayon::prelude::*;
+            let mut ends: Vec<(NodeId, Side, AdjEntry)> = Vec::with_capacity(2 * links.len());
+            for &(id, src, dst, type_id) in links {
+                let out = AdjEntry {
+                    type_id,
+                    neighbour: dst,
+                    rel: id,
+                };
+                ends.push((src, Side::Out, out));
+                let into = AdjEntry {
+                    type_id,
+                    neighbour: src,
+                    rel: id,
+                };
+                ends.push((dst, Side::In, into));
+            }
+            const LEAF_SHIFT: u32 = super::chunked_vec::CHUNK.trailing_zeros();
+            const SLOT_MASK: usize = super::chunked_vec::CHUNK - 1;
+            let leaf_of = |node: NodeId| (node as usize) >> LEAF_SHIFT;
+            ends.par_sort_by_key(|(node, _, _)| leaf_of(*node));
+            let groups: Vec<&[(NodeId, Side, AdjEntry)]> =
+                ends.chunk_by(|a, b| leaf_of(a.0) == leaf_of(b.0)).collect();
+            let touched: Vec<usize> = groups.iter().map(|group| leaf_of(group[0].0)).collect();
+            self.adjacency
+                .leaves_mut(&touched)
+                .into_par_iter()
+                .zip(groups)
+                .for_each(|((_, leaf), group)| {
+                    for &(node, side, entry) in group {
+                        leaf[node as usize & SLOT_MASK].push(side, entry);
+                    }
+                });
+        }
+        #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
+        for &(id, src, dst, type_id) in links {
+            let out = AdjEntry {
+                type_id,
+                neighbour: dst,
+                rel: id,
+            };
+            self.adjacency_push(src, Side::Out, out);
+            let into = AdjEntry {
+                type_id,
+                neighbour: src,
+                rel: id,
+            };
+            self.adjacency_push(dst, Side::In, into);
+        }
+    }
+
+    /// List `ids` under the label numbered `label_id`, as
+    /// [`Self::insert_node_label_index`] would one by one.
+    pub(super) fn extend_node_label_index(&mut self, label_id: u32, ids: &[NodeId]) {
+        let label = self.dicts.labels.name(label_id).as_arc();
+        let bucket = match self.nodes_by_label.get_mut(&**label) {
+            Some(bucket) => bucket,
+            None => self.nodes_by_label.entry(Arc::clone(label)).or_default(),
+        };
+        for &id in ids {
+            bucket.insert(id);
+        }
+    }
+
+    /// List `ids` under the relationship type numbered `type_id`.
+    pub(super) fn extend_relationship_type_index(&mut self, type_id: u32, ids: &[RelationshipId]) {
+        let rel_type = self.dicts.types.name(type_id).as_arc();
+        let bucket = match self.relationships_by_type.get_mut(&**rel_type) {
+            Some(bucket) => bucket,
+            None => self
+                .relationships_by_type
+                .entry(Arc::clone(rel_type))
+                .or_default(),
+        };
+        for &id in ids {
+            bucket.insert(id);
+        }
     }
 
     pub(super) fn put_node_at_slot(&mut self, idx: usize, node: &NodeRecord) {
@@ -930,20 +1063,66 @@ impl InMemoryGraph {
             .activate_any_scope(key, &self.relationship_values());
     }
 
+    /// Built without the property index lock, which is then held only to
+    /// file the result: other indexes build meanwhile (a restart builds
+    /// them all at once), and lookups of other keys are not held up.
     pub(super) fn ensure_node_property_index(&self, key: &str) {
-        {
-            let indexes = self.indexes_read();
-            if indexes.node_properties.is_active(key) {
-                return;
-            }
+        if self.indexes_read().node_properties.is_active(key) {
+            return;
         }
+
+        let built = if self.live_node_count >= PARALLEL_INDEX_MIN {
+            self.build_node_property_index_parallel(key)
+        } else {
+            let mut built = PropertyIndexState::default();
+            built.insert_bulk(
+                key,
+                || {
+                    self.iter_nodes().filter_map(|(id, node)| {
+                        let value = node.properties().get(key)?;
+                        Some((id, node.labels().strs(), value))
+                    })
+                },
+                &self.node_values(),
+            );
+            built
+        };
 
         let mut indexes = self.indexes_write();
         if indexes.node_properties.is_active(key) {
             return;
         }
+        indexes.node_properties.absorb(key, built);
+        if indexes.node_properties.activate(key) {
+            self.indexes
+                .active_node_property_indexes
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
 
-        indexes.node_properties.insert_bulk(
+    /// [`PropertyIndexState::build_parallel`] over the nodes.
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    pub(super) fn build_node_property_index_parallel(&self, key: &str) -> PropertyIndexState {
+        let Some(key_id) = self.dicts.keys.id_of(key) else {
+            return PropertyIndexState::default();
+        };
+        PropertyIndexState::build_parallel(
+            key,
+            self.nodes.len() as u64,
+            |ids| self.node_slots_in(ids),
+            |id| {
+                let node = StoredNode::new(id, self.nodes.get(id as usize)?, &self.dicts);
+                let value = node.properties().get_id(key_id)?;
+                Some((node.labels().iter().map(crate::Name::as_str), value))
+            },
+            &self.node_values(),
+        )
+    }
+
+    #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
+    pub(super) fn build_node_property_index_parallel(&self, key: &str) -> PropertyIndexState {
+        let mut built = PropertyIndexState::default();
+        built.insert_bulk(
             key,
             || {
                 self.iter_nodes().filter_map(|(id, node)| {
@@ -953,27 +1132,31 @@ impl InMemoryGraph {
             },
             &self.node_values(),
         );
-        if indexes.node_properties.activate(key) {
-            self.indexes
-                .active_node_property_indexes
-                .fetch_add(1, Ordering::Relaxed);
-        }
+        built
     }
 
-    pub(super) fn ensure_relationship_property_index(&self, key: &str) {
-        {
-            let indexes = self.indexes_read();
-            if indexes.relationship_properties.is_active(key) {
-                return;
-            }
-        }
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    fn build_relationship_property_index_parallel(&self, key: &str) -> PropertyIndexState {
+        let Some(key_id) = self.dicts.keys.id_of(key) else {
+            return PropertyIndexState::default();
+        };
+        PropertyIndexState::build_parallel(
+            key,
+            self.relationships.len() as u64,
+            |ids| self.rel_slots_in(ids),
+            |id| {
+                let rel = StoredRel::new(id, self.relationships.get(id as usize)?, &self.dicts);
+                let value = rel.properties().get_id(key_id)?;
+                Some(([rel.rel_type().as_str()], value))
+            },
+            &self.relationship_values(),
+        )
+    }
 
-        let mut indexes = self.indexes_write();
-        if indexes.relationship_properties.is_active(key) {
-            return;
-        }
-
-        indexes.relationship_properties.insert_bulk(
+    #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
+    fn build_relationship_property_index_parallel(&self, key: &str) -> PropertyIndexState {
+        let mut built = PropertyIndexState::default();
+        built.insert_bulk(
             key,
             || {
                 self.iter_rels().filter_map(|(id, rel)| {
@@ -983,6 +1166,57 @@ impl InMemoryGraph {
             },
             &self.relationship_values(),
         );
+        built
+    }
+
+    /// The node slots holding a record, among `ids`.
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    fn node_slots_in(&self, ids: std::ops::Range<u64>) -> impl Iterator<Item = NodeId> + '_ {
+        let end = ids.end;
+        self.nodes
+            .slots_from(usize::try_from(ids.start).unwrap_or(usize::MAX))
+            .map(|i| i as NodeId)
+            .take_while(move |id| *id < end)
+    }
+
+    /// The relationship slots holding a record, among `ids`.
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    fn rel_slots_in(&self, ids: std::ops::Range<u64>) -> impl Iterator<Item = RelationshipId> + '_ {
+        let end = ids.end;
+        self.relationships
+            .slots_from(usize::try_from(ids.start).unwrap_or(usize::MAX))
+            .map(|i| i as RelationshipId)
+            .take_while(move |id| *id < end)
+    }
+
+    /// As [`Self::ensure_node_property_index`].
+    pub(super) fn ensure_relationship_property_index(&self, key: &str) {
+        if self.indexes_read().relationship_properties.is_active(key) {
+            return;
+        }
+
+        let built = if self.live_rel_count >= PARALLEL_INDEX_MIN {
+            self.build_relationship_property_index_parallel(key)
+        } else {
+            let mut built = PropertyIndexState::default();
+            built.insert_bulk(
+                key,
+                || {
+                    self.iter_rels().filter_map(|(id, rel)| {
+                        let value = rel.properties().get(key)?;
+                        Some((id, [rel.rel_type()], value))
+                    })
+                },
+                &self.relationship_values(),
+            );
+            built
+        };
+
+        let mut indexes = self.indexes_write();
+        if indexes.relationship_properties.is_active(key) {
+            return;
+        }
+        indexes.relationship_properties.absorb(key, built);
         if indexes.relationship_properties.activate(key) {
             self.indexes
                 .active_relationship_property_indexes
@@ -1031,6 +1265,21 @@ impl InMemoryGraph {
         if_not_exists: bool,
         record_event: bool,
     ) -> Result<CreateIndexOutcome, CreateIndexError> {
+        self.register_index_deferring(request, if_not_exists, record_event, None)
+    }
+
+    /// [`Self::register_index_with_recording`]; with `deferred`, a new
+    /// index's data is left in it for [`Self::run_deferred`] instead of
+    /// populated now. Vector indexes populate now: a restore overlays
+    /// their saved graph on them right after.
+    #[allow(clippy::result_large_err)]
+    pub(super) fn register_index_deferring(
+        &self,
+        request: IndexRequest,
+        if_not_exists: bool,
+        record_event: bool,
+        deferred: Option<&mut DeferredData>,
+    ) -> Result<CreateIndexOutcome, CreateIndexError> {
         let request_for_event = record_event.then(|| request.clone());
         let outcome = {
             let mut catalog = self.index_catalog_write();
@@ -1038,7 +1287,12 @@ impl InMemoryGraph {
         };
 
         if let CreateIndexOutcome::Created(def) = &outcome {
-            self.populate_index_data(def);
+            match deferred {
+                Some(deferred) if def.kind != StoredIndexKind::Vector => {
+                    deferred.populate.push(def.clone());
+                }
+                _ => self.populate_index_data(def),
+            }
         }
 
         // Both Created and NoOpExists are committed catalog states; we
@@ -1093,6 +1347,18 @@ impl InMemoryGraph {
         &self,
         request: ConstraintRequest,
         if_not_exists: bool,
+    ) -> Result<CreateConstraintOutcome, CreateConstraintError> {
+        self.register_constraint_deferring(request, if_not_exists, None)
+    }
+
+    /// [`Self::register_constraint`]; with `deferred`, the scan of the
+    /// existing data and the backing index's data are left in it for
+    /// [`Self::run_deferred`].
+    pub(super) fn register_constraint_deferring(
+        &self,
+        request: ConstraintRequest,
+        if_not_exists: bool,
+        mut deferred: Option<&mut DeferredData>,
     ) -> Result<CreateConstraintOutcome, CreateConstraintError> {
         // Constraint-level conflicts (22N65/66/67) take precedence over
         // index-catalog conflicts: if the request collides with an
@@ -1174,7 +1440,9 @@ impl InMemoryGraph {
             // the constraint, fail and roll back the catalog write.
             // Creating constraints when conflicting data exists fails
             // before the catalog change is retained (22N77/79/80).
-            if let Err(violation) = self.validate_existing_data_for_constraint(def) {
+            if let Some(deferred) = deferred.as_deref_mut() {
+                deferred.validate.push(def.clone());
+            } else if let Err(violation) = self.validate_existing_data_for_constraint(def) {
                 let mut catalog = self.constraint_catalog_write();
                 let _ = catalog.try_drop(&def.name, true);
                 return Err(CreateConstraintError::DataViolation(violation.to_string()));
@@ -1203,7 +1471,8 @@ impl InMemoryGraph {
                 // Errors from the backing-index registration unwind the
                 // constraint registration to keep the two catalogs in
                 // step.
-                if let Err(err) = self.register_index_with_recording(idx_request, true, false) {
+                if let Err(err) = self.register_index_deferring(idx_request, true, false, deferred)
+                {
                     let mut catalog = self.constraint_catalog_write();
                     let _ = catalog.try_drop(&def.name, true);
                     return Err(CreateConstraintError::BackingIndexConflict(err.to_string()));
@@ -1217,6 +1486,76 @@ impl InMemoryGraph {
         }
 
         Ok(outcome)
+    }
+
+    /// Do the data work [`Self::register_index_deferring`] and
+    /// [`Self::register_constraint_deferring`] left in `deferred`: every
+    /// index population and constraint scan at once, on every core when
+    /// the build allows. They only read the records, and each index files
+    /// its result under its own lock. Fails with the first constraint (in
+    /// registration order) the data violates.
+    pub(super) fn run_deferred(&self, deferred: DeferredData) -> Result<(), String> {
+        enum Work {
+            Populate(IndexDefinition),
+            /// A RANGE index's two parts, built apart: the hash index of a
+            /// key, and the sorted index of a label's key.
+            Hash(StoredIndexEntity, String),
+            Sorted(StoredIndexEntity, String, String),
+            Validate(super::ConstraintDefinition),
+        }
+        // Scans first: a constraint scan is as long as an index build, and
+        // the last task to start bounds the wall time.
+        let mut work: Vec<Work> = deferred.validate.into_iter().map(Work::Validate).collect();
+        let mut hashed = std::collections::BTreeSet::new();
+        for def in deferred.populate {
+            if def.kind != StoredIndexKind::Range {
+                work.push(Work::Populate(def));
+                continue;
+            }
+            for key in &def.properties {
+                // Indexes on one key under several labels share its hash index.
+                if hashed.insert((def.entity == StoredIndexEntity::Node, key.clone())) {
+                    work.push(Work::Hash(def.entity, key.clone()));
+                }
+                if let Some(label) = def.label.as_deref().filter(|_| is_sorted(&def)) {
+                    work.push(Work::Sorted(def.entity, label.to_owned(), key.clone()));
+                }
+            }
+        }
+        let run = |work: Work| match work {
+            Work::Populate(def) => {
+                self.populate_index_data(&def);
+                Ok(())
+            }
+            Work::Hash(entity, key) => {
+                match entity {
+                    StoredIndexEntity::Node => self.ensure_node_property_index(&key),
+                    StoredIndexEntity::Relationship => {
+                        self.ensure_relationship_property_index(&key)
+                    }
+                }
+                Ok(())
+            }
+            Work::Sorted(entity, label, key) => {
+                self.activate_sorted_scope(entity, &label, &key);
+                Ok(())
+            }
+            Work::Validate(def) => {
+                self.validate_existing_data_for_constraint(&def)
+                    .map_err(|violation| {
+                        let err = CreateConstraintError::DataViolation(violation.to_string());
+                        format!("constraint `{}`: {err}", def.name)
+                    })
+            }
+        };
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        let results: Vec<Result<(), String>> = {
+            use rayon::prelude::*;
+            work.into_par_iter().with_max_len(1).map(run).collect()
+        };
+        #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
+        let results: Vec<Result<(), String>> = work.into_iter().map(run).collect();
+        results.into_iter().collect()
     }
 
     /// Replay a CreateConstraint event against a recorder-detached graph.
@@ -1609,7 +1948,22 @@ impl InMemoryGraph {
         self.indexes.sorted.write(entity)
     }
 
-    fn activate_sorted_scope(&self, entity: StoredIndexEntity, label: &str, property: &str) {
+    pub(super) fn activate_sorted_scope(
+        &self,
+        entity: StoredIndexEntity,
+        label: &str,
+        property: &str,
+    ) {
+        let members = match entity {
+            StoredIndexEntity::Node => self.nodes_by_label.get(label),
+            StoredIndexEntity::Relationship => self.relationships_by_type.get(label),
+        }
+        .map_or(0, |ids| ids.len());
+        if cfg!(all(feature = "parallel", not(target_arch = "wasm32")))
+            && members >= PARALLEL_INDEX_MIN
+        {
+            return self.activate_sorted_scope_parallel(entity, label, property);
+        }
         if !self.sorted_indexes_write(entity).add_scope(label, property) {
             return;
         }
@@ -1657,6 +2011,94 @@ impl InMemoryGraph {
                 }
             }
         }
+    }
+
+    /// [`Self::activate_sorted_scope`] for a large label: the entries are
+    /// gathered over id ranges and sorted on every core, then filed in key
+    /// order without the index lock, which is held only to install them.
+    fn activate_sorted_scope_parallel(
+        &self,
+        entity: StoredIndexEntity,
+        label: &str,
+        property: &str,
+    ) {
+        use super::sorted_property_index::{build_scope, element_keys};
+        if self.sorted_indexes_read(entity).has_scope(label, property) {
+            self.sorted_indexes_write(entity).add_scope(label, property);
+            return;
+        }
+        let (ids, slots) = match entity {
+            StoredIndexEntity::Node => (self.nodes_by_label.get(label), self.nodes.len()),
+            StoredIndexEntity::Relationship => (
+                self.relationships_by_type.get(label),
+                self.relationships.len(),
+            ),
+        };
+        let Some(ids) = ids else {
+            self.sorted_indexes_write(entity).add_scope(label, property);
+            return;
+        };
+        let Some(key_id) = self.dicts.keys.id_of(property) else {
+            self.sorted_indexes_write(entity).add_scope(label, property);
+            return;
+        };
+        const RANGE: u64 = 1 << 16;
+        let gather = |start: u64| {
+            let mut values = Vec::new();
+            let mut elements = Vec::new();
+            for id in ids.iter_from(start).take_while(|&id| id < start + RANGE) {
+                let value = match entity {
+                    StoredIndexEntity::Node => self.nodes.get(id as usize).and_then(|bytes| {
+                        StoredNode::new(id, bytes, &self.dicts)
+                            .properties()
+                            .get_id(key_id)
+                    }),
+                    StoredIndexEntity::Relationship => {
+                        self.relationships.get(id as usize).and_then(|bytes| {
+                            StoredRel::new(id, bytes, &self.dicts)
+                                .properties()
+                                .get_id(key_id)
+                        })
+                    }
+                };
+                match value {
+                    // A list is indexed by its elements too.
+                    Some(crate::ValueRef::Other(value)) => {
+                        let value = value.get();
+                        if let Some(key) = PropertyIndexKey::from_value(&value) {
+                            values.push((key, id));
+                        }
+                        elements.extend(element_keys(&value).into_iter().map(|key| (key, id)));
+                    }
+                    Some(value) => {
+                        if let Some(key) = PropertyIndexKey::from_value_ref(value) {
+                            values.push((key, id));
+                        }
+                    }
+                    None => {}
+                }
+            }
+            (values, elements)
+        };
+        let starts: Vec<u64> = (0..(slots as u64).div_ceil(RANGE))
+            .map(|i| i * RANGE)
+            .collect();
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        let gathered: Vec<_> = {
+            use rayon::prelude::*;
+            starts.into_par_iter().map(gather).collect()
+        };
+        #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
+        let gathered: Vec<_> = starts.into_iter().map(gather).collect();
+        let mut values = Vec::new();
+        let mut elements = Vec::new();
+        for (v, e) in gathered {
+            values.extend(v);
+            elements.extend(e);
+        }
+        let built = build_scope(values, elements);
+        self.sorted_indexes_write(entity)
+            .add_built_scope(label, property, built);
     }
 
     pub(super) fn deactivate_sorted_scope(
@@ -2876,4 +3318,18 @@ pub(super) fn is_sorted(def: &IndexDefinition) -> bool {
         def.options.get(SORTED_OPTION),
         Some(IndexConfigValue::Bool(false))
     )
+}
+
+/// Entities from which a property index is built on every core: below
+/// it, splitting the work costs more than it saves.
+const PARALLEL_INDEX_MIN: usize = 1 << 17;
+
+/// Data work a restore registers its catalogs without, to do it all at
+/// once in [`InMemoryGraph::run_deferred`].
+#[derive(Default)]
+pub(super) struct DeferredData {
+    /// Indexes to populate from the records.
+    pub(super) populate: Vec<IndexDefinition>,
+    /// Constraints to check the records against.
+    pub(super) validate: Vec<super::ConstraintDefinition>,
 }

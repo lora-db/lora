@@ -132,8 +132,17 @@ fn read_value<'a>(
 /// Write `value`, the value of key `key`, numbering it in `values` when
 /// its key repeats a few short strings.
 fn write_value(out: &mut Vec<u8>, key: u32, value: &PropertyValue, values: &mut ValueDict) {
+    write_value_numbered(out, value, |v| values.number(key, v));
+}
+
+/// [`write_value`] with the numbering of a short string left to `number`.
+fn write_value_numbered(
+    out: &mut Vec<u8>,
+    value: &PropertyValue,
+    number: impl FnOnce(&str) -> Option<u32>,
+) {
     match value {
-        PropertyValue::String(v) => match values.number(key, v) {
+        PropertyValue::String(v) => match number(v) {
             Some(id) => {
                 out.push(TAG_NUMBERED);
                 varint::push(out, u64::from(id));
@@ -208,7 +217,14 @@ impl<'a> StoredProps<'a> {
     #[inline]
     pub(crate) fn get(self, key: &str) -> Option<ValueRef<'a>> {
         // A key no record ever had is not in the dictionary.
-        let wanted = u64::from(self.keys.id_of(key)?);
+        self.get_id(self.keys.id_of(key)?)
+    }
+
+    /// [`Self::get`] for a key already numbered: a scan reading one key
+    /// of many records looks its number up once.
+    #[inline]
+    pub(crate) fn get_id(self, key: u32) -> Option<ValueRef<'a>> {
+        let wanted = u64::from(key);
         let bytes = self.bytes;
         let mut pos = 0;
         let count = varint::read(bytes, &mut pos);
@@ -278,6 +294,67 @@ impl<'a> Iterator for StoredPropsIter<'a> {
 
 impl ExactSizeIterator for StoredPropsIter<'_> {}
 
+impl<'a> StoredProps<'a> {
+    /// The properties by key id, in stored (key-name) order.
+    #[inline]
+    pub(crate) fn iter_ids(self) -> impl Iterator<Item = (u32, ValueRef<'a>)> + 'a {
+        let bytes = self.bytes;
+        let values = self.values;
+        let mut pos = 0;
+        let count = varint::read(bytes, &mut pos);
+        (0..count).map(move |_| {
+            let id = varint::read(bytes, &mut pos) as u32;
+            let tag = bytes[pos];
+            pos += 1;
+            (id, read_value(bytes, tag, &mut pos, values))
+        })
+    }
+}
+
+/// Encode `properties` (key ids in key-name order, each once) as
+/// [`write_props`] does, numbering only the values `dicts` already
+/// numbers, so encoders on several threads can share `dicts` unchanged.
+fn write_props_existing(out: &mut Vec<u8>, properties: &[(u32, PropertyValue)], dicts: &Dicts) {
+    varint::push(out, properties.len() as u64);
+    for (key, value) in properties {
+        varint::push(out, u64::from(*key));
+        write_value_numbered(out, value, |v| dicts.values.number_existing(*key, v));
+    }
+}
+
+/// Encode a node from dictionary ids into `out`, replacing what it held.
+/// See [`write_props_existing`] for `properties`.
+pub(crate) fn encode_node_ids(
+    labels: &[u32],
+    properties: &[(u32, PropertyValue)],
+    dicts: &Dicts,
+    out: &mut Vec<u8>,
+) {
+    out.clear();
+    varint::push(out, labels.len() as u64);
+    for label in labels {
+        varint::push(out, u64::from(*label));
+    }
+    write_props_existing(out, properties, dicts);
+}
+
+/// Encode a relationship from dictionary ids into `out`, replacing what
+/// it held. See [`write_props_existing`] for `properties`.
+pub(crate) fn encode_rel_ids(
+    src: NodeId,
+    dst: NodeId,
+    type_id: u32,
+    properties: &[(u32, PropertyValue)],
+    dicts: &Dicts,
+    out: &mut Vec<u8>,
+) {
+    out.clear();
+    varint::push(out, src);
+    varint::push(out, dst);
+    varint::push(out, u64::from(type_id));
+    write_props_existing(out, properties, dicts);
+}
+
 fn write_props(out: &mut Vec<u8>, properties: &Properties, dicts: &mut Dicts) {
     varint::push(out, properties.len() as u64);
     // `Properties` iterates in key order, which is the stored order.
@@ -318,7 +395,7 @@ impl<'a> StoredLabels<'a> {
     }
 
     #[inline]
-    fn ids(self) -> impl Iterator<Item = u32> + Clone + 'a {
+    pub(crate) fn ids(self) -> impl Iterator<Item = u32> + Clone + 'a {
         let bytes = self.bytes;
         let mut pos = 0;
         (0..self.count).map(move |_| varint::read(bytes, &mut pos) as u32)
@@ -425,6 +502,11 @@ impl<'a> StoredRel<'a> {
             props: &bytes[pos..],
             dicts,
         }
+    }
+
+    #[inline]
+    pub(crate) fn type_id(self) -> u32 {
+        self.type_id
     }
 
     #[inline]

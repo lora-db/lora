@@ -4,12 +4,12 @@
 //! [`SnapshotPayload`](lora_store::SnapshotPayload): every record decoded
 //! into an owned copy, then the columns, then the body, then the envelope,
 //! each held whole beside the graph. For a graph of a few gigabytes that
-//! is several times the graph again. This module writes and reads the same
-//! bytes without those copies.
+//! is several times the graph again. This module writes and reads
+//! snapshots without those copies.
 //!
-//! The body is column-major, so the encoder walks the graph once per
-//! column through borrowed views and writes each column as it goes. Only
-//! the dictionaries (labels, relationship types, property keys) are held.
+//! It writes the framed body of envelope format 3 (see [`crate::chunked`]),
+//! whose frames are built and decoded on every core. It still reads the
+//! column-major body of format 2, on one thread:
 //!
 //! The decoder keeps what it needs to place each value on its owner: the
 //! node and relationship columns (under 40 bytes an entity, with its
@@ -26,31 +26,28 @@
 //! Encryption seals the whole body, so an encrypted snapshot is built in
 //! memory (compressed, without the record copies).
 
-use std::collections::HashMap;
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 use flate2::read::GzDecoder;
-use flate2::write::GzEncoder;
-use flate2::Compression as GzipCompression;
 use lora_store::codec::{
     decode_constraint_definitions, decode_index_definitions, decode_property_value,
-    encode_constraint_definitions, encode_index_definitions, encode_property_value,
+    encode_constraint_definitions, encode_index_definitions,
 };
 use lora_store::{
     ConstraintDefinition, InMemoryGraph, IndexDefinition, Labels, Name, NodeRecord, Properties,
-    PropertyValue, RelationshipRecord, SnapshotCatalogs, SnapshotGraphBuilder, ValueRef,
-    VectorIndexSnapshot,
+    PropertyValue, RelationshipRecord, SnapshotCatalogs, SnapshotGraphBuilder, VectorIndexSnapshot,
 };
 
+use crate::chunked::{read_chunked_body, write_chunked_body};
 use crate::codec::{decrypt_snapshot_body, encrypt_snapshot_body, SnapshotInfo};
 use crate::envelope::{
     decode_manifest, encode_envelope, encode_manifest, manifest_info, EncryptionManifest, Manifest,
 };
 use crate::errors::{Result, SnapshotCodecError};
 use crate::format::{
-    nested_decode_depth, nested_encode_depth, BODY_FORMAT_VERSION, BODY_FORMAT_VERSION_V2,
-    BODY_FORMAT_VERSION_V3, BODY_FORMAT_VERSION_V4, FORMAT_VERSION, HEADER_LEN, MAGIC,
+    is_supported_format, nested_decode_depth, BODY_FORMAT_VERSION, BODY_FORMAT_VERSION_V2,
+    BODY_FORMAT_VERSION_V3, BODY_FORMAT_VERSION_V4, FORMAT_VERSION_CHUNKED, HEADER_LEN, MAGIC,
 };
 use crate::options::{Compression, SnapshotCredentials, SnapshotOptions};
 
@@ -65,9 +62,8 @@ const MAX_PREALLOC: usize = 1 << 20;
 
 /// Write a snapshot of `graph` at the current position of `file`, which
 /// must be readable, writable and seekable (a [`std::fs::File`] opened
-/// read-write). Produces the same bytes [`crate::write_snapshot`] would for
-/// the graph's payload, without the payload. Leaves `file` positioned at
-/// the end of the snapshot.
+/// read-write), in the framed format (envelope format 3) built on every
+/// core. Leaves `file` positioned at the end of the snapshot.
 pub fn write_graph_snapshot<F: Read + Write + Seek>(
     file: &mut F,
     graph: &InMemoryGraph,
@@ -82,7 +78,7 @@ pub fn write_graph_snapshot<F: Read + Write + Seek>(
 
     let start = file.stream_position()?;
     let placeholder = Manifest {
-        format_version: FORMAT_VERSION,
+        format_version: FORMAT_VERSION_CHUNKED,
         wal_lsn,
         node_count: 0,
         relationship_count: 0,
@@ -96,7 +92,7 @@ pub fn write_graph_snapshot<F: Read + Write + Seek>(
 
     let (counts, body_len) = {
         let mut counted = CountingWriter::new(BufWriter::new(&mut *file));
-        let counts = write_compressed_body(&mut counted, graph, options.compression)?;
+        let counts = write_chunked_body(&mut counted, graph, options.compression)?;
         counted.flush()?;
         (counts, counted.written)
     };
@@ -131,7 +127,13 @@ pub fn write_graph_snapshot<F: Read + Write + Seek>(
     let checksum = *hasher.finalize().as_bytes();
 
     file.seek(SeekFrom::Start(start))?;
-    write_header(file, manifest_bytes.len(), body_len, &checksum)?;
+    write_header(
+        file,
+        FORMAT_VERSION_CHUNKED,
+        manifest_bytes.len(),
+        body_len,
+        &checksum,
+    )?;
     file.write_all(&manifest_bytes)?;
     file.seek(SeekFrom::Start(body_start + body_len))?;
     Ok(info)
@@ -145,9 +147,10 @@ pub fn encode_graph_snapshot(
     options: &SnapshotOptions,
 ) -> Result<(Vec<u8>, SnapshotInfo)> {
     let mut body = Vec::new();
-    let counts = write_compressed_body(&mut body, graph, options.compression)?;
+    let counts = write_chunked_body(&mut body, graph, options.compression)?;
     let (body, encryption) = encrypt_snapshot_body(body, options.encryption.as_ref())?;
     encode_envelope(
+        FORMAT_VERSION_CHUNKED,
         body,
         counts.nodes as usize,
         counts.relationships as usize,
@@ -158,204 +161,12 @@ pub fn encode_graph_snapshot(
 }
 
 #[derive(Clone, Copy)]
-struct Counts {
-    nodes: u64,
-    relationships: u64,
+pub(crate) struct Counts {
+    pub(crate) nodes: u64,
+    pub(crate) relationships: u64,
 }
 
-fn write_compressed_body<W: Write>(
-    out: W,
-    graph: &InMemoryGraph,
-    compression: Compression,
-) -> Result<Counts> {
-    match compression {
-        Compression::None => {
-            let mut out = BufWriter::new(out);
-            let counts = write_body(&mut out, graph)?;
-            out.flush()?;
-            Ok(counts)
-        }
-        Compression::Gzip { level } => {
-            let encoder = GzEncoder::new(out, GzipCompression::new(level.min(9)));
-            let mut out = BufWriter::new(encoder);
-            let counts = write_body(&mut out, graph)?;
-            out.into_inner()
-                .map_err(|e| SnapshotCodecError::Io(e.into_error()))?
-                .finish()?;
-            Ok(counts)
-        }
-    }
-}
-
-/// First-seen dictionary of borrowed strings, numbered as
-/// `dictionary_encode_strings` in `columnar` numbers them.
-#[derive(Default)]
-struct Dictionary<'g> {
-    entries: Vec<&'g str>,
-    ids: HashMap<&'g str, u32>,
-}
-
-impl<'g> Dictionary<'g> {
-    fn add(&mut self, value: &'g str) -> Result<()> {
-        if !self.ids.contains_key(value) {
-            let id = u32::try_from(self.entries.len())
-                .map_err(|_| SnapshotCodecError::Encode("string dictionary too large".into()))?;
-            self.entries.push(value);
-            self.ids.insert(value, id);
-        }
-        Ok(())
-    }
-
-    fn id(&self, value: &str) -> Result<u32> {
-        self.ids
-            .get(value)
-            .copied()
-            .ok_or_else(|| SnapshotCodecError::Encode("graph changed while it was written".into()))
-    }
-
-    fn write(&self, out: &mut impl Write) -> Result<()> {
-        put_len(out, self.entries.len())?;
-        for entry in &self.entries {
-            put_bytes(out, entry.as_bytes())?;
-        }
-        Ok(())
-    }
-}
-
-fn write_body<W: Write>(out: &mut W, graph: &InMemoryGraph) -> Result<Counts> {
-    let catalogs = graph.snapshot_catalogs();
-
-    // Prepass: counts and dictionaries, in the order the payload encoder
-    // meets them (labels and keys over nodes first, then relationships).
-    let mut node_count = 0usize;
-    let mut label_count = 0usize;
-    let mut property_count = 0usize;
-    let mut labels = Dictionary::default();
-    let mut keys = Dictionary::default();
-    for node in graph.snapshot_nodes() {
-        node_count += 1;
-        for label in node.labels().strs() {
-            label_count += 1;
-            labels.add(label)?;
-        }
-        for key in node.properties().keys() {
-            property_count += 1;
-            keys.add(key)?;
-        }
-    }
-    let mut rel_count = 0usize;
-    let mut types = Dictionary::default();
-    for rel in graph.snapshot_relationships() {
-        rel_count += 1;
-        types.add(rel.rel_type())?;
-        for key in rel.properties().keys() {
-            property_count += 1;
-            keys.add(key)?;
-        }
-    }
-
-    put_u32(out, BODY_FORMAT_VERSION)?;
-    put_u64(out, catalogs.next_node_id)?;
-    put_u64(out, catalogs.next_rel_id)?;
-
-    put_len(out, node_count)?;
-    for node in graph.snapshot_nodes() {
-        put_u64(out, node.id())?;
-    }
-
-    labels.write(out)?;
-    put_len(out, node_count + 1)?;
-    put_u32(out, 0)?;
-    let mut offset = 0usize;
-    for node in graph.snapshot_nodes() {
-        offset += node.labels().len();
-        put_u32(
-            out,
-            u32::try_from(offset).map_err(|_| {
-                SnapshotCodecError::Encode("node label offset exceeds u32 range".into())
-            })?,
-        )?;
-    }
-    put_len(out, label_count)?;
-    for node in graph.snapshot_nodes() {
-        for label in node.labels().strs() {
-            put_u32(out, labels.id(label)?)?;
-        }
-    }
-
-    put_len(out, rel_count)?;
-    for rel in graph.snapshot_relationships() {
-        put_u64(out, rel.id())?;
-    }
-    put_len(out, rel_count)?;
-    for rel in graph.snapshot_relationships() {
-        put_u64(out, rel.src())?;
-    }
-    put_len(out, rel_count)?;
-    for rel in graph.snapshot_relationships() {
-        put_u64(out, rel.dst())?;
-    }
-    types.write(out)?;
-    put_len(out, rel_count)?;
-    for rel in graph.snapshot_relationships() {
-        put_u32(out, types.id(rel.rel_type())?)?;
-    }
-
-    // Property columns: owner kind, owner index, key id, value.
-    put_len(out, property_count)?;
-    for node in graph.snapshot_nodes() {
-        for _ in 0..node.properties().len() {
-            out.write_all(&[0])?;
-        }
-    }
-    for rel in graph.snapshot_relationships() {
-        for _ in 0..rel.properties().len() {
-            out.write_all(&[1])?;
-        }
-    }
-    put_len(out, property_count)?;
-    for (index, node) in graph.snapshot_nodes().enumerate() {
-        for _ in 0..node.properties().len() {
-            put_u64(out, index as u64)?;
-        }
-    }
-    for (index, rel) in graph.snapshot_relationships().enumerate() {
-        for _ in 0..rel.properties().len() {
-            put_u64(out, index as u64)?;
-        }
-    }
-    keys.write(out)?;
-    put_len(out, property_count)?;
-    for node in graph.snapshot_nodes() {
-        for key in node.properties().keys() {
-            put_u32(out, keys.id(key)?)?;
-        }
-    }
-    for rel in graph.snapshot_relationships() {
-        for key in rel.properties().keys() {
-            put_u32(out, keys.id(key)?)?;
-        }
-    }
-    put_len(out, property_count)?;
-    for node in graph.snapshot_nodes() {
-        for (_, value) in node.properties().iter() {
-            put_value_ref(out, value)?;
-        }
-    }
-    for rel in graph.snapshot_relationships() {
-        for (_, value) in rel.properties().iter() {
-            put_value_ref(out, value)?;
-        }
-    }
-
-    write_trailers(out, &catalogs)?;
-    Ok(Counts {
-        nodes: node_count as u64,
-        relationships: rel_count as u64,
-    })
-}
-
-fn write_trailers(out: &mut impl Write, catalogs: &SnapshotCatalogs) -> Result<()> {
+pub(crate) fn write_trailers(out: &mut impl Write, catalogs: &SnapshotCatalogs) -> Result<()> {
     let catalog_bytes = encode_index_definitions(&catalogs.indexes)
         .map_err(|e| SnapshotCodecError::Encode(format!("catalog: {e}")))?;
     put_bytes(out, &catalog_bytes)?;
@@ -367,76 +178,9 @@ fn write_trailers(out: &mut impl Write, catalogs: &SnapshotCatalogs) -> Result<(
     put_bytes(out, &vector_index_bytes)
 }
 
-/// A value as `ValueCell::encode_binary` writes it.
-fn put_value_ref(out: &mut impl Write, value: ValueRef<'_>) -> Result<()> {
-    put_value_ref_at(out, value, 0)
-}
-
-/// [`put_value_ref`] for a value nested `depth` levels deep.
-fn put_value_ref_at(out: &mut impl Write, value: ValueRef<'_>, depth: usize) -> Result<()> {
-    match value {
-        ValueRef::Null => out.write_all(&[0])?,
-        ValueRef::Bool(value) => out.write_all(&[1, u8::from(value)])?,
-        ValueRef::Int(value) => {
-            out.write_all(&[2])?;
-            out.write_all(&value.to_le_bytes())?;
-        }
-        ValueRef::Float(value) => {
-            out.write_all(&[3])?;
-            out.write_all(&value.to_bits().to_le_bytes())?;
-        }
-        ValueRef::String(value) => {
-            out.write_all(&[4])?;
-            put_bytes(out, value.as_bytes())?;
-        }
-        ValueRef::Other(value) => put_value(out, &value.get(), depth)?,
-    }
-    Ok(())
-}
-
-fn put_value(out: &mut impl Write, value: &PropertyValue, depth: usize) -> Result<()> {
-    match value {
-        PropertyValue::Null
-        | PropertyValue::Bool(_)
-        | PropertyValue::Int(_)
-        | PropertyValue::Float(_)
-        | PropertyValue::String(_) => put_value_ref_at(out, ValueRef::from(value), depth)?,
-        PropertyValue::Binary(binary) => {
-            out.write_all(&[8])?;
-            put_len(out, binary.segments().len())?;
-            for segment in binary.segments() {
-                put_bytes(out, segment)?;
-            }
-        }
-        PropertyValue::List(values) => {
-            let depth = nested_encode_depth(depth)?;
-            out.write_all(&[5])?;
-            put_len(out, values.len())?;
-            for value in values {
-                put_value(out, value, depth)?;
-            }
-        }
-        PropertyValue::Map(values) => {
-            let depth = nested_encode_depth(depth)?;
-            out.write_all(&[6])?;
-            put_len(out, values.len())?;
-            for (key, value) in values {
-                put_bytes(out, key.as_bytes())?;
-                put_value(out, value, depth)?;
-            }
-        }
-        other => {
-            out.write_all(&[7])?;
-            let bytes = encode_property_value(other)
-                .map_err(|e| SnapshotCodecError::Encode(e.to_string()))?;
-            put_bytes(out, &bytes)?;
-        }
-    }
-    Ok(())
-}
-
 fn write_header(
     out: &mut impl Write,
+    format_version: u32,
     manifest_len: usize,
     body_len: u64,
     checksum: &[u8; 32],
@@ -444,28 +188,28 @@ fn write_header(
     let manifest_len = u32::try_from(manifest_len)
         .map_err(|_| SnapshotCodecError::Encode("manifest too large".into()))?;
     out.write_all(MAGIC)?;
-    out.write_all(&FORMAT_VERSION.to_le_bytes())?;
+    out.write_all(&format_version.to_le_bytes())?;
     out.write_all(&manifest_len.to_le_bytes())?;
     out.write_all(&body_len.to_le_bytes())?;
     out.write_all(checksum)?;
     Ok(())
 }
 
-fn put_u32(out: &mut impl Write, value: u32) -> io::Result<()> {
+pub(crate) fn put_u32(out: &mut impl Write, value: u32) -> io::Result<()> {
     out.write_all(&value.to_le_bytes())
 }
 
-fn put_u64(out: &mut impl Write, value: u64) -> io::Result<()> {
+pub(crate) fn put_u64(out: &mut impl Write, value: u64) -> io::Result<()> {
     out.write_all(&value.to_le_bytes())
 }
 
-fn put_len(out: &mut impl Write, len: usize) -> Result<()> {
+pub(crate) fn put_len(out: &mut impl Write, len: usize) -> Result<()> {
     let len = u64::try_from(len)
         .map_err(|_| SnapshotCodecError::Encode("length does not fit in u64".into()))?;
     Ok(put_u64(out, len)?)
 }
 
-fn put_bytes(out: &mut impl Write, bytes: &[u8]) -> Result<()> {
+pub(crate) fn put_bytes(out: &mut impl Write, bytes: &[u8]) -> Result<()> {
     put_len(out, bytes.len())?;
     Ok(out.write_all(bytes)?)
 }
@@ -527,11 +271,12 @@ pub fn read_graph_snapshot<R: Read>(
     credentials: Option<&SnapshotCredentials>,
 ) -> Result<(InMemoryGraph, SnapshotInfo)> {
     let (manifest, manifest_bytes, checksum) = read_envelope_head(&mut reader)?;
-    if manifest.format_version != FORMAT_VERSION {
+    if !is_supported_format(manifest.format_version) {
         return Err(SnapshotCodecError::UnsupportedVersion(
             manifest.format_version,
         ));
     }
+    let framed = manifest.format_version == FORMAT_VERSION_CHUNKED;
     let info = manifest_info(&manifest)?;
     let mut hasher = blake3::Hasher::new();
     hasher.update(&manifest_bytes);
@@ -543,6 +288,12 @@ pub fn read_graph_snapshot<R: Read>(
             read: 0,
         };
         let loaded = match manifest.compression {
+            _ if framed => {
+                let mut body = BodyStream::new(BufReader::new(&mut hashed));
+                let loaded = read_chunked_body(&mut body, manifest.compression)?;
+                body.expect_end()?;
+                loaded
+            }
             Compression::None => {
                 let mut body = BodyStream::new(BufReader::new(&mut hashed));
                 let loaded = read_body(&mut body)?;
@@ -555,6 +306,11 @@ pub fn read_graph_snapshot<R: Read>(
                 let loaded = read_body(&mut body)?;
                 body.expect_end()?;
                 loaded
+            }
+            Compression::Zstd { .. } => {
+                return Err(SnapshotCodecError::UnsupportedCompression(
+                    "zstd compresses framed snapshots only",
+                ));
             }
         };
         // The decoder may stop before the end of the compressed body; the
@@ -574,6 +330,12 @@ pub fn read_graph_snapshot<R: Read>(
         }
         let body = decrypt_snapshot_body(&body, &manifest.encryption, credentials)?;
         let loaded = match manifest.compression {
+            _ if framed => {
+                let mut stream = BodyStream::new(body.as_slice());
+                let loaded = read_chunked_body(&mut stream, manifest.compression)?;
+                stream.expect_end()?;
+                loaded
+            }
             Compression::None => {
                 let mut stream = BodyStream::new(body.as_slice());
                 let loaded = read_body(&mut stream)?;
@@ -585,6 +347,11 @@ pub fn read_graph_snapshot<R: Read>(
                 let loaded = read_body(&mut stream)?;
                 stream.expect_end()?;
                 loaded
+            }
+            Compression::Zstd { .. } => {
+                return Err(SnapshotCodecError::UnsupportedCompression(
+                    "zstd compresses framed snapshots only",
+                ));
             }
         };
         let graph = loaded.finish()?;
@@ -609,7 +376,7 @@ fn read_envelope_head<R: Read>(reader: &mut R) -> Result<(Manifest, Vec<u8>, [u8
         return Err(SnapshotCodecError::BadMagic);
     }
     let format_version = u32::from_le_bytes(header[8..12].try_into().expect("4 bytes"));
-    if format_version != FORMAT_VERSION {
+    if !is_supported_format(format_version) {
         return Err(SnapshotCodecError::UnsupportedVersion(format_version));
     }
     let manifest_len = u32::from_le_bytes(header[12..16].try_into().expect("4 bytes"));
@@ -651,39 +418,39 @@ impl<R: Read> Read for HashingReader<'_, R> {
 }
 
 /// The body read as a stream: the `BodyReader` primitives over a reader.
-struct BodyStream<R> {
+pub(crate) struct BodyStream<R> {
     inner: R,
 }
 
 impl<R: Read> BodyStream<R> {
-    fn new(inner: R) -> Self {
+    pub(crate) fn new(inner: R) -> Self {
         Self { inner }
     }
 
-    fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
+    pub(crate) fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
         let mut out = [0u8; N];
         self.inner.read_exact(&mut out).map_err(truncated)?;
         Ok(out)
     }
 
-    fn u8(&mut self) -> Result<u8> {
+    pub(crate) fn u8(&mut self) -> Result<u8> {
         Ok(self.array::<1>()?[0])
     }
 
-    fn u32(&mut self) -> Result<u32> {
+    pub(crate) fn u32(&mut self) -> Result<u32> {
         Ok(u32::from_le_bytes(self.array()?))
     }
 
-    fn u64(&mut self) -> Result<u64> {
+    pub(crate) fn u64(&mut self) -> Result<u64> {
         Ok(u64::from_le_bytes(self.array()?))
     }
 
-    fn len(&mut self) -> Result<usize> {
+    pub(crate) fn len(&mut self) -> Result<usize> {
         usize::try_from(self.u64()?)
             .map_err(|_| SnapshotCodecError::Decode("length overflows usize".into()))
     }
 
-    fn bytes(&mut self) -> Result<Vec<u8>> {
+    pub(crate) fn bytes(&mut self) -> Result<Vec<u8>> {
         let len = self.u64()?;
         let mut out =
             Vec::with_capacity(usize::try_from(len).unwrap_or(usize::MAX).min(MAX_PREALLOC));
@@ -699,7 +466,7 @@ impl<R: Read> BodyStream<R> {
             .map_err(|e| SnapshotCodecError::Decode(format!("invalid UTF-8 string: {e}")))
     }
 
-    fn string_vec(&mut self) -> Result<Vec<String>> {
+    pub(crate) fn string_vec(&mut self) -> Result<Vec<String>> {
         let len = self.len()?;
         let mut values = Vec::with_capacity(len.min(MAX_PREALLOC));
         for _ in 0..len {
@@ -779,7 +546,7 @@ impl<R: Read> BodyStream<R> {
         })
     }
 
-    fn expect_end(&mut self) -> Result<()> {
+    pub(crate) fn expect_end(&mut self) -> Result<()> {
         let mut rest = Vec::new();
         let trailing = (&mut self.inner).take(1 << 16).read_to_end(&mut rest)?;
         if trailing == 0 {
@@ -800,17 +567,17 @@ fn truncated(e: io::Error) -> SnapshotCodecError {
     }
 }
 
-fn store_error(e: lora_store::SnapshotError) -> SnapshotCodecError {
+pub(crate) fn store_error(e: lora_store::SnapshotError) -> SnapshotCodecError {
     SnapshotCodecError::Decode(e.to_string())
 }
 
 /// A decoded body waiting for its checksum before the catalogs register
 /// (and index) over it.
-struct LoadedBody {
-    builder: SnapshotGraphBuilder,
-    indexes: Vec<IndexDefinition>,
-    constraints: Vec<ConstraintDefinition>,
-    vector_indexes: Vec<VectorIndexSnapshot>,
+pub(crate) struct LoadedBody {
+    pub(crate) builder: SnapshotGraphBuilder,
+    pub(crate) indexes: Vec<IndexDefinition>,
+    pub(crate) constraints: Vec<ConstraintDefinition>,
+    pub(crate) vector_indexes: Vec<VectorIndexSnapshot>,
 }
 
 impl LoadedBody {
@@ -1279,15 +1046,6 @@ mod depth_tests {
     use super::*;
     use crate::format::MAX_VALUE_DEPTH;
 
-    /// A value `depth` lists deep.
-    fn nested(depth: usize) -> PropertyValue {
-        let mut value = PropertyValue::Int(1);
-        for _ in 0..depth {
-            value = PropertyValue::List(vec![value]);
-        }
-        value
-    }
-
     /// The encoding of [`nested`] (`depth` one-element lists).
     fn crafted(depth: usize) -> Vec<u8> {
         let mut out = Vec::new();
@@ -1306,13 +1064,6 @@ mod depth_tests {
         // Deep enough to overflow the stack without the cap.
         let deep = crafted(1_000_000);
         let err = BodyStream::new(&deep[..]).value().unwrap_err();
-        assert!(err.to_string().contains("deeper than 128"), "{err}");
-    }
-
-    #[test]
-    fn value_encode_rejects_nesting_past_the_cap() {
-        put_value(&mut Vec::new(), &nested(MAX_VALUE_DEPTH), 0).unwrap();
-        let err = put_value(&mut Vec::new(), &nested(MAX_VALUE_DEPTH + 1), 0).unwrap_err();
         assert!(err.to_string().contains("deeper than 128"), "{err}");
     }
 }

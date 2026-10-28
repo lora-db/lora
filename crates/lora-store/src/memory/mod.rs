@@ -54,6 +54,8 @@ const ARC_HEADER: usize = 2 * std::mem::size_of::<usize>();
 #[cfg(test)]
 mod model_tests;
 #[cfg(test)]
+mod parallel_build_tests;
+#[cfg(test)]
 mod test_util;
 #[cfg(test)]
 mod tests;
@@ -72,6 +74,9 @@ pub use index_catalog::{
     StoredIndexState,
 };
 pub use mem_report::{property_value_heap_bytes, MemoryReport, PropertyIndexKeyUsage};
-pub use snapshot::{SnapshotCatalogs, SnapshotGraphBuilder};
+pub use snapshot::{
+    NodeBatch, RelationshipBatch, SnapshotCatalogs, SnapshotEncoder, SnapshotGraphBuilder,
+    SnapshotNames, SnapshotNode, SnapshotRelationship,
+};
 pub use stats::{DistinctValues, GraphStats, ListElementStats, PlanSignature};
 pub use vector_index::{VectorBackendSnapshot, VectorIndexSnapshot};

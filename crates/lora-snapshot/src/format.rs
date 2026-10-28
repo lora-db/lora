@@ -4,7 +4,16 @@ use crate::errors::{Result, SnapshotCodecError};
 
 pub(crate) const MAGIC: &[u8; 8] = b"LORACOL1";
 pub const DATABASE_SNAPSHOT_MAGIC: &[u8; 8] = MAGIC;
+/// The column-major body: one stream, compressed whole. Still read.
 pub(crate) const FORMAT_VERSION: u32 = 2;
+/// The framed body (see `chunked`): records in frames compressed one by
+/// one, so several threads write and read them. Written since 0.34.
+pub(crate) const FORMAT_VERSION_CHUNKED: u32 = 3;
+
+/// Whether this build reads envelopes of `format_version`.
+pub(crate) fn is_supported_format(format_version: u32) -> bool {
+    format_version == FORMAT_VERSION || format_version == FORMAT_VERSION_CHUNKED
+}
 pub(crate) const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 32;
 /// `2` was the last release before the catalog trailer; readable on this branch
 /// for forward compatibility with older snapshots that lack indexes.

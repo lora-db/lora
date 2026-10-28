@@ -231,6 +231,33 @@ impl<T: Clone> ChunkedVec<T> {
         Some(&mut Arc::make_mut(leaf)[i & MASK])
     }
 
+    /// Mutable access to the leaves `touched` names (by leaf number, in
+    /// ascending order), each copied first if shared: disjoint, so several
+    /// threads can fill them at once. Yields `(leaf number, entries)`.
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    pub(super) fn leaves_mut(&mut self, touched: &[usize]) -> Vec<(usize, &mut [T])>
+    where
+        T: Clone,
+    {
+        let mut touched = touched.iter().copied().peekable();
+        let mut out = Vec::with_capacity(touched.len());
+        for (n, node) in Arc::make_mut(&mut self.root).iter_mut().enumerate() {
+            if touched.peek().is_none() {
+                break;
+            }
+            if touched.peek().is_some_and(|&l| l >> FAN_SHIFT != n) {
+                continue;
+            }
+            for (l, leaf) in Arc::make_mut(node).iter_mut().enumerate() {
+                let at = (n << FAN_SHIFT) | l;
+                if touched.next_if_eq(&at).is_some() {
+                    out.push((at, Arc::make_mut(leaf).as_mut_slice()));
+                }
+            }
+        }
+        out
+    }
+
     /// Number of leaves that are `leaf`, for the memory estimator.
     pub(super) fn leaves_sharing(&self, leaf: &Arc<Vec<T>>) -> usize {
         self.root

@@ -70,6 +70,9 @@ blake3 = "1"
 getrandom = "0.2"
 argon2 = "0.5"
 flate2 = "1"
+zstd = { version = "0.13", default-features = false }
+# Pure-Rust zstd decoder (MIT): wasm builds read zstd snapshots with it.
+ruzstd = { version = "0.7", default-features = false, features = ["std"] }
 rayon = "1"
 # Named time zones: the IANA database bundled into the binary (no
 # filesystem access, so it also works on wasm32). Unlicense OR MIT; the tz

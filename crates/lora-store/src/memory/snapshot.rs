@@ -6,14 +6,19 @@
 //! vocabulary.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
+use crate::dict::{Dicts, ValueDictionary};
+use crate::encoded::{self, StoredNode, StoredRel};
 use crate::{
-    NodeId, NodeRecord, NodeRef, RelRef, RelationshipId, RelationshipRecord, SnapshotError,
-    SnapshotMeta, SnapshotPayload,
+    Name, NodeId, NodeRecord, NodeRef, PropertyValue, RelRef, RelationshipId, RelationshipRecord,
+    SnapshotError, SnapshotMeta, SnapshotPayload, ValueRef,
 };
 
 use super::distinct_stats::DistinctBuilder;
+use super::graph::DeferredData;
 use super::index_catalog::StoredIndexEntity;
+use super::record_slab::BuiltLeaves;
 use super::{ConstraintDefinition, InMemoryGraph, IndexDefinition, VectorIndexSnapshot};
 
 /// Format-version stamp surfaced through [`SnapshotMeta::format_version`]
@@ -238,6 +243,11 @@ impl SnapshotGraphBuilder {
         // skipping it would leave RANGE indexes registered but never populated.
         // Constraint-owned backing indexes are restored by re-registering the
         // owning constraint below, which keeps catalog ownership explicit.
+        //
+        // Registration only fills the catalogs, in order; the indexes'
+        // data and the constraint scans are left in `deferred` and done
+        // together at the end, on every core.
+        let mut deferred = DeferredData::default();
         for def in indexes {
             if constraint_owned_indexes.contains(&def.name) {
                 continue;
@@ -245,7 +255,7 @@ impl SnapshotGraphBuilder {
             // Errors here would mean the snapshot itself is corrupt or
             // ambiguous; map them into Decode rather than panicking.
             rebuilt
-                .register_index(
+                .register_index_deferring(
                     crate::memory::IndexRequest {
                         explicit_name: Some(def.name.clone()),
                         kind: def.kind,
@@ -256,6 +266,8 @@ impl SnapshotGraphBuilder {
                         options: def.options.clone(),
                     },
                     /*if_not_exists*/ true,
+                    /*record_event*/ true,
+                    Some(&mut deferred),
                 )
                 .map_err(|e| SnapshotError::Decode(format!("index `{}`: {e}", def.name)))?;
         }
@@ -283,7 +295,7 @@ impl SnapshotGraphBuilder {
         // their own backing indexes as part of registration.
         for def in constraints {
             rebuilt
-                .register_constraint(
+                .register_constraint_deferring(
                     crate::memory::ConstraintRequest {
                         name: def.name.clone(),
                         kind: def.kind.clone(),
@@ -293,10 +305,14 @@ impl SnapshotGraphBuilder {
                         backing: def.backing,
                     },
                     /*if_not_exists*/ true,
+                    Some(&mut deferred),
                 )
                 .map_err(|e| SnapshotError::Decode(format!("constraint `{}`: {e}", def.name)))?;
         }
 
+        rebuilt
+            .run_deferred(deferred)
+            .map_err(SnapshotError::Decode)?;
         Ok(rebuilt)
     }
 }
@@ -346,4 +362,523 @@ fn validate_slot_id(label: &str, id: u64) -> Result<(), SnapshotError> {
     idx.checked_add(1)
         .ok_or_else(|| SnapshotError::Decode(format!("{label} {id} leaves no valid slab slot")))?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Encoding on several threads
+// ---------------------------------------------------------------------------
+
+/// The dictionaries a graph numbers its records with, in number order.
+/// A snapshot writer names records by these numbers, and a
+/// [`SnapshotGraphBuilder`] primed with them ([`SnapshotGraphBuilder::prime`])
+/// encodes records on any thread.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SnapshotNames {
+    pub labels: Vec<Name>,
+    pub types: Vec<Name>,
+    pub keys: Vec<Name>,
+    /// Which short string values the graph stores by number.
+    pub values: ValueDictionary,
+}
+
+/// A stored node as a snapshot writer reads it: names by number in
+/// [`SnapshotNames`], values borrowed.
+#[derive(Clone, Copy)]
+pub struct SnapshotNode<'a> {
+    stored: StoredNode<'a>,
+}
+
+impl<'a> SnapshotNode<'a> {
+    pub fn id(self) -> NodeId {
+        self.stored.id
+    }
+
+    /// Numbers in [`SnapshotNames::labels`], in the node's order.
+    pub fn label_ids(self) -> impl ExactSizeIterator<Item = u32> + 'a {
+        let labels = self.stored.labels();
+        let count = labels.len();
+        ExactLen {
+            inner: labels.ids(),
+            remaining: count,
+        }
+    }
+
+    /// `(number in` [`SnapshotNames::keys`]`, value)` in key-name order.
+    pub fn properties(self) -> impl Iterator<Item = (u32, ValueRef<'a>)> + 'a {
+        self.stored.properties().iter_ids()
+    }
+
+    pub fn property_count(self) -> usize {
+        self.stored.properties().len()
+    }
+}
+
+/// A stored relationship as a snapshot writer reads it.
+#[derive(Clone, Copy)]
+pub struct SnapshotRelationship<'a> {
+    stored: StoredRel<'a>,
+}
+
+impl<'a> SnapshotRelationship<'a> {
+    pub fn id(self) -> RelationshipId {
+        self.stored.id
+    }
+
+    pub fn src(self) -> NodeId {
+        self.stored.src
+    }
+
+    pub fn dst(self) -> NodeId {
+        self.stored.dst
+    }
+
+    /// Number in [`SnapshotNames::types`].
+    pub fn type_id(self) -> u32 {
+        self.stored.type_id()
+    }
+
+    /// `(number in` [`SnapshotNames::keys`]`, value)` in key-name order.
+    pub fn properties(self) -> impl Iterator<Item = (u32, ValueRef<'a>)> + 'a {
+        self.stored.properties().iter_ids()
+    }
+
+    pub fn property_count(self) -> usize {
+        self.stored.properties().len()
+    }
+}
+
+/// An iterator of known length.
+struct ExactLen<I> {
+    inner: I,
+    remaining: usize,
+}
+
+impl<I: Iterator> Iterator for ExactLen<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<I::Item> {
+        let item = self.inner.next()?;
+        self.remaining -= 1;
+        Some(item)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<I: Iterator> ExactSizeIterator for ExactLen<I> {}
+
+impl InMemoryGraph {
+    /// The graph's dictionaries. Every name a record holds is in them,
+    /// and so may names no record holds any more.
+    pub fn snapshot_names(&self) -> SnapshotNames {
+        let names = |dict: &crate::dict::NameDict| {
+            (0..dict.len() as u32)
+                .map(|id| dict.name(id).clone())
+                .collect()
+        };
+        SnapshotNames {
+            labels: names(&self.dicts.labels),
+            types: names(&self.dicts.types),
+            keys: names(&self.dicts.keys),
+            values: self
+                .dicts
+                .values
+                .export(|key| self.dicts.keys.name(key).clone()),
+        }
+    }
+
+    /// The nodes with an id in `ids`, in id order, numbered as
+    /// [`Self::snapshot_names`] numbers them. Writers on several threads
+    /// each take a range.
+    pub fn snapshot_nodes_in(
+        &self,
+        ids: std::ops::Range<NodeId>,
+    ) -> impl Iterator<Item = SnapshotNode<'_>> + '_ {
+        let dicts = &self.dicts;
+        let start = usize::try_from(ids.start).unwrap_or(usize::MAX);
+        let end = ids.end;
+        self.nodes
+            .iter_from(start)
+            .map(|(i, bytes)| (i as NodeId, bytes))
+            .take_while(move |(id, _)| *id < end)
+            .map(move |(id, bytes)| SnapshotNode {
+                stored: StoredNode::new(id, bytes, dicts),
+            })
+    }
+
+    /// The relationships with an id in `ids`, in id order.
+    pub fn snapshot_relationships_in(
+        &self,
+        ids: std::ops::Range<RelationshipId>,
+    ) -> impl Iterator<Item = SnapshotRelationship<'_>> + '_ {
+        let dicts = &self.dicts;
+        let start = usize::try_from(ids.start).unwrap_or(usize::MAX);
+        let end = ids.end;
+        self.relationships
+            .iter_from(start)
+            .map(|(i, bytes)| (i as RelationshipId, bytes))
+            .take_while(move |(id, _)| *id < end)
+            .map(move |(id, bytes)| SnapshotRelationship {
+                stored: StoredRel::new(id, bytes, dicts),
+            })
+    }
+
+    /// One past the highest node slot (an upper bound on node ids).
+    pub fn snapshot_node_slots(&self) -> u64 {
+        self.nodes.len() as u64
+    }
+
+    /// One past the highest relationship slot.
+    pub fn snapshot_relationship_slots(&self) -> u64 {
+        self.relationships.len() as u64
+    }
+}
+
+/// Encodes snapshot records into a graph's stored form on any thread,
+/// for the [`SnapshotGraphBuilder`] that [primed](SnapshotGraphBuilder::prime)
+/// it. Cheap to clone.
+#[derive(Clone)]
+pub struct SnapshotEncoder {
+    inner: Arc<EncoderTables>,
+}
+
+struct EncoderTables {
+    /// The builder's dictionaries when it was primed. Encoding reads them
+    /// only; a value they do not number yet is stored in full.
+    dicts: Dicts,
+    /// Snapshot label / type / key number -> graph number.
+    labels: Vec<u32>,
+    types: Vec<u32>,
+    keys: Vec<u32>,
+    /// The snapshot's key names, and each one's place in name order:
+    /// records keep their properties in that order.
+    key_names: Vec<Arc<str>>,
+    key_ranks: Vec<u32>,
+    label_names: Vec<Name>,
+    type_names: Vec<Name>,
+    next_node_id: NodeId,
+    next_rel_id: RelationshipId,
+}
+
+/// Nodes encoded off the builder's thread, for
+/// [`SnapshotGraphBuilder::push_nodes`]. Fill with [`SnapshotEncoder::push_node`].
+pub struct NodeBatch {
+    /// The encoded records, in whole leaves of the node slab.
+    records: BuiltLeaves,
+    by_label: Vec<(u32, Vec<NodeId>)>,
+    distinct: DistinctBuilder,
+    /// Reused per record.
+    scratch: Vec<u8>,
+    labels: Vec<u32>,
+}
+
+/// Relationships encoded off the builder's thread, for
+/// [`SnapshotGraphBuilder::push_relationships`].
+pub struct RelationshipBatch {
+    /// The encoded records, in whole leaves of the relationship slab.
+    records: BuiltLeaves,
+    /// `(id, source, target, graph type number)` per relationship.
+    links: Vec<(RelationshipId, NodeId, NodeId, u32)>,
+    by_type: Vec<(u32, Vec<RelationshipId>)>,
+    distinct: DistinctBuilder,
+    scratch: Vec<u8>,
+}
+
+impl NodeBatch {
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.len() == 0
+    }
+}
+
+impl RelationshipBatch {
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.len() == 0
+    }
+}
+
+/// Add record `id` to a batch's leaves. Ids ascend within a batch, so
+/// a repeated or falling one is refused here.
+fn push_record(records: &mut BuiltLeaves, id: u64, bytes: &[u8]) -> Result<(), SnapshotError> {
+    let slot = usize::try_from(id)
+        .map_err(|_| SnapshotError::Decode(format!("id {id} does not fit in usize")))?;
+    if records.last_slot().is_some_and(|last| last >= slot) {
+        return Err(SnapshotError::Decode(format!(
+            "record ids in a snapshot batch must ascend (id {id})"
+        )));
+    }
+    records.push(slot, bytes);
+    Ok(())
+}
+
+/// `ids` for `number` in a batch's by-name lists, which hold few names.
+fn ids_for(lists: &mut Vec<(u32, Vec<u64>)>, number: u32) -> &mut Vec<u64> {
+    let at = match lists.iter().rposition(|(n, _)| *n == number) {
+        Some(at) => at,
+        None => {
+            lists.push((number, Vec::new()));
+            lists.len() - 1
+        }
+    };
+    &mut lists[at].1
+}
+
+impl SnapshotEncoder {
+    /// A batch for about `capacity` records.
+    pub fn node_batch(&self, capacity: usize) -> NodeBatch {
+        let _ = capacity;
+        NodeBatch {
+            records: BuiltLeaves::default(),
+            by_label: Vec::new(),
+            distinct: DistinctBuilder::default(),
+            scratch: Vec::new(),
+            labels: Vec::new(),
+        }
+    }
+
+    /// A batch for about `capacity` records.
+    pub fn relationship_batch(&self, capacity: usize) -> RelationshipBatch {
+        RelationshipBatch {
+            records: BuiltLeaves::default(),
+            links: Vec::with_capacity(capacity),
+            by_type: Vec::new(),
+            distinct: DistinctBuilder::default(),
+            scratch: Vec::new(),
+        }
+    }
+
+    /// Put `properties` (snapshot key numbers) in the order a record keeps
+    /// them, the last of a repeated key winning as in [`Properties`], and
+    /// renumber the keys for the graph.
+    fn order_properties(
+        &self,
+        properties: &mut Vec<(u32, PropertyValue)>,
+    ) -> Result<(), SnapshotError> {
+        let tables = &*self.inner;
+        let mut sorted = true;
+        let mut last = None;
+        for (key, _) in properties.iter() {
+            let rank = *tables
+                .key_ranks
+                .get(*key as usize)
+                .ok_or_else(|| SnapshotError::Decode("invalid property key number".into()))?;
+            if last.is_some_and(|last| last >= rank) {
+                sorted = false;
+            }
+            last = Some(rank);
+        }
+        if !sorted {
+            // Stable, so of two equal keys the later stays later; keep it.
+            properties.sort_by_key(|(key, _)| tables.key_ranks[*key as usize]);
+            let mut i = properties.len();
+            while i > 1 {
+                i -= 1;
+                let same = tables.key_ranks[properties[i].0 as usize]
+                    == tables.key_ranks[properties[i - 1].0 as usize];
+                if same {
+                    properties.remove(i - 1);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Encode a node: `labels` and the keys of `properties` are numbers in
+    /// the snapshot's [`SnapshotNames`]. Takes the values out of
+    /// `properties`, leaving it empty for the next record.
+    pub fn push_node(
+        &self,
+        batch: &mut NodeBatch,
+        id: NodeId,
+        labels: &[u32],
+        properties: &mut Vec<(u32, PropertyValue)>,
+    ) -> Result<(), SnapshotError> {
+        let tables = &*self.inner;
+        validate_entity_id("node", id, tables.next_node_id)?;
+        self.order_properties(properties)?;
+        batch.labels.clear();
+        for &label in labels {
+            let number = *tables
+                .labels
+                .get(label as usize)
+                .ok_or_else(|| SnapshotError::Decode("invalid label dictionary id".into()))?;
+            batch.labels.push(number);
+            ids_for(&mut batch.by_label, number).push(id);
+        }
+        for &label in labels {
+            let name = &tables.label_names[label as usize];
+            batch.distinct.add_all(
+                name,
+                properties
+                    .iter()
+                    .map(|(key, value)| (&tables.key_names[*key as usize], value)),
+            );
+        }
+        for (key, _) in properties.iter_mut() {
+            *key = tables.keys[*key as usize];
+        }
+        encoded::encode_node_ids(&batch.labels, properties, &tables.dicts, &mut batch.scratch);
+        properties.clear();
+        push_record(&mut batch.records, id, &batch.scratch)
+    }
+
+    /// Encode a relationship: `rel_type` and the keys of `properties` are
+    /// numbers in the snapshot's [`SnapshotNames`].
+    pub fn push_relationship(
+        &self,
+        batch: &mut RelationshipBatch,
+        id: RelationshipId,
+        src: NodeId,
+        dst: NodeId,
+        rel_type: u32,
+        properties: &mut Vec<(u32, PropertyValue)>,
+    ) -> Result<(), SnapshotError> {
+        let tables = &*self.inner;
+        validate_entity_id("relationship", id, tables.next_rel_id)?;
+        validate_slot_id("relationship source node", src)?;
+        validate_slot_id("relationship target node", dst)?;
+        let type_id = *tables
+            .types
+            .get(rel_type as usize)
+            .ok_or_else(|| SnapshotError::Decode("invalid relationship type id".into()))?;
+        self.order_properties(properties)?;
+        batch.distinct.add_all(
+            &tables.type_names[rel_type as usize],
+            properties
+                .iter()
+                .map(|(key, value)| (&tables.key_names[*key as usize], value)),
+        );
+        for (key, _) in properties.iter_mut() {
+            *key = tables.keys[*key as usize];
+        }
+        encoded::encode_rel_ids(
+            src,
+            dst,
+            type_id,
+            properties,
+            &tables.dicts,
+            &mut batch.scratch,
+        );
+        properties.clear();
+        push_record(&mut batch.records, id, &batch.scratch)?;
+        batch.links.push((id, src, dst, type_id));
+        ids_for(&mut batch.by_type, type_id).push(id);
+        Ok(())
+    }
+}
+
+impl SnapshotGraphBuilder {
+    /// Number the snapshot's names in the graph being built, and return
+    /// an encoder that turns records named by those numbers into the
+    /// graph's stored form on any thread. Call before pushing records.
+    pub fn prime(&mut self, names: &SnapshotNames) -> Result<SnapshotEncoder, SnapshotError> {
+        let dicts = &mut self.graph.dicts;
+        let labels = names
+            .labels
+            .iter()
+            .map(|name| dicts.labels.id_or_insert(name))
+            .collect();
+        let types = names
+            .types
+            .iter()
+            .map(|name| dicts.types.id_or_insert(name))
+            .collect();
+        let keys: Vec<u32> = names
+            .keys
+            .iter()
+            .map(|name| dicts.keys.id_or_insert(name))
+            .collect();
+        let mut by_name: Vec<u32> = (0..names.keys.len() as u32).collect();
+        by_name.sort_by(|a, b| {
+            names.keys[*a as usize]
+                .as_str()
+                .cmp(names.keys[*b as usize].as_str())
+        });
+        let mut key_ranks = vec![0u32; names.keys.len()];
+        let mut rank = 0u32;
+        for (i, &key) in by_name.iter().enumerate() {
+            if i > 0
+                && names.keys[by_name[i - 1] as usize].as_str() != names.keys[key as usize].as_str()
+            {
+                rank += 1;
+            }
+            key_ranks[key as usize] = rank;
+        }
+        let keys_dict = &mut dicts.keys;
+        dicts
+            .values
+            .import(&names.values, |name| keys_dict.id_or_insert(name))
+            .map_err(SnapshotError::Decode)?;
+        Ok(SnapshotEncoder {
+            inner: Arc::new(EncoderTables {
+                dicts: dicts.clone(),
+                labels,
+                types,
+                keys,
+                key_names: names
+                    .keys
+                    .iter()
+                    .map(|name| name.as_arc().clone())
+                    .collect(),
+                key_ranks,
+                label_names: names.labels.clone(),
+                type_names: names.types.clone(),
+                next_node_id: self.graph.next_node_id,
+                next_rel_id: self.graph.next_rel_id,
+            }),
+        })
+    }
+
+    /// Store nodes an encoder from [`Self::prime`] encoded.
+    pub fn push_nodes(&mut self, batch: NodeBatch) -> Result<(), SnapshotError> {
+        self.graph
+            .put_encoded_node_leaves(batch.records)
+            .map_err(SnapshotError::Decode)?;
+        for (label, ids) in &batch.by_label {
+            self.graph.extend_node_label_index(*label, ids);
+        }
+        self.node_distinct.merge(batch.distinct);
+        Ok(())
+    }
+
+    /// Store relationships an encoder from [`Self::prime`] encoded. Their
+    /// endpoints must already be pushed.
+    pub fn push_relationships(&mut self, batch: RelationshipBatch) -> Result<(), SnapshotError> {
+        self.push_relationship_batches(vec![batch])
+    }
+
+    /// [`Self::push_relationships`] for several batches, in order: their
+    /// adjacency is linked in one pass, on every core when the build
+    /// allows.
+    pub fn push_relationship_batches(
+        &mut self,
+        batches: Vec<RelationshipBatch>,
+    ) -> Result<(), SnapshotError> {
+        let mut links = Vec::new();
+        for batch in batches {
+            self.graph
+                .put_encoded_relationship_leaves(batch.records, &batch.links)
+                .map_err(SnapshotError::Decode)?;
+            for (rel_type, ids) in &batch.by_type {
+                self.graph.extend_relationship_type_index(*rel_type, ids);
+            }
+            self.rel_distinct.merge(batch.distinct);
+            if links.is_empty() {
+                links = batch.links;
+            } else {
+                links.extend(batch.links);
+            }
+        }
+        self.graph.link_relationships(&links);
+        Ok(())
+    }
 }

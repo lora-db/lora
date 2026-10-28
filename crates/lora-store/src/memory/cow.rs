@@ -159,6 +159,17 @@ pub(super) fn route<Q: Hash + ?Sized>(key: &Q) -> u64 {
     hasher.finish().wrapping_mul(0x9e37_79b9_7f4a_7c15)
 }
 
+/// Root children of a [`CowMap`]: the parts [`CowMap::from_slots`] takes.
+#[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+pub(super) const TOP_SLOTS: usize = FAN;
+
+/// The root child slot `route` takes, for [`CowMap::from_slots`].
+#[inline]
+#[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+pub(super) fn top_slot(route: u64) -> usize {
+    slot(route, 0)
+}
+
 /// The child slot `route` takes at `depth`: successive [`BITS`]-bit
 /// fields from the top.
 #[inline]
@@ -221,6 +232,16 @@ impl<K: Eq + Hash + Clone, V: Clone> Node<K, V> {
             }
         });
         Node::Branch(Arc::new(Branch { kids }))
+    }
+
+    /// Entries in the subtree.
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    fn count(&self) -> usize {
+        match self {
+            Node::Empty => 0,
+            Node::Leaf(map) => map.len(),
+            Node::Branch(branch) => branch.kids.iter().map(Node::count).sum(),
+        }
     }
 
     /// Every entry of the subtree, moved out where unshared and cloned
@@ -493,6 +514,64 @@ impl<K: Eq + Hash + Clone, V: Clone, const LEAF: usize> CowMap<K, V, LEAF> {
             Self::shape(mine, depth + 1)
         });
         Node::Branch(Arc::new(Branch { kids }))
+    }
+
+    /// A map of the entries of `parts`, built apart (on several threads)
+    /// from keys split by [`top_slot`] of their route: each part is grafted
+    /// as the root's child for its slot, so nothing is rehashed. A part's
+    /// keys of another slot are inserted one by one.
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    pub(super) fn from_slots(parts: Vec<(usize, Self)>) -> Self {
+        let mut kids: [Node<K, V>; FAN] = std::array::from_fn(|_| Node::Empty);
+        let mut len = 0;
+        let mut strays = LeafMap::default();
+        for (s, part) in parts {
+            match part.root {
+                Node::Empty => {}
+                Node::Leaf(map) => {
+                    let mut mine = LeafMap::default();
+                    for (key, value) in Arc::unwrap_or_clone(map) {
+                        if slot(route(&key), 0) == s {
+                            mine.insert(key, value);
+                        } else {
+                            strays.insert(key, value);
+                        }
+                    }
+                    if !mine.is_empty() {
+                        len += mine.len();
+                        kids[s] = Node::Leaf(Arc::new(mine));
+                    }
+                }
+                Node::Branch(branch) => {
+                    for (i, kid) in Arc::unwrap_or_clone(branch).kids.into_iter().enumerate() {
+                        if i == s {
+                            len += kid.count();
+                            kids[s] = kid;
+                        } else {
+                            kid.drain_into(&mut strays);
+                        }
+                    }
+                }
+            }
+        }
+        let mut map = Self {
+            root: Node::Branch(Arc::new(Branch { kids })),
+            len,
+        };
+        if len <= LEAF {
+            // As small a map as one leaf holds is one leaf.
+            let mut leaf = LeafMap::default();
+            std::mem::replace(&mut map.root, Node::Empty).drain_into(&mut leaf);
+            map.root = if leaf.is_empty() {
+                Node::Empty
+            } else {
+                Node::Leaf(Arc::new(leaf))
+            };
+        }
+        for (key, value) in strays {
+            map.insert(key, value);
+        }
+        map
     }
 
     pub(super) fn insert(&mut self, key: K, value: V) -> Option<V> {
@@ -934,6 +1013,45 @@ impl<K: Ord + Clone, V: Clone, const PART: usize> CowOrdMap<K, V, PART> {
             }
         }
         self.insert_new(key, make());
+    }
+
+    /// A map of `entries`, whose keys strictly ascend: full partitions in
+    /// full groups, the shape inserting them one by one in that order
+    /// leaves, built without the walks.
+    pub(super) fn from_sorted(entries: impl IntoIterator<Item = (K, V)>) -> Self {
+        let mut map = Self::default();
+        let mut groups: Vec<(K, Group<K, V>)> = Vec::new();
+        let mut group: Vec<(K, Part<K, V>)> = Vec::new();
+        let mut part: Vec<(K, V)> = Vec::new();
+        let close_part = |part: &mut Vec<(K, V)>, group: &mut Vec<(K, Part<K, V>)>| {
+            let entries = std::mem::take(part);
+            let min = entries[0].0.clone();
+            group.push((min, Arc::new(SortedPart { entries })));
+        };
+        let close_group = |group: &mut Vec<(K, Part<K, V>)>, groups: &mut Vec<(K, Group<K, V>)>| {
+            let parts = std::mem::take(group);
+            let min = parts[0].0.clone();
+            groups.push((min, Arc::new(parts)));
+        };
+        for (key, value) in entries {
+            debug_assert!(part.last().is_none_or(|(last, _)| *last < key));
+            if part.len() == PART {
+                close_part(&mut part, &mut group);
+                if group.len() == GROUP_MAX {
+                    close_group(&mut group, &mut groups);
+                }
+            }
+            part.push((key, value));
+            map.len += 1;
+        }
+        if !part.is_empty() {
+            close_part(&mut part, &mut group);
+        }
+        if !group.is_empty() {
+            close_group(&mut group, &mut groups);
+        }
+        map.groups = Arc::new(groups);
+        map
     }
 
     fn insert_new(&mut self, key: K, value: V) {

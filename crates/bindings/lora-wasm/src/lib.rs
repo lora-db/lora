@@ -69,6 +69,10 @@ fn snapshot_info_to_js(info: &SnapshotInfo) -> Result<JsValue, JsError> {
             "format": "gzip",
             "level": level,
         }),
+        Compression::Zstd { level } => serde_json::json!({
+            "format": "zstd",
+            "level": level,
+        }),
     };
     let out = serde_json::json!({
         "formatVersion": info.format_version,

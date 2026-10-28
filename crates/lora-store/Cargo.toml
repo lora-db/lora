@@ -11,6 +11,12 @@ description = "In-memory graph store with property indexes for LoraDB."
 keywords = ["loradb", "graph", "in-memory", "storage", "database"]
 categories = ["database-implementations", "data-structures"]
 
+[features]
+# Build a restored graph's indexes on every core. Default-on for native
+# builds; wasm consumers opt out with `default-features = false`.
+default = ["parallel"]
+parallel = ["dep:rayon"]
+
 [dependencies]
 lora-ast.workspace = true
 serde.workspace = true
@@ -19,6 +25,7 @@ smallvec.workspace = true
 unicode-normalization.workspace = true
 thiserror.workspace = true
 jiff.workspace = true
+rayon = { workspace = true, optional = true }
 
 # Wall-clock reads go through the standard library on native targets and
 # through `js_sys::Date::now()` on wasm32-unknown-unknown, where

@@ -288,12 +288,19 @@ fn write_archive_tmp(wal_dir: &Path, tmp_path: &Path) -> Result<(), WalError> {
         let mut tally = FrameTally::default();
 
         match File::open(wal_dir.join(SNAPSHOT_FILE_NAME)) {
-            Ok(snapshot) => tally.add(write_compressed_file_frame(
-                &mut writer,
-                FRAME_KIND_SNAPSHOT,
-                SNAPSHOT_FRAME_NAME,
-                snapshot,
-            )?),
+            Ok(snapshot) => {
+                // A framed snapshot's frames are compressed one by one,
+                // and a second pass would be one long single-threaded
+                // inflate on every open.
+                let compress = !is_framed_snapshot(&snapshot)?;
+                tally.add(write_file_frame(
+                    &mut writer,
+                    FRAME_KIND_SNAPSHOT,
+                    SNAPSHOT_FRAME_NAME,
+                    snapshot,
+                    compress,
+                )?)
+            }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
@@ -310,11 +317,12 @@ fn write_archive_tmp(wal_dir: &Path, tmp_path: &Path) -> Result<(), WalError> {
             }
             // Streamed like the snapshot: a segment holding one large
             // transaction can be far larger than the segment target.
-            tally.add(write_compressed_file_frame(
+            tally.add(write_file_frame(
                 &mut writer,
                 FRAME_KIND_WAL_FILE,
                 name,
                 File::open(&entry)?,
+                true,
             )?);
         }
         writer.write_all(&tally.encode())?;
@@ -554,11 +562,29 @@ impl<R: Read> Read for CountingReader<R> {
 /// Write `file` as one gzip-compressed frame without holding it. The
 /// header carries the compressed length and checksum, so it is written
 /// last, over a placeholder.
-fn write_compressed_file_frame<W: Write + Seek>(
+/// Whether `snapshot` is in the framed snapshot format (envelope format
+/// 3), whose frames are already compressed. Leaves the file at its start.
+fn is_framed_snapshot(mut snapshot: &File) -> Result<bool, WalError> {
+    let mut head = [0u8; 12];
+    let framed = match snapshot.read_exact(&mut head) {
+        Ok(()) => {
+            &head[..8] == lora_snapshot::DATABASE_SNAPSHOT_MAGIC
+                && u32::from_le_bytes(head[8..12].try_into().expect("4 bytes")) >= 3
+        }
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => false,
+        Err(e) => return Err(e.into()),
+    };
+    snapshot.seek(SeekFrom::Start(0))?;
+    Ok(framed)
+}
+
+/// Copy `file` into a frame, gzip-compressed when `compress` is set.
+fn write_file_frame<W: Write + Seek>(
     out: &mut W,
     kind: u8,
     name: &str,
     file: File,
+    compress: bool,
 ) -> Result<u32, WalError> {
     let name_bytes = name.as_bytes();
     let header_at = out.stream_position()?;
@@ -573,15 +599,20 @@ fn write_compressed_file_frame<W: Write + Seek>(
             hasher: &mut hasher,
             written: 0,
         };
-        let mut encoder = GzEncoder::new(&mut body, GzipCompression::new(1));
-        let raw_len = io::copy(&mut BufReader::new(file), &mut encoder)?;
-        encoder.finish()?;
+        let raw_len = if compress {
+            let mut encoder = GzEncoder::new(&mut body, GzipCompression::new(1));
+            let raw_len = io::copy(&mut BufReader::new(file), &mut encoder)?;
+            encoder.finish()?;
+            raw_len
+        } else {
+            io::copy(&mut BufReader::with_capacity(1 << 20, file), &mut body)?
+        };
         (raw_len, body.written)
     };
     let mut header = FrameHeader {
         kind,
-        flags: FLAG_COMPRESSED,
-        codec: CODEC_GZIP,
+        flags: if compress { FLAG_COMPRESSED } else { 0 },
+        codec: if compress { CODEC_GZIP } else { CODEC_PLAIN },
         encryption: ENCRYPTION_NONE,
         name_len: name_bytes.len() as u16,
         body_len,

@@ -26,7 +26,10 @@ export interface NativeSnapshotMeta {
 /** Header metadata returned by `snapshotInfo`. Includes envelope-level
  * fields (compression, encryption) that `loadSnapshot` does not surface. */
 export interface NativeSnapshotInfo extends NativeSnapshotMeta {
-  compression: { format: "none" } | { format: "gzip"; level: number };
+  compression:
+    | { format: "none" }
+    | { format: "gzip"; level: number }
+    | { format: "zstd"; level: number };
   encrypted: boolean;
   keyId: string | null;
 }

@@ -14,6 +14,15 @@ categories = ["database-implementations", "encoding"]
 [lib]
 bench = false
 
+[dev-dependencies]
+ruzstd.workspace = true
+
+[features]
+# Write and read snapshot frames on every core. Default-on for native
+# builds; wasm consumers opt out with `default-features = false`.
+default = ["parallel"]
+parallel = ["dep:rayon", "lora-store/parallel"]
+
 [dependencies]
 blake3.workspace = true
 chacha20poly1305.workspace = true
@@ -23,8 +32,15 @@ getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+rayon = { workspace = true, optional = true }
 
 lora-store.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+zstd.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ruzstd.workspace = true
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { workspace = true, features = ["js"] }

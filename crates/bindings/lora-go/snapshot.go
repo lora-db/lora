@@ -29,7 +29,7 @@ type SnapshotMeta struct {
 }
 
 // SnapshotCompression selects the database snapshot compression codec.
-// Supported formats are "none" and "gzip".
+// Supported formats are "none", "gzip" (level 0-9) and "zstd" (level 1-22).
 type SnapshotCompression struct {
 	Format string `json:"format"`
 	Level  uint32 `json:"level,omitempty"`

@@ -226,6 +226,26 @@ enum KeyValues {
     Stored,
 }
 
+/// A graph's value dictionary as a snapshot carries it, so a restarted
+/// graph stores the values it numbered by number again. Only a hint: a
+/// graph without it reads every value the same, and stores more bytes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ValueDictionary {
+    /// The numbered strings, in number order.
+    pub strings: Vec<Arc<str>>,
+    /// The keys judged after their trial.
+    pub keys: Vec<(Name, ValueKeyState)>,
+}
+
+/// How a key's short string values are stored, once judged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueKeyState {
+    /// By number; `misses` new values have been added since the trial.
+    Numbered { misses: u16 },
+    /// In full.
+    Stored,
+}
+
 impl Default for KeyValues {
     fn default() -> Self {
         KeyValues::Trial {
@@ -291,6 +311,83 @@ impl ValueDict {
         if *seen == TRIAL_VALUES {
             *state = KeyValues::Numbered { misses: 0 };
         }
+    }
+
+    /// [`Self::number`] without changing the dictionary: the number of a
+    /// value already numbered under a numbered key, `None` for anything
+    /// else. Encoders on other threads share one dictionary this way; a
+    /// value they store in full reads the same as a numbered one.
+    #[inline]
+    pub(crate) fn number_existing(&self, key: u32, value: &str) -> Option<u32> {
+        if value.len() > VALUE_MAX_LEN {
+            return None;
+        }
+        match self.keys.get(key as usize) {
+            Some(KeyValues::Numbered { .. }) => self.strings.id_of(value),
+            _ => None,
+        }
+    }
+
+    /// The numbered strings in number order, and the keys that finished
+    /// their trial with the judgement each got. A key still on trial is
+    /// left out: its trial starts over.
+    pub(crate) fn export(&self, key_name: impl Fn(u32) -> Name) -> ValueDictionary {
+        let strings = (0..self.strings.len() as u32)
+            .map(|id| Arc::from(self.string(id)))
+            .collect();
+        let keys = self
+            .keys
+            .iter()
+            .enumerate()
+            .filter_map(|(key, state)| {
+                let state = match state {
+                    KeyValues::Trial { .. } => return None,
+                    KeyValues::Numbered { misses } => ValueKeyState::Numbered { misses: *misses },
+                    KeyValues::Stored => ValueKeyState::Stored,
+                };
+                Some((key_name(key as u32), state))
+            })
+            .collect();
+        ValueDictionary { strings, keys }
+    }
+
+    /// Restore what [`Self::export`] wrote into an empty dictionary; `key_id`
+    /// numbers a key name. Strings past [`VALUES_MAX`], too long to be
+    /// numbered, or repeated are refused, so a restored dictionary is one
+    /// [`Self::number`] could have built.
+    pub(crate) fn import(
+        &mut self,
+        dictionary: &ValueDictionary,
+        mut key_id: impl FnMut(&Name) -> u32,
+    ) -> Result<(), String> {
+        if dictionary.strings.len() > VALUES_MAX {
+            return Err("value dictionary holds too many strings".into());
+        }
+        for value in &dictionary.strings {
+            if value.len() > VALUE_MAX_LEN {
+                return Err("value dictionary holds a string too long to number".into());
+            }
+            let before = self.strings.len();
+            self.strings
+                .id_or_insert_with(value, || crate::Name::from_arc(Arc::clone(value)));
+            if self.strings.len() == before {
+                return Err("value dictionary repeats a string".into());
+            }
+        }
+        let keys = Arc::make_mut(&mut self.keys);
+        for (name, state) in &dictionary.keys {
+            let key = key_id(name) as usize;
+            if keys.len() <= key {
+                keys.resize_with(key + 1, KeyValues::default);
+            }
+            keys[key] = match *state {
+                ValueKeyState::Numbered { misses } => KeyValues::Numbered {
+                    misses: misses.min(KEY_MISSES),
+                },
+                ValueKeyState::Stored => KeyValues::Stored,
+            };
+        }
+        Ok(())
     }
 
     /// The string numbered `id`.

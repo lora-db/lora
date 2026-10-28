@@ -42,7 +42,13 @@ pub use types::{LabelsRef, NodeRef, OtherValue, PropsIter, PropsRef, RelRef, Val
 pub use traits::{GraphCatalog, GraphStorage, GraphStorageMut};
 
 // ---------- In-memory backend ----------
-pub use memory::{InMemoryGraph, SnapshotCatalogs, SnapshotGraphBuilder};
+pub use memory::{
+    InMemoryGraph, NodeBatch, RelationshipBatch, SnapshotCatalogs, SnapshotEncoder,
+    SnapshotGraphBuilder, SnapshotNames, SnapshotNode, SnapshotRelationship,
+};
+
+// Value dictionary carried by snapshots (see `SnapshotNames`).
+pub use dict::{ValueDictionary, ValueKeyState};
 
 // ---------- Memory-footprint diagnostics ----------
 //

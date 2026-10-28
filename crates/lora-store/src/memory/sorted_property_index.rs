@@ -95,6 +95,34 @@ impl SortedPropertyIndex {
         was_empty
     }
 
+    pub(super) fn has_scope(&self, label: &str, property: &str) -> bool {
+        self.by_scope
+            .contains_key(&ScopedPropertyKey::new(label, property))
+    }
+
+    /// Add `label`'s `property` scope as [`Self::add_scope`] does, holding
+    /// `built`'s entries ([`build_scope`]) if it is new. Returns whether
+    /// it was.
+    pub(super) fn add_built_scope(
+        &mut self,
+        label: &str,
+        property: &str,
+        built: SortedScope,
+    ) -> bool {
+        let entry = self
+            .by_scope
+            .entry(ScopedPropertyKey::new(label, property))
+            .or_default();
+        let new = entry.refcount == 0;
+        if new {
+            entry.by_value = built.by_value;
+            entry.by_element = built.by_element;
+            entry.element_postings = built.element_postings;
+        }
+        entry.refcount = entry.refcount.saturating_add(1);
+        new
+    }
+
     pub(super) fn remove_scope(&mut self, label: &str, property: &str) {
         let key = ScopedPropertyKey::new(label, property);
         if let Some(scope) = self.by_scope.get_mut(&key) {
@@ -403,8 +431,53 @@ fn element_key(value: &PropertyValue) -> Option<PropertyIndexKey> {
     }
 }
 
+/// A scope's entries from every entity's `(value key, id)` and
+/// `(list element key, id)`, in any order: sorted (on every core when the
+/// build allows) and filed in key order, as many inserts would have.
+pub(super) fn build_scope(
+    mut values: Vec<(PropertyIndexKey, u64)>,
+    mut elements: Vec<(PropertyIndexKey, u64)>,
+) -> SortedScope {
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    {
+        use rayon::slice::ParallelSliceMut;
+        values.par_sort_unstable();
+        elements.par_sort_unstable();
+    }
+    #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
+    {
+        values.sort_unstable();
+        elements.sort_unstable();
+    }
+    elements.dedup();
+    fn grouped(
+        pairs: Vec<(PropertyIndexKey, u64)>,
+    ) -> impl Iterator<Item = (PropertyIndexKey, IdSet)> {
+        let mut pairs = pairs.into_iter().peekable();
+        std::iter::from_fn(move || {
+            let (key, first) = pairs.next()?;
+            let mut ids = IdSet::new(first);
+            while let Some((_, id)) = pairs.next_if(|(next, _)| *next == key) {
+                ids.insert(id);
+            }
+            Some((key, ids))
+        })
+    }
+    let element_postings = elements.len();
+    let mut by_element = CowMap::default();
+    for (key, ids) in grouped(elements) {
+        by_element.insert(key, ids);
+    }
+    SortedScope {
+        by_value: CowOrdMap::from_sorted(grouped(values)),
+        by_element,
+        element_postings,
+        refcount: 0,
+    }
+}
+
 /// The distinct element keys of `value` when it is a list.
-fn element_keys(value: &PropertyValue) -> Vec<PropertyIndexKey> {
+pub(super) fn element_keys(value: &PropertyValue) -> Vec<PropertyIndexKey> {
     let PropertyValue::List(items) = value else {
         return Vec::new();
     };

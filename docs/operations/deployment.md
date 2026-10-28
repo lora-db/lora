@@ -80,7 +80,7 @@ Then snapshot on demand:
 
 ```bash
 curl -sX POST http://127.0.0.1:4747/admin/snapshot/save
-# => {"formatVersion":2,"nodeCount":1024,"relationshipCount":4096,"walLsn":null}
+# => {"formatVersion":3,"nodeCount":1024,"relationshipCount":4096,"walLsn":null}
 ```
 
 `--restore-from` is independent of `--snapshot-path`. You can restore from a read-only seed (`/var/lib/lora/seed.bin`) and snapshot to a writable path (`/var/lib/lora/runtime.bin`). See [Snapshots](snapshots.md) for the wire format and atomic-rename protocol.

@@ -35,6 +35,11 @@ use crate::wal::auto_checkpoint::{AutoCheckpoint, CheckpointTarget};
 
 use super::replay::open_wal_into;
 
+/// The envelope format snapshots are written in. A named database opened
+/// from an older one checkpoints at once, so the next open reads frames
+/// on every core.
+const LATEST_SNAPSHOT_FORMAT: u32 = 3;
+
 impl Database<InMemoryGraph> {
     /// Convenience constructor: a fresh, empty in-memory graph database.
     pub fn in_memory() -> Self {
@@ -135,7 +140,9 @@ impl Database<InMemoryGraph> {
     /// transaction above its fence as replay reads it. When that WAL is at
     /// least [`DatabaseOpenOptions::compact_on_open_wal_bytes`] and larger
     /// than the snapshot, the open checkpoints as [`Self::sync`] does
-    /// before it returns, so a long write history is replayed once.
+    /// before it returns, so a long write history is replayed once. So it
+    /// does when the snapshot is in the columnar format older releases
+    /// wrote, which reads on one thread: the next open reads frames.
     pub fn open_named(
         database_name: impl AsRef<str>,
         options: DatabaseOpenOptions,
@@ -146,12 +153,16 @@ impl Database<InMemoryGraph> {
             name.relative_path().to_path_buf(),
             options.max_database_bytes,
         )?);
-        let (mut graph, snapshot_lsn) = match archive.snapshot_path() {
+        let (mut graph, snapshot_lsn, legacy_snapshot) = match archive.snapshot_path() {
             Some(path) => {
                 let (graph, info) = crate::snapshot::read_graph_snapshot_file(&path, None)?;
-                (graph, info.wal_lsn.map(Lsn::new).unwrap_or(Lsn::ZERO))
+                (
+                    graph,
+                    info.wal_lsn.map(Lsn::new).unwrap_or(Lsn::ZERO),
+                    info.format_version < LATEST_SNAPSHOT_FORMAT,
+                )
             }
-            None => (InMemoryGraph::new(), Lsn::ZERO),
+            None => (InMemoryGraph::new(), Lsn::ZERO, false),
         };
         let snapshot_bytes = archive.snapshot_bytes();
         let wal = open_wal_into(
@@ -172,10 +183,12 @@ impl Database<InMemoryGraph> {
             Some(archive),
             options.checkpoint_wal_bytes,
         );
-        if wal_bytes >= options.compact_on_open_wal_bytes && wal_bytes > snapshot_bytes {
-            // The next open would replay this log again: checkpoint now,
-            // which also rewrites the container as the snapshot and the
-            // tail of the WAL.
+        if (wal_bytes >= options.compact_on_open_wal_bytes && wal_bytes > snapshot_bytes)
+            || legacy_snapshot
+        {
+            // The next open would replay this log again, or read a snapshot
+            // in the one-thread columnar format: checkpoint now, which also
+            // rewrites the container as the snapshot and the tail of the WAL.
             db.sync()?;
         } else {
             // Mark the archive dirty so a fresh named database is

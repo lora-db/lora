@@ -757,10 +757,18 @@ fn named_database_wal_size_trigger_is_at_least_the_snapshot_size() {
     let mut next_id = 0u32;
     let mut write = |db: &Database<lora_database::InMemoryGraph>, n: u32| {
         for _ in 0..n {
+            // A pad per node that does not compress away, so the
+            // snapshot keeps a size worth comparing the WAL with.
+            let pad = (0..3u64)
+                .map(|i| {
+                    format!(
+                        "{:016x}",
+                        (u64::from(next_id) * 3 + i).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                    )
+                })
+                .collect::<String>();
             db.execute(
-                &format!(
-                    "CREATE (:N {{id: {next_id}, pad: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'}})"
-                ),
+                &format!("CREATE (:N {{id: {next_id}, pad: '{pad}'}})"),
                 rows(),
             )
             .unwrap();

@@ -435,6 +435,144 @@ impl PropertyIndexState {
     }
 
     /// The (copied-on-write) per-key index of `scope`, created if absent.
+    /// [`Self::insert_bulk`] into a fresh state, on every core. `slots`
+    /// bounds the entity ids, `ids` lists those in a range, and `entry`
+    /// reads an entity's scopes and `key` value.
+    ///
+    /// A value's bucket operations touch only its digest entry and its
+    /// exact entry, so the values are split by the trie slot those take
+    /// at the root ([`super::cow::top_slot`]): first the id ranges are
+    /// scanned in parallel for which slot each entity goes to (two bytes
+    /// an entity), then each slot's buckets are built in parallel in id
+    /// order, making every decision the one-by-one build makes, and the
+    /// slots are grafted together ([`CowMap::from_slots`]).
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    pub(super) fn build_parallel<'a, I, S>(
+        key: &str,
+        slots: u64,
+        ids: impl Fn(std::ops::Range<u64>) -> I + Sync,
+        entry: impl Fn(u64) -> Option<(S, crate::ValueRef<'a>)> + Sync,
+        records: &(dyn EntityValues + Sync),
+    ) -> Self
+    where
+        I: Iterator<Item = u64>,
+        S: IntoIterator<Item = &'a str>,
+    {
+        use super::cow::{top_slot, TOP_SLOTS};
+        use rayon::prelude::*;
+
+        const RANGE: u64 = 1 << 16;
+        let route_of = |probe: &Probe<'_>| PropertyValueBuckets::shape_route(probe).1;
+
+        // Per range, per slot: the entities' offsets in the range.
+        let starts: Vec<u64> = (0..slots.div_ceil(RANGE)).map(|i| i * RANGE).collect();
+        let routed: Vec<Vec<Vec<u16>>> = starts
+            .par_iter()
+            .map(|&start| {
+                let mut parts = vec![Vec::new(); TOP_SLOTS];
+                for id in ids(start..start + RANGE) {
+                    let Some((_, value)) = entry(id) else {
+                        continue;
+                    };
+                    let Some(probe) = Probe::of_ref(value) else {
+                        continue;
+                    };
+                    parts[top_slot(route_of(&probe))].push((id - start) as u16);
+                }
+                parts
+            })
+            .collect();
+
+        // Per slot: each scope's buckets of the values routed there.
+        let built: Vec<FastHashMap<&'a str, PropertyValueBuckets>> = (0..TOP_SLOTS)
+            .into_par_iter()
+            .map(|s| {
+                let mine = || {
+                    starts.iter().zip(&routed).flat_map(move |(&start, parts)| {
+                        parts[s]
+                            .iter()
+                            .map(move |&offset| start + u64::from(offset))
+                    })
+                };
+                let mut routes: FastHashMap<&'a str, (Vec<u64>, Vec<u64>)> = FastHashMap::default();
+                for id in mine() {
+                    let Some((scopes, value)) = entry(id) else {
+                        continue;
+                    };
+                    let Some(probe) = Probe::of_ref(value) else {
+                        continue;
+                    };
+                    let (single, route) = PropertyValueBuckets::shape_route(&probe);
+                    for scope in or_unlabelled(scopes) {
+                        let shape = routes.entry(scope).or_default();
+                        if single {
+                            shape.1.push(route);
+                        } else {
+                            shape.0.push(route);
+                        }
+                    }
+                }
+                let mut buckets: FastHashMap<&'a str, PropertyValueBuckets> = routes
+                    .into_iter()
+                    .map(|(scope, (exact, single))| {
+                        (scope, PropertyValueBuckets::with_shape(exact, single))
+                    })
+                    .collect();
+                for id in mine() {
+                    let Some((scopes, value)) = entry(id) else {
+                        continue;
+                    };
+                    let Some(probe) = Probe::of_ref(value) else {
+                        continue;
+                    };
+                    for scope in or_unlabelled(scopes) {
+                        if let Some(scoped) = buckets.get_mut(scope) {
+                            scoped.insert(id, &probe, &|other| {
+                                records.get(other, key).is_some_and(|v| probe.matches(v))
+                            });
+                        }
+                    }
+                }
+                buckets
+            })
+            .collect();
+
+        // Graft each scope's slots together.
+        let mut by_scope: FastHashMap<&'a str, Vec<(usize, PropertyValueBuckets)>> =
+            FastHashMap::default();
+        for (s, buckets) in built.into_iter().enumerate() {
+            for (scope, scoped) in buckets {
+                by_scope.entry(scope).or_default().push((s, scoped));
+            }
+        }
+        let mut state = Self::default();
+        for (scope, parts) in by_scope {
+            let (exact, single): (Vec<_>, Vec<_>) = parts
+                .into_iter()
+                .map(|(s, buckets)| ((s, buckets.exact), (s, buckets.single)))
+                .unzip();
+            let buckets = PropertyValueBuckets {
+                exact: CowMap::from_slots(exact),
+                single: CowMap::from_slots(single),
+            };
+            Self::scope_mut(&mut state.scoped_values, scope).insert(Arc::from(key), buckets);
+        }
+        state
+    }
+
+    /// Move `key`'s buckets out of `built`, a state that indexed only
+    /// `key` (with [`Self::insert_bulk`]), into this one. Lets an index be
+    /// built without this state's lock, which then is held only to file it.
+    pub(super) fn absorb(&mut self, key: &str, built: PropertyIndexState) {
+        let scoped = Arc::try_unwrap(built.scoped_values).unwrap_or_else(|arc| (*arc).clone());
+        for (scope, values) in scoped {
+            let mut values = Arc::try_unwrap(values).unwrap_or_else(|arc| (*arc).clone());
+            if let Some((key, buckets)) = values.remove_entry(key) {
+                Self::scope_mut(&mut self.scoped_values, &scope).insert(key, buckets);
+            }
+        }
+    }
+
     fn scope_mut<'s>(
         scoped: &'s mut Arc<ScopedPropertyIndex>,
         scope: &str,
