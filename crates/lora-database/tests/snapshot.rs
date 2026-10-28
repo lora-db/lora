@@ -368,3 +368,59 @@ fn tempdir_like(tag: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
+
+/// Byte and file saves write the framed format (3) whatever the codec,
+/// and loads read it straight into a graph, keeping indexes and
+/// constraints and refusing what the constraint forbids afterwards.
+#[test]
+fn byte_and_file_snapshots_are_framed_and_keep_the_schema() {
+    let donor = Database::in_memory();
+    donor
+        .execute(
+            "CREATE CONSTRAINT person_name FOR (p:Person) REQUIRE p.name IS UNIQUE",
+            opts(),
+        )
+        .unwrap();
+    donor
+        .execute(
+            "UNWIND range(1, 200) AS i CREATE (:Person {name: 'p' + toString(i)})",
+            opts(),
+        )
+        .unwrap();
+
+    let dir = std::env::temp_dir().join(format!("lora-framed-bytes-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for compression in [
+        Compression::None,
+        Compression::Gzip { level: 1 },
+        Compression::Zstd { level: 3 },
+    ] {
+        let options = SnapshotOptions {
+            compression,
+            encryption: None,
+        };
+        let (bytes, info) = donor.save_snapshot_to_bytes_with_options(&options).unwrap();
+        assert_eq!(info.format_version, 3, "{compression:?}");
+
+        let path = dir.join("framed.lsnap");
+        donor
+            .save_snapshot_to_with_options(&path, &options)
+            .unwrap();
+        for target in [
+            {
+                let db = Database::in_memory();
+                db.load_snapshot_from_bytes(&bytes).unwrap();
+                db
+            },
+            Database::in_memory_from_snapshot(&path).unwrap(),
+        ] {
+            assert_eq!(target.node_count(), 200, "{compression:?}");
+            let duplicate = target.execute("CREATE (:Person {name: 'p7'})", opts());
+            assert!(duplicate.is_err(), "{compression:?}: constraint lost");
+            target
+                .execute("CREATE (:Person {name: 'fresh'})", opts())
+                .unwrap();
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

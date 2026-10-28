@@ -17,12 +17,14 @@ mod json;
 pub(crate) mod store;
 
 pub use directory::DirectorySnapshot;
-pub use json::{snapshot_credentials_from_json, snapshot_options_from_json};
+pub use json::{
+    managed_snapshot_options_from_json, snapshot_credentials_from_json, snapshot_options_from_json,
+};
 pub(crate) use store::ManagedSnapshotStore;
 pub use store::{SnapshotConfig, DEFAULT_CHECKPOINT_WAL_BYTES};
 
 use std::fs::OpenOptions;
-use std::io::{BufReader, Write};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -30,11 +32,10 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use lora_snapshot::{
-    decode_snapshot as decode_database_snapshot, read_graph_snapshot, write_graph_snapshot,
-    write_snapshot as write_database_snapshot, Compression, SnapshotCodecError,
-    SnapshotCredentials, SnapshotInfo, SnapshotOptions, DATABASE_SNAPSHOT_MAGIC,
+    read_graph_snapshot, write_graph_snapshot, Compression, SnapshotCredentials, SnapshotInfo,
+    SnapshotOptions, DATABASE_SNAPSHOT_MAGIC,
 };
-use lora_store::{InMemoryGraph, MutationRecorder, SnapshotMeta, SnapshotPayload};
+use lora_store::{InMemoryGraph, MutationRecorder, SnapshotMeta};
 use lora_wal::WalRecorder;
 
 use crate::durable_io::{sync_dir, sync_file};
@@ -130,16 +131,6 @@ impl Drop for TempFileGuard {
     }
 }
 
-/// Decode columnar snapshot bytes into a payload + info. Returns the
-/// underlying typed [`SnapshotCodecError`] so callers can `?` it
-/// straight into a [`LoraError`] via the `From` impl.
-pub(crate) fn decode_snapshot_bytes(
-    bytes: &[u8],
-    credentials: Option<&SnapshotCredentials>,
-) -> Result<(SnapshotPayload, SnapshotInfo), SnapshotCodecError> {
-    decode_database_snapshot(bytes, credentials)
-}
-
 /// Write a snapshot of `graph` to `path` (created or truncated) as a
 /// stream, then fsync it. The caller renames it into place.
 pub(crate) fn write_graph_snapshot_file(
@@ -166,16 +157,6 @@ pub(crate) fn read_graph_snapshot_file(
 ) -> Result<(InMemoryGraph, SnapshotInfo), LoraError> {
     let file = std::fs::File::open(path)?;
     Ok(read_graph_snapshot(BufReader::new(file), credentials)?)
-}
-
-/// Encode a payload through the columnar codec.
-pub(crate) fn encode_snapshot_to<W: Write>(
-    writer: W,
-    payload: &SnapshotPayload,
-    wal_lsn: Option<u64>,
-    options: &SnapshotOptions,
-) -> Result<SnapshotInfo, SnapshotCodecError> {
-    write_database_snapshot(writer, payload, wal_lsn, options)
 }
 
 // ---------------------------------------------------------------------------
@@ -246,10 +227,9 @@ impl Database<InMemoryGraph> {
         options: &SnapshotOptions,
     ) -> Result<(Vec<u8>, SnapshotInfo), LoraError> {
         let (graph, wal_lsn) = self.graph_with_wal_fence()?;
-        let payload = graph.snapshot_payload();
-        let mut bytes = Vec::new();
-        let info = encode_snapshot_to(&mut bytes, &payload, wal_lsn, options)?;
-        Ok((bytes, info))
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        let info = write_graph_snapshot(&mut bytes, &graph, wal_lsn, options)?;
+        Ok((bytes.into_inner(), info))
     }
 
     /// Serialize the current graph state to a database snapshot file with
@@ -336,13 +316,23 @@ impl Database<InMemoryGraph> {
                 "snapshot bytes have unrecognized magic",
             ));
         }
+        self.load_snapshot_from_reader(bytes, credentials)
+    }
+
+    /// Decode a snapshot from `reader` straight into a graph, on every
+    /// core for a framed snapshot, and install it as the current state.
+    fn load_snapshot_from_reader<R: Read>(
+        &self,
+        reader: R,
+        credentials: Option<&SnapshotCredentials>,
+    ) -> Result<SnapshotMeta, LoraError> {
         let Some(recorder) = self.wal.clone() else {
-            let mut guard = self.write_store();
-            let (payload, info) = decode_snapshot_bytes(bytes, credentials)?;
+            // Decoded before the writer lock is taken: writers and readers
+            // keep going on the old graph while the snapshot loads.
+            let (restored, info) = read_graph_snapshot(reader, credentials)?;
             let meta = snapshot_info_to_meta(info);
-            guard
-                .staged_mut_or_error()?
-                .load_snapshot_payload(payload)?;
+            let mut guard = self.write_store();
+            guard.staged_mut_or_error()?.replace_with_restored(restored);
             // Publish the staged graph atomically into the live store;
             // dropping the guard without `publish` would discard the restore
             // (rollback semantics on the writer lease).
@@ -363,7 +353,7 @@ impl Database<InMemoryGraph> {
                 "cannot load a snapshot into a WAL-backed database without a snapshot directory, because recovery would replay the old WAL instead; open it with managed snapshots or as a named database, or use `Database::recover` with the snapshot",
             ));
         }
-        let (payload, info) = decode_snapshot_bytes(bytes, credentials)?;
+        let (restored, info) = read_graph_snapshot(reader, credentials)?;
         let meta = snapshot_info_to_meta(info);
 
         // Checkpoint lock before writer lock, as `sync()` takes them.
@@ -373,7 +363,7 @@ impl Database<InMemoryGraph> {
         };
         let mut guard = self.write_store();
         let staged = guard.staged_mut_or_error()?;
-        staged.load_snapshot_payload(payload)?;
+        staged.replace_with_restored(restored);
         staged.set_mutation_recorder(Some(recorder.clone() as Arc<dyn MutationRecorder>));
 
         let mut installed = false;
@@ -438,8 +428,14 @@ impl Database<InMemoryGraph> {
         path: impl AsRef<Path>,
         credentials: Option<&SnapshotCredentials>,
     ) -> Result<SnapshotMeta, LoraError> {
-        let bytes = std::fs::read(path.as_ref())?;
-        self.load_snapshot_from_bytes_with_credentials(&bytes, credentials)
+        let mut file = BufReader::new(std::fs::File::open(path.as_ref())?);
+        if SnapshotByteFormat::detect(file.fill_buf()?).is_none() {
+            return Err(LoraError::new(
+                LoraErrorCode::SnapshotCodec,
+                "snapshot file has unrecognized magic",
+            ));
+        }
+        self.load_snapshot_from_reader(file, credentials)
     }
 
     /// Take a checkpoint: snapshot the current state with the WAL's
