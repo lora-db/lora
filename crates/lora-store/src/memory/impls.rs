@@ -809,7 +809,9 @@ impl GraphStorage for InMemoryGraph {
             return self.scan_nodes_by_property(label, key, value);
         }
 
-        self.ensure_node_property_index(key);
+        if !self.try_ensure_node_property_index(key) {
+            return self.scan_nodes_by_property(label, key, value);
+        }
         if label.is_none() {
             self.ensure_any_scope_node_property_index(key);
         }
@@ -851,7 +853,9 @@ impl GraphStorage for InMemoryGraph {
             return self.scan_node_ids_by_property(label, key, value);
         }
 
-        self.ensure_node_property_index(key);
+        if !self.try_ensure_node_property_index(key) {
+            return self.scan_node_ids_by_property(label, key, value);
+        }
         if label.is_none() {
             self.ensure_any_scope_node_property_index(key);
         }
@@ -885,7 +889,9 @@ impl GraphStorage for InMemoryGraph {
             return self.scan_relationships_by_property(rel_type, key, value);
         }
 
-        self.ensure_relationship_property_index(key);
+        if !self.try_ensure_relationship_property_index(key) {
+            return self.scan_relationships_by_property(rel_type, key, value);
+        }
         if rel_type.is_none() {
             self.ensure_any_scope_relationship_property_index(key);
         }
@@ -928,7 +934,9 @@ impl GraphStorage for InMemoryGraph {
             return self.scan_relationship_ids_by_property(rel_type, key, value);
         }
 
-        self.ensure_relationship_property_index(key);
+        if !self.try_ensure_relationship_property_index(key) {
+            return self.scan_relationship_ids_by_property(rel_type, key, value);
+        }
         if rel_type.is_none() {
             self.ensure_any_scope_relationship_property_index(key);
         }
@@ -961,7 +969,9 @@ impl GraphStorage for InMemoryGraph {
             return self.any_node_by_property(label, key, value);
         }
 
-        self.ensure_node_property_index(key);
+        if !self.try_ensure_node_property_index(key) {
+            return self.any_node_by_property(label, key, value);
+        }
         let indexes = self.indexes_read();
         indexes
             .node_properties
@@ -983,7 +993,9 @@ impl GraphStorage for InMemoryGraph {
             return self.any_relationship_by_property(rel_type, key, value);
         }
 
-        self.ensure_relationship_property_index(key);
+        if !self.try_ensure_relationship_property_index(key) {
+            return self.any_relationship_by_property(rel_type, key, value);
+        }
         let indexes = self.indexes_read();
         indexes
             .relationship_properties

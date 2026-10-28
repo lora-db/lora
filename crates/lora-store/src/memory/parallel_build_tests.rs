@@ -10,8 +10,10 @@ use super::sorted_property_index::SortedPropertyIndex;
 use super::InMemoryGraph;
 use crate::{intern, GraphStorageMut, Properties, PropertyValue};
 
-/// Past `PARALLEL_INDEX_MIN`, and over several 65,536-id ranges.
-const NODES: u64 = 150_000;
+/// Past `PARALLEL_INDEX_MIN` over all nodes and over the two thirds that
+/// carry `A` (so a sorted index on `A` takes the parallel path too), and
+/// over several 65,536-id ranges.
+const NODES: u64 = 200_000;
 
 /// A value for node `i`: unique strings mostly, with repeated strings,
 /// repeated integers, lists, and nodes without the key mixed in.
@@ -237,4 +239,22 @@ fn relationships_restored_in_batches_keep_every_adjacency_list_in_order() {
         }
     }
     assert_eq!(restored.snapshot_payload(), graph.snapshot_payload());
+}
+
+/// A lookup that finds its key's index being built by another lookup
+/// scans instead of building it a second time, and answers the same.
+#[test]
+fn a_lookup_scans_while_another_builds_its_index() {
+    use crate::GraphStorage;
+    let graph = graph(value);
+    let wanted = PropertyValue::String("v4".into());
+    let build = graph.indexes.property_builds.claim(true, "k").unwrap();
+    assert!(graph.indexes.property_builds.claim(true, "k").is_none());
+    let scanned = graph.find_node_ids_by_property(Some("A"), "k", &wanted);
+    assert_eq!(scanned, vec![4]);
+    assert!(!graph.indexes_read().node_properties.is_active("k"));
+    drop(build);
+    let indexed = graph.find_node_ids_by_property(Some("A"), "k", &wanted);
+    assert_eq!(indexed, scanned);
+    assert!(graph.indexes_read().node_properties.is_active("k"));
 }

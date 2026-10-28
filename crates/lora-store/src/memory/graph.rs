@@ -1063,9 +1063,37 @@ impl InMemoryGraph {
             .activate_any_scope(key, &self.relationship_values());
     }
 
+    /// For a lookup: activate the node property index on `key` unless
+    /// another lookup is building it, in which case this one should scan.
+    /// Returns whether the index is active.
+    pub(super) fn try_ensure_node_property_index(&self, key: &str) -> bool {
+        if self.indexes_read().node_properties.is_active(key) {
+            return true;
+        }
+        let Some(_build) = self.indexes.property_builds.claim(true, key) else {
+            return false;
+        };
+        self.ensure_node_property_index(key);
+        true
+    }
+
+    /// As [`Self::try_ensure_node_property_index`], for relationships.
+    pub(super) fn try_ensure_relationship_property_index(&self, key: &str) -> bool {
+        if self.indexes_read().relationship_properties.is_active(key) {
+            return true;
+        }
+        let Some(_build) = self.indexes.property_builds.claim(false, key) else {
+            return false;
+        };
+        self.ensure_relationship_property_index(key);
+        true
+    }
+
     /// Built without the property index lock, which is then held only to
     /// file the result: other indexes build meanwhile (a restart builds
     /// them all at once), and lookups of other keys are not held up.
+    /// Lookups go through [`Self::try_ensure_node_property_index`], so two
+    /// of them do not build the same index at once.
     pub(super) fn ensure_node_property_index(&self, key: &str) {
         if self.indexes_read().node_properties.is_active(key) {
             return;

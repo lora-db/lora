@@ -20,8 +20,9 @@
 //! and their lock granularity are preserved verbatim, so hot paths
 //! see zero performance change.
 
+use std::collections::HashSet;
 use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use super::fulltext_index::FulltextRegistry;
 use super::index_catalog::{IndexCatalog, StoredIndexEntity};
@@ -181,6 +182,52 @@ pub(super) struct IndexBundle {
     pub(super) active_node_property_indexes: AtomicUsize,
     pub(super) active_relationship_property_indexes: AtomicUsize,
     pub(super) active_fulltext_indexes: AtomicUsize,
+    /// Property indexes a lookup is building right now.
+    pub(super) property_builds: PropertyIndexBuilds,
+}
+
+/// The property indexes being built for a lookup, by entity and key. A
+/// lookup that finds its key here scans instead of building the same index
+/// a second time beside the first. It does not wait: the builder may be
+/// the same rayon worker, which picked this lookup up while it waited on
+/// its own build.
+#[derive(Debug, Default)]
+pub(super) struct PropertyIndexBuilds {
+    keys: Mutex<HashSet<(bool, Box<str>)>>,
+}
+
+impl PropertyIndexBuilds {
+    /// Claim the build of `key` (on nodes when `nodes`), or `None` while
+    /// another lookup holds it. The claim ends when the guard drops,
+    /// unwinding included.
+    pub(super) fn claim(&self, nodes: bool, key: &str) -> Option<PropertyIndexBuild<'_>> {
+        let entry = (nodes, Box::<str>::from(key));
+        let mut keys = self.keys.lock().unwrap_or_else(PoisonError::into_inner);
+        if !keys.insert(entry.clone()) {
+            return None;
+        }
+        Some(PropertyIndexBuild {
+            builds: self,
+            entry: Some(entry),
+        })
+    }
+}
+
+pub(super) struct PropertyIndexBuild<'a> {
+    builds: &'a PropertyIndexBuilds,
+    entry: Option<(bool, Box<str>)>,
+}
+
+impl Drop for PropertyIndexBuild<'_> {
+    fn drop(&mut self) {
+        if let Some(entry) = self.entry.take() {
+            self.builds
+                .keys
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&entry);
+        }
+    }
 }
 
 impl Clone for IndexBundle {
@@ -211,6 +258,8 @@ impl Clone for IndexBundle {
             active_fulltext_indexes: AtomicUsize::new(
                 self.active_fulltext_indexes.load(Ordering::Relaxed),
             ),
+            // A clone is another graph: no lookup builds its indexes yet.
+            property_builds: PropertyIndexBuilds::default(),
         }
     }
 }
