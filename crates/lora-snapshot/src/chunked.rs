@@ -43,7 +43,7 @@
 use std::io::{Read, Write};
 use std::sync::Arc;
 
-use flate2::read::DeflateDecoder;
+use flate2::bufread::DeflateDecoder;
 use flate2::write::DeflateEncoder;
 use flate2::Compression as DeflateLevel;
 use lora_store::codec::{
@@ -371,74 +371,132 @@ fn compress_frame(raw: Vec<u8>, compression: Compression) -> Result<(u64, Vec<u8
     }
 }
 
+/// Raw bytes after which the writer starts a new frame, so a range of
+/// large records is stored as several frames a reader can bound.
+const FRAME_SPLIT_BYTES: usize = 64 << 20;
+
+/// Largest raw frame a reader inflates. The writer splits frames at
+/// [`FRAME_SPLIT_BYTES`], so only a single record this large exceeds it,
+/// and the writer refuses that record instead of writing a snapshot no
+/// reader would load.
+const MAX_FRAME_RAW: u64 = 1 << 30;
+
+/// Raw bytes of the frames one round reads ahead. Up to three rounds are
+/// alive at once, so this, with [`MAX_FRAME_RAW`], bounds what a snapshot
+/// can make a reader hold before its records are checked, however far
+/// its frames claim to inflate.
+const ROUND_RAW_BUDGET: u64 = 256 << 20;
+
+/// Collects one id range's records into frames of about
+/// [`FRAME_SPLIT_BYTES`].
+struct FrameSink {
+    kind: u8,
+    compression: Compression,
+    raw: Vec<u8>,
+    records: u64,
+    frames: Vec<Frame>,
+}
+
+impl FrameSink {
+    fn new(kind: u8, compression: Compression) -> Self {
+        Self {
+            kind,
+            compression,
+            raw: Vec::new(),
+            records: 0,
+            frames: Vec::new(),
+        }
+    }
+
+    /// Delta-encode `id` against the frame's previous record; the first
+    /// record of a frame is written whole.
+    fn start_record(&mut self, id: u64, last: &mut Option<u64>) {
+        push_varint(&mut self.raw, last.map_or(id, |last| id - last));
+        *last = Some(id);
+    }
+
+    /// Count the record just written, and close the frame once it is large.
+    fn end_record(&mut self, last: &mut Option<u64>) -> Result<()> {
+        self.records += 1;
+        if self.raw.len() >= FRAME_SPLIT_BYTES {
+            self.flush()?;
+            *last = None;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if self.records == 0 {
+            return Ok(());
+        }
+        if self.raw.len() as u64 > MAX_FRAME_RAW {
+            return Err(SnapshotCodecError::Encode(format!(
+                "a snapshot record takes more than {MAX_FRAME_RAW} bytes"
+            )));
+        }
+        let raw = std::mem::take(&mut self.raw);
+        let (raw_len, stored) = compress_frame(raw, self.compression)?;
+        self.frames.push(Frame {
+            kind: self.kind,
+            records: std::mem::take(&mut self.records),
+            raw_len,
+            stored,
+        });
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<Vec<Frame>> {
+        self.flush()?;
+        Ok(self.frames)
+    }
+}
+
 fn node_frame(
     graph: &InMemoryGraph,
     ids: std::ops::Range<u64>,
     compression: Compression,
-) -> Result<Option<Frame>> {
-    let mut raw = Vec::new();
-    let mut records = 0u64;
+) -> Result<Vec<Frame>> {
+    let mut sink = FrameSink::new(FRAME_NODES, compression);
     let mut last = None;
     for node in graph.snapshot_nodes_in(ids) {
-        let id = node.id();
-        push_varint(&mut raw, last.map_or(id, |last| id - last));
-        last = Some(id);
+        sink.start_record(node.id(), &mut last);
+        let raw = &mut sink.raw;
         let labels = node.label_ids();
-        push_varint(&mut raw, labels.len() as u64);
+        push_varint(raw, labels.len() as u64);
         for label in labels {
-            push_varint(&mut raw, u64::from(label));
+            push_varint(raw, u64::from(label));
         }
-        push_varint(&mut raw, node.property_count() as u64);
+        push_varint(raw, node.property_count() as u64);
         for (key, value) in node.properties() {
-            push_varint(&mut raw, u64::from(key));
-            put_value(&mut raw, value)?;
+            push_varint(raw, u64::from(key));
+            put_value(raw, value)?;
         }
-        records += 1;
+        sink.end_record(&mut last)?;
     }
-    if records == 0 {
-        return Ok(None);
-    }
-    let (raw_len, stored) = compress_frame(raw, compression)?;
-    Ok(Some(Frame {
-        kind: FRAME_NODES,
-        records,
-        raw_len,
-        stored,
-    }))
+    sink.finish()
 }
 
 fn relationship_frame(
     graph: &InMemoryGraph,
     ids: std::ops::Range<u64>,
     compression: Compression,
-) -> Result<Option<Frame>> {
-    let mut raw = Vec::new();
-    let mut records = 0u64;
+) -> Result<Vec<Frame>> {
+    let mut sink = FrameSink::new(FRAME_RELATIONSHIPS, compression);
     let mut last = None;
     for rel in graph.snapshot_relationships_in(ids) {
-        let id = rel.id();
-        push_varint(&mut raw, last.map_or(id, |last| id - last));
-        last = Some(id);
-        push_varint(&mut raw, rel.src());
-        push_varint(&mut raw, rel.dst());
-        push_varint(&mut raw, u64::from(rel.type_id()));
-        push_varint(&mut raw, rel.property_count() as u64);
+        sink.start_record(rel.id(), &mut last);
+        let raw = &mut sink.raw;
+        push_varint(raw, rel.src());
+        push_varint(raw, rel.dst());
+        push_varint(raw, u64::from(rel.type_id()));
+        push_varint(raw, rel.property_count() as u64);
         for (key, value) in rel.properties() {
-            push_varint(&mut raw, u64::from(key));
-            put_value(&mut raw, value)?;
+            push_varint(raw, u64::from(key));
+            put_value(raw, value)?;
         }
-        records += 1;
+        sink.end_record(&mut last)?;
     }
-    if records == 0 {
-        return Ok(None);
-    }
-    let (raw_len, stored) = compress_frame(raw, compression)?;
-    Ok(Some(Frame {
-        kind: FRAME_RELATIONSHIPS,
-        records,
-        raw_len,
-        stored,
-    }))
+    sink.finish()
 }
 
 fn write_frame(out: &mut impl Write, frame: &Frame) -> Result<()> {
@@ -540,13 +598,14 @@ pub(crate) fn write_chunked_body<W: Write>(
         let (built, written) = overlap(
             || map_all(next.unwrap_or_default(), build),
             || -> Result<()> {
-                for frame in ready.drain(..) {
-                    let Some(frame) = frame? else { continue };
-                    match frame.kind {
-                        FRAME_NODES => counts.nodes += frame.records,
-                        _ => counts.relationships += frame.records,
+                for frames in ready.drain(..) {
+                    for frame in frames? {
+                        match frame.kind {
+                            FRAME_NODES => counts.nodes += frame.records,
+                            _ => counts.relationships += frame.records,
+                        }
+                        write_frame(out, &frame)?;
                     }
-                    write_frame(out, &frame)?;
                 }
                 Ok(())
             },
@@ -579,6 +638,7 @@ pub(crate) fn write_chunked_body<W: Write>(
 // ---------------------------------------------------------------------------
 
 /// A frame as read, before decoding.
+#[derive(Clone)]
 struct StoredFrame {
     kind: u8,
     records: u64,
@@ -602,38 +662,58 @@ fn inflate(frame: &StoredFrame, compression: Compression) -> Result<Vec<u8>> {
             Ok(frame.stored.clone())
         }
         Compression::Gzip { .. } => {
-            let mut raw = Vec::with_capacity(
-                usize::try_from(frame.raw_len)
-                    .unwrap_or(usize::MAX)
-                    .min(MAX_PREALLOC),
-            );
-            DeflateDecoder::new(frame.stored.as_slice())
-                .take(frame.raw_len.saturating_add(1))
-                .read_to_end(&mut raw)
-                .map_err(|e| SnapshotCodecError::Decode(format!("snapshot frame: {e}")))?;
-            if raw.len() as u64 != frame.raw_len {
-                return Err(SnapshotCodecError::Decode(
-                    "snapshot frame length mismatch".into(),
-                ));
-            }
+            // The buffered decoder reads no further than its stream ends.
+            let mut stored = frame.stored.as_slice();
+            let raw = read_inflated(DeflateDecoder::new(&mut stored), frame.raw_len)?;
+            expect_consumed(stored)?;
             Ok(raw)
         }
         #[cfg(not(target_arch = "wasm32"))]
         Compression::Zstd { .. } => {
-            // `raw_len` sizes the output; a frame that would inflate past
-            // it fails instead of growing.
-            let capacity = usize::try_from(frame.raw_len).map_err(|_| truncated_frame())?;
-            let raw = zstd::bulk::decompress(&frame.stored, capacity)
-                .map_err(|e| SnapshotCodecError::Decode(format!("snapshot frame: {e}")))?;
-            if raw.len() != capacity {
-                return Err(SnapshotCodecError::Decode(
-                    "snapshot frame length mismatch".into(),
-                ));
-            }
+            // Streamed, as gzip is: the output grows as bytes really
+            // inflate, never to the size the frame claims up front.
+            let mut stored = frame.stored.as_slice();
+            let decoder = zstd::stream::read::Decoder::with_buffer(&mut stored)
+                .map_err(|e| SnapshotCodecError::Decode(format!("snapshot frame: {e}")))?
+                .single_frame();
+            let raw = read_inflated(decoder, frame.raw_len)?;
+            expect_consumed(stored)?;
             Ok(raw)
         }
         #[cfg(target_arch = "wasm32")]
         Compression::Zstd { .. } => inflate_zstd_portable(frame),
+    }
+}
+
+/// Inflate exactly `raw_len` bytes from `decoder`: a frame that inflates
+/// to more or fewer fails, having allocated no more than it produced.
+fn read_inflated(decoder: impl Read, raw_len: u64) -> Result<Vec<u8>> {
+    let mut raw = Vec::with_capacity(
+        usize::try_from(raw_len)
+            .unwrap_or(usize::MAX)
+            .min(MAX_PREALLOC),
+    );
+    decoder
+        .take(raw_len.saturating_add(1))
+        .read_to_end(&mut raw)
+        .map_err(|e| SnapshotCodecError::Decode(format!("snapshot frame: {e}")))?;
+    if raw.len() as u64 != raw_len {
+        return Err(SnapshotCodecError::Decode(
+            "snapshot frame length mismatch".into(),
+        ));
+    }
+    Ok(raw)
+}
+
+/// A compressed frame holds one compressed stream and nothing after it, so
+/// every decoder accepts and refuses the same frames.
+fn expect_consumed(rest: &[u8]) -> Result<()> {
+    if rest.is_empty() {
+        Ok(())
+    } else {
+        Err(SnapshotCodecError::Decode(
+            "snapshot frame has bytes after its compressed data".into(),
+        ))
     }
 }
 
@@ -644,20 +724,8 @@ fn inflate_zstd_portable(frame: &StoredFrame) -> Result<Vec<u8>> {
     let mut stored = frame.stored.as_slice();
     let decoder = ruzstd::streaming_decoder::StreamingDecoder::new(&mut stored)
         .map_err(|e| SnapshotCodecError::Decode(format!("snapshot frame: {e}")))?;
-    let mut raw = Vec::with_capacity(
-        usize::try_from(frame.raw_len)
-            .unwrap_or(usize::MAX)
-            .min(MAX_PREALLOC),
-    );
-    decoder
-        .take(frame.raw_len.saturating_add(1))
-        .read_to_end(&mut raw)
-        .map_err(|e| SnapshotCodecError::Decode(format!("snapshot frame: {e}")))?;
-    if raw.len() as u64 != frame.raw_len {
-        return Err(SnapshotCodecError::Decode(
-            "snapshot frame length mismatch".into(),
-        ));
-    }
+    let raw = read_inflated(decoder, frame.raw_len)?;
+    expect_consumed(stored)?;
     Ok(raw)
 }
 
@@ -780,7 +848,8 @@ fn read_round<R: Read>(
         catalog: None,
         ended: false,
     };
-    while round.frames.len() < limit {
+    let mut raw_bytes = 0u64;
+    while round.frames.len() < limit && raw_bytes < ROUND_RAW_BUDGET {
         let kind = body.u8()?;
         if kind == FRAME_END {
             if *last_kind != FRAME_CATALOG {
@@ -804,6 +873,12 @@ fn read_round<R: Read>(
         *last_kind = kind;
         let records = body.u64()?;
         let raw_len = body.u64()?;
+        if raw_len > MAX_FRAME_RAW {
+            return Err(SnapshotCodecError::Decode(format!(
+                "snapshot frame claims {raw_len} bytes, more than {MAX_FRAME_RAW}"
+            )));
+        }
+        raw_bytes += raw_len;
         let stored = body.bytes()?;
         let frame = StoredFrame {
             kind,
@@ -1006,5 +1081,67 @@ mod tests {
                 "{compression:?} truncated"
             );
         }
+    }
+
+    /// A length read from the file never sizes an allocation: a frame
+    /// claiming 64 TiB fails on its real bytes instead of aborting the
+    /// process.
+    #[test]
+    fn a_frame_claiming_a_huge_length_fails_without_reserving_it() {
+        let raw = sample();
+        for compression in [
+            Compression::Zstd { level: 3 },
+            Compression::Gzip { level: 1 },
+        ] {
+            let mut frame = frame(&raw, compression);
+            frame.raw_len = 1 << 46;
+            assert!(inflate(&frame, compression).is_err(), "{compression:?}");
+        }
+        let mut zstd = frame(&raw, Compression::Zstd { level: 3 });
+        zstd.raw_len = 1 << 46;
+        assert!(inflate_zstd_portable(&zstd).is_err());
+    }
+
+    /// Native and wasm builds accept the same frames: bytes after the
+    /// compressed stream are refused by both.
+    #[test]
+    fn bytes_after_a_compressed_frame_are_refused_by_every_decoder() {
+        let raw = sample();
+        for compression in [
+            Compression::Zstd { level: 3 },
+            Compression::Gzip { level: 1 },
+        ] {
+            let mut frame = frame(&raw, compression);
+            frame.stored.extend_from_slice(b"trailing");
+            assert!(inflate(&frame, compression).is_err(), "{compression:?}");
+        }
+        let mut zstd = frame(&raw, Compression::Zstd { level: 3 });
+        let clean = zstd.clone();
+        zstd.stored.extend_from_slice(b"trailing");
+        assert!(inflate_zstd_portable(&zstd).is_err());
+        assert_eq!(inflate_zstd_portable(&clean).unwrap(), raw);
+    }
+
+    /// A frame header claiming more than any writer produces is refused as
+    /// it is read, before a byte of it is inflated.
+    #[test]
+    fn a_round_refuses_a_frame_over_the_cap() {
+        let mut body = Vec::new();
+        write_frame(
+            &mut body,
+            &Frame {
+                kind: FRAME_NODES,
+                records: 1,
+                raw_len: MAX_FRAME_RAW + 1,
+                stored: vec![0; 8],
+            },
+        )
+        .unwrap();
+        let mut stream = BodyStream::new(body.as_slice());
+        let mut last_kind = FRAME_NODES;
+        let err = read_round(&mut stream, 4, &mut last_kind, Compression::None)
+            .err()
+            .expect("an oversized frame is refused");
+        assert!(err.to_string().contains("claims"), "{err}");
     }
 }

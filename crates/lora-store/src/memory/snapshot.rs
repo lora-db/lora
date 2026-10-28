@@ -84,6 +84,14 @@ impl InMemoryGraph {
         Ok(meta)
     }
 
+    /// Replace the graph with `restored`, one a snapshot decoder built
+    /// (`lora_snapshot::read_graph_snapshot`), preserving the currently
+    /// installed mutation recorder as [`Self::load_snapshot_payload`] does.
+    pub fn replace_with_restored(&mut self, mut restored: InMemoryGraph) {
+        restored.recorder = self.recorder.take();
+        *self = restored;
+    }
+
     /// The node records, in id order, as borrowed views. With
     /// [`Self::snapshot_relationships`] and [`Self::snapshot_catalogs`] this
     /// is what a snapshot encoder reads instead of a [`SnapshotPayload`],
@@ -142,6 +150,12 @@ pub struct SnapshotGraphBuilder {
     rel_distinct: DistinctBuilder,
 }
 
+/// A node record names one label twice: no write makes one, and the label
+/// index would hold the node twice.
+fn repeated_label(id: NodeId) -> SnapshotError {
+    SnapshotError::Decode(format!("node {id} has a repeated label in snapshot"))
+}
+
 impl SnapshotGraphBuilder {
     pub fn new(next_node_id: NodeId, next_rel_id: RelationshipId) -> Result<Self, SnapshotError> {
         validate_next_id("node", next_node_id)?;
@@ -159,6 +173,14 @@ impl SnapshotGraphBuilder {
     pub fn push_node(&mut self, node: NodeRecord) -> Result<(), SnapshotError> {
         let id = node.id;
         validate_entity_id("node", id, self.graph.next_node_id)?;
+        if node
+            .labels
+            .iter()
+            .enumerate()
+            .any(|(i, label)| node.labels[..i].contains(label))
+        {
+            return Err(repeated_label(id));
+        }
         // Distinct-value sketches are not persisted: count the record as a
         // live create would, through the bulk builder.
         for label in &node.labels {
@@ -645,11 +667,12 @@ impl SnapshotEncoder {
         }
     }
 
-    /// A batch for about `capacity` records.
+    /// A batch for about `capacity` records. `capacity` comes from the
+    /// snapshot being read, so at most a frame's worth is reserved up front.
     pub fn relationship_batch(&self, capacity: usize) -> RelationshipBatch {
         RelationshipBatch {
             records: BuiltLeaves::default(),
-            links: Vec::with_capacity(capacity),
+            links: Vec::with_capacity(capacity.min(1 << 16)),
             by_type: Vec::new(),
             distinct: DistinctBuilder::default(),
             scratch: Vec::new(),
@@ -711,6 +734,9 @@ impl SnapshotEncoder {
                 .labels
                 .get(label as usize)
                 .ok_or_else(|| SnapshotError::Decode("invalid label dictionary id".into()))?;
+            if batch.labels.contains(&number) {
+                return Err(repeated_label(id));
+            }
             batch.labels.push(number);
             ids_for(&mut batch.by_label, number).push(id);
         }

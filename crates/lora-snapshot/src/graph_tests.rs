@@ -356,3 +356,34 @@ fn a_corrupt_frame_is_refused() {
     assert!(read_graph_snapshot(tampered.as_slice(), None).is_err());
     assert!(read_graph_snapshot(&bytes[..bytes.len() - 1], None).is_err());
 }
+
+/// The writer splits a range of large records into frames a reader can
+/// bound, and the reader files records of one leaf from several frames.
+#[test]
+fn records_larger_than_a_frame_are_split_and_load() {
+    let mut graph = InMemoryGraph::new();
+    use lora_store::GraphStorageMut;
+    let big = "x".repeat(30 << 20);
+    for i in 0..3 {
+        let mut properties = Properties::new();
+        properties.insert("blob".into(), PropertyValue::String(format!("{i}{big}")));
+        graph.create_node(vec!["Big".into()], properties);
+    }
+    graph.create_node(vec!["Small".into()], Properties::new());
+    for compression in [Compression::None, Compression::Zstd { level: 1 }] {
+        let bytes = write_to_vec(&graph, None, &options(compression));
+        let (loaded, info) = read_graph_snapshot(bytes.as_slice(), None).unwrap();
+        assert_eq!(info.node_count, 4, "{compression:?}");
+        assert_eq!(loaded.snapshot_payload(), graph.snapshot_payload());
+    }
+}
+
+#[test]
+fn a_node_with_a_repeated_label_is_refused() {
+    let mut payload = payload();
+    payload.nodes[0].labels = vec!["User".to_string(), "User".to_string()].into();
+    let err = InMemoryGraph::new()
+        .load_snapshot_payload(payload)
+        .unwrap_err();
+    assert!(err.to_string().contains("repeated label"), "{err}");
+}
