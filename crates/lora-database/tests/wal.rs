@@ -733,10 +733,10 @@ fn named_database_checkpoints_by_wal_size_without_sync() {
 }
 
 /// Each checkpoint rewrites the whole snapshot, so the trigger is never
-/// below the snapshot's size: a bulk load into a large graph must not
-/// rewrite it back to back every `checkpoint_wal_bytes`.
+/// below a quarter of the snapshot's size: a bulk load into a large graph
+/// must not rewrite it back to back every `checkpoint_wal_bytes`.
 #[test]
-fn named_database_wal_size_trigger_is_at_least_the_snapshot_size() {
+fn named_database_wal_size_trigger_is_a_quarter_of_the_snapshot_size() {
     let dir = TmpDir::new("named-auto-checkpoint-base");
     let sidecar = dir.path().join("app.loradb.wal");
     let snapshot = sidecar.join("snapshot.lsnap");
@@ -788,22 +788,24 @@ fn named_database_wal_size_trigger_is_at_least_the_snapshot_size() {
     let before = modified();
     let start = wal_bytes();
 
-    // Many times 4 KiB of WAL, but less than the snapshot: no checkpoint.
-    while wal_bytes() < start + base / 2 {
+    // Many times 4 KiB of WAL, but less than a quarter of the snapshot: no
+    // checkpoint.
+    while wal_bytes() < start + base / 8 {
         write(&db, 20);
     }
     std::thread::sleep(std::time::Duration::from_millis(500));
-    assert_eq!(modified(), before, "checkpointed below the snapshot size");
+    assert_eq!(modified(), before, "checkpointed below a quarter snapshot");
 
-    // Past the snapshot's size it checkpoints.
-    while wal_bytes() < start + base + base / 2 {
+    // Past a quarter of the snapshot's size it checkpoints, well before a
+    // whole one.
+    while wal_bytes() < start + base / 4 + base / 8 {
         write(&db, 20);
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while modified() == before && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    assert_ne!(modified(), before, "no checkpoint past the snapshot size");
+    assert_ne!(modified(), before, "no checkpoint past a quarter snapshot");
     drop(db);
 
     let db = Database::open_named("app", options(4 * 1024)).unwrap();

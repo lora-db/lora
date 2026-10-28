@@ -94,8 +94,9 @@ over the cores, and so is a constraint's scan of the existing data; a
 constraint on one property (other than a type constraint) reads each value in
 place. What a restart still does on one thread: reading the file and checking
 its checksum, and replaying the WAL tail. Replay applies about 85 MB of WAL a
-second; a named database checkpoints once its WAL reaches 64 MB or the
-snapshot's size, whichever is larger (`open_probe <dir> wal <MB>` measures it).
+second; a named database checkpoints once its WAL reaches 64 MB or a quarter
+of the snapshot's size, whichever is larger, so a restart replays at most
+about a quarter snapshot of WAL (`open_probe <dir> wal <MB>` measures it).
 Peak memory over the graph is a few rounds of frames (a few megabytes per core)
 and, while a uniqueness constraint is checked, 16 bytes per constrained entity.
 

@@ -15,14 +15,16 @@
 //! the WAL still holds every commit, and the next checkpoint is attempted
 //! once the WAL has grown by the threshold again.
 //!
-//! Each checkpoint rewrites the whole snapshot, so the threshold is never
-//! below the size of the current snapshot: the effective trigger is
-//! `max(checkpoint_wal_bytes, snapshot bytes)`, refreshed at open and after
-//! every automatic checkpoint. Checkpoint I/O then stays at most about the
-//! WAL bytes written, whatever the graph size; with a fixed threshold a bulk
-//! load into a large graph would rewrite the full snapshot back to back. A
-//! factor above 1 would cut checkpoint I/O further but let the WAL, and the
-//! replay after a crash, grow to a multiple of the graph.
+//! Each checkpoint rewrites the whole snapshot, so the threshold grows with
+//! the current snapshot: the effective trigger is
+//! `max(checkpoint_wal_bytes, snapshot bytes / SNAPSHOT_FRACTION)`, refreshed
+//! at open and after every automatic checkpoint. Checkpoint I/O then stays
+//! at most about `SNAPSHOT_FRACTION` times the WAL bytes written, whatever
+//! the graph size; with a fixed threshold a bulk load into a large graph
+//! would rewrite the full snapshot back to back. The WAL also bounds replay
+//! on open, which runs on one thread at about 85 MB/s while a snapshot
+//! loads on every core, so the fraction keeps it to a quarter of the
+//! snapshot rather than a whole one.
 //!
 //! A WAL with nowhere to put a snapshot (`Database::open_with_wal`,
 //! `Database::recover`) cannot be checkpointed automatically; it logs one
@@ -41,6 +43,10 @@ use crate::live_store::LiveStore;
 use crate::snapshot::{ManagedSnapshotStore, DEFAULT_CHECKPOINT_WAL_BYTES};
 use crate::wal::archive::WalArchive;
 
+/// The WAL may grow by `1 / SNAPSHOT_FRACTION` of the snapshot before an
+/// automatic checkpoint (or, past the open-time minimum, an open) rewrites it.
+pub(crate) const SNAPSHOT_FRACTION: u64 = 4;
+
 /// Where an automatic checkpoint writes its snapshot.
 pub(crate) enum CheckpointTarget {
     /// No snapshot location: only warn.
@@ -52,7 +58,8 @@ pub(crate) enum CheckpointTarget {
 pub(crate) struct AutoCheckpoint {
     /// Configured size.
     threshold: u64,
-    /// `max(threshold, snapshot bytes)`, the size the WAL listens for.
+    /// `max(threshold, snapshot bytes / SNAPSHOT_FRACTION)`, the size the WAL
+    /// listens for.
     effective: AtomicU64,
     store: Arc<LiveStore<InMemoryGraph>>,
     writer: Arc<Mutex<()>>,
@@ -118,9 +125,12 @@ impl AutoCheckpoint {
         }
     }
 
-    /// Listen for `max(threshold, snapshot bytes)` of growth.
+    /// Listen for `max(threshold, snapshot bytes / SNAPSHOT_FRACTION)` of
+    /// growth.
     pub(crate) fn refresh_threshold(&self) {
-        let effective = self.threshold.max(self.snapshot_bytes());
+        let effective = self
+            .threshold
+            .max(self.snapshot_bytes() / SNAPSHOT_FRACTION);
         self.effective.store(effective, Ordering::Relaxed);
         self.wal.wal().set_growth_threshold(effective);
     }

@@ -76,7 +76,7 @@ Use `openWalDatabase` when you want a raw WAL directory instead of a
 portable `.loradb` archive. Pair it with `snapshotDir` to let the
 database write managed checkpoints every `snapshotEveryCommits`
 committed transactions, and in any case each time the WAL has grown by
-64 MiB or by the snapshot's size, whichever is larger. Without `snapshotDir` nothing is checkpointed automatically. Node does not expose WAL status or truncate
+64 MiB or by a quarter of the snapshot's size, whichever is larger. Without `snapshotDir` nothing is checkpointed automatically. Node does not expose WAL status or truncate
 helpers yet; use Rust or `lora-server` for those operator controls.
 
 ### Python
@@ -447,12 +447,12 @@ durability point. On a named `.loradb` database `sync()` is also the
 checkpoint: it writes the graph as the archive's base snapshot, streamed so it
 holds no second copy of the graph, and drops the WAL segments that snapshot
 covers. A change feed can then resume only from the last `sync()` on. An open
-that replays more WAL than its snapshot holds, and at least 64 MiB of it,
+that replays more WAL than a quarter of its snapshot, and at least 64 MiB of it,
 takes the same checkpoint before it returns, so the next open loads the
 snapshot instead of replaying the log again. A named database also takes
 that checkpoint on its own, on a background thread, each time its WAL has grown
-by 64 MiB since the last one, or by the size of its snapshot when that is
-larger (`DatabaseOpenOptions::checkpoint_wal_bytes`, 0 turns it off), so a
+by 64 MiB since the last one, or by a quarter of its snapshot's size when
+that is larger (`DatabaseOpenOptions::checkpoint_wal_bytes`, 0 turns it off), so a
 process that never calls `sync()` does not keep every segment and a bulk load
 into a large graph does not rewrite the snapshot over and over. A checkpoint snapshot is stamped with the WAL's current
 `durableLsn`; in `group-sync` mode that fence

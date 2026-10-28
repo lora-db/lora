@@ -22,15 +22,15 @@ pub struct DatabaseOpenOptions {
     pub sync_mode: SyncMode,
     pub segment_target_bytes: u64,
     pub max_database_bytes: u64,
-    /// An open that finds at least this much WAL, and more WAL than base
-    /// snapshot, checkpoints before it returns, as [`crate::Database::sync`]
+    /// An open that finds at least this much WAL, and more WAL than a
+    /// quarter of the base snapshot, checkpoints before it returns, as [`crate::Database::sync`]
     /// does: the container is rewritten as the snapshot and the tail of the
     /// WAL, so the next open loads the snapshot instead of replaying the
     /// log again. `u64::MAX` turns it off.
     pub compact_on_open_wal_bytes: u64,
     /// Checkpoint, as [`crate::Database::sync`] does, once the WAL has grown
-    /// by this many bytes since the last checkpoint, or by the size of the
-    /// base snapshot when that is larger, so a long-running process does not
+    /// by this many bytes since the last checkpoint, or by a quarter of the
+    /// base snapshot's size when that is larger, so a long-running process does not
     /// keep every WAL segment and checkpoint writes stay proportional to WAL
     /// growth. The checkpoint runs on a
     /// background thread; writers wait only while the graph and its LSN

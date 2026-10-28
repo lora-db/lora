@@ -36,10 +36,11 @@ pub struct SnapshotConfig {
     /// no encryption.
     pub codec: SnapshotOptions,
     /// Create a managed checkpoint once the WAL has grown by this many bytes
-    /// since the last one, or by the size of the current snapshot when that
-    /// is larger, so a long-running process does not keep every WAL segment
-    /// and checkpoint writes stay proportional to WAL growth. The checkpoint runs on a background thread; writers
-    /// wait only while the graph and its LSN are taken. 0 turns it off.
+    /// since the last one, or by a quarter of the current snapshot's size
+    /// when that is larger, so a long-running process does not keep every
+    /// WAL segment and checkpoint writes stay proportional to WAL growth.
+    /// The checkpoint runs on a background thread; writers wait only while
+    /// the graph and its LSN are taken. 0 turns it off.
     /// Defaults to [`DEFAULT_CHECKPOINT_WAL_BYTES`].
     pub checkpoint_wal_bytes: u64,
 }

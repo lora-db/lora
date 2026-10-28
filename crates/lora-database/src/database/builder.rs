@@ -31,7 +31,7 @@ use crate::named::{DatabaseName, DatabaseOpenOptions};
 use crate::plan_cache::PlanCache;
 use crate::snapshot::{ManagedSnapshotStore, SnapshotConfig};
 use crate::wal::archive::WalArchive;
-use crate::wal::auto_checkpoint::{AutoCheckpoint, CheckpointTarget};
+use crate::wal::auto_checkpoint::{AutoCheckpoint, CheckpointTarget, SNAPSHOT_FRACTION};
 
 use super::replay::open_wal_into;
 
@@ -138,8 +138,8 @@ impl Database<InMemoryGraph> {
     ///
     /// The open loads the base snapshot, then applies each committed WAL
     /// transaction above its fence as replay reads it. When that WAL is at
-    /// least [`DatabaseOpenOptions::compact_on_open_wal_bytes`] and larger
-    /// than the snapshot, the open checkpoints as [`Self::sync`] does
+    /// least [`DatabaseOpenOptions::compact_on_open_wal_bytes`] and more
+    /// than a quarter of the snapshot, the open checkpoints as [`Self::sync`] does
     /// before it returns, so a long write history is replayed once. So it
     /// does when the snapshot is in the columnar format older releases
     /// wrote, which reads on one thread: the next open reads frames.
@@ -183,7 +183,8 @@ impl Database<InMemoryGraph> {
             Some(archive),
             options.checkpoint_wal_bytes,
         );
-        if (wal_bytes >= options.compact_on_open_wal_bytes && wal_bytes > snapshot_bytes)
+        if (wal_bytes >= options.compact_on_open_wal_bytes
+            && wal_bytes > snapshot_bytes / SNAPSHOT_FRACTION)
             || legacy_snapshot
         {
             // The next open would replay this log again, or read a snapshot
