@@ -91,7 +91,7 @@ Node `saveSnapshot()` return the snapshot bytes directly instead.
 
 ```json
 {
-  "formatVersion": 1,
+  "formatVersion": 3,
   "nodeCount": 1024,
   "relationshipCount": 4096,
   "walLsn": null
@@ -100,7 +100,7 @@ Node `saveSnapshot()` return the snapshot bytes directly instead.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `formatVersion` | integer | On-disk file format the payload is written in. Currently `1`. |
+| `formatVersion` | integer | Envelope format of the snapshot file. `3` for every snapshot this release writes; `2` when loading one an older release wrote. |
 | `nodeCount` | integer | Nodes in the saved / restored graph. |
 | `relationshipCount` | integer | Relationships in the saved / restored graph. |
 | `walLsn` | integer or null | The WAL fence on a WAL-backed database, for saves and checkpoints alike; `null` for a database without a WAL. |
@@ -391,7 +391,7 @@ environment variable.
 
 ```bash
 curl -sX POST http://127.0.0.1:4747/admin/snapshot/save
-# => {"formatVersion":1,"nodeCount":1024,"relationshipCount":4096,"walLsn":null,"path":"/var/lib/lora/db.bin"}
+# => {"formatVersion":3,"nodeCount":1024,"relationshipCount":4096,"walLsn":null,"path":"/var/lib/lora/db.bin"}
 
 curl -sX POST http://127.0.0.1:4747/admin/snapshot/load
 ```
@@ -469,34 +469,39 @@ for the detailed security profile.
 
 ## File format (reference)
 
-The current database snapshot format is column-oriented. Files declare an
-envelope format version and are rejected when the reader does not support that
-version. The previous `LORASNAP` legacy format has been retired.
+Snapshots are written in envelope format 3: framed records, each frame
+compressed on its own so snapshots are built and read on every core. Files
+declare their envelope format version and are rejected when the reader does not
+support it. Format 2 (one column-oriented body) still loads; the `LORASNAP`
+legacy format has been retired.
 
 ```
 [0..8)     magic         "LORACOL1"
-[8..12)    format        u32 — envelope format, currently 2
+[8..12)    format        u32 — envelope format, currently 3
 [12..16)   manifest_len  u32
 [16..24)   body_len      u64
 [24..56)   checksum      BLAKE3(manifest || body)
 [56..)     manifest      explicit binary manifest
-[...end)   body          column-oriented graph payload plus index and constraint catalog trailers
+[...end)   body          framed records and catalogs (format 3), or a column-oriented payload (format 2)
 ```
 
 The manifest carries `walLsn`, node and relationship counts,
-compression, encryption metadata, and the body length. The body stores
-nodes, labels, relationships, relationship types, and properties in
-separate columns. The current body format is version 4: version 3 added
-the explicit index catalog trailer, and version 4 adds the constraint
-catalog trailer. That means `SHOW INDEXES` and `SHOW CONSTRAINTS` state
-survives snapshot save/load. Older catalog-free `LORACOL1` bodies still
-load with empty index and constraint lists as needed. The body then
-applies compression and authenticated encryption if requested.
+compression, encryption metadata, and the body length. A format 3 body holds
+the id counters and the graph's dictionaries, then nodes and relationships in
+frames of 4,096 ids, then one catalog frame with the index, constraint and
+vector index definitions, so `SHOW INDEXES` and `SHOW CONSTRAINTS` state
+survives snapshot save/load. Each frame is compressed on its own (zstd by
+default, gzip or none); encryption seals the whole body. A format 2 body stores
+the same graph in separate columns (body versions 2 to 5); older catalog-free
+bodies still load with empty index and constraint lists.
 
-Readers validate the magic bytes, the format version, total length,
-and BLAKE3 checksum before decoding the payload. A file that fails any
-of those checks is rejected — the graph in memory is never touched
-until the load succeeds.
+Readers validate the magic bytes, the format version, every length and
+the BLAKE3 checksum, and build the loaded graph beside the current one.
+A file that fails any check is rejected, and the graph in memory is not
+touched until the load succeeds. Snapshots may come from uploads, so a
+reader never allocates from a length the file states: a frame claiming
+more than 1 GiB, inflating to a different size than it declares, or
+holding bytes after its compressed data is refused.
 
 ## Limitations
 

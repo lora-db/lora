@@ -27,7 +27,7 @@ relationship counts, compression mode, encryption metadata, and body length.
 
 ### Format 3: framed body
 
-Every writer emits format 3. The body starts with the id counters and the
+Every save, checkpoint and `sync()` through `Database` writes format 3. The body starts with the id counters and the
 graph's dictionaries (labels, relationship types, property keys, and the short
 string values the graph stores by number), then holds the records in frames of
 4,096 ids each: node frames, then relationship frames, then one catalog frame
@@ -35,11 +35,13 @@ string values the graph stores by number), then holds the records in frames of
 marker. Each frame is compressed on its own (zstd, raw deflate for gzip, or
 stored as is), so frames are built and decoded on every core:
 
-- **Writing** (`sync()`, checkpoints, `save_snapshot_to` and
-  `save_snapshot_to_with_options`) encodes and compresses
+- **Writing** (`sync()`, checkpoints, `save_snapshot_to*` and
+  `save_snapshot_to_bytes*`, so every binding's `saveSnapshot`) encodes and compresses
   a round of frames on the thread pool while the calling thread writes the
   round before.
-- **Reading** (opening a named or snapshot-backed database, `recover`) decodes a round of
+- **Reading** (opening a named or snapshot-backed database, `recover`,
+  `load_snapshot_from*` and `in_memory_from_snapshot`, so every binding's
+  `loadSnapshot` and the admin restore) decodes a round of
   frames into the store's record encoding on the thread pool while the calling
   thread files the round before into the graph and reads the round after. The
   catalogs are then registered, and every index population and constraint scan
@@ -49,6 +51,17 @@ stored as is), so frames are built and decoded on every core:
 A frame records its record count, raw length and stored length; the reader
 checks every length, that ids ascend within a frame, that frames come in order,
 and the envelope checksum over the whole body before the graph is used.
+
+A snapshot can come from an upload, so no length in it sizes an allocation:
+frames inflate as a stream into a buffer that grows only as bytes really
+inflate, and a frame that inflates to more or less than its raw length, or has
+bytes after its compressed stream, is refused (by the native and the wasm zstd
+decoder alike). The writer starts a new frame once one holds 64 MiB of raw
+records, and the reader refuses a frame claiming more than 1 GiB; a round reads
+ahead at most 256 MiB of raw frames, so a crafted file cannot make a reader hold
+much more than a gigabyte before its records are checked. A single record
+larger than 1 GiB cannot be snapshotted and fails the save. A node listing one
+label twice is refused, in either format.
 Encryption seals the whole body, as in format 2. The layout is documented in
 `crates/lora-snapshot/src/chunked.rs`.
 
@@ -60,7 +73,12 @@ same format on one thread.
 Snapshots written before format 3 hold one column-major body, compressed
 whole. They still load, on one thread. A named database opened from one
 checkpoints before the open returns, so its first open after an upgrade takes
-one `sync()` longer and the opens after it read format 3. Managed snapshot
+one `sync()` longer and the opens after it read format 3. That rewrite is an
+optimisation: if it fails (a full disk, a read-only mount, a container at
+`max_database_bytes`) the open logs a warning and succeeds, and
+`compact_on_open_wal_bytes = u64::MAX` turns it off with open compaction. Once
+rewritten, a database no longer opens in a release before 0.34, so back up the
+`.loradb` file before upgrading if you may need to roll back. Managed snapshot
 directories are rewritten as format 3 by their next checkpoint. The columnar body has its own version, tracked in
 `crates/lora-snapshot/src/format.rs`; each version appends a trailer:
 
@@ -72,10 +90,11 @@ directories are rewritten as format 3 by their next checkpoint. The columnar bod
 | v5 | Vector-index backend trailer: HNSW graph state, JSON-encoded |
 
 The reader accepts v2 through v5; a missing trailer loads as empty (no indexes,
-no constraints, vector backends rebuilt from the property store). The payload
-encoder (`encode_snapshot`, `write_snapshot`, and through it
-`save_snapshot_to_bytes`) still writes format 2. `decode_snapshot` and
-`load_snapshot_from_*` read both formats, through a payload copy on one thread.
+no constraints, vector backends rebuilt from the property store). Only the
+payload encoder in `lora-snapshot` (`encode_snapshot` and `write_snapshot`,
+given a `SnapshotPayload` rather than a graph) still writes format 2, for gzip
+or no compression. `decode_snapshot` reads both formats into a payload; the
+`Database` loads read both straight into a graph.
 
 ### Restart cost
 
@@ -112,7 +131,10 @@ a quarter smaller than gzip level 1 and as fast to write and read. Gzip (levels
 builds read zstd snapshots (with a pure-Rust decoder) but write gzip level 1,
 their default; a snapshot written by a native build therefore loads in a
 browser. zstd compresses format 3 snapshots only: the payload encoder
-(`encode_snapshot`) writes format 3 when asked for zstd.
+(`encode_snapshot`) writes format 3 when asked for zstd, which its default
+options are on native builds. Byte and file saves (`saveSnapshot`) are
+uncompressed unless asked otherwise, so they stay quick to write; managed
+snapshot directories and named databases use zstd in every binding.
 
 The 3M-node database above, per codec, 4,096 ids a frame:
 
