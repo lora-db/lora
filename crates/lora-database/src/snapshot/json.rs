@@ -6,13 +6,15 @@
 //! the database can take typed [`SnapshotOptions`] / [`SnapshotCredentials`]
 //! values directly.
 //!
-//! Two public entry points sit at the top:
+//! Three public entry points sit at the top:
 //!
 //! * [`snapshot_options_from_json`] — build save options.
+//! * [`managed_snapshot_options_from_json`] — build a managed snapshot
+//!   directory's codec.
 //! * [`snapshot_credentials_from_json`] — build load credentials.
 //!
 //! All other helpers (compression / encryption / KDF / field-extraction)
-//! are private — bindings consume only the two public entry points.
+//! are private — bindings consume only the public entry points.
 
 use anyhow::{anyhow, Result};
 
@@ -24,11 +26,12 @@ use lora_snapshot::{
 const DEFAULT_SNAPSHOT_KEY_ID: &str = "default";
 
 /// Build snapshot save options from the JSON shape used by the language
-/// bindings.
+/// bindings, for a snapshot saved on request (`saveSnapshot`). Without a
+/// `compression` field it is uncompressed, so the bytes stay portable.
 ///
 /// Supported shape:
 ///
-/// `{ compression?: "none" | "gzip" | { format: "gzip", level?: number },
+/// `{ compression?: "none" | "gzip" | "zstd" | { format: "gzip" | "zstd", level?: number },
 ///    encryption?: { type: "password", keyId?: string, password: string,
 ///                   params?: { memoryCostKib?: number, timeCost?: number,
 ///                              parallelism?: number } } }`
@@ -36,22 +39,36 @@ const DEFAULT_SNAPSHOT_KEY_ID: &str = "default";
 /// `encryption` may also be a raw 32-byte key object with
 /// `{ type: "key", keyId?: string, key: number[] }`.
 pub fn snapshot_options_from_json(value: Option<serde_json::Value>) -> Result<SnapshotOptions> {
-    let Some(value) = value else {
-        return Ok(SnapshotOptions {
-            compression: Compression::None,
-            encryption: None,
-        });
+    options_from_json(value, Compression::None)
+}
+
+/// As [`snapshot_options_from_json`], for the codec of a managed snapshot
+/// directory: without a `compression` field it is
+/// [`SnapshotOptions::default`]'s, as in Rust, so checkpoints are zstd
+/// compressed whichever binding opened the database.
+pub fn managed_snapshot_options_from_json(
+    value: Option<serde_json::Value>,
+) -> Result<SnapshotOptions> {
+    options_from_json(value, SnapshotOptions::default().compression)
+}
+
+fn options_from_json(
+    value: Option<serde_json::Value>,
+    default_compression: Compression,
+) -> Result<SnapshotOptions> {
+    let value = match value {
+        Some(value) if !value.is_null() => value,
+        _ => {
+            return Ok(SnapshotOptions {
+                compression: default_compression,
+                encryption: None,
+            })
+        }
     };
-    if value.is_null() {
-        return Ok(SnapshotOptions {
-            compression: Compression::None,
-            encryption: None,
-        });
-    }
 
     let compression = match value.get("compression") {
         Some(value) => parse_snapshot_compression_json(value)?,
-        None => Compression::None,
+        None => default_compression,
     };
     let encryption = parse_snapshot_credentials_json(Some(value))?;
 

@@ -23,8 +23,8 @@ use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
 
 use lora_database::{
-    snapshot_credentials_from_json, snapshot_options_from_json, DatabaseOpenOptions, LoraValue,
-    SnapshotCredentials, SnapshotOptions, TransactionMode,
+    managed_snapshot_options_from_json, snapshot_credentials_from_json, snapshot_options_from_json,
+    DatabaseOpenOptions, LoraValue, SnapshotCredentials, SnapshotOptions, TransactionMode,
 };
 use lora_store::{
     LoraBinary, LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraPoint,
@@ -122,7 +122,7 @@ pub(crate) fn py_database_open_options(
     };
     if let Some(value) = value {
         out.has_snapshot_codec = true;
-        out.snapshot_codec = snapshot_options_from_json(Some(py_to_json(&value)?))
+        out.snapshot_codec = managed_snapshot_options_from_json(Some(py_to_json(&value)?))
             .map_err(|e| InvalidParamsError::new_err(format!("invalid snapshot options: {e}")))?;
     }
     Ok(out)

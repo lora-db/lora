@@ -477,7 +477,7 @@ fn ruby_database_open_options(
     if let Some(value) = hash_get_any(ruby, hash, &["snapshot_options", "snapshotOptions"]) {
         let json = ruby_optional_to_json(ruby, value)?;
         options.has_snapshot_codec = true;
-        options.snapshot_codec = lora_database::snapshot_options_from_json(json)
+        options.snapshot_codec = lora_database::managed_snapshot_options_from_json(json)
             .map_err(|e| invalid_params(ruby, format!("invalid snapshot options: {e}")))?;
     }
     Ok(options)

@@ -62,9 +62,9 @@ use std::ptr;
 use std::sync::Arc;
 
 use lora_database::{
-    snapshot_credentials_from_json, snapshot_options_from_json, Database as InnerDatabase,
-    DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, LoraValue, QueryResult, ResultFormat,
-    SnapshotConfig, SnapshotCredentials, SnapshotOptions, WalConfig,
+    managed_snapshot_options_from_json, snapshot_credentials_from_json, snapshot_options_from_json,
+    Database as InnerDatabase, DatabaseOpenOptions, ExecuteOptions, InMemoryGraph, LoraValue,
+    QueryResult, ResultFormat, SnapshotConfig, SnapshotCredentials, SnapshotOptions, WalConfig,
 };
 
 mod errors;
@@ -302,7 +302,7 @@ pub unsafe extern "C" fn lora_db_new_with_wal_snapshots(
                 return LoraStatus::InvalidParams;
             }
         };
-        let codec = match parse_snapshot_options_arg(snapshot_options_json) {
+        let codec = match parse_managed_snapshot_options_arg(snapshot_options_json) {
             Ok(options) => options,
             Err(error) => return write_parse_error(out_error, error),
         };
@@ -1341,13 +1341,24 @@ unsafe fn parse_snapshot_options_arg(
     options_json: *const c_char,
 ) -> FfiParseResult<SnapshotOptions> {
     let options = parse_optional_json_arg(options_json, "snapshot options")?;
-    snapshot_options_from_json(options).map_err(|e| {
-        (
-            LoraStatus::InvalidParams,
-            INVALID_PARAMS_PREFIX,
-            format!("invalid snapshot options: {e}"),
-        )
-    })
+    snapshot_options_from_json(options).map_err(invalid_snapshot_options)
+}
+
+/// A managed snapshot directory's codec: zstd unless `compression` says
+/// otherwise, as in Rust.
+unsafe fn parse_managed_snapshot_options_arg(
+    options_json: *const c_char,
+) -> FfiParseResult<SnapshotOptions> {
+    let options = parse_optional_json_arg(options_json, "snapshot options")?;
+    managed_snapshot_options_from_json(options).map_err(invalid_snapshot_options)
+}
+
+fn invalid_snapshot_options(e: anyhow::Error) -> (LoraStatus, &'static str, String) {
+    (
+        LoraStatus::InvalidParams,
+        INVALID_PARAMS_PREFIX,
+        format!("invalid snapshot options: {e}"),
+    )
 }
 
 unsafe fn parse_snapshot_credentials_arg(

@@ -32,8 +32,8 @@ pub struct SnapshotConfig {
     pub checkpoint_every_commits: Option<u64>,
     /// Number of older checkpoint files to retain in addition to `CURRENT`.
     pub keep_old: usize,
-    /// Columnar snapshot codec options. Defaults to fast gzip compression and
-    /// no encryption.
+    /// Snapshot codec options. Defaults to [`SnapshotOptions::default`]:
+    /// zstd level 3 (gzip level 1 on wasm) and no encryption.
     pub codec: SnapshotOptions,
     /// Create a managed checkpoint once the WAL has grown by this many bytes
     /// since the last one, or by a quarter of the current snapshot's size

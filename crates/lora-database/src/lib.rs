@@ -52,8 +52,9 @@ pub use named::{
     DEFAULT_COMPACT_ON_OPEN_WAL_BYTES, DEFAULT_DATABASE_MAX_BYTES,
 };
 pub use snapshot::{
-    snapshot_credentials_from_json, snapshot_options_from_json, DirectorySnapshot, SnapshotAdmin,
-    SnapshotByteFormat, SnapshotConfig, DEFAULT_CHECKPOINT_WAL_BYTES,
+    managed_snapshot_options_from_json, snapshot_credentials_from_json, snapshot_options_from_json,
+    DirectorySnapshot, SnapshotAdmin, SnapshotByteFormat, SnapshotConfig,
+    DEFAULT_CHECKPOINT_WAL_BYTES,
 };
 pub use stream::QueryStream;
 pub use transaction::{Transaction, TransactionError, TransactionMode};

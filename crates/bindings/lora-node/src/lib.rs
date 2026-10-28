@@ -23,9 +23,10 @@ use napi::{Env, Error as NapiError, JsObject, JsUnknown, Status, Task};
 use napi_derive::napi;
 
 use lora_database::{
-    snapshot_credentials_from_json, snapshot_options_from_json, CancellableDeadline,
-    Database as InnerDatabase, DatabaseName, DatabaseOpenOptions, InMemoryGraph, LoraError,
-    LoraErrorCode, SnapshotConfig, SnapshotCredentials, SnapshotOptions, SyncMode, WalConfig,
+    managed_snapshot_options_from_json, snapshot_credentials_from_json, snapshot_options_from_json,
+    CancellableDeadline, Database as InnerDatabase, DatabaseName, DatabaseOpenOptions,
+    InMemoryGraph, LoraError, LoraErrorCode, SnapshotConfig, SnapshotCredentials, SnapshotOptions,
+    SyncMode, WalConfig,
 };
 
 mod actor;
@@ -1365,12 +1366,22 @@ fn snapshot_meta_to_json(meta: lora_database::SnapshotMeta) -> serde_json::Value
 }
 
 fn parse_snapshot_options_for_napi(options: Option<serde_json::Value>) -> Result<SnapshotOptions> {
-    snapshot_options_from_json(options).map_err(|e| {
-        NapiError::new(
-            Status::InvalidArg,
-            format!("{INVALID_PARAMS_CODE}: invalid snapshot options: {e}"),
-        )
-    })
+    snapshot_options_from_json(options).map_err(invalid_snapshot_options)
+}
+
+/// A managed snapshot directory's codec: zstd unless `compression` says
+/// otherwise, as in Rust.
+fn parse_managed_snapshot_options_for_napi(
+    options: Option<serde_json::Value>,
+) -> Result<SnapshotOptions> {
+    managed_snapshot_options_from_json(options).map_err(invalid_snapshot_options)
+}
+
+fn invalid_snapshot_options(e: anyhow::Error) -> NapiError {
+    NapiError::new(
+        Status::InvalidArg,
+        format!("{INVALID_PARAMS_CODE}: invalid snapshot options: {e}"),
+    )
 }
 
 fn parse_snapshot_credentials_for_napi(
@@ -1424,7 +1435,7 @@ fn open_explicit_wal_database(
     let db = if let Some(snapshot_dir) = snapshot_dir {
         let mut snapshots = SnapshotConfig::enabled(snapshot_dir)
             .keep_old(snapshot_keep_old.unwrap_or(1) as usize)
-            .codec(parse_snapshot_options_for_napi(snapshot_options)?);
+            .codec(parse_managed_snapshot_options_for_napi(snapshot_options)?);
         if let Some(every) = snapshot_every_commits {
             if every != 0 {
                 snapshots = snapshots.every_commits(every as u64);
