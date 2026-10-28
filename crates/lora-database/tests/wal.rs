@@ -1665,3 +1665,73 @@ fn with_store_mut_writes_through_the_wal() {
     assert_eq!(db.node_count(), 2);
     assert_eq!(db.graph_node_ids_by_label("Admin").len(), 1);
 }
+
+/// A named database whose snapshot is in the column-major format (2) an
+/// older release wrote is rewritten framed on open, so the next open
+/// reads it on every core; `compact_on_open_wal_bytes = u64::MAX` keeps
+/// it as it is.
+#[test]
+fn named_database_rewrites_a_column_major_snapshot_on_open() {
+    use lora_database::DEFAULT_COMPACT_ON_OPEN_WAL_BYTES;
+    use lora_snapshot::{
+        read_graph_snapshot, read_snapshot_info, write_snapshot, Compression, SnapshotOptions,
+    };
+
+    let dir = TmpDir::new("named-format-2-upgrade");
+    let sidecar = dir.path().join("app.loradb.wal");
+    let saved = dir.path().join("saved-sidecar");
+    let snapshot = sidecar.join("snapshot.lsnap");
+    let version = || {
+        read_snapshot_info(std::fs::File::open(&snapshot).unwrap())
+            .unwrap()
+            .format_version
+    };
+    let open = |compact_on_open_wal_bytes| {
+        Database::open_named(
+            "app",
+            DatabaseOpenOptions {
+                compact_on_open_wal_bytes,
+                ..DatabaseOpenOptions::default().with_database_dir(dir.path())
+            },
+        )
+        .unwrap()
+    };
+    // Put back the sidecar as it was while the database was open, its
+    // snapshot rewritten in format 2.
+    let restore_format_2 = || {
+        let _ = std::fs::remove_dir_all(&sidecar);
+        copy_dir_all(&saved, &sidecar);
+        let (graph, info) =
+            read_graph_snapshot(std::fs::File::open(&snapshot).unwrap(), None).unwrap();
+        let options = SnapshotOptions {
+            compression: Compression::Gzip { level: 1 },
+            encryption: None,
+        };
+        let file = std::fs::File::create(&snapshot).unwrap();
+        write_snapshot(file, &graph.snapshot_payload(), info.wal_lsn, &options).unwrap();
+        assert_eq!(version(), 2);
+    };
+
+    {
+        let db = open(DEFAULT_COMPACT_ON_OPEN_WAL_BYTES);
+        db.execute("UNWIND list.range(1, 50) AS i CREATE (:N {id: i})", rows())
+            .unwrap();
+        db.sync().unwrap();
+        copy_dir_all(&sidecar, &saved);
+    }
+
+    restore_format_2();
+    {
+        let db = open(u64::MAX);
+        assert_eq!(version(), 2, "rewritten although open compaction is off");
+        assert_eq!(db.node_count(), 50);
+    }
+
+    restore_format_2();
+    {
+        let db = open(DEFAULT_COMPACT_ON_OPEN_WAL_BYTES);
+        assert_eq!(version(), 3);
+        assert_eq!(db.node_count(), 50);
+    }
+    assert_eq!(open(DEFAULT_COMPACT_ON_OPEN_WAL_BYTES).node_count(), 50);
+}

@@ -183,14 +183,29 @@ impl Database<InMemoryGraph> {
             Some(archive),
             options.checkpoint_wal_bytes,
         );
-        if (wal_bytes >= options.compact_on_open_wal_bytes
-            && wal_bytes > snapshot_bytes / SNAPSHOT_FRACTION)
-            || legacy_snapshot
-        {
-            // The next open would replay this log again, or read a snapshot
-            // in the one-thread columnar format: checkpoint now, which also
-            // rewrites the container as the snapshot and the tail of the WAL.
+        let long_log = wal_bytes >= options.compact_on_open_wal_bytes
+            && wal_bytes > snapshot_bytes / SNAPSHOT_FRACTION;
+        let rewrite_legacy = legacy_snapshot && options.compact_on_open_wal_bytes != u64::MAX;
+        if long_log {
+            // The next open would replay this log again: checkpoint now,
+            // which also rewrites the container as the snapshot and the
+            // tail of the WAL.
             db.sync()?;
+        } else if rewrite_legacy {
+            // The snapshot is in the one-thread columnar format: rewrite it
+            // framed so the next open reads it on every core. Only an
+            // optimisation, so a database that cannot be written (a full
+            // disk, a read-only mount, a container at its size limit) still
+            // opens, and is rewritten on a later checkpoint.
+            if let Err(err) = db.sync() {
+                tracing::warn!(
+                    database = name.as_str(),
+                    error = %err,
+                    "could not rewrite the snapshot in the framed format on open; \
+                     it loads on one thread until the next checkpoint"
+                );
+                recorder.flush()?;
+            }
         } else {
             // Mark the archive dirty so a fresh named database is
             // materialized as a portable Lora container. Follow-up writes
