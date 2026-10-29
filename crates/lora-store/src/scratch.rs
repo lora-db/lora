@@ -4,9 +4,9 @@
 //! macOS's malloc keeps freed large blocks resident for reuse and holds
 //! them until the process exits, so a step that frees one per frame (the
 //! snapshot reader's inflated frames, replay's WAL frames) leaves an open
-//! holding many of them on top of the graph: 0.34.0's framed snapshot
-//! read added about 60 B of resident memory per node of a 200k-node
-//! graph this way (G-64). On macOS a [`ScratchBytes`] of
+//! holding many of them on top of the graph: after 0.34.0's framed
+//! snapshot read a 200k-node graph kept 17-37 MB more resident this way
+//! (G-64). On macOS a [`ScratchBytes`] of
 //! [`ScratchBytes::MAPPED_MIN`] bytes or more gets pages of its own,
 //! mapped for it and unmapped when it is dropped. Elsewhere, and below
 //! that size, it is a `Vec`: glibc maps blocks this large itself and

@@ -57,11 +57,11 @@ pub(super) struct SortedPropertyIndex {
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct SortedScope {
-    /// Keyed by sortable property key. Values are ids in that bucket.
-    /// Copy-on-write partitions (see [`CowOrdMap`]): a write's staged
-    /// graph copy shares them and copies only the path (root, group,
-    /// partition) to the entry it changes.
-    /// Every key but strings, which are in `strings`.
+    /// Keyed by sortable property key, every key but strings (those are
+    /// in `strings`). Values are ids in that bucket. Copy-on-write
+    /// partitions (see [`CowOrdMap`]): a write's staged graph copy shares
+    /// them and copies only the path (root, group, partition) to the
+    /// entry it changes.
     pub(super) by_value: CowOrdMap<PropertyIndexKey, IdSet>,
     /// String keys, packed: their own `Arc<str>` each cost a 58-byte key
     /// about 110 bytes (G-64). Strings sort after numbers and before

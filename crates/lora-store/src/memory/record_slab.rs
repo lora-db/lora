@@ -475,11 +475,9 @@ fn empty_leaf() -> &'static Arc<Leaf> {
 /// for [`RecordSlab::put_leaves`]. Slots must be pushed in ascending order.
 ///
 /// A segment's records are staged in a buffer the builder reuses and get
-/// one allocation of their exact size once the segment is complete. Filed
+/// one allocation of their exact size once the segment is complete: filed
 /// through [`Leaf::set`], a leaf's first segment grew by rebuilds (300
-/// bytes, 600, ... 10 KiB), and the outgrown buffers, freed between the
-/// segments a loaded graph keeps, left a snapshot open holding about 1.6
-/// times its heap (G-64).
+/// bytes, 600, ... 10 KiB), each copying the records so far.
 #[derive(Default)]
 pub(super) struct BuiltLeaves {
     leaves: Vec<(usize, Arc<Leaf>)>,
