@@ -99,6 +99,8 @@ export interface Pattern {
 export interface SortItem {
   expr: Expr;
   direction: "ASC" | "DESC";
+  /** `NULLS FIRST` / `NULLS LAST`; unset, Cypher's default for the direction. */
+  nulls?: "FIRST" | "LAST" | undefined;
 }
 
 export interface ReturnItem {
@@ -394,7 +396,12 @@ function printTail(
   if (orderBy && orderBy.length > 0) {
     s +=
       " ORDER BY " +
-      orderBy.map((o) => `${printExpr(o.expr)} ${o.direction}`).join(", ");
+      orderBy
+        .map(
+          (o) =>
+            `${printExpr(o.expr)} ${o.direction}${o.nulls ? ` NULLS ${o.nulls}` : ""}`,
+        )
+        .join(", ");
   }
   if (limit) s += ` LIMIT ${printExpr(limit)}`;
   return s;

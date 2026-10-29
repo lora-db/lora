@@ -86,9 +86,8 @@ fn entries(index: &SortedPropertyIndex, label: &str) -> Entries {
         .collect();
     elements.sort();
     let values = scope
-        .by_value
-        .iter()
-        .map(|(key, ids)| (key.clone(), ids.to_vec()))
+        .entries(&std::ops::Bound::Unbounded, &std::ops::Bound::Unbounded)
+        .map(|(key, ids)| (key.to_key(), ids.to_vec()))
         .collect();
     (values, elements)
 }

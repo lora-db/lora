@@ -61,7 +61,7 @@ export declare class Database {
    * lets JS cancel it early. Either way an expired query rejects with
    * `LORA_TIMEOUT`, aborts its WAL transaction and releases its locks.
    */
-  execute(query: string, params?: Record<string, any> | null | undefined, timeoutMs?: number | null | undefined, cancelToken?: number | null | undefined): Promise<Buffer>
+  execute(query: string, params?: Record<string, any> | string | null | undefined, timeoutMs?: number | null | undefined, cancelToken?: number | null | undefined): Promise<Buffer>
   /**
    * Create a cancellation token for one query. `timeout_ms` (or the
    * database default) is folded into it, so pass the token instead of

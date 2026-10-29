@@ -84,8 +84,8 @@ fn plan_drops_the_sort() {
 
 #[test]
 fn numeric_bounds_still_order_ints_and_floats_together() {
-    // The index orders every integer before every float, which is not
-    // Cypher's numeric order: the scan must sort these itself.
+    // Integers and floats share one numeric run in the index, so a
+    // numeric bound walks it in Cypher's order (G-77; it used to sort).
     let db = TestDb::new();
     db.run("CREATE INDEX v FOR (n:N) ON (n.v)");
     db.run("UNWIND [5, 1.5, 3, 2.5, 4, 0.5] AS v CREATE (:N {v: v})");

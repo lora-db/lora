@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::types::spatial::LoraPoint;
 
 use super::cow::CowMap;
-use super::entity_index_store::ScopedPropertyKey;
+use super::entity_index_store::{ScopeKey, ScopedPropertyKey};
 use super::id_map::CowIdMap;
 use super::index_catalog::IndexConfigValue;
 
@@ -178,7 +178,7 @@ impl PointRegistry {
         !self.by_scope.is_empty()
             && scopes.into_iter().any(|scope| {
                 self.by_scope
-                    .contains_key(&ScopedPropertyKey::new(scope, property))
+                    .contains_key(&(scope, property) as &dyn ScopeKey)
             })
     }
 
@@ -225,14 +225,11 @@ impl PointRegistry {
     #[cfg(test)]
     pub(super) fn has_scope(&self, label: &str, property: &str) -> bool {
         self.by_scope
-            .contains_key(&ScopedPropertyKey::new(label, property))
+            .contains_key(&(label, property) as &dyn ScopeKey)
     }
 
     pub(super) fn insert(&mut self, label: &str, property: &str, id: u64, point: LoraPoint) {
-        if let Some(scope) = self
-            .by_scope
-            .get_mut(&ScopedPropertyKey::new(label, property))
-        {
+        if let Some(scope) = self.by_scope.get_mut(&(label, property) as &dyn ScopeKey) {
             scope.grid.insert(point, id);
         }
     }
@@ -245,10 +242,7 @@ impl PointRegistry {
         old: Option<&LoraPoint>,
         new: Option<&LoraPoint>,
     ) {
-        let Some(scope) = self
-            .by_scope
-            .get_mut(&ScopedPropertyKey::new(label, property))
-        else {
+        let Some(scope) = self.by_scope.get_mut(&(label, property) as &dyn ScopeKey) else {
             return;
         };
         if let Some(old) = old {
@@ -269,9 +263,7 @@ impl PointRegistry {
         ll: (f64, f64),
         ur: (f64, f64),
     ) -> Option<BTreeSet<u64>> {
-        let scope = self
-            .by_scope
-            .get(&ScopedPropertyKey::new(label, property))?;
+        let scope = self.by_scope.get(&(label, property) as &dyn ScopeKey)?;
         Some(scope.grid.candidates_in_bbox(
             ll.0.min(ur.0),
             ll.1.min(ur.1),
@@ -291,9 +283,7 @@ impl PointRegistry {
         center: (f64, f64),
         max_distance: f64,
     ) -> Option<BTreeSet<u64>> {
-        let scope = self
-            .by_scope
-            .get(&ScopedPropertyKey::new(label, property))?;
+        let scope = self.by_scope.get(&(label, property) as &dyn ScopeKey)?;
         // Conservative bounding box: a square of side 2 * max_distance.
         // For WGS-84 this overcollects near the poles (the square in
         // (lat, lon) space is wider than the actual great-circle

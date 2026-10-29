@@ -200,7 +200,7 @@ impl Database {
         &self,
         env: Env,
         query: String,
-        #[napi(ts_arg_type = "Record<string, any> | null | undefined")] params: Option<
+        #[napi(ts_arg_type = "Record<string, any> | string | null | undefined")] params: Option<
             serde_json::Value,
         >,
         #[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,

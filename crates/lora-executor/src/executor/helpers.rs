@@ -40,7 +40,7 @@ use web_time::Instant;
 
 use lora_analyzer::symbols::VarId;
 use lora_analyzer::{AggregateFunction, FunctionId, ResolvedExpr, ResolvedMapSelector};
-use lora_ast::{Direction, RangeLiteral, SortDirection};
+use lora_ast::{Direction, NullsOrder, RangeLiteral, SortDirection};
 use lora_compiler::physical::{
     ExpandExec, HashAggregationExec, LimitExec, NodeByLabelScanExec, NodeByPropertyScanExec,
     NodeScanExec, PhysicalNodeId, PhysicalOp, PhysicalPlan, ProjectionExec, UnwindExec,
@@ -1601,6 +1601,7 @@ pub(crate) fn node_by_property_range_scan_rows<S: GraphStorage>(
         if let Some(existing_id) = bound_id {
             if node_matches_range_filter(storage, existing_id, &filter)
                 || bound_node_has_other_kind(storage, existing_id, op, bounds)
+                || (op.nulls.is_some() && node_key_is_null(storage, existing_id, op))
             {
                 out.push(row);
             }
@@ -1643,6 +1644,24 @@ pub(crate) fn node_by_property_range_scan_rows<S: GraphStorage>(
     }
 
     Ok(out)
+}
+
+/// Whether `id` has `op`'s labels and no `op.key`: a node the null part
+/// of an ordered range scan with `nulls` emits.
+fn node_key_is_null<S: GraphStorage>(
+    storage: &S,
+    id: NodeId,
+    op: &lora_compiler::NodeByPropertyRangeScanExec,
+) -> bool {
+    storage
+        .with_node(id, |n| {
+            node_matches_label_groups(n.labels(), &op.labels)
+                && matches!(
+                    n.properties().get(op.key.as_str()),
+                    None | Some(lora_store::ValueRef::Null)
+                )
+        })
+        .unwrap_or(false)
 }
 
 pub(crate) fn node_by_text_scan_rows<S: GraphStorage>(
@@ -3496,13 +3515,19 @@ pub(crate) fn rel_by_point_scan_rows<S: GraphStorage>(
 /// Node ids of an ordered range scan (`op.order` set), in `ORDER BY op.key`
 /// order, each already checked against the exact bounds and labels.
 ///
-/// The index serves the order when every bound is a string: a string
-/// comparison only lets strings through, and among strings the index's
-/// order is Cypher's order. Ids are then pulled from the index in chunks
-/// that grow as rows are consumed, so a `LIMIT` above stops the scan
-/// after a few small index reads. For any other bound the index order is
-/// not Cypher's (it orders every integer before every float), so the
-/// cursor collects the candidates and sorts them by value itself.
+/// The index serves the order when every bound is a string, every bound
+/// a number, or every bound a temporal of one kind: such a comparison
+/// only lets values of that kind through, and among them the index's
+/// order is Cypher's (integers and floats share one numeric run, an
+/// integer before an equal float, which Cypher calls a tie). Ids are then
+/// pulled from the index in chunks that grow as rows are consumed, so a
+/// `LIMIT` above stops the scan after a few small index reads. For any
+/// other bound the cursor collects the candidates and sorts them by value
+/// itself.
+///
+/// With `op.nulls` set, the label's nodes without `op.key` come before
+/// (`First`) or after (`Last`) the range, read lazily from the label so
+/// that a `LIMIT` met inside the range never visits them.
 pub(crate) struct OrderedRangeCursor {
     lo: Option<LoraValue>,
     hi: Option<LoraValue>,
@@ -3512,6 +3537,10 @@ pub(crate) struct OrderedRangeCursor {
     key: String,
     lo_inclusive: bool,
     hi_inclusive: bool,
+    nulls: Option<NullsOrder>,
+    /// The label's ids, being searched for nulls; `None` until the null
+    /// part starts.
+    null_ids: Option<std::vec::IntoIter<NodeId>>,
 }
 
 enum OrderedMode {
@@ -3538,12 +3567,15 @@ impl OrderedRangeCursor {
             hi_inclusive,
         } = range;
         let descending = matches!(op.order, Some(SortDirection::Desc));
-        // Strings and temporals of one kind have a single contiguous,
-        // correctly ordered run in the index, so the walk can stream from
-        // it. Numbers cannot: integers and floats are keyed separately.
+        // Strings, numbers and temporals of one kind each have a single
+        // contiguous, correctly ordered run in the index, so the walk can
+        // stream from it.
         let mut bounds = lo.iter().chain(hi.iter());
         let string_bounds = match bounds.next() {
             Some(LoraValue::String(_)) => bounds.all(|v| matches!(v, LoraValue::String(_))),
+            Some(LoraValue::Int(_) | LoraValue::Float(_)) => {
+                bounds.all(|v| matches!(v, LoraValue::Int(_) | LoraValue::Float(_)))
+            }
             Some(
                 first @ (LoraValue::Date(_)
                 | LoraValue::DateTime(_)
@@ -3569,6 +3601,8 @@ impl OrderedRangeCursor {
             key: op.key.clone(),
             lo_inclusive,
             hi_inclusive,
+            nulls: op.nulls,
+            null_ids: None,
         };
         match index_label {
             Some(label) => {
@@ -3643,6 +3677,40 @@ impl OrderedRangeCursor {
     }
 
     pub(crate) fn next_id<S: GraphStorage>(&mut self, storage: &S) -> Option<NodeId> {
+        if self.nulls == Some(NullsOrder::First) {
+            if let Some(id) = self.next_null(storage) {
+                return Some(id);
+            }
+        }
+        if let Some(id) = self.next_in_range(storage) {
+            return Some(id);
+        }
+        if self.nulls == Some(NullsOrder::Last) {
+            return self.next_null(storage);
+        }
+        None
+    }
+
+    /// The next node of the labels without `key`, in id order.
+    fn next_null<S: GraphStorage>(&mut self, storage: &S) -> Option<NodeId> {
+        let labels = &self.labels;
+        let ids = self
+            .null_ids
+            .get_or_insert_with(|| scan_node_ids_for_label_groups(storage, labels).into_iter());
+        ids.find(|&id| {
+            storage
+                .with_node(id, |n| {
+                    node_matches_label_groups(n.labels(), labels)
+                        && matches!(
+                            n.properties().get(self.key.as_str()),
+                            None | Some(lora_store::ValueRef::Null)
+                        )
+                })
+                .unwrap_or(false)
+        })
+    }
+
+    fn next_in_range<S: GraphStorage>(&mut self, storage: &S) -> Option<NodeId> {
         loop {
             if let Some(id) = self.pending.next() {
                 if matches!(self.mode, OrderedMode::Buffered)

@@ -162,7 +162,7 @@ API:
 | `@mutation(operations: [CREATE, UPDATE, DELETE])`     | type                                                      | Generated mutations; none without it                                                                                                                                      |
 | `@subscription(operations: [CREATE, UPDATE, DELETE])` | type                                                      | Generated subscriptions; none without it                                                                                                                                  |
 | `@filterable(byValue: [...])`                         | field                                                     | Filter operators. Bare: `EQ` and `IN` (lists: `INCLUDES`). On a relationship: enables relationship filters                                                                |
-| `@sortable`                                           | field                                                     | Sort and paginate by this field (on a relationship property: `sort: [{ edge: { ... } }]`)                                                                                 |
+| `@sortable`                                           | field                                                     | Sort and paginate by this field (on a relationship property: `sort: [{ edge: { ... } }]`); `nulls: FIRST \| LAST` places a nullable field's nulls whichever the direction |
 | `@groupBy`                                            | field                                                     | A grouping key of `<plural>Grouped(by:)` (needs `@query(aggregate: true)`)                                                                                                |
 | `@limit(default:, max:)`                              | type, interface, union, list relationship                 | Page size bounds                                                                                                                                                          |
 | `@length(min:, max:)`                                 | String / ID field                                         | Its length in code points (each item of a list)                                                                                                                           |
@@ -288,7 +288,12 @@ false`: festivals without a venue); as in every relationship filter, a
   error. With `cursorSecret` it is also signed (HMAC-SHA-256), and any
   cursor the server did not issue is rejected. Nested lists without a sort come in `@key` order.
 - Nulls sort last ascending and first descending, as in Cypher, and keyset
-  pages handle them.
+  pages handle them. `@sortable(nulls: LAST)` (or `FIRST`) puts a nullable
+  field's nulls there whichever the direction, so `popularityScore: DESC`
+  starts with the biggest score. Such a page walks the field's RANGE index
+  and then the nulls, reading about one page of rows on any label size
+  (see the worked example under
+  [`@sortable`](https://loradb.com/docs/graphql/directives#sortable-nulls)).
 - Every list is bounded: `limit` / `first` default to `@limit(default:)`
   (global 25) and asking for more than `max` (global 100) is a
   `LIMIT_EXCEEDED` error, not a silent clamp.

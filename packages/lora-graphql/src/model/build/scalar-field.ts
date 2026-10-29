@@ -88,7 +88,9 @@ export function buildScalarField(
   const unique = directive(d("unique"), f, at) !== undefined;
   const isPrivate = directive(d("private"), f, at) !== undefined;
   const relayId = directive(d("relayId"), f, at) !== undefined;
-  const sortable = directive(d("sortable"), f, at) !== undefined;
+  const sortableArgs = directive(d("sortable"), f, at);
+  const sortable = sortableArgs !== undefined;
+  const sortNulls = sortableArgs?.["nulls"] as "FIRST" | "LAST" | undefined;
   const groupBy = directive(d("groupBy"), f, at) !== undefined;
   const filterable = directive(d("filterable"), f, at);
   const alias = directive(d("alias"), f, at);
@@ -217,6 +219,11 @@ export function buildScalarField(
   if (sortable && (shape.list || UNSORTABLE.has(type))) {
     at(`${shape.list ? "lists" : type} cannot be @sortable`);
   }
+  if (sortNulls && shape.required) {
+    at(
+      "@sortable(nulls:) is for nullable fields: a non-null field has no nulls",
+    );
+  }
   if (
     groupBy &&
     (shape.list ||
@@ -305,6 +312,7 @@ export function buildScalarField(
     relayId,
     filters,
     sortable: sortable && !isPrivate,
+    ...(sortNulls && sortable && !isPrivate ? { sortNulls } : {}),
     groupBy,
     indexes,
     generate,

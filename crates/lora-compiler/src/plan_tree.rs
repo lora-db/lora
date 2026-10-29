@@ -227,6 +227,20 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
                 (&n.hi, n.hi_inclusive),
                 &n.extra_bounds,
             );
+            if let Some(order) = n.order {
+                let order = match order {
+                    lora_ast::SortDirection::Asc => "ASC",
+                    lora_ast::SortDirection::Desc => "DESC",
+                };
+                d.insert("order".to_string(), order.to_string());
+            }
+            if let Some(nulls) = n.nulls {
+                let nulls = match nulls {
+                    lora_ast::NullsOrder::First => "FIRST",
+                    lora_ast::NullsOrder::Last => "LAST",
+                };
+                d.insert("nulls".to_string(), nulls.to_string());
+            }
             PlanDescription::with_children("NodeByPropertyRangeScan", d, opt_input(n.input))
         }
         PhysicalOp::NodeByPointScan(n) => {
@@ -415,6 +429,11 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
                 d.insert("top_k".to_string(), top_k);
             }
             insert_pattern_seeks(&mut d, n.items.iter().map(|item| &item.expr));
+            // Ordered by its first keys already: it sorts runs, not its input.
+            if n.presorted > 0 {
+                d.insert("presorted".to_string(), n.presorted.to_string());
+                return PlanDescription::with_children("PartialSort", d, vec![n.input]);
+            }
             PlanDescription::with_children("Sort", d, vec![n.input])
         }
         PhysicalOp::Limit(n) => {

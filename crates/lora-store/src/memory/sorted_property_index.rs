@@ -40,9 +40,11 @@ use std::ops::Bound;
 use crate::types::PropertyValue;
 
 use super::cow::{CowMap, CowOrdMap};
-use super::entity_index_store::ScopedPropertyKey;
+use super::entity_index_store::{ScopeKey, ScopedPropertyKey};
 use super::id_set::IdSet;
 use super::property_index::PropertyIndexKey;
+use super::str_postings::{StrKey, StrPostings, StrPostingsBuilder};
+use crate::scratch::ScratchVec;
 
 /// Sorted bucket: every value seen for an indexed property mapped to
 /// the ids carrying that value. The outer map is keyed by
@@ -55,11 +57,17 @@ pub(super) struct SortedPropertyIndex {
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct SortedScope {
-    /// Keyed by sortable property key. Values are ids in that bucket.
-    /// Copy-on-write partitions (see [`CowOrdMap`]): a write's staged
-    /// graph copy shares them and copies only the path (root, group,
-    /// partition) to the entry it changes.
+    /// Keyed by sortable property key, every key but strings (those are
+    /// in `strings`). Values are ids in that bucket. Copy-on-write
+    /// partitions (see [`CowOrdMap`]): a write's staged graph copy shares
+    /// them and copies only the path (root, group, partition) to the
+    /// entry it changes.
     pub(super) by_value: CowOrdMap<PropertyIndexKey, IdSet>,
+    /// String keys, packed: their own `Arc<str>` each cost a 58-byte key
+    /// about 110 bytes (G-64). Strings sort after numbers and before
+    /// byte strings, so reads splice them in between (see
+    /// [`SortedScope::entries`]).
+    pub(super) strings: StrPostings,
     /// Element → ids of the entities whose list value holds it (see
     /// "List elements" above). Empty unless the property holds lists.
     pub(super) by_element: CowMap<PropertyIndexKey, IdSet>,
@@ -68,6 +76,118 @@ pub(super) struct SortedScope {
     element_postings: usize,
     /// Refcount of catalog entries pointing at this scope.
     refcount: u32,
+}
+
+/// A key read from a scope: one of `by_value`'s, or a packed string.
+#[derive(Clone, Copy)]
+pub(super) enum KeyRef<'a> {
+    Key(&'a PropertyIndexKey),
+    Str(StrKey<'a>),
+}
+
+impl KeyRef<'_> {
+    /// Whether this is `key`.
+    fn is(&self, key: &PropertyIndexKey) -> bool {
+        match (self, key) {
+            (KeyRef::Key(k), key) => *k == key,
+            (KeyRef::Str(s), PropertyIndexKey::String(t)) => s.eq_str(t),
+            (KeyRef::Str(_), _) => false,
+        }
+    }
+
+    /// The key as `by_value` would hold it.
+    #[cfg(test)]
+    pub(super) fn to_key(self) -> PropertyIndexKey {
+        match self {
+            KeyRef::Key(k) => k.clone(),
+            KeyRef::Str(s) => PropertyIndexKey::String(s.to_arc()),
+        }
+    }
+}
+
+/// The smallest string key: every key `by_value` holds below it sorts
+/// before every string.
+fn first_string() -> &'static PropertyIndexKey {
+    static KEY: std::sync::OnceLock<PropertyIndexKey> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| PropertyIndexKey::String(std::sync::Arc::from("")))
+}
+
+/// The smallest key after every string: the empty byte string.
+fn after_strings() -> &'static PropertyIndexKey {
+    static KEY: std::sync::OnceLock<PropertyIndexKey> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        PropertyIndexKey::Binary(Box::new(crate::LoraBinary::from_bytes(Vec::new())))
+    })
+}
+
+/// Where `key` sorts against the strings: before them, among them or
+/// after them.
+fn against_strings(key: &PropertyIndexKey) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match key {
+        PropertyIndexKey::String(_) => Ordering::Equal,
+        key if key < first_string() => Ordering::Less,
+        _ => Ordering::Greater,
+    }
+}
+
+/// `bound` on the strings, if it lets any through: a bound below every
+/// string is no bound, one above them all admits none.
+fn string_bound(bound: &Bound<PropertyIndexKey>, lower: bool) -> Option<Bound<&str>> {
+    use std::cmp::Ordering;
+    let key = match bound {
+        Bound::Unbounded => return Some(Bound::Unbounded),
+        Bound::Included(k) | Bound::Excluded(k) => k,
+    };
+    match (key, against_strings(key)) {
+        (PropertyIndexKey::String(s), _) => Some(match bound {
+            Bound::Included(_) => Bound::Included(&**s),
+            _ => Bound::Excluded(&**s),
+        }),
+        (_, Ordering::Less) => lower.then_some(Bound::Unbounded),
+        _ => (!lower).then_some(Bound::Unbounded),
+    }
+}
+
+impl SortedScope {
+    /// Entries with keys in `(lower, upper)`, in key order (reversible):
+    /// `by_value`'s keys below the strings, the strings, then the rest.
+    pub(super) fn entries<'a>(
+        &'a self,
+        lower: &'a Bound<PropertyIndexKey>,
+        upper: &'a Bound<PropertyIndexKey>,
+    ) -> impl DoubleEndedIterator<Item = (KeyRef<'a>, &'a IdSet)> + 'a {
+        use std::cmp::Ordering;
+        // An inverted range is empty in every part: `range_by` and
+        // `StrPostings::range` check their own bounds.
+        let below_upper = match upper {
+            Bound::Included(u) | Bound::Excluded(u) if against_strings(u) == Ordering::Less => {
+                upper.as_ref()
+            }
+            _ => Bound::Excluded(first_string()),
+        };
+        let above_lower = match lower {
+            Bound::Included(l) | Bound::Excluded(l) if against_strings(l) == Ordering::Greater => {
+                lower.as_ref()
+            }
+            _ => Bound::Included(after_strings()),
+        };
+        let below = self.by_value.range_by(lower.as_ref(), below_upper);
+        let above = self.by_value.range_by(above_lower, upper.as_ref());
+        let strings = match (string_bound(lower, true), string_bound(upper, false)) {
+            (Some(l), Some(u)) => Some(self.strings.range(l, u)),
+            _ => None,
+        };
+        below
+            .map(|(k, ids)| (KeyRef::Key(k), ids))
+            .chain(
+                strings
+                    .into_iter()
+                    .flatten()
+                    .map(|(k, ids)| (KeyRef::Str(k), ids)),
+            )
+            .chain(above.map(|(k, ids)| (KeyRef::Key(k), ids)))
+    }
 }
 
 impl SortedPropertyIndex {
@@ -81,7 +201,7 @@ impl SortedPropertyIndex {
         !self.by_scope.is_empty()
             && scopes.into_iter().any(|scope| {
                 self.by_scope
-                    .contains_key(&ScopedPropertyKey::new(scope, property))
+                    .contains_key(&(scope, property) as &dyn ScopeKey)
             })
     }
 
@@ -97,7 +217,7 @@ impl SortedPropertyIndex {
 
     pub(super) fn has_scope(&self, label: &str, property: &str) -> bool {
         self.by_scope
-            .contains_key(&ScopedPropertyKey::new(label, property))
+            .contains_key(&(label, property) as &dyn ScopeKey)
     }
 
     /// Add `label`'s `property` scope as [`Self::add_scope`] does, holding
@@ -116,6 +236,7 @@ impl SortedPropertyIndex {
         let new = entry.refcount == 0;
         if new {
             entry.by_value = built.by_value;
+            entry.strings = built.strings;
             entry.by_element = built.by_element;
             entry.element_postings = built.element_postings;
         }
@@ -136,16 +257,25 @@ impl SortedPropertyIndex {
     /// Index `id` under a whole value: its key and, for a list, each
     /// of its elements.
     pub(super) fn insert(&mut self, label: &str, property: &str, id: u64, value: &PropertyValue) {
-        if let Some(scope) = self
-            .by_scope
-            .get_mut(&ScopedPropertyKey::new(label, property))
-        {
+        if let Some(scope) = self.by_scope.get_mut(&(label, property) as &dyn ScopeKey) {
+            if let PropertyValue::String(s) = value {
+                scope.strings.insert(s, id);
+                return;
+            }
             // A list holding a duration has no key as a whole, but its
             // other elements do.
             if let Some(key) = PropertyIndexKey::from_value(value) {
                 insert_id(scope, key, id);
             }
             insert_elements(scope, value, id);
+        }
+    }
+
+    /// Index `id` under the string `value`, read from a record without
+    /// making it a key.
+    pub(super) fn insert_str(&mut self, label: &str, property: &str, id: u64, value: &str) {
+        if let Some(scope) = self.by_scope.get_mut(&(label, property) as &dyn ScopeKey) {
+            scope.strings.insert(value, id);
         }
     }
 
@@ -159,10 +289,7 @@ impl SortedPropertyIndex {
         id: u64,
         key: PropertyIndexKey,
     ) {
-        if let Some(scope) = self
-            .by_scope
-            .get_mut(&ScopedPropertyKey::new(label, property))
-        {
+        if let Some(scope) = self.by_scope.get_mut(&(label, property) as &dyn ScopeKey) {
             insert_id(scope, key, id);
         }
     }
@@ -175,23 +302,32 @@ impl SortedPropertyIndex {
         old: Option<&PropertyValue>,
         new: Option<&PropertyValue>,
     ) {
-        let Some(scope) = self
-            .by_scope
-            .get_mut(&ScopedPropertyKey::new(label, property))
-        else {
+        let Some(scope) = self.by_scope.get_mut(&(label, property) as &dyn ScopeKey) else {
             return;
         };
-        if let Some(old) = old {
-            if let Some(key) = PropertyIndexKey::from_value(old) {
-                Self::remove_from_scope(scope, id, &key);
+        // Strings go to `strings` as they are: making them keys first
+        // allocated a copy per write, freed right after.
+        match old {
+            Some(PropertyValue::String(s)) => {
+                scope.strings.remove(s, id);
             }
-            remove_elements(scope, old, id);
+            Some(old) => {
+                if let Some(key) = PropertyIndexKey::from_value(old) {
+                    Self::remove_from_scope(scope, id, &key);
+                }
+                remove_elements(scope, old, id);
+            }
+            None => {}
         }
-        if let Some(new) = new {
-            if let Some(key) = PropertyIndexKey::from_value(new) {
-                insert_id(scope, key, id);
+        match new {
+            Some(PropertyValue::String(s)) => scope.strings.insert(s, id),
+            Some(new) => {
+                if let Some(key) = PropertyIndexKey::from_value(new) {
+                    insert_id(scope, key, id);
+                }
+                insert_elements(scope, new, id);
             }
-            insert_elements(scope, new, id);
+            None => {}
         }
     }
 
@@ -205,9 +341,7 @@ impl SortedPropertyIndex {
         property: &str,
         element: &PropertyValue,
     ) -> Option<Vec<u64>> {
-        let scope = self
-            .by_scope
-            .get(&ScopedPropertyKey::new(label, property))?;
+        let scope = self.by_scope.get(&(label, property) as &dyn ScopeKey)?;
         if matches!(element, PropertyValue::Null) {
             return Some(Vec::new());
         }
@@ -249,9 +383,7 @@ impl SortedPropertyIndex {
         lo: Option<&PropertyValue>,
         hi: Option<&PropertyValue>,
     ) -> Option<BTreeSet<u64>> {
-        let scope = self
-            .by_scope
-            .get(&ScopedPropertyKey::new(label, property))?;
+        let scope = self.by_scope.get(&(label, property) as &dyn ScopeKey)?;
         let (lower, upper) = probe_bounds(lo, hi)?;
         let mut out = BTreeSet::new();
         if let (Bound::Included(l), Bound::Included(u)) = (&lower, &upper) {
@@ -259,7 +391,7 @@ impl SortedPropertyIndex {
                 return Some(out);
             }
         }
-        extend_ids(&mut out, scope.by_value.range(lower, upper));
+        extend_ids(&mut out, scope.entries(&lower, &upper));
         Some(out)
     }
 
@@ -274,9 +406,7 @@ impl SortedPropertyIndex {
         property: &str,
         like: &PropertyValue,
     ) -> Option<Vec<u64>> {
-        let scope = self
-            .by_scope
-            .get(&ScopedPropertyKey::new(label, property))?;
+        let scope = self.by_scope.get(&(label, property) as &dyn ScopeKey)?;
         let Some(key) = PropertyIndexKey::from_value(like).filter(PropertyIndexKey::is_temporal)
         else {
             return Some(Vec::new());
@@ -286,18 +416,18 @@ impl SortedPropertyIndex {
         };
         let (floor, ceiling) = PropertyIndexKey::all_temporals();
         let mut out = BTreeSet::new();
-        extend_ids(
-            &mut out,
-            scope
-                .by_value
-                .range(Bound::Included(floor), Bound::Excluded(kind_floor)),
-        );
-        extend_ids(
-            &mut out,
-            scope
-                .by_value
-                .range(Bound::Excluded(kind_ceiling), Bound::Included(ceiling)),
-        );
+        // Temporals are never strings: `by_value` holds them all.
+        for (_, ids) in scope
+            .by_value
+            .range(Bound::Included(floor), Bound::Excluded(kind_floor))
+            .chain(
+                scope
+                    .by_value
+                    .range(Bound::Excluded(kind_ceiling), Bound::Included(ceiling)),
+            )
+        {
+            out.extend(ids.iter());
+        }
         Some(out.into_iter().collect())
     }
 
@@ -320,9 +450,7 @@ impl SortedPropertyIndex {
         after: Option<(&PropertyValue, u64)>,
         max: usize,
     ) -> Option<Vec<u64>> {
-        let scope = self
-            .by_scope
-            .get(&ScopedPropertyKey::new(label, property))?;
+        let scope = self.by_scope.get(&(label, property) as &dyn ScopeKey)?;
         let after = after.and_then(|(v, id)| PropertyIndexKey::from_value(v).map(|k| (k, id)));
 
         // Narrow the value range to start at the cursor's value.
@@ -342,8 +470,8 @@ impl SortedPropertyIndex {
 
         let mut out = Vec::with_capacity(max.min(1024));
         // Returns true once the chunk is full.
-        let mut push_bucket = |key: &PropertyIndexKey, ids: &IdSet| -> bool {
-            let cursor_id = after.as_ref().filter(|(k, _)| k == key).map(|(_, id)| *id);
+        let mut push_bucket = |key: KeyRef<'_>, ids: &IdSet| -> bool {
+            let cursor_id = after.as_ref().filter(|(k, _)| key.is(k)).map(|(_, id)| *id);
             for id in ids.iter_after(cursor_id, descending) {
                 if out.len() >= max {
                     return true;
@@ -352,7 +480,7 @@ impl SortedPropertyIndex {
             }
             out.len() >= max
         };
-        let range = scope.by_value.range(lower, upper);
+        let range = scope.entries(&lower, &upper);
         if descending {
             for (key, ids) in range.rev() {
                 if push_bucket(key, ids) {
@@ -370,6 +498,10 @@ impl SortedPropertyIndex {
     }
 
     fn remove_from_scope(scope: &mut SortedScope, id: u64, key: &PropertyIndexKey) {
+        if let PropertyIndexKey::String(s) = key {
+            scope.strings.remove(s, id);
+            return;
+        }
         let emptied = scope
             .by_value
             .get_mut(key)
@@ -411,6 +543,10 @@ fn probe_bounds(
 }
 
 fn insert_id(scope: &mut SortedScope, key: PropertyIndexKey, id: u64) {
+    if let PropertyIndexKey::String(s) = &key {
+        scope.strings.insert(s, id);
+        return;
+    }
     scope.by_value.upsert(
         key,
         || IdSet::new(id),
@@ -436,22 +572,25 @@ fn element_key(value: &PropertyValue) -> Option<PropertyIndexKey> {
 /// build allows) and filed in key order, as many inserts would have.
 pub(super) fn build_scope(
     mut values: Vec<(PropertyIndexKey, u64)>,
+    mut strings: ScratchVec<(&str, u64)>,
     mut elements: Vec<(PropertyIndexKey, u64)>,
 ) -> SortedScope {
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
     {
         use rayon::slice::ParallelSliceMut;
         values.par_sort_unstable();
+        strings.as_mut_slice().par_sort_unstable();
         elements.par_sort_unstable();
     }
     #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
     {
         values.sort_unstable();
+        strings.as_mut_slice().sort_unstable();
         elements.sort_unstable();
     }
     elements.dedup();
     fn grouped(
-        pairs: Vec<(PropertyIndexKey, u64)>,
+        pairs: impl IntoIterator<Item = (PropertyIndexKey, u64)>,
     ) -> impl Iterator<Item = (PropertyIndexKey, IdSet)> {
         let mut pairs = pairs.into_iter().peekable();
         std::iter::from_fn(move || {
@@ -468,8 +607,24 @@ pub(super) fn build_scope(
     for (key, ids) in grouped(elements) {
         by_element.insert(key, ids);
     }
+    // Strings come borrowed from the records, so the build allocates
+    // nothing per key: a key per string, freed once packed, left the
+    // open's heap full of holes.
+    debug_assert!(values
+        .iter()
+        .all(|(k, _)| !matches!(k, PropertyIndexKey::String(_))));
+    let mut packed = StrPostingsBuilder::default();
+    let mut pairs = strings.as_slice().iter().peekable();
+    while let Some(&(key, first)) = pairs.next() {
+        let mut ids = IdSet::new(first);
+        while let Some(&(_, id)) = pairs.next_if(|(next, _)| *next == key) {
+            ids.insert(id);
+        }
+        packed.push(key, ids);
+    }
     SortedScope {
         by_value: CowOrdMap::from_sorted(grouped(values)),
+        strings: packed.finish(),
         by_element,
         element_postings,
         refcount: 0,
@@ -517,10 +672,7 @@ fn remove_elements(scope: &mut SortedScope, value: &PropertyValue, id: u64) {
     }
 }
 
-fn extend_ids<'a>(
-    out: &mut BTreeSet<u64>,
-    iter: impl Iterator<Item = (&'a PropertyIndexKey, &'a IdSet)>,
-) {
+fn extend_ids<'a>(out: &mut BTreeSet<u64>, iter: impl Iterator<Item = (KeyRef<'a>, &'a IdSet)>) {
     for (_, ids) in iter {
         out.extend(ids.iter());
     }

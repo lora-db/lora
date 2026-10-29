@@ -587,6 +587,9 @@ pub enum ProjectionItem {
 pub struct SortItem {
     pub expr: Expr,
     pub direction: SortDirection,
+    /// `NULLS FIRST` / `NULLS LAST`, when written. `None` keeps Cypher's
+    /// default ([`SortDirection::default_nulls`]).
+    pub nulls: Option<NullsOrder>,
     pub span: Span,
 }
 
@@ -594,6 +597,32 @@ pub struct SortItem {
 pub enum SortDirection {
     Asc,
     Desc,
+}
+
+impl SortDirection {
+    /// Where nulls go when the sort item does not say: Cypher orders null
+    /// above every value, so last ascending and first descending.
+    pub fn default_nulls(self) -> NullsOrder {
+        match self {
+            SortDirection::Asc => NullsOrder::Last,
+            SortDirection::Desc => NullsOrder::First,
+        }
+    }
+
+    pub fn reversed(self) -> Self {
+        match self {
+            SortDirection::Asc => SortDirection::Desc,
+            SortDirection::Desc => SortDirection::Asc,
+        }
+    }
+}
+
+/// Where a sort key's nulls go (`ORDER BY x DESC NULLS LAST`), whichever
+/// the direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NullsOrder {
+    First,
+    Last,
 }
 
 #[derive(Debug, Clone)]

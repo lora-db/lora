@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::{analyzer::FunctionId, symbols::*};
 use lora_ast::{
-    BinaryOp, Direction, ListPredicateKind, RangeLiteral, SortDirection, Span, UnaryOp,
+    BinaryOp, Direction, ListPredicateKind, NullsOrder, RangeLiteral, SortDirection, Span, UnaryOp,
 };
 
 #[derive(Debug, Clone)]
@@ -189,6 +189,14 @@ pub struct ResolvedProjection {
 pub struct ResolvedSortItem {
     pub expr: ResolvedExpr,
     pub direction: SortDirection,
+    /// Where nulls go: as written, else the direction's default.
+    pub nulls: NullsOrder,
+}
+
+impl ResolvedSortItem {
+    pub fn nulls_last(&self) -> bool {
+        self.nulls == NullsOrder::Last
+    }
 }
 
 #[derive(Debug, Clone)]

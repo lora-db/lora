@@ -240,7 +240,9 @@ projection_item = { star | expression ~ (AS ~ variable)? }
 star = { STAR }
 
 order_clause = { ORDER ~ BY ~ sort_item ~ (comma ~ sort_item)* }
-sort_item = { expression ~ (ASCENDING | ASC | DESCENDING | DESC)? }
+sort_item = { expression ~ (ASCENDING | ASC | DESCENDING | DESC)? ~ nulls_order? }
+// GQL / SQL null placement. NULLS, FIRST and LAST stay usable as names.
+nulls_order = { NULLS ~ (FIRST | LAST) }
 skip_clause = { SKIP ~ expression }
 limit_clause = { LIMIT ~ expression }
 
@@ -571,6 +573,9 @@ CREATE = @{ ^"CREATE" ~ !ident_part }
 DELETE = @{ ^"DELETE" ~ !ident_part }
 DESC = @{ ^"DESC" ~ !ident_part }
 DESCENDING = @{ ^"DESCENDING" ~ !ident_part }
+FIRST = @{ ^"FIRST" ~ !ident_part }
+LAST = @{ ^"LAST" ~ !ident_part }
+NULLS = @{ ^"NULLS" ~ !ident_part }
 DETACH = @{ ^"DETACH" ~ !ident_part }
 DISTINCT = @{ ^"DISTINCT" ~ !ident_part }
 EXISTS = @{ ^"EXISTS" ~ !ident_part }

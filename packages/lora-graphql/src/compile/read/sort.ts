@@ -28,10 +28,25 @@ import { refuseRowRules } from "./common.js";
 export interface SortKey {
   field: ScalarField;
   direction: "ASC" | "DESC";
+  /**
+   * Where nulls go (`@sortable(nulls:)`), flipped with the direction on a
+   * backward page. Unset: Cypher's order, last ascending, first descending.
+   */
+  nulls?: "FIRST" | "LAST" | undefined;
   /** A relationship property (`sort: [{ edge: { ... } }]`), not a node field. */
   edge?: boolean;
   /** For a computed (`@cypher`) field: the variable holding its value. */
   computed?: string;
+}
+
+/** Whether `k`'s nulls come after every value in its order. */
+export function nullsLast(k: SortKey): boolean {
+  return k.nulls ? k.nulls === "LAST" : k.direction === "ASC";
+}
+
+/** `@sortable(nulls:)` of a field that can hold null, as a sort key's. */
+function declaredNulls(field: ScalarField): Pick<SortKey, "nulls"> {
+  return field.sortNulls && !field.required ? { nulls: field.sortNulls } : {};
 }
 
 /** The value a sort key orders by: `node.prop`, or `rel.prop` for edge keys. */
@@ -110,7 +125,12 @@ export function resolveSort(
           `\`sort\` names edge.${propName} more than once`,
         );
       }
-      keys.push({ field, direction: dir as "ASC" | "DESC", edge: true });
+      keys.push({
+        field,
+        direction: dir as "ASC" | "DESC",
+        ...declaredNulls(field),
+        edge: true,
+      });
       continue;
     }
     const declared = node.fields.get(fieldName)!;
@@ -127,7 +147,11 @@ export function resolveSort(
         `\`sort\` names ${fieldName} more than once`,
       );
     }
-    keys.push({ field, direction: direction as "ASC" | "DESC" });
+    keys.push({
+      field,
+      direction: direction as "ASC" | "DESC",
+      ...declaredNulls(field),
+    });
     // A unique, always-present field orders totally: later items could
     // never break a tie. (Unique fields may repeat null, so a nullable
     // one still needs the key.)
@@ -183,6 +207,12 @@ export function resolvePage(
     ? requested.map((k) => ({
         ...k,
         direction: k.direction === "ASC" ? ("DESC" as const) : ("ASC" as const),
+        ...(k.nulls
+          ? {
+              nulls:
+                k.nulls === "LAST" ? ("FIRST" as const) : ("LAST" as const),
+            }
+          : {}),
       }))
     : requested;
   return { first, sort, signature, cursor, backward };
@@ -190,7 +220,10 @@ export function resolvePage(
 
 export function sortSignature(sort: SortKey[]): string {
   return sort
-    .map((k) => `${k.edge ? "edge." : ""}${k.field.name}:${k.direction}`)
+    .map(
+      (k) =>
+        `${k.edge ? "edge." : ""}${k.field.name}:${k.direction}${k.nulls ? `:NULLS_${k.nulls}` : ""}`,
+    )
     .join(",");
 }
 
@@ -202,6 +235,7 @@ export function sortItems(
   return sort.map((k) => ({
     expr: keyExpr(k, variable, edge),
     direction: k.direction,
+    ...(k.nulls ? { nulls: k.nulls } : {}),
   }));
 }
 
@@ -223,8 +257,13 @@ export function leadBound(k: SortKey): boolean {
 
 /**
  * Rows strictly after `values` in `sort` order, written out term by term
- * (`[a, b] > $list` silently matches nothing in LoraDB). Null ordering
- * follows Cypher: nulls last ascending, first descending.
+ * (`[a, b] > $list` silently matches nothing in LoraDB). Nulls go where
+ * each key puts them (`nullsLast`).
+ *
+ * A non-null lead value also bounds the lead (`p <= $v AND (...)`) so the
+ * planner can seek it. When a nullable lead's nulls come last they are a
+ * disjunct of their own, `(p <= $v AND (...)) OR p IS NULL`, which LoraDB
+ * walks as the range index and then the label's nulls (G-77).
  */
 export function keysetPredicate(
   ctx: CompileContext,
@@ -236,29 +275,30 @@ export function keysetPredicate(
   const branches: Expr[] = [];
   const equal: Expr[] = [];
   let lead: Expr | undefined;
+  let leadNulls: Expr | undefined;
   sort.forEach((k, i) => {
     const target = keyExpr(k, variable, edge);
     const value = values[i];
     const p = value === null ? undefined : bind(ctx, value);
     const present = leadBound(k);
+    const last = nullsLast(k);
     let after: Expr | undefined;
     if (p === undefined) {
-      // Past a null: ascending, nothing but more nulls; descending, every
-      // non-null value.
-      after = k.direction === "ASC" ? undefined : isNull(target, true);
-    } else if (k.direction === "ASC") {
-      after = present
-        ? bin(">", target, p)
-        : or(bin(">", target, p), isNull(target));
+      // Past a null: with nulls last, nothing but more nulls; with nulls
+      // first, every non-null value.
+      after = last ? undefined : isNull(target, true);
     } else {
-      after = bin("<", target, p);
+      after = bin(k.direction === "ASC" ? ">" : "<", target, p);
+      // The nulls after every value: the lead's get a disjunct of their own.
+      if (last && !present && i > 0) after = or(after, isNull(target));
     }
     if (after) branches.push(and(...equal, after)!);
     equal.push(p === undefined ? isNull(target) : bin("=", target, p));
-    if (i === 0 && p !== undefined && present) {
+    if (i === 0 && p !== undefined) {
       lead = bin(k.direction === "ASC" ? ">=" : "<=", target, p);
+      if (last && !present) leadNulls = isNull(target);
     }
   });
   const disjunction = or(...branches) ?? lit(false);
-  return and(lead, disjunction);
+  return or(and(lead, disjunction), leadNulls);
 }

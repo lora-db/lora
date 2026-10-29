@@ -41,7 +41,8 @@ export declare class Database {
    */
   execute(
     query: string,
-    params?: Record<string, unknown> | null,
+    /** An object, or the params as JSON text (parsed on the worker). */
+    params?: Record<string, unknown> | string | null,
     timeoutMs?: number | null,
     cancelToken?: number | null,
   ): Promise<Buffer>;

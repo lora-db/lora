@@ -136,6 +136,8 @@ pub struct NodeByPropertyRangeScanExec {
     /// scan: rows must come out in that order (from the index when it can
     /// supply it, otherwise sorted by the operator itself).
     pub order: Option<lora_ast::SortDirection>,
+    /// See [`crate::logical::NodeByPropertyRangeScan::nulls`].
+    pub nulls: Option<lora_ast::NullsOrder>,
 }
 
 #[derive(Debug, Clone)]
@@ -277,6 +279,8 @@ pub struct SortExec {
     /// Run-time bound from a parent `LIMIT $n` (see
     /// [`crate::logical::Sort::limit`]).
     pub limit: Option<crate::logical::SortLimit>,
+    /// See [`crate::logical::Sort::presorted`].
+    pub presorted: usize,
 }
 
 #[derive(Debug, Clone)]

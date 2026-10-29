@@ -18,8 +18,8 @@ use std::collections::BTreeMap;
 
 use anyhow::{anyhow, Result};
 use lora_ast::{
-    BinaryOp, Expr, ProjectionItem, ShowPipeline, ShowReturn, ShowYield, SortDirection, SortItem,
-    UnaryOp,
+    BinaryOp, Expr, NullsOrder, ProjectionItem, ShowPipeline, ShowReturn, ShowYield, SortDirection,
+    SortItem, UnaryOp,
 };
 use lora_executor::{LoraValue, Row};
 
@@ -138,13 +138,21 @@ fn apply_sort_skip_limit(
             })
             .collect::<Result<_>>()?;
         keyed.sort_by(|a, b| {
-            for (i, dir) in order.iter().map(|si| si.direction).enumerate() {
-                let ord = compare_values(&a.0[i], &b.0[i]);
+            for (i, si) in order.iter().enumerate() {
+                let nulls = si.nulls.unwrap_or(si.direction.default_nulls());
+                let ord = match (&a.0[i], &b.0[i]) {
+                    (LoraValue::Null, LoraValue::Null) => Ordering::Equal,
+                    (LoraValue::Null, _) if nulls == NullsOrder::Last => Ordering::Greater,
+                    (LoraValue::Null, _) => Ordering::Less,
+                    (_, LoraValue::Null) if nulls == NullsOrder::Last => Ordering::Less,
+                    (_, LoraValue::Null) => Ordering::Greater,
+                    (x, y) => match si.direction {
+                        SortDirection::Asc => compare_values(x, y),
+                        SortDirection::Desc => compare_values(x, y).reverse(),
+                    },
+                };
                 if ord != Ordering::Equal {
-                    return match dir {
-                        SortDirection::Asc => ord,
-                        SortDirection::Desc => ord.reverse(),
-                    };
+                    return ord;
                 }
             }
             Ordering::Equal

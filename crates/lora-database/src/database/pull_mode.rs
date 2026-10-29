@@ -42,6 +42,11 @@ fn subtree_contains_blocking_limit_input_at(
         });
     }
     match &plan.nodes[node_id] {
+        // A partial sort holds one run of equal first keys at a time and
+        // stops reading once its bound is met.
+        PhysicalOp::Sort(op) if op.presorted > 0 => {
+            subtree_contains_blocking_limit_input_at(plan, op.input, depth + 1)
+        }
         PhysicalOp::Sort(_)
         | PhysicalOp::HashAggregation(_)
         | PhysicalOp::OptionalMatch(_)

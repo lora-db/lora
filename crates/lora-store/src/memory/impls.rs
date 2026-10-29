@@ -78,6 +78,15 @@ impl GraphStorage for InMemoryGraph {
             .unwrap_or_default()
     }
 
+    fn combines_property_writes(&self) -> bool {
+        !self.has_active_constraints()
+            || self
+                .constraint_catalog_read()
+                .list()
+                .iter()
+                .all(|c| c.properties.len() <= 1)
+    }
+
     fn list_constraints(&self) -> Vec<ConstraintDefinition> {
         self.constraint_catalog_read().list()
     }
@@ -1152,6 +1161,45 @@ impl GraphStorageMut for InMemoryGraph {
             value: value.clone(),
         });
 
+        true
+    }
+
+    fn update_node_properties(
+        &mut self,
+        node_id: NodeId,
+        edits: Vec<(String, Option<PropertyValue>)>,
+    ) -> bool {
+        let Some(olds) = self.edit_node_properties(node_id, &edits) else {
+            return false;
+        };
+        let Some(labels) = self.node_at(node_id).map(|node| node.labels().to_owned()) else {
+            return false;
+        };
+        for ((key, value), old) in edits.into_iter().zip(olds) {
+            // A remove that found nothing changed nothing.
+            let Some(old) = old else { continue };
+            match value {
+                Some(value) => {
+                    self.on_labelled_node_property_set(
+                        &labels,
+                        node_id,
+                        &key,
+                        old.as_ref(),
+                        &value,
+                    );
+                    self.emit(|| MutationEvent::SetNodeProperty {
+                        node_id,
+                        key,
+                        value,
+                    });
+                }
+                None => {
+                    let old = old.expect("a remove that changed the record had a value");
+                    self.on_labelled_node_property_removed(&labels, node_id, &key, &old);
+                    self.emit(|| MutationEvent::RemoveNodeProperty { node_id, key });
+                }
+            }
+        }
         true
     }
 

@@ -658,6 +658,14 @@ pub trait GraphStorage {
 
     /// List explicitly-declared constraints. Backends without a
     /// constraint catalog return the empty vector.
+    /// Whether a statement may store several property writes to one entity
+    /// as one ([`GraphStorageMut::update_node_properties`]) with the same
+    /// result as writing them in turn: each write's constraint check must
+    /// not depend on another property, so no constraint spans two.
+    fn combines_property_writes(&self) -> bool {
+        false
+    }
+
     fn list_constraints(&self) -> Vec<ConstraintDefinition> {
         Vec::new()
     }
@@ -1111,6 +1119,31 @@ pub trait GraphStorageMut: GraphStorage {
     fn set_node_property(&mut self, node_id: NodeId, key: String, value: PropertyValue) -> bool;
 
     fn remove_node_property(&mut self, node_id: NodeId, key: &str) -> bool;
+
+    /// Set (`Some`) or remove (`None`) several properties of a node, in
+    /// order, as one [`Self::set_node_property`] or
+    /// [`Self::remove_node_property`] per edit would. A backend may store
+    /// them as one write. Returns whether the node exists.
+    fn update_node_properties(
+        &mut self,
+        node_id: NodeId,
+        edits: Vec<(String, Option<PropertyValue>)>,
+    ) -> bool {
+        if !self.contains_node(node_id) {
+            return false;
+        }
+        for (key, value) in edits {
+            match value {
+                Some(value) => {
+                    self.set_node_property(node_id, key, value);
+                }
+                None => {
+                    self.remove_node_property(node_id, &key);
+                }
+            }
+        }
+        true
+    }
 
     fn add_node_label(&mut self, node_id: NodeId, label: &str) -> bool;
     fn remove_node_label(&mut self, node_id: NodeId, label: &str) -> bool;

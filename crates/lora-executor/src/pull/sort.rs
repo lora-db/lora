@@ -2,13 +2,18 @@
 //!
 //! - [`SortSource`] — drains upstream on first pull, sorts the buffer
 //!   in place, then yields rows lazily.
+//! - [`PartialSortSource`] — a sort whose input already arrives in order
+//!   of its first keys: sorts one run of equal first keys at a time.
 //! - [`LimitSource`] — `SKIP` / `LIMIT`. Fully streaming.
+
+use std::cmp::Ordering;
 
 use lora_store::GraphStorage;
 
 use crate::errors::ExecResult;
-use crate::executor::{sort_checked, SortBuffer};
-use crate::value::Row;
+use crate::eval::eval_expr;
+use crate::executor::{compare_sort_key, sort_checked, SortBuffer};
+use crate::value::{LoraValue, Row};
 
 use super::{RowSource, StreamCtx};
 
@@ -141,6 +146,125 @@ impl<'a, S: GraphStorage> RowSource for SortSource<'a, S> {
                     // fall through to the Yielding match on the next iteration.
                 }
                 SortState::Yielding(it) => return Ok(it.next()),
+            }
+        }
+    }
+}
+
+/// Sort whose input arrives ordered by its first `presorted` keys (an
+/// ordered index walk under it): rows are read one run of equal first
+/// keys at a time, and each run is sorted by all the keys (so by the
+/// remaining ones) before it is yielded. Under a bound (`ORDER BY ...
+/// LIMIT k`) it stops reading once `k` rows are out or queued from
+/// complete runs: about `k` rows plus the last run and one row of the
+/// next, instead of the whole input.
+///
+/// The order is the full stable sort's on that input: runs come in
+/// input order, which is the first keys' order, and within a run the
+/// buffer orders by every key, ties by arrival.
+pub struct PartialSortSource<'a, S: GraphStorage> {
+    upstream: Box<dyn RowSource + 'a>,
+    ctx: StreamCtx<'a, S>,
+    items: &'a [lora_analyzer::ResolvedSortItem],
+    presorted: usize,
+    /// Rows still to yield, or `None` for no bound.
+    remaining: Option<usize>,
+    /// The sorted run being yielded.
+    ready: std::vec::IntoIter<Row>,
+    /// The first row of the next run, with its first keys.
+    lookahead: Option<(Vec<LoraValue>, Row)>,
+    exhausted: bool,
+}
+
+impl<'a, S: GraphStorage> PartialSortSource<'a, S> {
+    pub(super) fn new(
+        upstream: Box<dyn RowSource + 'a>,
+        ctx: StreamCtx<'a, S>,
+        items: &'a [lora_analyzer::ResolvedSortItem],
+        presorted: usize,
+        bound: Option<usize>,
+    ) -> Self {
+        Self {
+            upstream,
+            ctx,
+            items,
+            presorted: presorted.min(items.len()),
+            remaining: bound,
+            ready: Vec::new().into_iter(),
+            lookahead: None,
+            exhausted: false,
+        }
+    }
+
+    fn lead_keys(&self, row: &Row) -> ExecResult<Vec<LoraValue>> {
+        let eval_ctx = self.ctx.eval_ctx();
+        sort_checked(|| {
+            self.items[..self.presorted]
+                .iter()
+                .map(|item| eval_expr(&item.expr, row, &eval_ctx))
+                .collect()
+        })
+    }
+
+    fn same_run(&self, a: &[LoraValue], b: &[LoraValue]) -> bool {
+        self.items[..self.presorted]
+            .iter()
+            .zip(a.iter().zip(b))
+            .all(|(item, (x, y))| compare_sort_key(item, x, y) == Ordering::Equal)
+    }
+
+    /// Read the next run and sort it into `ready`. False at the end.
+    fn next_run(&mut self) -> ExecResult<bool> {
+        let first = match self.lookahead.take() {
+            Some(first) => first,
+            None => {
+                if self.exhausted {
+                    return Ok(false);
+                }
+                match self.upstream.next_row()? {
+                    Some(row) => (self.lead_keys(&row)?, row),
+                    None => {
+                        self.exhausted = true;
+                        return Ok(false);
+                    }
+                }
+            }
+        };
+        let (run_keys, row) = first;
+        let eval_ctx = self.ctx.eval_ctx();
+        let mut buffer = SortBuffer::new(self.items, self.remaining);
+        sort_checked(|| buffer.push(row, &eval_ctx))?;
+        loop {
+            let Some(row) = self.upstream.next_row()? else {
+                self.exhausted = true;
+                break;
+            };
+            let keys = self.lead_keys(&row)?;
+            if !self.same_run(&run_keys, &keys) {
+                self.lookahead = Some((keys, row));
+                break;
+            }
+            sort_checked(|| buffer.push(row, &eval_ctx))?;
+        }
+        self.ready = buffer.finish().into_iter();
+        Ok(true)
+    }
+}
+
+impl<'a, S: GraphStorage> RowSource for PartialSortSource<'a, S> {
+    fn next_row(&mut self) -> ExecResult<Option<Row>> {
+        loop {
+            if self.remaining == Some(0) {
+                return Ok(None);
+            }
+            if let Some(row) = self.ready.next() {
+                if let Some(remaining) = self.remaining.as_mut() {
+                    *remaining -= 1;
+                }
+                return Ok(Some(row));
+            }
+            if !self.next_run()? {
+                return Ok(None);
             }
         }
     }

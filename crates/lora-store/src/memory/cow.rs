@@ -1186,6 +1186,86 @@ impl<K: Ord + Clone, V: Clone, const PART: usize> CowOrdMap<K, V, PART> {
             .flat_map(move |(_, part)| part.range(&lower, &upper))
     }
 
+    /// The entry with the greatest key `<= key`, if any.
+    pub(super) fn floor<Q>(&self, key: &Q) -> Option<(&K, &V)>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        if self.groups.is_empty() {
+            return None;
+        }
+        // `locate` picks the partition whose minimum is the greatest
+        // `<= key`, or the first when `key` precedes every key.
+        let (g, p) = self.locate(key);
+        let entries = &self.groups[g].1[p].1.entries;
+        let at = entries.partition_point(|(k, _)| k.borrow() <= key);
+        at.checked_sub(1).map(|i| {
+            let (k, v) = &entries[i];
+            (k, v)
+        })
+    }
+
+    /// [`Self::range`] with borrowed bounds, so a map keyed by `Arc<str>`
+    /// is probed with a `&str` without allocating one.
+    pub(super) fn range_by<'a, Q>(
+        &'a self,
+        lower: std::ops::Bound<&'a Q>,
+        upper: std::ops::Bound<&'a Q>,
+    ) -> impl DoubleEndedIterator<Item = (&'a K, &'a V)> + 'a
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        use std::ops::Bound;
+        let empty = match (lower, upper) {
+            (Bound::Included(l), Bound::Included(u)) => l > u,
+            (Bound::Included(l) | Bound::Excluded(l), Bound::Included(u) | Bound::Excluded(u)) => {
+                l >= u
+            }
+            _ => false,
+        };
+        let span = if empty || self.groups.is_empty() {
+            None
+        } else {
+            let first = match lower {
+                Bound::Included(k) | Bound::Excluded(k) => self.locate(k),
+                Bound::Unbounded => (0, 0),
+            };
+            let last = match upper {
+                Bound::Included(k) | Bound::Excluded(k) => self.locate(k),
+                Bound::Unbounded => {
+                    let g = self.groups.len() - 1;
+                    (g, self.groups[g].1.len() - 1)
+                }
+            };
+            (first <= last).then_some((first, last))
+        };
+        let ((gf, pf), (gl, pl)) = span.unwrap_or(((1, 0), (0, 0)));
+        let groups = &self.groups[..];
+        (gf..=gl)
+            .flat_map(move |g| {
+                let group = &groups[g].1;
+                let from = if g == gf { pf } else { 0 };
+                let to = if g == gl { pl } else { group.len() - 1 };
+                group[from..=to].iter()
+            })
+            .flat_map(move |(_, part)| {
+                let entries = &part.entries;
+                let from = match lower {
+                    Bound::Included(l) => entries.partition_point(|(k, _)| k.borrow() < l),
+                    Bound::Excluded(l) => entries.partition_point(|(k, _)| k.borrow() <= l),
+                    Bound::Unbounded => 0,
+                };
+                let to = match upper {
+                    Bound::Included(u) => entries.partition_point(|(k, _)| k.borrow() <= u),
+                    Bound::Excluded(u) => entries.partition_point(|(k, _)| k.borrow() < u),
+                    Bound::Unbounded => entries.len(),
+                };
+                entries[from..to.max(from)].iter().map(|(k, v)| (k, v))
+            })
+    }
+
     pub(super) fn iter(&self) -> impl DoubleEndedIterator<Item = (&K, &V)> + '_ {
         self.groups
             .iter()

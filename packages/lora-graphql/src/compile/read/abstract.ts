@@ -43,6 +43,8 @@ import { projectNode } from "./project.js";
 interface MemberSort {
   name: string;
   direction: "ASC" | "DESC";
+  /** `@sortable(nulls:)` of the field, as declared on the interface. */
+  nulls?: "FIRST" | "LAST" | undefined;
 }
 
 function resolveAbstractSort(
@@ -67,7 +69,14 @@ function resolveAbstractSort(
         refuseRowRules(ctx, ctx.model.nodes.get(member)!, f, "sort by");
       }
     }
-    keys.push({ name, direction: direction as "ASC" | "DESC" });
+    const declared = abstract.fields.get(name);
+    keys.push({
+      name,
+      direction: direction as "ASC" | "DESC",
+      ...(declared?.sortNulls && !declared.required
+        ? { nulls: declared.sortNulls }
+        : {}),
+    });
   }
   return keys;
 }
@@ -100,7 +109,11 @@ function memberList(
   const sortExprs: SortItem[] = [
     ...sort.map((k) => {
       const f = member.fields.get(k.name) as ScalarField;
-      return { expr: prop(v(x), f.property), direction: k.direction };
+      return {
+        expr: prop(v(x), f.property),
+        direction: k.direction,
+        nulls: k.nulls,
+      };
     }),
     { expr: prop(v(x), member.key.property), direction: "ASC" as const },
   ];
@@ -141,6 +154,7 @@ function mergedOrder(item: string, sort: MemberSort[]): SortItem[] {
     ...sort.map((k, i) => ({
       expr: prop(v(item), `__s${i}`),
       direction: k.direction,
+      nulls: k.nulls,
     })),
     { expr: prop(v(item), "__typename"), direction: "ASC" as const },
     { expr: prop(v(item), "__key"), direction: "ASC" as const },
