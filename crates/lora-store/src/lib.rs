@@ -10,6 +10,7 @@ mod encoded;
 pub mod intern;
 mod memory;
 mod mutation;
+pub mod scratch;
 mod snapshot;
 mod traits;
 pub mod types;

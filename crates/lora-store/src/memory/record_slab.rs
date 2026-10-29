@@ -473,11 +473,21 @@ fn empty_leaf() -> &'static Arc<Leaf> {
 
 /// Records in whole leaves, built apart from any slab (on another thread)
 /// for [`RecordSlab::put_leaves`]. Slots must be pushed in ascending order.
+///
+/// A segment's records are staged in a buffer the builder reuses and get
+/// one allocation of their exact size once the segment is complete. Filed
+/// through [`Leaf::set`], a leaf's first segment grew by rebuilds (300
+/// bytes, 600, ... 10 KiB), and the outgrown buffers, freed between the
+/// segments a loaded graph keeps, left a snapshot open holding about 1.6
+/// times its heap (G-64).
 #[derive(Default)]
 pub(super) struct BuiltLeaves {
-    leaves: Vec<(usize, Leaf)>,
+    leaves: Vec<(usize, Arc<Leaf>)>,
     last: Option<usize>,
     records: usize,
+    /// The segment being staged: `(leaf position, segment)`.
+    staging: Option<(usize, usize)>,
+    stage: Vec<u8>,
 }
 
 impl BuiltLeaves {
@@ -485,13 +495,59 @@ impl BuiltLeaves {
     pub(super) fn push(&mut self, i: usize, bytes: &[u8]) {
         debug_assert!(self.last.is_none_or(|last| last < i));
         let at = i >> SHIFT;
+        let slot = i & MASK;
+        let seg = segment_of(slot);
+        if self.staging != Some((at, seg)) {
+            self.flush();
+            self.staging = Some((at, seg));
+        }
         if self.leaves.last().is_none_or(|(l, _)| *l != at) {
-            self.leaves.push((at, Leaf::new()));
+            self.leaves.push((at, Arc::new(Leaf::new())));
         }
         let (_, leaf) = self.leaves.last_mut().expect("pushed above");
-        leaf.set(i & MASK, bytes);
+        let leaf = Arc::get_mut(leaf).expect("a built leaf is unshared");
+        if bytes.len() >= LARGE_MIN {
+            leaf.live += 1;
+            leaf.push_loose(slot, bytes);
+        } else {
+            let mut pos = self.stage.len();
+            self.stage
+                .resize(pos + varint::len(bytes.len() as u64) + bytes.len(), 0);
+            leaf.offsets[slot] = pos as u32;
+            varint::write(&mut self.stage, &mut pos, bytes.len() as u64);
+            self.stage[pos..].copy_from_slice(bytes);
+            leaf.live += 1;
+        }
         self.last = Some(i);
         self.records += 1;
+    }
+
+    /// Give the staged segment its buffer.
+    fn flush(&mut self) {
+        let Some((at, seg)) = self.staging.take() else {
+            return;
+        };
+        if self.stage.is_empty() {
+            return;
+        }
+        let (l, leaf) = self
+            .leaves
+            .last_mut()
+            .expect("a staged segment has its leaf");
+        debug_assert_eq!(*l, at);
+        let leaf = Arc::get_mut(leaf).expect("a built leaf is unshared");
+        leaf.segments[seg] = Segment {
+            buf: Some(Arc::from(self.stage.as_slice())),
+            len: self.stage.len() as u32,
+            garbage: 0,
+        };
+        self.stage.clear();
+    }
+
+    /// The leaves, every segment given its buffer.
+    fn into_leaves(mut self) -> Vec<(usize, Arc<Leaf>)> {
+        self.flush();
+        self.leaves
     }
 
     /// The highest slot pushed.
@@ -590,14 +646,14 @@ impl RecordSlab {
     pub(super) fn put_leaves(&mut self, built: BuiltLeaves) -> Result<usize, usize> {
         let empty = empty_leaf();
         let mut stored = 0;
-        for (at, leaf) in built.leaves {
+        for (at, leaf) in built.into_leaves() {
             let i = at * CHUNK;
             assert!(i < self.len, "record leaf {at} out of bounds");
             let node = &mut Arc::make_mut(&mut self.root)[i >> SPAN_SHIFT];
             let place = &mut Arc::make_mut(node)[at & FAN_MASK];
             if Arc::ptr_eq(place, empty) || place.live == 0 {
                 stored += leaf.live as usize;
-                *place = Arc::new(leaf);
+                *place = leaf;
                 continue;
             }
             let target = Arc::make_mut(place);

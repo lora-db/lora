@@ -44,6 +44,7 @@ mod secondary_index_maintenance;
 mod snapshot;
 mod sorted_property_index;
 mod stats;
+mod str_postings;
 mod text_index;
 mod vector_index;
 

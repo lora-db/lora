@@ -50,6 +50,7 @@ use lora_store::codec::{
     decode_constraint_definitions, decode_index_definitions, decode_property_value,
     encode_property_value,
 };
+use lora_store::scratch::ScratchBytes;
 use lora_store::{
     InMemoryGraph, Name, NodeBatch, PropertyValue, RelationshipBatch, SnapshotEncoder,
     SnapshotGraphBuilder, SnapshotNames, ValueDictionary, ValueKeyState, ValueRef,
@@ -651,7 +652,7 @@ enum Decoded {
     Relationships(RelationshipBatch),
 }
 
-fn inflate(frame: &StoredFrame, compression: Compression) -> Result<Vec<u8>> {
+fn inflate(frame: &StoredFrame, compression: Compression) -> Result<ScratchBytes> {
     match compression {
         Compression::None => {
             if frame.stored.len() as u64 != frame.raw_len {
@@ -659,7 +660,7 @@ fn inflate(frame: &StoredFrame, compression: Compression) -> Result<Vec<u8>> {
                     "snapshot frame length mismatch".into(),
                 ));
             }
-            Ok(frame.stored.clone())
+            Ok(ScratchBytes::from_vec(frame.stored.clone()))
         }
         Compression::Gzip { .. } => {
             // The buffered decoder reads no further than its stream ends.
@@ -687,7 +688,44 @@ fn inflate(frame: &StoredFrame, compression: Compression) -> Result<Vec<u8>> {
 
 /// Inflate exactly `raw_len` bytes from `decoder`: a frame that inflates
 /// to more or fewer fails, having allocated no more than it produced.
-fn read_inflated(decoder: impl Read, raw_len: u64) -> Result<Vec<u8>> {
+///
+/// A frame of up to [`MAX_PREALLOC`] bytes inflates into a buffer of its
+/// size, which on macOS is pages of its own when it is large, unmapped
+/// when the frame is decoded: a `Vec` per frame left the open holding
+/// those malloc kept for reuse (G-64). Mapped pages cost memory only as
+/// they are written, so a frame that claims more than it inflates to
+/// costs no more than it produced either.
+fn read_inflated(mut decoder: impl Read, raw_len: u64) -> Result<ScratchBytes> {
+    let mismatch = || SnapshotCodecError::Decode("snapshot frame length mismatch".into());
+    let read_error = |e: std::io::Error| SnapshotCodecError::Decode(format!("snapshot frame: {e}"));
+    let len = usize::try_from(raw_len).unwrap_or(usize::MAX);
+    #[cfg(target_os = "macos")]
+    let exact = (ScratchBytes::MAPPED_MIN..=MAX_PREALLOC).contains(&len);
+    #[cfg(not(target_os = "macos"))]
+    let exact = false;
+    if exact {
+        let mut raw = ScratchBytes::zeroed(len).ok_or_else(|| {
+            SnapshotCodecError::Decode(format!("cannot allocate a {len}-byte snapshot frame"))
+        })?;
+        let mut filled = 0;
+        while filled < len {
+            match decoder.read(&mut raw[filled..]) {
+                Ok(0) => return Err(mismatch()),
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(read_error(e)),
+            }
+        }
+        let mut probe = [0u8; 1];
+        loop {
+            match decoder.read(&mut probe) {
+                Ok(0) => return Ok(raw),
+                Ok(_) => return Err(mismatch()),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(read_error(e)),
+            }
+        }
+    }
     let mut raw = Vec::with_capacity(
         usize::try_from(raw_len)
             .unwrap_or(usize::MAX)
@@ -696,13 +734,11 @@ fn read_inflated(decoder: impl Read, raw_len: u64) -> Result<Vec<u8>> {
     decoder
         .take(raw_len.saturating_add(1))
         .read_to_end(&mut raw)
-        .map_err(|e| SnapshotCodecError::Decode(format!("snapshot frame: {e}")))?;
+        .map_err(read_error)?;
     if raw.len() as u64 != raw_len {
-        return Err(SnapshotCodecError::Decode(
-            "snapshot frame length mismatch".into(),
-        ));
+        return Err(mismatch());
     }
-    Ok(raw)
+    Ok(ScratchBytes::from_vec(raw))
 }
 
 /// A compressed frame holds one compressed stream and nothing after it, so
@@ -720,7 +756,7 @@ fn expect_consumed(rest: &[u8]) -> Result<()> {
 /// A zstd frame inflated by the pure-Rust decoder, where the C library is
 /// not built (wasm).
 #[cfg(any(target_arch = "wasm32", test))]
-fn inflate_zstd_portable(frame: &StoredFrame) -> Result<Vec<u8>> {
+fn inflate_zstd_portable(frame: &StoredFrame) -> Result<ScratchBytes> {
     let mut stored = frame.stored.as_slice();
     let decoder = ruzstd::streaming_decoder::StreamingDecoder::new(&mut stored)
         .map_err(|e| SnapshotCodecError::Decode(format!("snapshot frame: {e}")))?;
@@ -734,11 +770,15 @@ fn decode_frame(
     frame: StoredFrame,
     compression: Compression,
 ) -> Result<Decoded> {
-    let raw = match compression {
-        Compression::None if frame.stored.len() as u64 == frame.raw_len => frame.stored,
-        _ => inflate(&frame, compression)?,
+    let inflated;
+    let raw: &[u8] = match compression {
+        Compression::None if frame.stored.len() as u64 == frame.raw_len => &frame.stored,
+        _ => {
+            inflated = inflate(&frame, compression)?;
+            &inflated
+        }
     };
-    let mut cursor = Cursor::new(&raw);
+    let mut cursor = Cursor::new(raw);
     // Each record takes at least a byte.
     if frame.records > raw.len() as u64 {
         return Err(truncated_frame());
@@ -887,7 +927,7 @@ fn read_round<R: Read>(
             stored,
         };
         if kind == FRAME_CATALOG {
-            round.catalog = Some(inflate(&frame, compression)?);
+            round.catalog = Some(inflate(&frame, compression)?.to_vec());
             continue;
         }
         round.frames.push(frame);
@@ -1043,7 +1083,7 @@ mod tests {
         ] {
             let frame = frame(&raw, compression);
             assert_eq!(
-                inflate(&frame, compression).unwrap(),
+                &inflate(&frame, compression).unwrap()[..],
                 raw,
                 "{compression:?}"
             );
@@ -1056,7 +1096,7 @@ mod tests {
     fn the_portable_zstd_decoder_reads_the_native_encoder() {
         let raw = sample();
         let frame = frame(&raw, Compression::Zstd { level: 3 });
-        assert_eq!(inflate_zstd_portable(&frame).unwrap(), raw);
+        assert_eq!(&inflate_zstd_portable(&frame).unwrap()[..], &raw[..]);
     }
 
     #[test]
@@ -1119,7 +1159,7 @@ mod tests {
         let clean = zstd.clone();
         zstd.stored.extend_from_slice(b"trailing");
         assert!(inflate_zstd_portable(&zstd).is_err());
-        assert_eq!(inflate_zstd_portable(&clean).unwrap(), raw);
+        assert_eq!(&inflate_zstd_portable(&clean).unwrap()[..], &raw[..]);
     }
 
     /// A frame header claiming more than any writer produces is refused as

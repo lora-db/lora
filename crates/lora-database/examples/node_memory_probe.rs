@@ -27,7 +27,10 @@
 //! partly used pages, freed large blocks it caches) plus the code pages
 //! the open touched. By default the open replays the WAL, as Festimap's
 //! probe does; `PROBE_SYNC=1` checkpoints after the writes so it loads a
-//! snapshot instead.
+//! snapshot instead. `PROBE_TRACE=1` prints what the open freed, by
+//! size: the blocks malloc may keep resident after it (G-64). Buffers in
+//! `lora_store::scratch` are mapped pages on macOS, which the counting
+//! allocator does not see, so `peak` leaves them out.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::BTreeMap;
@@ -42,6 +45,18 @@ struct Counting;
 
 static LIVE: AtomicIsize = AtomicIsize::new(0);
 static PEAK: AtomicIsize = AtomicIsize::new(0);
+static TRACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[allow(clippy::declare_interior_mutable_const)]
+const ZERO: AtomicIsize = AtomicIsize::new(0);
+static FREED: [AtomicIsize; 40] = [ZERO; 40];
+static FREED_N: [AtomicIsize; 40] = [ZERO; 40];
+fn freed(size: usize) {
+    if TRACE.load(Ordering::Relaxed) {
+        let b = (usize::BITS - size.leading_zeros()) as usize;
+        FREED[b].fetch_add(size as isize, Ordering::Relaxed);
+        FREED_N[b].fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 fn grew(by: isize) {
     let live = LIVE.fetch_add(by, Ordering::Relaxed) + by;
@@ -58,11 +73,13 @@ unsafe impl GlobalAlloc for Counting {
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         System.dealloc(ptr, layout);
+        freed(layout.size());
         LIVE.fetch_sub(layout.size() as isize, Ordering::Relaxed);
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let p = System.realloc(ptr, layout, new_size);
         if !p.is_null() {
+            freed(layout.size());
             grew(new_size as isize - layout.size() as isize);
         }
         p
@@ -170,7 +187,20 @@ fn measure(name: &str, dir: &Path, n: usize) {
     let (rss_before, footprint_before) = resident();
     PEAK.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
     let before = LIVE.load(Ordering::Relaxed);
+    TRACE.store(std::env::var_os("PROBE_TRACE").is_some(), Ordering::Relaxed);
     let db = Database::open_named("probe", options(dir)).unwrap();
+    TRACE.store(false, Ordering::Relaxed);
+    for b in 0..40 {
+        let n = FREED_N[b].load(Ordering::Relaxed);
+        if n > 0 {
+            eprintln!(
+                "freed <{:>9}: {:>8} blocks {:>8.1} MB",
+                1usize << b,
+                n,
+                FREED[b].load(Ordering::Relaxed) as f64 / 1e6
+            );
+        }
+    }
     db.execute("MATCH (r:Record) RETURN count(r)", rows())
         .unwrap();
     let live = LIVE.load(Ordering::Relaxed) - before;

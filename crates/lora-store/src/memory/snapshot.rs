@@ -20,6 +20,7 @@ use super::graph::DeferredData;
 use super::index_catalog::StoredIndexEntity;
 use super::record_slab::BuiltLeaves;
 use super::{ConstraintDefinition, InMemoryGraph, IndexDefinition, VectorIndexSnapshot};
+use crate::scratch::ScratchVec;
 
 /// Format-version stamp surfaced through [`SnapshotMeta::format_version`]
 /// for payloads produced via the inherent helpers below. Kept stable
@@ -602,7 +603,7 @@ pub struct RelationshipBatch {
     /// The encoded records, in whole leaves of the relationship slab.
     records: BuiltLeaves,
     /// `(id, source, target, graph type number)` per relationship.
-    links: Vec<(RelationshipId, NodeId, NodeId, u32)>,
+    links: ScratchVec<(RelationshipId, NodeId, NodeId, u32)>,
     by_type: Vec<(u32, Vec<RelationshipId>)>,
     distinct: DistinctBuilder,
     scratch: Vec<u8>,
@@ -672,7 +673,7 @@ impl SnapshotEncoder {
     pub fn relationship_batch(&self, capacity: usize) -> RelationshipBatch {
         RelationshipBatch {
             records: BuiltLeaves::default(),
-            links: Vec::with_capacity(capacity.min(1 << 16)),
+            links: ScratchVec::with_capacity(capacity.min(1 << 16)),
             by_type: Vec::new(),
             distinct: DistinctBuilder::default(),
             scratch: Vec::new(),
@@ -889,22 +890,18 @@ impl SnapshotGraphBuilder {
         &mut self,
         batches: Vec<RelationshipBatch>,
     ) -> Result<(), SnapshotError> {
-        let mut links = Vec::new();
+        let mut links = ScratchVec::with_capacity(batches.iter().map(|b| b.links.len()).sum());
         for batch in batches {
             self.graph
-                .put_encoded_relationship_leaves(batch.records, &batch.links)
+                .put_encoded_relationship_leaves(batch.records, batch.links.as_slice())
                 .map_err(SnapshotError::Decode)?;
             for (rel_type, ids) in &batch.by_type {
                 self.graph.extend_relationship_type_index(*rel_type, ids);
             }
             self.rel_distinct.merge(batch.distinct);
-            if links.is_empty() {
-                links = batch.links;
-            } else {
-                links.extend(batch.links);
-            }
+            links.extend_from(&batch.links);
         }
-        self.graph.link_relationships(&links);
+        self.graph.link_relationships(links.as_slice());
         Ok(())
     }
 }

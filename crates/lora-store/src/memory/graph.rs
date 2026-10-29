@@ -509,7 +509,9 @@ impl InMemoryGraph {
         #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
         {
             use rayon::prelude::*;
-            let mut ends: Vec<(NodeId, Side, AdjEntry)> = Vec::with_capacity(2 * links.len());
+            // Unmapped after the round on macOS (see `crate::scratch`).
+            let mut ends: crate::scratch::ScratchVec<(NodeId, Side, AdjEntry)> =
+                crate::scratch::ScratchVec::with_capacity(2 * links.len());
             for &(id, src, dst, type_id) in links {
                 let out = AdjEntry {
                     type_id,
@@ -527,7 +529,13 @@ impl InMemoryGraph {
             const LEAF_SHIFT: u32 = super::chunked_vec::CHUNK.trailing_zeros();
             const SLOT_MASK: usize = super::chunked_vec::CHUNK - 1;
             let leaf_of = |node: NodeId| (node as usize) >> LEAF_SHIFT;
-            ends.par_sort_by_key(|(node, _, _)| leaf_of(*node));
+            // `links` ascend by id and each pushed its source end first, so
+            // ordering by (leaf, id, side) is the stable order by leaf, and
+            // an unstable sort needs no buffer of the size of `ends`.
+            let ends = ends.as_mut_slice();
+            ends.par_sort_unstable_by_key(|(node, side, entry)| {
+                (leaf_of(*node), entry.rel, *side == Side::In)
+            });
             let groups: Vec<&[(NodeId, Side, AdjEntry)]> =
                 ends.chunk_by(|a, b| leaf_of(a.0) == leaf_of(b.0)).collect();
             let touched: Vec<usize> = groups.iter().map(|group| leaf_of(group[0].0)).collect();
@@ -2010,6 +2018,9 @@ impl InMemoryGraph {
                         Some(crate::ValueRef::Other(value)) => {
                             registry.insert(label, property, id, &value.get())
                         }
+                        Some(crate::ValueRef::String(s)) => {
+                            registry.insert_str(label, property, id, s)
+                        }
                         Some(value) => {
                             if let Some(key) = PropertyIndexKey::from_value_ref(value) {
                                 registry.insert_key(label, property, id, key);
@@ -2028,6 +2039,9 @@ impl InMemoryGraph {
                         // A list is indexed by its elements too.
                         Some(crate::ValueRef::Other(value)) => {
                             registry.insert(label, property, id, &value.get())
+                        }
+                        Some(crate::ValueRef::String(s)) => {
+                            registry.insert_str(label, property, id, s)
                         }
                         Some(value) => {
                             if let Some(key) = PropertyIndexKey::from_value_ref(value) {
@@ -2051,6 +2065,7 @@ impl InMemoryGraph {
         property: &str,
     ) {
         use super::sorted_property_index::{build_scope, element_keys};
+        use crate::scratch::ScratchVec;
         if self.sorted_indexes_read(entity).has_scope(label, property) {
             self.sorted_indexes_write(entity).add_scope(label, property);
             return;
@@ -2071,8 +2086,16 @@ impl InMemoryGraph {
             return;
         };
         const RANGE: u64 = 1 << 16;
+        // Sized up front and dropped once the scope is built: on macOS
+        // these pages are unmapped then, where malloc kept freed blocks
+        // of this size resident after the open (G-64).
         let gather = |start: u64| {
+            let in_range = ids
+                .iter_from(start)
+                .take_while(|&id| id < start + RANGE)
+                .count();
             let mut values = Vec::new();
+            let mut strings = ScratchVec::with_capacity(in_range);
             let mut elements = Vec::new();
             for id in ids.iter_from(start).take_while(|&id| id < start + RANGE) {
                 let value = match entity {
@@ -2098,6 +2121,7 @@ impl InMemoryGraph {
                         }
                         elements.extend(element_keys(&value).into_iter().map(|key| (key, id)));
                     }
+                    Some(crate::ValueRef::String(s)) => strings.push((s, id)),
                     Some(value) => {
                         if let Some(key) = PropertyIndexKey::from_value_ref(value) {
                             values.push((key, id));
@@ -2106,7 +2130,7 @@ impl InMemoryGraph {
                     None => {}
                 }
             }
-            (values, elements)
+            (values, strings, elements)
         };
         let starts: Vec<u64> = (0..(slots as u64).div_ceil(RANGE))
             .map(|i| i * RANGE)
@@ -2118,13 +2142,15 @@ impl InMemoryGraph {
         };
         #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
         let gathered: Vec<_> = starts.into_iter().map(gather).collect();
-        let mut values = Vec::new();
+        let mut values = Vec::with_capacity(gathered.iter().map(|(v, _, _)| v.len()).sum());
+        let mut strings = ScratchVec::with_capacity(gathered.iter().map(|(_, s, _)| s.len()).sum());
         let mut elements = Vec::new();
-        for (v, e) in gathered {
+        for (v, s, e) in gathered {
             values.extend(v);
+            strings.extend_from(&s);
             elements.extend(e);
         }
-        let built = build_scope(values, elements);
+        let built = build_scope(values, strings, elements);
         self.sorted_indexes_write(entity)
             .add_built_scope(label, property, built);
     }
