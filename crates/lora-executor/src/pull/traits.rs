@@ -565,6 +565,7 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             items,
             top_k,
             limit,
+            presorted,
         }) => {
             let upstream = build_streaming_dispatch(
                 plan,
@@ -576,6 +577,11 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             )?;
             let ctx = StreamCtx::new(storage, params);
             let bound = crate::executor::sort_row_bound(*top_k, limit.as_ref(), &ctx.eval_ctx());
+            if *presorted > 0 {
+                return Ok(Box::new(super::sort::PartialSortSource::new(
+                    upstream, ctx, items, *presorted, bound,
+                )));
+            }
             Ok(Box::new(SortSource::new_with_top_k(
                 upstream, ctx, items, bound,
             )))

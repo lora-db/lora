@@ -439,6 +439,7 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
                 Ok(ResolvedSortItem {
                     expr,
                     direction: item.direction,
+                    nulls: item.nulls.unwrap_or(item.direction.default_nulls()),
                 })
             })
             .collect::<Result<Vec<_>, SemanticError>>()?;

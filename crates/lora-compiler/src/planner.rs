@@ -390,6 +390,7 @@ impl Planner {
                     items: sort_keys_on_outputs(order, items),
                     top_k: None,
                     limit: None,
+                    presorted: 0,
                 }));
             }
             if has_limit {
@@ -442,6 +443,7 @@ impl Planner {
             items: sort_keys_on_projected_reads(order, items),
             top_k: None,
             limit: None,
+            presorted: 0,
         }));
         if has_limit {
             node = self.push(LogicalOp::Limit(Limit {
@@ -626,6 +628,7 @@ fn sort_keys_on_outputs(
                 Some((_, output)) => ResolvedSortItem {
                     expr: ResolvedExpr::Variable(*output),
                     direction: key.direction,
+                    nulls: key.nulls,
                 },
                 None => key.clone(),
             }
@@ -679,6 +682,7 @@ fn sort_keys_on_projected_reads(
                 Some(item) => ResolvedSortItem {
                     expr: ResolvedExpr::Variable(item.output),
                     direction: key.direction,
+                    nulls: key.nulls,
                 },
                 None => key.clone(),
             }

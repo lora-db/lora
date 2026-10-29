@@ -26,7 +26,7 @@ impl Optimizer {
         self.push_filter_below_projection(&mut plan);
         self.use_indexed_node_scans(&mut plan, stats);
         self.use_indexed_rel_scans(&mut plan, stats);
-        self.use_index_order_for_sorts(&mut plan);
+        self.use_index_order_for_sorts(&mut plan, stats);
         self.annotate_top_k_sorts(&mut plan);
         plan
     }
@@ -59,28 +59,39 @@ impl Optimizer {
     /// streams and stops after `m` rows instead of sorting every match
     /// (keyset pagination at a cost independent of label size).
     ///
-    /// Applies when the Sort has a single key naming the scanned
-    /// variable's range property (directly or through a projection alias)
-    /// and only Filters and non-DISTINCT Projections, which keep rows 1:1
-    /// and in order, sit between Sort and scan. The Sort node becomes a
-    /// pass-through projection. Whether the index order can really be used
-    /// is decided per execution from the bound values (see the executor);
+    /// Applies when the Sort's first key names the scanned variable's
+    /// range property (directly or through a projection alias) and only
+    /// Filters and non-DISTINCT Projections, which keep rows 1:1 and in
+    /// order, sit between Sort and scan. A single-key Sort becomes a
+    /// pass-through projection; with more keys it stays, as a partial sort
+    /// ([`Sort::presorted`]) that only orders each run of equal first keys
+    /// by the others. Whether the index order can really be used is
+    /// decided per execution from the bound values (see the executor);
     /// otherwise the scan sorts its own output, so results never change.
-    fn use_index_order_for_sorts(&self, plan: &mut LogicalPlan) {
+    ///
+    /// A label scan under `WHERE (range on n.k) OR n.k IS NULL` (a keyset
+    /// page with its nulls, or any range written with them) becomes the
+    /// same ordered range scan, emitting the label's nodes without `k`
+    /// before or after the range as the first key's `NULLS FIRST` / `LAST`
+    /// says. The Filter stays above it and judges every row.
+    fn use_index_order_for_sorts(&self, plan: &mut LogicalPlan, stats: &GraphStats) {
         for i in 0..plan.nodes.len() {
             let LogicalOp::Sort(sort) = &plan.nodes[i] else {
                 continue;
             };
-            if sort.items.len() != 1 {
+            if sort.items.is_empty() || sort.presorted > 0 {
                 continue;
             }
-            let direction = sort.items[0].direction;
+            let lead = sort.items[0].clone();
+            let single_key = sort.items.len() == 1;
             let sort_input = sort.input;
-            let mut key_expr = sort.items[0].expr.clone();
+            let mut key_expr = lead.expr.clone();
 
             // Walk down to the scan, resolving an alias key through the
-            // projections passed on the way.
+            // projections passed on the way, and keeping the predicates
+            // of the Filters passed.
             let mut cursor = sort_input;
+            let mut predicates: Vec<ResolvedExpr> = Vec::new();
             let scan_id = loop {
                 match &plan.nodes[cursor] {
                     LogicalOp::Projection(p) if !p.distinct => {
@@ -91,34 +102,81 @@ impl Optimizer {
                         }
                         cursor = p.input;
                     }
-                    LogicalOp::Filter(f) => cursor = f.input,
-                    LogicalOp::NodeByPropertyRangeScan(_) => break Some(cursor),
+                    LogicalOp::Filter(f) => {
+                        predicates.push(f.predicate.clone());
+                        cursor = f.input;
+                    }
+                    LogicalOp::NodeByPropertyRangeScan(_) | LogicalOp::NodeScan(_) => {
+                        break Some(cursor)
+                    }
                     _ => break None,
                 }
             };
             let Some(scan_id) = scan_id else { continue };
-            let LogicalOp::NodeByPropertyRangeScan(scan) = &plan.nodes[scan_id] else {
+            let ResolvedExpr::Property { expr, property } = &key_expr else {
                 continue;
             };
-            let key_matches = matches!(
-                &key_expr,
-                ResolvedExpr::Property { expr, property }
-                    if matches!(expr.as_ref(), ResolvedExpr::Variable(v) if *v == scan.var)
-                        && *property == scan.key
-            );
-            if !key_matches || scan.input.is_some() || scan.order.is_some() {
+            let ResolvedExpr::Variable(key_var) = expr.as_ref() else {
                 continue;
+            };
+            let (key_var, property) = (*key_var, property.clone());
+
+            match &mut plan.nodes[scan_id] {
+                LogicalOp::NodeByPropertyRangeScan(scan) => {
+                    if scan.var != key_var
+                        || scan.key != property
+                        || scan.input.is_some()
+                        || scan.order.is_some()
+                    {
+                        continue;
+                    }
+                    // The range holds no nulls, so where they go is moot.
+                    scan.order = Some(lead.direction);
+                }
+                LogicalOp::NodeScan(scan) => {
+                    if scan.var != key_var || scan.input.is_some() {
+                        continue;
+                    }
+                    let Some(label) = first_simple_label(&scan.labels) else {
+                        continue;
+                    };
+                    if !stats.has_node_range_index(label, &property) {
+                        continue;
+                    }
+                    let Some(bounds) = predicates
+                        .iter()
+                        .find_map(|p| range_or_null_bounds(p, key_var, &property))
+                    else {
+                        continue;
+                    };
+                    plan.nodes[scan_id] =
+                        LogicalOp::NodeByPropertyRangeScan(NodeByPropertyRangeScan {
+                            input: None,
+                            var: key_var,
+                            labels: scan.labels.clone(),
+                            key: bounds.key,
+                            lo: bounds.lo,
+                            lo_inclusive: bounds.lo_inclusive,
+                            hi: bounds.hi,
+                            hi_inclusive: bounds.hi_inclusive,
+                            extra_bounds: bounds.extra,
+                            order: Some(lead.direction),
+                            nulls: Some(lead.nulls),
+                        });
+                }
+                _ => continue,
             }
 
-            if let LogicalOp::NodeByPropertyRangeScan(scan) = &mut plan.nodes[scan_id] {
-                scan.order = Some(direction);
+            if single_key {
+                plan.nodes[i] = LogicalOp::Projection(Projection {
+                    input: sort_input,
+                    distinct: false,
+                    items: Vec::new(),
+                    include_existing: true,
+                });
+            } else if let LogicalOp::Sort(sort) = &mut plan.nodes[i] {
+                sort.presorted = 1;
             }
-            plan.nodes[i] = LogicalOp::Projection(Projection {
-                input: sort_input,
-                distinct: false,
-                items: Vec::new(),
-                include_existing: true,
-            });
         }
     }
 
@@ -367,6 +425,7 @@ fn lower_logical_op(op: LogicalOp) -> PhysicalOp {
                 hi_inclusive: scan.hi_inclusive,
                 extra_bounds: scan.extra_bounds,
                 order: scan.order,
+                nulls: scan.nulls,
             })
         }
 
@@ -481,6 +540,7 @@ fn lower_logical_op(op: LogicalOp) -> PhysicalOp {
             items: sort.items,
             top_k: sort.top_k,
             limit: sort.limit,
+            presorted: sort.presorted,
         }),
 
         LogicalOp::Limit(limit) => PhysicalOp::Limit(LimitExec {
@@ -700,6 +760,7 @@ fn collect_index_candidates(
                     hi_inclusive: bounds.hi_inclusive,
                     extra_bounds: bounds.extra,
                     order: None,
+                    nulls: None,
                 },
             ));
         }
@@ -1284,6 +1345,77 @@ fn collect_range_bounds(predicate: &ResolvedExpr, var: VarId) -> Option<RangeBou
         }
     });
     bounds
+}
+
+/// The bounds of `(range on var.key) OR var.key IS NULL`, a conjunct of
+/// `predicate`: the range from the one disjunct that is not a null test
+/// (its comparisons on `key`, conjuncts of it). A null test may carry
+/// more conjuncts (`(var.key IS NULL AND var.k < $k) OR ...`, a backward
+/// keyset page from a null): the scan emits every null and the Filter
+/// keeps the right ones. `None` for any other shape, or when the other
+/// disjunct does not bound `key`.
+fn range_or_null_bounds(predicate: &ResolvedExpr, var: VarId, key: &str) -> Option<RangeBounds> {
+    fn conjuncts<'a>(expr: &'a ResolvedExpr, out: &mut Vec<&'a ResolvedExpr>) {
+        match expr {
+            ResolvedExpr::Binary {
+                lhs,
+                op: BinaryOp::And,
+                rhs,
+            } => {
+                conjuncts(lhs, out);
+                conjuncts(rhs, out);
+            }
+            other => out.push(other),
+        }
+    }
+    fn disjuncts<'a>(expr: &'a ResolvedExpr, out: &mut Vec<&'a ResolvedExpr>) {
+        match expr {
+            ResolvedExpr::Binary {
+                lhs,
+                op: BinaryOp::Or,
+                rhs,
+            } => {
+                disjuncts(lhs, out);
+                disjuncts(rhs, out);
+            }
+            other => out.push(other),
+        }
+    }
+    // `var.key IS NULL`, alone or as a conjunct (`... AND var.key IS
+    // NULL`): either way the disjunct only holds for nodes without `key`.
+    let is_null_test = |expr: &ResolvedExpr| {
+        let mut parts = Vec::new();
+        conjuncts(expr, &mut parts);
+        parts.into_iter().any(|part| {
+            matches!(
+                part,
+                ResolvedExpr::Binary { lhs, op: BinaryOp::IsNull, .. }
+                    if property_access_for_var(lhs, var).as_deref() == Some(key)
+            )
+        })
+    };
+    lora_ast::stack::guard(|| {
+        let mut all = Vec::new();
+        conjuncts(predicate, &mut all);
+        all.into_iter().find_map(|conjunct| {
+            let mut parts = Vec::new();
+            disjuncts(conjunct, &mut parts);
+            let (nulls, ranges): (Vec<_>, Vec<_>) =
+                parts.into_iter().partition(|p| is_null_test(p));
+            if nulls.is_empty() || ranges.len() != 1 {
+                return None;
+            }
+            let mut bounds: Option<RangeBounds> = None;
+            walk_and_for_range(ranges[0], var, &mut |found_key, side, value, inclusive| {
+                if found_key == key {
+                    bounds
+                        .get_or_insert_with(|| RangeBounds::new(key.to_string()))
+                        .add(side, value, inclusive);
+                }
+            });
+            bounds
+        })
+    })
 }
 
 /// The range `prefix <= x < string.prefix_end(prefix)` of `x STARTS WITH
@@ -2052,6 +2184,7 @@ mod tests {
                 hi_inclusive: false,
                 extra_bounds: Vec::new(),
                 order: None,
+                nulls: None,
             }),
             LogicalOp::NodeByPropertyScan(NodeByPropertyScan {
                 input: None,
