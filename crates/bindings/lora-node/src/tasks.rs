@@ -167,6 +167,18 @@ impl Task for ExecuteTask {
         // surface as Promise rejections, not synchronous throws.
         let params_map = match self.params.take() {
             None | Some(serde_json::Value::Null) => BTreeMap::new(),
+            // The params as JSON text, which the TS wrapper sends when JSON
+            // carries them exactly: parsed here rather than read through
+            // napi on the JS thread.
+            Some(serde_json::Value::String(text)) => {
+                let value = serde_json::from_str(&text).map_err(|e| {
+                    NapiError::new(
+                        Status::InvalidArg,
+                        format!("{INVALID_PARAMS_CODE}: params are not valid JSON: {e}"),
+                    )
+                })?;
+                json_value_to_params(value)?
+            }
             Some(other) => json_value_to_params(other)?,
         };
 

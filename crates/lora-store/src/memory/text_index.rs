@@ -28,7 +28,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::cow::CowMap;
-use super::entity_index_store::ScopedPropertyKey;
+use super::entity_index_store::{ScopeKey, ScopedPropertyKey};
 use super::id_map::CowIdMap;
 
 /// Leaf size of the trigram trie. A ~20-character value touches ~20
@@ -65,7 +65,7 @@ impl TrigramRegistry {
         !self.by_scope.is_empty()
             && scopes.into_iter().any(|scope| {
                 self.by_scope
-                    .contains_key(&ScopedPropertyKey::new(scope, property))
+                    .contains_key(&(scope, property) as &dyn ScopeKey)
             })
     }
 
@@ -95,24 +95,18 @@ impl TrigramRegistry {
     #[cfg(test)]
     pub(super) fn has_scope(&self, label: &str, property: &str) -> bool {
         self.by_scope
-            .contains_key(&ScopedPropertyKey::new(label, property))
+            .contains_key(&(label, property) as &dyn ScopeKey)
     }
 
     pub(super) fn insert(&mut self, label: &str, property: &str, id: u64, value: &str) {
-        if let Some(scope) = self
-            .by_scope
-            .get_mut(&ScopedPropertyKey::new(label, property))
-        {
+        if let Some(scope) = self.by_scope.get_mut(&(label, property) as &dyn ScopeKey) {
             scope.insert(id, value);
         }
     }
 
     #[cfg(test)]
     pub(super) fn remove(&mut self, label: &str, property: &str, id: u64, value: &str) {
-        if let Some(scope) = self
-            .by_scope
-            .get_mut(&ScopedPropertyKey::new(label, property))
-        {
+        if let Some(scope) = self.by_scope.get_mut(&(label, property) as &dyn ScopeKey) {
             scope.remove(id, value);
         }
     }
@@ -125,10 +119,7 @@ impl TrigramRegistry {
         old: Option<&str>,
         new: Option<&str>,
     ) {
-        let Some(scope) = self
-            .by_scope
-            .get_mut(&ScopedPropertyKey::new(label, property))
-        else {
+        let Some(scope) = self.by_scope.get_mut(&(label, property) as &dyn ScopeKey) else {
             return;
         };
         if let Some(old) = old {
@@ -148,9 +139,7 @@ impl TrigramRegistry {
         property: &str,
         query: &str,
     ) -> Option<BTreeSet<u64>> {
-        let scope = self
-            .by_scope
-            .get(&ScopedPropertyKey::new(label, property))?;
+        let scope = self.by_scope.get(&(label, property) as &dyn ScopeKey)?;
         scope.candidates(query)
     }
 }

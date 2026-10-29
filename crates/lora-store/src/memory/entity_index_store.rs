@@ -47,6 +47,61 @@ impl ScopedPropertyKey {
     }
 }
 
+/// A `(label, property)` pair a map keyed by [`ScopedPropertyKey`] can be
+/// probed with, borrowed: building the owned key for a lookup allocated
+/// both strings, several times per property a write set (G-76).
+/// Ordering and hashing match the owned key's derived ones.
+pub(super) trait ScopeKey {
+    fn parts(&self) -> (&str, &str);
+}
+
+impl ScopeKey for ScopedPropertyKey {
+    fn parts(&self) -> (&str, &str) {
+        (&self.label, &self.property)
+    }
+}
+
+impl ScopeKey for (&str, &str) {
+    fn parts(&self) -> (&str, &str) {
+        (self.0, self.1)
+    }
+}
+
+impl<'a> std::borrow::Borrow<dyn ScopeKey + 'a> for ScopedPropertyKey {
+    fn borrow(&self) -> &(dyn ScopeKey + 'a) {
+        self
+    }
+}
+
+impl PartialEq for dyn ScopeKey + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.parts() == other.parts()
+    }
+}
+
+impl Eq for dyn ScopeKey + '_ {}
+
+impl PartialOrd for dyn ScopeKey + '_ {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for dyn ScopeKey + '_ {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.parts().cmp(&other.parts())
+    }
+}
+
+impl std::hash::Hash for dyn ScopeKey + '_ {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // As the derived `Hash` of the owned key: each field's `str` hash.
+        let (label, property) = self.parts();
+        label.hash(state);
+        property.hash(state);
+    }
+}
+
 /// A registry per entity kind, each behind `Arc` so cloning the graph
 /// (the staged copy a write works on) shares the registries. The first
 /// mutable access through [`IndexWrite`] copies a registry only if a
@@ -261,5 +316,29 @@ impl Clone for IndexBundle {
             // A clone is another graph: no lookup builds its indexes yet.
             property_builds: PropertyIndexBuilds::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod scope_key_tests {
+    use super::{ScopeKey, ScopedPropertyKey};
+    use std::collections::{BTreeMap, HashMap};
+
+    #[test]
+    fn a_borrowed_scope_key_finds_what_the_owned_key_does() {
+        let pairs = [("A", "k"), ("A", "ka"), ("Ak", ""), ("", "Ak"), ("B", "k")];
+        let hashed: HashMap<ScopedPropertyKey, usize> = pairs
+            .iter()
+            .enumerate()
+            .map(|(i, (l, p))| (ScopedPropertyKey::new(l, p), i))
+            .collect();
+        let sorted: BTreeMap<ScopedPropertyKey, usize> =
+            hashed.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        for (i, (l, p)) in pairs.iter().enumerate() {
+            assert_eq!(hashed.get(&(*l, *p) as &dyn ScopeKey), Some(&i));
+            assert_eq!(sorted.get(&(*l, *p) as &dyn ScopeKey), Some(&i));
+        }
+        assert!(hashed.get(&("A", "") as &dyn ScopeKey).is_none());
+        assert!(sorted.get(&("Ak", "k") as &dyn ScopeKey).is_none());
     }
 }

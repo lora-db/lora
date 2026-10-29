@@ -40,7 +40,7 @@ use std::ops::Bound;
 use crate::types::PropertyValue;
 
 use super::cow::{CowMap, CowOrdMap};
-use super::entity_index_store::ScopedPropertyKey;
+use super::entity_index_store::{ScopeKey, ScopedPropertyKey};
 use super::id_set::IdSet;
 use super::property_index::PropertyIndexKey;
 use super::str_postings::{StrKey, StrPostings, StrPostingsBuilder};
@@ -201,7 +201,7 @@ impl SortedPropertyIndex {
         !self.by_scope.is_empty()
             && scopes.into_iter().any(|scope| {
                 self.by_scope
-                    .contains_key(&ScopedPropertyKey::new(scope, property))
+                    .contains_key(&(scope, property) as &dyn ScopeKey)
             })
     }
 
@@ -217,7 +217,7 @@ impl SortedPropertyIndex {
 
     pub(super) fn has_scope(&self, label: &str, property: &str) -> bool {
         self.by_scope
-            .contains_key(&ScopedPropertyKey::new(label, property))
+            .contains_key(&(label, property) as &dyn ScopeKey)
     }
 
     /// Add `label`'s `property` scope as [`Self::add_scope`] does, holding
@@ -257,10 +257,7 @@ impl SortedPropertyIndex {
     /// Index `id` under a whole value: its key and, for a list, each
     /// of its elements.
     pub(super) fn insert(&mut self, label: &str, property: &str, id: u64, value: &PropertyValue) {
-        if let Some(scope) = self
-            .by_scope
-            .get_mut(&ScopedPropertyKey::new(label, property))
-        {
+        if let Some(scope) = self.by_scope.get_mut(&(label, property) as &dyn ScopeKey) {
             if let PropertyValue::String(s) = value {
                 scope.strings.insert(s, id);
                 return;
@@ -277,10 +274,7 @@ impl SortedPropertyIndex {
     /// Index `id` under the string `value`, read from a record without
     /// making it a key.
     pub(super) fn insert_str(&mut self, label: &str, property: &str, id: u64, value: &str) {
-        if let Some(scope) = self
-            .by_scope
-            .get_mut(&ScopedPropertyKey::new(label, property))
-        {
+        if let Some(scope) = self.by_scope.get_mut(&(label, property) as &dyn ScopeKey) {
             scope.strings.insert(value, id);
         }
     }
@@ -295,10 +289,7 @@ impl SortedPropertyIndex {
         id: u64,
         key: PropertyIndexKey,
     ) {
-        if let Some(scope) = self
-            .by_scope
-            .get_mut(&ScopedPropertyKey::new(label, property))
-        {
+        if let Some(scope) = self.by_scope.get_mut(&(label, property) as &dyn ScopeKey) {
             insert_id(scope, key, id);
         }
     }
@@ -311,10 +302,7 @@ impl SortedPropertyIndex {
         old: Option<&PropertyValue>,
         new: Option<&PropertyValue>,
     ) {
-        let Some(scope) = self
-            .by_scope
-            .get_mut(&ScopedPropertyKey::new(label, property))
-        else {
+        let Some(scope) = self.by_scope.get_mut(&(label, property) as &dyn ScopeKey) else {
             return;
         };
         // Strings go to `strings` as they are: making them keys first
@@ -353,9 +341,7 @@ impl SortedPropertyIndex {
         property: &str,
         element: &PropertyValue,
     ) -> Option<Vec<u64>> {
-        let scope = self
-            .by_scope
-            .get(&ScopedPropertyKey::new(label, property))?;
+        let scope = self.by_scope.get(&(label, property) as &dyn ScopeKey)?;
         if matches!(element, PropertyValue::Null) {
             return Some(Vec::new());
         }
@@ -397,9 +383,7 @@ impl SortedPropertyIndex {
         lo: Option<&PropertyValue>,
         hi: Option<&PropertyValue>,
     ) -> Option<BTreeSet<u64>> {
-        let scope = self
-            .by_scope
-            .get(&ScopedPropertyKey::new(label, property))?;
+        let scope = self.by_scope.get(&(label, property) as &dyn ScopeKey)?;
         let (lower, upper) = probe_bounds(lo, hi)?;
         let mut out = BTreeSet::new();
         if let (Bound::Included(l), Bound::Included(u)) = (&lower, &upper) {
@@ -422,9 +406,7 @@ impl SortedPropertyIndex {
         property: &str,
         like: &PropertyValue,
     ) -> Option<Vec<u64>> {
-        let scope = self
-            .by_scope
-            .get(&ScopedPropertyKey::new(label, property))?;
+        let scope = self.by_scope.get(&(label, property) as &dyn ScopeKey)?;
         let Some(key) = PropertyIndexKey::from_value(like).filter(PropertyIndexKey::is_temporal)
         else {
             return Some(Vec::new());
@@ -468,9 +450,7 @@ impl SortedPropertyIndex {
         after: Option<(&PropertyValue, u64)>,
         max: usize,
     ) -> Option<Vec<u64>> {
-        let scope = self
-            .by_scope
-            .get(&ScopedPropertyKey::new(label, property))?;
+        let scope = self.by_scope.get(&(label, property) as &dyn ScopeKey)?;
         let after = after.and_then(|(v, id)| PropertyIndexKey::from_value(v).map(|k| (k, id)));
 
         // Narrow the value range to start at the cursor's value.

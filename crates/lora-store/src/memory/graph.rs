@@ -367,6 +367,48 @@ impl InMemoryGraph {
         )
     }
 
+    /// Apply `edits` to node `id`'s record in order and store the result
+    /// once: a staged write stores a record version per edit otherwise,
+    /// each appended to its segment. Per edit, the previous value
+    /// (`Some(None)` when there was none), or `None` for a remove that
+    /// found nothing. `None` when the node does not exist.
+    pub(super) fn edit_node_properties(
+        &mut self,
+        id: NodeId,
+        edits: &[(String, Option<PropertyValue>)],
+    ) -> Option<Vec<Option<Option<PropertyValue>>>> {
+        let idx = Self::slot_index(id)?;
+        let stored = self.nodes.get(idx)?;
+        let mut current = Scratch::take();
+        current.extend_from_slice(stored);
+        let mut next = Vec::with_capacity(current.len() + 64);
+        let mut olds = Vec::with_capacity(edits.len());
+        let mut changed = false;
+        for (key, value) in edits {
+            let edit = match value {
+                Some(value) => encoded::PropEdit::Set(value),
+                None => encoded::PropEdit::Remove,
+            };
+            let old = encoded::edit_property(
+                &current,
+                encoded::RecordKind::Node,
+                &mut self.dicts,
+                key,
+                edit,
+                &mut next,
+            );
+            if old.is_some() {
+                std::mem::swap(&mut *current, &mut next);
+                changed = true;
+            }
+            olds.push(old);
+        }
+        if changed {
+            self.nodes.set(idx, &current);
+        }
+        Some(olds)
+    }
+
     pub(super) fn edit_rel_property(
         &mut self,
         id: RelationshipId,
@@ -2542,7 +2584,19 @@ impl InMemoryGraph {
         let Some(labels) = self.node_at(node_id).map(|node| node.labels().to_owned()) else {
             return;
         };
-        for label in &labels {
+        self.on_labelled_node_property_set(&labels, node_id, key, old, new);
+    }
+
+    /// [`Self::on_node_property_set`] with the node's labels in hand.
+    pub(super) fn on_labelled_node_property_set(
+        &mut self,
+        labels: &crate::Labels,
+        node_id: NodeId,
+        key: &str,
+        old: Option<&PropertyValue>,
+        new: &PropertyValue,
+    ) {
+        for label in labels {
             self.distinct_stats.nodes.replace(label, key, old, new);
         }
 
@@ -2572,7 +2626,18 @@ impl InMemoryGraph {
         let Some(labels) = self.node_at(node_id).map(|node| node.labels().to_owned()) else {
             return;
         };
-        for label in &labels {
+        self.on_labelled_node_property_removed(&labels, node_id, key, old);
+    }
+
+    /// [`Self::on_node_property_removed`] with the node's labels in hand.
+    pub(super) fn on_labelled_node_property_removed(
+        &mut self,
+        labels: &crate::Labels,
+        node_id: NodeId,
+        key: &str,
+        old: &PropertyValue,
+    ) {
+        for label in labels {
             self.distinct_stats.nodes.remove(label, key, old);
         }
         if self.node_property_index_is_active(key) {

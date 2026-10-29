@@ -86,6 +86,75 @@ pub struct MutableExecutor<'a, S: GraphStorageMut> {
     /// Result-row cap; see [`Self::with_max_rows`].
     max_rows: Option<usize>,
     caps: RowCaps,
+    /// Whether the storage may combine one entity's property writes
+    /// ([`lora_store::GraphStorage::combines_property_writes`]), asked
+    /// once per statement.
+    combine_writes: Option<bool>,
+}
+
+/// Consecutive `SET` items that write properties of one node variable
+/// and can be stored as one record edit (G-76): `items[start..end]` all
+/// set `var.<key>`. Every item but the first must not see the others'
+/// writes, which holds when the variables its value names (`later`) are
+/// bound to plain values: nothing it reads is an entity, so the graph
+/// state it could read is not reached. That is checked per row.
+struct PropertyRun {
+    start: usize,
+    end: usize,
+    var: VarId,
+    later: Vec<VarId>,
+}
+
+/// The [`PropertyRun`]s of `items` of two items or more.
+fn property_runs(items: &[ResolvedSetItem]) -> Vec<PropertyRun> {
+    let target = |item: &ResolvedSetItem| match item {
+        ResolvedSetItem::SetProperty {
+            target: ResolvedExpr::Property { expr, .. },
+            ..
+        } => match expr.as_ref() {
+            ResolvedExpr::Variable(var) => Some(*var),
+            _ => None,
+        },
+        _ => None,
+    };
+    let mut runs = Vec::new();
+    let mut i = 0;
+    while i < items.len() {
+        let Some(var) = target(&items[i]) else {
+            i += 1;
+            continue;
+        };
+        let mut end = i + 1;
+        while end < items.len() && target(&items[end]) == Some(var) {
+            end += 1;
+        }
+        if end - i > 1 {
+            let mut later = BTreeSet::new();
+            for item in &items[i + 1..end] {
+                if let ResolvedSetItem::SetProperty { value, .. } = item {
+                    value.collect_vars(&mut later);
+                }
+            }
+            runs.push(PropertyRun {
+                start: i,
+                end,
+                var,
+                later: later.into_iter().collect(),
+            });
+        }
+        i = end;
+    }
+    runs
+}
+
+/// Whether `value` is, or holds, a node, relationship or path.
+fn holds_entity(value: &LoraValue) -> bool {
+    match value {
+        LoraValue::Node(_) | LoraValue::Relationship(_) | LoraValue::Path(_) => true,
+        LoraValue::List(items) => items.iter().any(holds_entity),
+        LoraValue::Map(entries) => entries.values().any(holds_entity),
+        _ => false,
+    }
 }
 
 impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
@@ -98,6 +167,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             pending_existence: Vec::new(),
             max_rows: None,
             caps: RowCaps::new(),
+            combine_writes: None,
         }
     }
 
@@ -110,6 +180,7 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             pending_existence: Vec::new(),
             max_rows: None,
             caps: RowCaps::new(),
+            combine_writes: None,
         }
     }
 
@@ -1410,24 +1481,136 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
     }
 
     fn exec_set(&mut self, plan: &PhysicalPlan, op: &SetExec) -> ExecResult<Vec<Row>> {
+        let runs = if self.combines_writes() {
+            property_runs(&op.items)
+        } else {
+            Vec::new()
+        };
         if crate::pull::subtree_is_fully_streaming(plan, op.input) {
             return self.streaming_apply(plan, op.input, |this, row| {
-                for item in &op.items {
-                    this.apply_set_item(row, item)?;
-                }
-                Ok(())
+                this.apply_set_items(row, &op.items, &runs)
             });
         }
 
         let input_rows = self.execute_node(plan, op.input)?;
 
         for row in &input_rows {
-            for item in &op.items {
-                self.apply_set_item(row, item)?;
-            }
+            self.apply_set_items(row, &op.items, &runs)?;
         }
 
         Ok(input_rows)
+    }
+
+    fn combines_writes(&mut self) -> bool {
+        *self
+            .combine_writes
+            .get_or_insert_with(|| self.ctx.storage.combines_property_writes())
+    }
+
+    /// `items` in order for `row`, each [`PropertyRun`] whose row allows it
+    /// as one write.
+    fn apply_set_items(
+        &mut self,
+        row: &Row,
+        items: &[ResolvedSetItem],
+        runs: &[PropertyRun],
+    ) -> ExecResult<()> {
+        let mut next = 0;
+        for run in runs {
+            for item in &items[next..run.start] {
+                self.apply_set_item(row, item)?;
+            }
+            let node = match row.get(run.var) {
+                Some(LoraValue::Node(id)) => Some(*id),
+                _ => None,
+            };
+            let plain = run
+                .later
+                .iter()
+                .all(|var| row.get(*var).is_some_and(|value| !holds_entity(value)));
+            match node {
+                Some(node_id) if plain => {
+                    self.apply_property_run(row, &items[run.start..run.end], node_id)?
+                }
+                _ => {
+                    for item in &items[run.start..run.end] {
+                        self.apply_set_item(row, item)?;
+                    }
+                }
+            }
+            next = run.end;
+        }
+        for item in &items[next..] {
+            self.apply_set_item(row, item)?;
+        }
+        Ok(())
+    }
+
+    /// The `SET var.key = value` items of a [`PropertyRun`] on `node_id`,
+    /// each value evaluated and checked against the constraints in turn,
+    /// stored as one record edit.
+    fn apply_property_run(
+        &mut self,
+        row: &Row,
+        items: &[ResolvedSetItem],
+        node_id: NodeId,
+    ) -> ExecResult<()> {
+        let mut edits = Vec::with_capacity(items.len());
+        for item in items {
+            let ResolvedSetItem::SetProperty {
+                target: ResolvedExpr::Property { property, .. },
+                value,
+            } = item
+            else {
+                unreachable!("a property run holds property items only");
+            };
+            let value = {
+                let eval_ctx = EvalContext {
+                    storage: &*self.ctx.storage,
+                    params: &self.ctx.params,
+                };
+                eval_expr_result(value, row, &eval_ctx).map_err(ExecutorError::from_eval)?
+            };
+            edits.push((property.clone(), value));
+        }
+        self.write_node_properties(node_id, edits)
+    }
+
+    /// Set (a value) or remove (`null`) each of `edits` on `node_id`, with
+    /// the checks one write at a time makes, as one store write.
+    fn write_node_properties(
+        &mut self,
+        node_id: NodeId,
+        edits: Vec<(String, LoraValue)>,
+    ) -> ExecResult<()> {
+        let mut writes = Vec::with_capacity(edits.len());
+        for (key, value) in edits {
+            if matches!(value, LoraValue::Null) {
+                if self.defer_existence {
+                    self.pending_existence.push(EntityTarget::Node(node_id));
+                } else if let Err(msg) = self
+                    .ctx
+                    .storage
+                    .check_node_remove_property_against_constraints(node_id, &key)
+                {
+                    return Err(ExecutorError::ConstraintViolation(msg));
+                }
+                writes.push((key, None));
+                continue;
+            }
+            let prop = lora_value_to_property(value)
+                .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
+            if let Err(msg) = self
+                .ctx
+                .storage
+                .check_node_set_property_against_constraints(node_id, &key, &prop)
+            {
+                return Err(ExecutorError::ConstraintViolation(msg));
+            }
+            writes.push((key, Some(prop)));
+        }
+        self.ctx.storage.update_node_properties(node_id, writes);
+        Ok(())
     }
 
     /// `FOREACH (var IN list | body...)` — for each input row, evaluate
@@ -1898,6 +2081,10 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         };
 
         match target {
+            EntityTarget::Node(node_id) if map.len() > 1 && self.combines_writes() => {
+                // `SET n += {a: null}` removes `a`.
+                self.write_node_properties(node_id, map.into_iter().collect())?;
+            }
             EntityTarget::Node(node_id) => {
                 for (k, v) in map {
                     // `SET n += {a: null}` removes `a`.

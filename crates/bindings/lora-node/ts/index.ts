@@ -982,7 +982,7 @@ class DatabaseImpl {
     options?: QueryOptions,
   ): Promise<QueryResult<T>> {
     try {
-      const encoded = encodeParams(params);
+      const encoded = paramsForExecute(params);
       const buf = await this.#limited(options, (timeoutMs, token) =>
         this.#inner.execute(query, encoded, timeoutMs, token),
       );
@@ -1912,7 +1912,23 @@ function encodeParams(
   params: LoraParams | null | undefined,
 ): LoraParams | null {
   if (params == null) return null;
-  return needsEncoding(params) ? (encodeValue(params) as LoraParams) : params;
+  return walk(params) & ENCODE ? (encodeValue(params) as LoraParams) : params;
+}
+
+/**
+ * Params for `execute`, as {@link encodeParams} gives them, or as JSON text
+ * when JSON carries them exactly. The native side parses the text on the
+ * libuv worker; an object is instead read field by field through napi on
+ * this (the JS) thread, which for an `UNWIND` batch of a few thousand rows
+ * took about as long as running the statement (G-76).
+ */
+function paramsForExecute(
+  params: LoraParams | null | undefined,
+): LoraParams | string | null {
+  if (params == null) return null;
+  const found = walk(params);
+  const encoded = found & ENCODE ? (encodeValue(params) as LoraParams) : params;
+  return found & OPAQUE ? encoded : JSON.stringify(encoded);
 }
 
 /**
@@ -1952,23 +1968,56 @@ function paramBytes(value: object): Uint8Array | null {
   return null;
 }
 
-function needsEncoding(value: unknown): boolean {
-  if (typeof value === "bigint") return true;
-  if (typeof value === "number") {
-    checkNumber(value);
-    return false;
+/** A param needs {@link encodeValue}: a bigint or bytes. */
+const ENCODE = 1;
+/**
+ * A param JSON would not carry as napi does: `undefined`, a number that is
+ * not finite, a string that is not well-formed UTF-16, a function or
+ * symbol, or an object that is not plain (a `Date`, a `Map`, a class
+ * instance, anything with `toJSON`).
+ */
+const OPAQUE = 2;
+
+/**
+ * Whether `s` has no lone surrogate (JSON text cannot carry one). Before
+ * Node 20, without `isWellFormed`, any surrogate counts, pairs included:
+ * such a string takes the napi path, which is exact either way.
+ */
+const wellFormed: (s: string) => boolean =
+  typeof (String.prototype as { isWellFormed?: unknown }).isWellFormed ===
+  "function"
+    ? (s) => (s as unknown as { isWellFormed(): boolean }).isWellFormed()
+    : (s) => !/[\uD800-\uDFFF]/.test(s);
+
+/** What `value` holds, as {@link ENCODE} and {@link OPAQUE} bits. */
+function walk(value: unknown): number {
+  switch (typeof value) {
+    case "bigint":
+      return ENCODE;
+    case "number":
+      checkNumber(value);
+      return Number.isFinite(value) ? 0 : OPAQUE;
+    case "string":
+      return wellFormed(value) ? 0 : OPAQUE;
+    case "boolean":
+      return 0;
+    case "object":
+      break;
+    default:
+      return OPAQUE;
   }
-  if (value === null || typeof value !== "object") return false;
-  if (paramBytes(value) !== null) return true;
+  if (value === null) return 0;
+  if (paramBytes(value) !== null) return ENCODE;
+  let found = 0;
   if (Array.isArray(value)) {
-    let found = false;
-    for (const item of value) found = needsEncoding(item) || found;
+    for (const item of value) found |= walk(item);
     return found;
   }
-  let found = false;
-  for (const key in value) {
-    found = needsEncoding((value as Record<string, unknown>)[key]) || found;
-  }
+  const proto = Object.getPrototypeOf(value);
+  if ((proto !== Object.prototype && proto !== null) || "toJSON" in value)
+    found |= OPAQUE;
+  for (const key in value)
+    found |= walk((value as Record<string, unknown>)[key]);
   return found;
 }
 
