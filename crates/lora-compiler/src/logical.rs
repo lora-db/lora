@@ -172,6 +172,11 @@ pub struct NodeByPropertyRangeScan {
     /// scan: rows must come out in that order (from the index when it can
     /// supply it, otherwise sorted by the operator itself).
     pub order: Option<lora_ast::SortDirection>,
+    /// With `order`: the scan also emits, before (`First`) or after
+    /// (`Last`) the range, the nodes of the label whose `key` is null.
+    /// Set for `WHERE (range on var.key) OR var.key IS NULL ORDER BY
+    /// var.key ... NULLS ...`; the Filter above still judges every row.
+    pub nulls: Option<lora_ast::NullsOrder>,
 }
 
 /// Trigram-backed property scan rewritten from `Filter(NodeScan, var.prop OP "literal")`
@@ -373,6 +378,12 @@ pub struct Sort {
     /// literals (`LIMIT $n`): the executor evaluates them once per run and
     /// keeps only `skip + limit` rows, like a static [`Sort::top_k`].
     pub limit: Option<SortLimit>,
+    /// How many leading `items` the input already arrives ordered by (an
+    /// ordered index walk under it). Non-zero makes this a partial sort:
+    /// it sorts each run of rows equal on those keys by the rest, and
+    /// under a bound stops reading once the bound is met and its run is
+    /// complete.
+    pub presorted: usize,
 }
 
 /// A parent LIMIT's row bound, evaluated at run time (see [`Sort::limit`]).

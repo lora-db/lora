@@ -271,7 +271,7 @@ fn compare_keys<'a>(
     b: impl IntoIterator<Item = &'a LoraValue>,
 ) -> Ordering {
     for ((item, av), bv) in items.iter().zip(a).zip(b) {
-        let ord = compare_values_for_sort(av, bv, matches!(item.direction, SortDirection::Asc));
+        let ord = compare_sort_key(item, av, bv);
         if ord != Ordering::Equal {
             return ord;
         }
@@ -279,18 +279,23 @@ fn compare_keys<'a>(
     Ordering::Equal
 }
 
-fn compare_values_for_sort(a: &LoraValue, b: &LoraValue, ascending: bool) -> Ordering {
-    let ord = match (a, b) {
-        (LoraValue::Null, LoraValue::Null) => Ordering::Equal,
-        (LoraValue::Null, _) => Ordering::Greater,
-        (_, LoraValue::Null) => Ordering::Less,
-        _ => compare_values_total(a, b),
-    };
-
-    if ascending {
-        ord
+/// Order of two values of one sort key: nulls where the item puts them
+/// (`NULLS FIRST` / `LAST`; by default last ascending, first descending),
+/// every other value by [`compare_values_total`] in the item's direction.
+pub(crate) fn compare_sort_key(item: &ResolvedSortItem, a: &LoraValue, b: &LoraValue) -> Ordering {
+    let null_first = if item.nulls_last() {
+        Ordering::Greater
     } else {
-        ord.reverse()
+        Ordering::Less
+    };
+    match (a, b) {
+        (LoraValue::Null, LoraValue::Null) => Ordering::Equal,
+        (LoraValue::Null, _) => null_first,
+        (_, LoraValue::Null) => null_first.reverse(),
+        _ => match item.direction {
+            SortDirection::Asc => compare_values_total(a, b),
+            SortDirection::Desc => compare_values_total(a, b).reverse(),
+        },
     }
 }
 
@@ -299,6 +304,7 @@ mod tests {
     use super::*;
     use lora_analyzer::symbols::VarId;
     use lora_analyzer::ResolvedExpr;
+    use lora_ast::NullsOrder;
     use lora_store::InMemoryGraph;
     use std::collections::BTreeMap;
 
@@ -306,6 +312,14 @@ mod tests {
         ResolvedSortItem {
             expr: ResolvedExpr::Variable(VarId(var)),
             direction,
+            nulls: direction.default_nulls(),
+        }
+    }
+
+    fn item_nulls(var: u32, direction: SortDirection, nulls: NullsOrder) -> ResolvedSortItem {
+        ResolvedSortItem {
+            nulls,
+            ..item(var, direction)
         }
     }
 
@@ -388,6 +402,8 @@ mod tests {
             vec![item(0, SortDirection::Asc)],
             vec![item(0, SortDirection::Desc)],
             vec![item(0, SortDirection::Asc), item(1, SortDirection::Desc)],
+            vec![item_nulls(0, SortDirection::Asc, NullsOrder::First)],
+            vec![item_nulls(0, SortDirection::Desc, NullsOrder::Last)],
         ] {
             let expected = reference(&rows, &items);
             for k in 0..=rows.len() + 2 {
@@ -426,6 +442,11 @@ mod tests {
         for items in [
             vec![item(0, SortDirection::Asc)],
             vec![item(0, SortDirection::Desc)],
+            vec![item_nulls(0, SortDirection::Desc, NullsOrder::Last)],
+            vec![
+                item_nulls(0, SortDirection::Asc, NullsOrder::First),
+                item(1, SortDirection::Desc),
+            ],
         ] {
             let expected = reference(&rows, &items);
             for k in [0, 1, 5, 31, 32, 33, 100, 350, 699, 700, 900] {
@@ -441,5 +462,51 @@ mod tests {
                 assert_eq!(got, expected[..k.min(expected.len())], "buffered k={k}");
             }
         }
+    }
+
+    /// `NULLS FIRST` / `NULLS LAST` place nulls whichever the direction.
+    #[test]
+    fn nulls_go_where_the_item_says() {
+        let graph = InMemoryGraph::new();
+        let params = BTreeMap::new();
+        let eval_ctx = EvalContext {
+            storage: &graph,
+            params: &params,
+        };
+        let rows: Vec<Row> = [Some(10), None, Some(90), None, Some(50)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| row(v.map(LoraValue::Int).unwrap_or(LoraValue::Null), i as i64))
+            .collect();
+        let sorted = |items: Vec<ResolvedSortItem>, k: Option<usize>| -> Vec<i64> {
+            let mut got = rows.clone();
+            sort_rows_with_top_k(&mut got, &items, &eval_ctx, k);
+            got.iter()
+                .map(|r| match r.get(VarId(1)) {
+                    Some(LoraValue::Int(i)) => *i,
+                    other => panic!("{other:?}"),
+                })
+                .collect()
+        };
+        use NullsOrder::{First, Last};
+        use SortDirection::{Asc, Desc};
+        assert_eq!(sorted(vec![item(0, Desc)], None), vec![1, 3, 2, 4, 0]);
+        assert_eq!(
+            sorted(vec![item_nulls(0, Desc, Last)], None),
+            vec![2, 4, 0, 1, 3]
+        );
+        assert_eq!(
+            sorted(vec![item_nulls(0, Desc, Last)], Some(3)),
+            vec![2, 4, 0]
+        );
+        assert_eq!(sorted(vec![item(0, Asc)], None), vec![0, 4, 2, 1, 3]);
+        assert_eq!(
+            sorted(vec![item_nulls(0, Asc, First)], None),
+            vec![1, 3, 0, 4, 2]
+        );
+        assert_eq!(
+            sorted(vec![item_nulls(0, Desc, Last), item(1, Desc)], None),
+            vec![2, 4, 0, 3, 1]
+        );
     }
 }

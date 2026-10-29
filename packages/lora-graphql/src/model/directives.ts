@@ -214,8 +214,18 @@ export const directiveTypeDefs = /* GraphQL */ `
   "Filter operators for a field. Without arguments: EQ and IN. On a relationship field: enables relationship filters."
   directive @filterable(byValue: [FilterOperator!]) on FIELD_DEFINITION
 
-  "Sort and keyset-paginate on this field."
-  directive @sortable on FIELD_DEFINITION
+  """
+  Sort and keyset-paginate on this field. \`nulls\` puts a nullable field's
+  nulls first or last whichever the direction asked for (without it, Cypher's
+  order: last ascending, first descending).
+  """
+  directive @sortable(nulls: SortNulls) on FIELD_DEFINITION
+
+  "Where a @sortable field's nulls go."
+  enum SortNulls {
+    FIRST
+    LAST
+  }
 
   "Page size bounds for lists of this type."
   directive @limit(

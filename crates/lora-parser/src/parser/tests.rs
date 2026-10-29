@@ -631,6 +631,32 @@ fn parse_order_multiple_sort_items() {
     assert_eq!(ret.body.order.len(), 2);
     assert!(matches!(ret.body.order[0].direction, SortDirection::Asc));
     assert!(matches!(ret.body.order[1].direction, SortDirection::Desc));
+    assert_eq!(ret.body.order[0].nulls, None);
+}
+
+#[test]
+fn parse_order_nulls_first_and_last() {
+    let doc = parse_query(
+        "MATCH (n) RETURN n ORDER BY n.a DESC NULLS LAST, n.b nulls first, n.c ASC Nulls Last, n.d",
+    )
+    .unwrap();
+    let sp = as_regular_single_part(doc);
+    let order = sp.return_clause.expect("expected RETURN clause").body.order;
+    let got: Vec<_> = order.iter().map(|i| (i.direction, i.nulls)).collect();
+    assert_eq!(
+        got,
+        vec![
+            (SortDirection::Desc, Some(NullsOrder::Last)),
+            (SortDirection::Asc, Some(NullsOrder::First)),
+            (SortDirection::Asc, Some(NullsOrder::Last)),
+            (SortDirection::Asc, None),
+        ]
+    );
+    // NULLS, FIRST and LAST stay usable as names.
+    parse_query("WITH 1 AS nulls, 2 AS first, 3 AS last RETURN nulls, first, last ORDER BY last NULLS FIRST, nulls").unwrap();
+    parse_query("MATCH (n) WITH n ORDER BY n.x NULLS LAST LIMIT 3 RETURN n").unwrap();
+    assert!(parse_query("MATCH (n) RETURN n ORDER BY n.x NULLS").is_err());
+    assert!(parse_query("MATCH (n) RETURN n ORDER BY n.x NULLS MIDDLE").is_err());
 }
 
 #[test]

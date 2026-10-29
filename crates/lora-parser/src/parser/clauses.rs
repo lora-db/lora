@@ -599,12 +599,22 @@ pub(super) fn lower_sort_item(pair: Pair<Rule>) -> Result<SortItem, ParseError> 
     let span = pair_span(&pair);
     let mut expr = None;
     let mut direction = SortDirection::Asc;
+    let mut nulls = None;
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::expression => expr = Some(lower_expression(p)?),
             Rule::DESC | Rule::DESCENDING => direction = SortDirection::Desc,
             Rule::ASC | Rule::ASCENDING => direction = SortDirection::Asc,
+            Rule::nulls_order => {
+                for q in p.into_inner() {
+                    match q.as_rule() {
+                        Rule::FIRST => nulls = Some(NullsOrder::First),
+                        Rule::LAST => nulls = Some(NullsOrder::Last),
+                        _ => {}
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -612,6 +622,7 @@ pub(super) fn lower_sort_item(pair: Pair<Rule>) -> Result<SortItem, ParseError> 
     Ok(SortItem {
         expr: expr.ok_or_else(|| ParseError::new("expected expression", span.start, span.end))?,
         direction,
+        nulls,
         span,
     })
 }

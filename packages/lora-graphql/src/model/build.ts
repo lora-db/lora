@@ -640,6 +640,9 @@ export function buildModel(
             new Set([...mf.filters, ...field.filters]);
           if (field.sortable && !mf.list)
             (mf as { sortable: boolean }).sortable = true;
+          if (field.sortNulls && !mf.list && !mf.sortNulls)
+            (mf as { sortNulls?: "FIRST" | "LAST" }).sortNulls =
+              field.sortNulls;
         }
       }
     }

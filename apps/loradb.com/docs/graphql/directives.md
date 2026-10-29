@@ -1382,8 +1382,148 @@ type Festival @node {
 ```
 
 Not on lists, points or durations. Nulls sort last ascending and first
-descending. On a relationship property it enables
-`sort: [{ edge: { ... } }]` on the connection.
+descending, as in Cypher, unless the field says otherwise (below). On a
+relationship property it enables `sort: [{ edge: { ... } }]` on the
+connection.
+
+#### Nulls first or last {#sortable-nulls}
+
+`@sortable(nulls: LAST)` puts a nullable field's nulls after every value
+whichever the direction asked for, and `nulls: FIRST` before them. A
+score read biggest-first then starts with the biggest score, not with
+every node that has none. The statement says `NULLS LAST` (or `NULLS
+FIRST`), a backward page reverses it with the direction, and a cursor
+records it in its sort, so a cursor from before the setting changed is
+`INVALID_CURSOR`.
+
+```graphql title="schema.graphql"
+type Artist @node {
+  key: String! @key
+  name: String!
+  popularityScore: Float @sortable(nulls: LAST)
+}
+```
+
+```cypher title="seed"
+CREATE (:Artist {key: 'amber', name: 'Amber Fields', popularityScore: 10.0}),
+       (:Artist {key: 'nova', name: 'Nova'}),
+       (:Artist {key: 'kite', name: 'Kite Avenue', popularityScore: 90.0}),
+       (:Artist {key: 'lumen', name: 'Lumen', popularityScore: 90.0})
+```
+
+```graphql title="Request"
+{
+  artistsConnection(first: 3, sort: [{ popularityScore: DESC }]) {
+    edges {
+      node {
+        name
+        popularityScore
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "artistsConnection": {
+      "edges": [
+        { "node": { "name": "Kite Avenue", "popularityScore": 90 } },
+        { "node": { "name": "Lumen", "popularityScore": 90 } },
+        { "node": { "name": "Amber Fields", "popularityScore": 10 } }
+      ],
+      "pageInfo": {
+        "hasNextPage": true,
+        "endCursor": "eyJzIjoicG9wdWxhcml0eVNjb3JlOkRFU0M6TlVMTFNfTEFTVCxrZXk6QVNDIiwidiI6WzEwLCJhbWJlciJdfQ"
+      }
+    }
+  }
+}
+```
+
+The next page starts after Amber Fields and reaches the nulls:
+
+```graphql title="Request"
+query ($after: String) {
+  artistsConnection(first: 3, after: $after, sort: [{ popularityScore: DESC }]) {
+    edges {
+      node {
+        name
+        popularityScore
+      }
+    }
+    pageInfo {
+      hasNextPage
+      hasPreviousPage
+    }
+  }
+}
+```
+
+```json title="variables"
+{ "after": "eyJzIjoicG9wdWxhcml0eVNjb3JlOkRFU0M6TlVMTFNfTEFTVCxrZXk6QVNDIiwidiI6WzEwLCJhbWJlciJdfQ" }
+```
+
+```json
+{
+  "data": {
+    "artistsConnection": {
+      "edges": [{ "node": { "name": "Nova", "popularityScore": null } }],
+      "pageInfo": { "hasNextPage": false, "hasPreviousPage": true }
+    }
+  }
+}
+```
+
+Ascending, the nulls are last too:
+
+```graphql title="Request"
+{
+  artists(sort: [{ popularityScore: ASC }]) {
+    name
+    popularityScore
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "artists": [
+      { "name": "Amber Fields", "popularityScore": 10 },
+      { "name": "Kite Avenue", "popularityScore": 90 },
+      { "name": "Lumen", "popularityScore": 90 },
+      { "name": "Nova", "popularityScore": null }
+    ]
+  }
+}
+```
+
+The first page compiles to one ordered index walk, the scored artists
+from the highest down and then the unscored ones, and stops at the page:
+
+```cypher
+MATCH (this:Artist)
+WHERE this.popularityScore >= toFloat("-Infinity") OR this.popularityScore IS NULL
+WITH this ORDER BY this.popularityScore DESC NULLS LAST, this.key ASC LIMIT $p0
+RETURN this { .name, .popularityScore } AS node, [this.popularityScore, this.key] AS __cursor
+```
+
+The `>=` bound excludes no row; it lets the planner walk the RANGE index
+that `@sortable` infers in order. A page after a scored cursor seeks from
+it the same way (`(this.popularityScore <= $v AND (...)) OR
+this.popularityScore IS NULL`), and ties on a score are sorted by key one
+run at a time (`PartialSort` in `explain()`), so a page reads about one
+page of rows however many artists there are. A page whose cursor is
+already among the nulls has no range left to walk: it reads the type's
+nulls and sorts them by key. The walk covers String, ID, enum and number
+fields; other types sort as before. Only for nullable fields: a non-null
+field has no nulls, and `nulls:` on one is an error.
 
 ### @groupBy {#groupby}
 

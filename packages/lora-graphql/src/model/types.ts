@@ -115,6 +115,12 @@ export interface ScalarField extends FieldBase {
   relayId: boolean;
   filters: ReadonlySet<FilterOperator>;
   sortable: boolean;
+  /**
+   * `@sortable(nulls:)` on a nullable field: its nulls sort first or last
+   * whichever the direction. Unset: Cypher's order (last ascending, first
+   * descending).
+   */
+  sortNulls?: "FIRST" | "LAST" | undefined;
   /** `@groupBy`: a grouping key of `<plural>Grouped`. */
   groupBy: boolean;
   /** Indexes requested explicitly with `@index`. */
