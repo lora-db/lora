@@ -27,7 +27,7 @@ are **evaluated after** projection and
 
 ```text
 <RETURN | WITH> expr [, expr]
-  [ORDER BY expr [ASC | DESC] [, expr [ASC | DESC]]]
+  [ORDER BY expr [ASC | DESC] [NULLS FIRST | NULLS LAST] [, ...]]
   [SKIP n]
   [LIMIT n]
 ```
@@ -184,20 +184,43 @@ LIMIT 20`} />
 ## Nulls in ordering
 
 `null` values sort **last** in ascending order and **first** in
-descending order. There is no `NULLS FIRST` / `NULLS LAST` keyword —
-reverse the sort direction, or guard with
-[`coalesce`](../functions/overview#type-conversion-and-checking) to
-change placement.
+descending order. `NULLS FIRST` or `NULLS LAST` after the direction (GQL
+syntax) puts a key's nulls there whichever the direction. `NULLS`,
+`FIRST` and `LAST` are not reserved: they still work as names.
 
-<QueryCodeBlock code={String.raw`// Nulls to the end of a DESC sort
-MATCH (p:Person)
-RETURN p.name, p.rank
-ORDER BY coalesce(p.rank, -2147483648) DESC
+<QueryCodeBlock code={String.raw`// The biggest score first, the unscored at the end
+MATCH (a:Artist)
+RETURN a.name, a.popularityScore
+ORDER BY a.popularityScore DESC NULLS LAST, a.name
 
-;// Nulls to the start of an ASC sort
-MATCH (p:Person)
-RETURN p.name, p.rank
-ORDER BY coalesce(p.rank, -2147483648) ASC`} />
+;// The unscored first, then the smallest score
+MATCH (a:Artist)
+RETURN a.name, a.popularityScore
+ORDER BY a.popularityScore NULLS FIRST`} />
+
+With a RANGE index on the key, a nulls-last page can walk the index
+instead of sorting. Bound the key to its type and name the nulls, so the
+planner sees a range: the index is walked in order, then the label's
+nodes without the key, and the scan stops at the limit. With more keys
+the sort becomes a `PartialSort` in `EXPLAIN`, which orders each run of
+equal scores by the next key only.
+
+<QueryCodeBlock code={String.raw`MATCH (a:Artist)
+WHERE a.popularityScore >= toFloat('-Infinity') OR a.popularityScore IS NULL
+RETURN a.name, a.popularityScore
+ORDER BY a.popularityScore DESC NULLS LAST, a.key
+LIMIT 24
+
+;// The next page, after the last row's (score, key)
+MATCH (a:Artist)
+WHERE (a.popularityScore <= $score AND (a.popularityScore < $score OR a.key > $key))
+   OR a.popularityScore IS NULL
+RETURN a.name, a.popularityScore
+ORDER BY a.popularityScore DESC NULLS LAST, a.key
+LIMIT 24`} />
+
+A page that starts among the nulls (`WHERE a.popularityScore IS NULL AND
+a.key > $key`) has no range left to walk and sorts the label's nulls.
 
 ## Common patterns
 
@@ -275,9 +298,12 @@ Returns zero rows — never an error.
 
 - `ORDER BY` sorts the full projected result set in memory. Combine with
   [`LIMIT`](./ordering) when the input is large.
-- `ORDER BY n.prop` sorts the matched rows in memory. RANGE indexes can
-  narrow predicates before the sort, but the current engine does not walk
-  an index in sorted order to satisfy `ORDER BY` directly.
+- `ORDER BY n.prop` sorts the matched rows in memory, unless a RANGE
+  index on `prop` can supply the order: with a range predicate on it
+  (`WHERE n.prop > $after ORDER BY n.prop LIMIT k`, or the nulls form in
+  [Nulls in ordering](#nulls-in-ordering)) rows stream from the index and
+  the scan stops after `k`. A tie-breaking second key keeps that, as a
+  `PartialSort` over each run of equal values.
 - Pair `LIMIT` with a stable key (like an id) so re-running the same
   query yields the same rows.
 
