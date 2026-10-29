@@ -5,10 +5,21 @@ import { RANGE_UNINDEXABLE } from "../../analyze/indexes.js";
 import type { CypherField, NodeType } from "../../model/types.js";
 import { authFilter, checkAuthentication } from "../auth.js";
 import { bind, freshVar, type CompileContext } from "../context.js";
-import { and, bin, lit, prop, v, type Clause, type Expr } from "../cypher.js";
+import {
+  and,
+  bin,
+  fn,
+  isNull,
+  lit,
+  or,
+  prop,
+  v,
+  type Clause,
+  type Expr,
+} from "../cypher.js";
 import { compileNodeWhere } from "../filter.js";
 import type { SeekExpectation, Where } from "./types.js";
-import { type SortKey, leadBound, keysetPredicate } from "./sort.js";
+import { type SortKey, leadBound, keysetPredicate, nullsLast } from "./sort.js";
 import { keyOf } from "./by-keys.js";
 import { projectCypher } from "./cypher-field.js";
 
@@ -78,10 +89,12 @@ export function rootMatch(
   let keyset: Expr | undefined;
   if (cursor) {
     keyset = keysetPredicate(ctx, "this", sort, cursor);
+    // A non-null lead value bounds the lead (see keysetPredicate), with
+    // the nulls after it as a disjunct the planner walks after the range.
     if (
       computed.length === 0 &&
       !expectation &&
-      leadBound(sort[0]!) &&
+      (leadBound(sort[0]!) || cursor[0] != null) &&
       !RANGE_UNINDEXABLE.has(sort[0]!.field.type)
     ) {
       expectation = {
@@ -101,12 +114,10 @@ export function rootMatch(
   // index in order and stop after `limit` rows instead of sorting the label.
   let bound: Expr | undefined;
   const lead = sort[0];
+  const unconstrained =
+    !predicate && !anchor && !keyset && !related && computed.length === 0;
   if (
-    !predicate &&
-    !anchor &&
-    !keyset &&
-    !related &&
-    computed.length === 0 &&
+    unconstrained &&
     lead &&
     lead.direction === "ASC" &&
     leadBound(lead) &&
@@ -118,6 +129,27 @@ export function rootMatch(
       access: "range",
       reason: `ordered by ${node.name}.${lead.field.name}`,
     };
+  } else if (
+    unconstrained &&
+    lead &&
+    !leadBound(lead) &&
+    lead.field.sortable &&
+    nullsLast(lead)
+  ) {
+    // A nullable field whose nulls sort last (`@sortable(nulls: LAST)`,
+    // or ascending): `>= <least value of its type> OR IS NULL` excludes no
+    // row, and lets the planner walk the index in order, then the nulls,
+    // stopping after `limit` rows (G-77).
+    const least = leastValue(lead.field.type);
+    if (least) {
+      const target = prop(v("this"), lead.field.property);
+      bound = or(bin(">=", target, least), isNull(target));
+      expectation = {
+        label,
+        access: "range",
+        reason: `ordered by ${node.name}.${lead.field.name}`,
+      };
+    }
   }
 
   clauses.push({
@@ -149,6 +181,25 @@ export function rootMatch(
     });
   }
   return { clauses, expectation, carry };
+}
+
+/**
+ * A value every stored value of `type` is `>=` to, when there is one an
+ * index walks: the empty string, or minus infinity for numbers.
+ */
+function leastValue(type: SortKey["field"]["type"]): Expr | undefined {
+  switch (type) {
+    case "String":
+    case "ID":
+    case "Enum":
+      return lit("");
+    case "Int":
+    case "Float":
+    case "BigInt":
+      return fn("toFloat", lit("-Infinity"));
+    default:
+      return undefined;
+  }
 }
 
 /** The computed (`@cypher`) fields a root filter or sort refers to. */
