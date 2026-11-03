@@ -9,10 +9,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use lora_compiler::physical::{
-    CallSubqueryExec, ExpandExec, FilterExec, HashAggregationExec, LimitExec, NodeByIdSeekExec,
-    NodeByLabelScanExec, NodeByPointScanExec, NodeByPropertyRangeScanExec, NodeByPropertyScanExec,
-    NodeByTextScanExec, NodeScanExec, OptionalMatchExec, PathBuildExec, PhysicalNodeId, PhysicalOp,
-    PhysicalPlan, ProjectionExec, RelByIdSeekExec, RelByListElementScanExec, RelByPointScanExec,
+    ExpandExec, FilterExec, HashAggregationExec, LimitExec, NodeByIdSeekExec, NodeByLabelScanExec,
+    NodeByPointScanExec, NodeByPropertyRangeScanExec, NodeByPropertyScanExec, NodeByTextScanExec,
+    NodeScanExec, OptionalMatchExec, PathBuildExec, PhysicalNodeId, PhysicalOp, PhysicalPlan,
+    ProjectionExec, RelByIdSeekExec, RelByListElementScanExec, RelByPointScanExec,
     RelByPropertyRangeScanExec, RelByTextScanExec, SortExec, UnwindExec,
 };
 use lora_compiler::CompiledQuery;
@@ -218,7 +218,9 @@ fn subtree_is_fully_streaming_at(
         PhysicalOp::OptionalMatch(o) => Some(o.input),
         // A `CALL { ... }` that writes runs on the mutable executor, never
         // on the read-only pull pipeline.
-        PhysicalOp::CallSubquery(o) if subtree_has_write(plan, o.inner) => return false,
+        PhysicalOp::CallSubquery(o) if o.branches().any(|b| subtree_has_write(plan, b)) => {
+            return false
+        }
         PhysicalOp::CallSubquery(o) => Some(o.input),
         PhysicalOp::PathBuild(o) => Some(o.input),
         // Already filtered by is_streaming_op above.
@@ -270,7 +272,15 @@ fn subtree_has_write_at(plan: &PhysicalPlan, node_id: PhysicalNodeId, depth: usi
         PhysicalOp::Limit(o) => (Some(o.input), None),
         PhysicalOp::PathBuild(o) => (Some(o.input), None),
         PhysicalOp::OptionalMatch(o) => (Some(o.input), Some(o.inner)),
-        PhysicalOp::CallSubquery(o) => (Some(o.input), Some(o.inner)),
+        PhysicalOp::CallSubquery(o) => {
+            if o.unions
+                .iter()
+                .any(|b| subtree_has_write_at(plan, b.inner, depth + 1))
+            {
+                return true;
+            }
+            (Some(o.input), Some(o.inner))
+        }
     };
     first.is_some_and(|c| subtree_has_write_at(plan, c, depth + 1))
         || second.is_some_and(|c| subtree_has_write_at(plan, c, depth + 1))
@@ -637,15 +647,16 @@ fn build_streaming_inner<'a, S: GraphStorage + 'a>(
             )))
         }
 
-        PhysicalOp::CallSubquery(CallSubqueryExec {
-            input,
-            inner,
-            new_vars,
-        }) => {
+        PhysicalOp::CallSubquery(op) => {
             let upstream =
-                build_streaming_dispatch(plan, *input, storage, params.clone(), seed, depth + 1)?;
+                build_streaming_dispatch(plan, op.input, storage, params.clone(), seed, depth + 1)?;
             Ok(Box::new(CallSubquerySource::new(
-                upstream, plan, *inner, storage, params, new_vars,
+                upstream,
+                plan,
+                op,
+                storage,
+                params,
+                &op.new_vars,
             )))
         }
 

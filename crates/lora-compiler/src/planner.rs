@@ -178,10 +178,52 @@ impl Planner {
         // not change what the outer query considers bound.
         let outer_bound = self.bound.clone();
         let inner = self.plan_query(&inner_query);
-        self.bound = outer_bound;
+        self.bound = outer_bound.clone();
+
+        // `CALL { head UNION branch ... }`: each branch is planned on its
+        // own `Argument`, then projected onto the head's output VarIds, so
+        // the outer query reads one set of columns whichever branch made
+        // the row.
+        let mut unions = Vec::with_capacity(call.unions.len());
+        for part in &call.unions {
+            let branch_query = ResolvedQuery {
+                clauses: part.clauses.clone(),
+                unions: Vec::new(),
+                parameters: Default::default(),
+            };
+            let branch = self.plan_query(&branch_query);
+            self.bound = outer_bound.clone();
+            let Some(ResolvedClause::Return(ret)) = part.clauses.last() else {
+                unreachable!("the analyzer requires each CALL UNION branch to end in RETURN");
+            };
+            let items = ret
+                .items
+                .iter()
+                .zip(&call.return_vars)
+                .map(|(item, &head)| ResolvedProjection {
+                    expr: ResolvedExpr::Variable(item.output),
+                    output: head,
+                    name: item.name.clone(),
+                    explicit_alias: true,
+                    span: item.span,
+                })
+                .collect();
+            let root = self.push(LogicalOp::Projection(Projection {
+                input: branch,
+                distinct: false,
+                items,
+                include_existing: false,
+            }));
+            unions.push(crate::logical::CallUnionBranch {
+                all: part.all,
+                inner: root,
+            });
+        }
+
         self.push(LogicalOp::CallSubquery(crate::logical::CallSubquery {
             input,
             inner,
+            unions,
             new_vars: call.return_vars.clone(),
         }))
     }

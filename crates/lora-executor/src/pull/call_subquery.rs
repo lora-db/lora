@@ -10,20 +10,42 @@
 use std::sync::Arc;
 
 use lora_analyzer::symbols::VarId;
-use lora_compiler::physical::{PhysicalNodeId, PhysicalPlan};
+use lora_compiler::physical::{CallSubqueryExec, PhysicalNodeId, PhysicalPlan};
 use lora_store::GraphStorage;
 
 use crate::errors::{ExecResult, ExecutorError};
-use crate::executor::merge_optional_rows;
+use crate::executor::{merge_optional_rows, RowKeyBuilder};
 use crate::value::{LoraValue, Row};
 
 use super::traits::build_streaming_seeded;
 use super::{drain, RowSource};
 
+/// The rows a `CALL { ... }` body produces for one outer row: every
+/// branch's rows in turn (`run` runs one branch root), deduplicated by
+/// column name and value when a branch is joined by plain `UNION`.
+pub(crate) fn call_body_rows(
+    op: &CallSubqueryExec,
+    mut run: impl FnMut(PhysicalNodeId) -> ExecResult<Vec<Row>>,
+) -> ExecResult<Vec<Row>> {
+    if op.unions.is_empty() {
+        return run(op.inner);
+    }
+    let mut rows = Vec::new();
+    for branch in op.branches() {
+        rows.extend(run(branch)?);
+    }
+    if op.distinct() {
+        let mut keys = RowKeyBuilder::default();
+        let mut seen = std::collections::BTreeSet::new();
+        rows.retain(|row| seen.insert(keys.named_row_key(row)));
+    }
+    Ok(rows)
+}
+
 pub struct CallSubquerySource<'a, S: GraphStorage> {
     upstream: Box<dyn RowSource + 'a>,
     plan: &'a PhysicalPlan,
-    inner: PhysicalNodeId,
+    op: &'a CallSubqueryExec,
     storage: &'a S,
     params: Arc<std::collections::BTreeMap<String, LoraValue>>,
     new_vars: &'a [VarId],
@@ -35,7 +57,7 @@ impl<'a, S: GraphStorage> CallSubquerySource<'a, S> {
     pub(super) fn new(
         upstream: Box<dyn RowSource + 'a>,
         plan: &'a PhysicalPlan,
-        inner: PhysicalNodeId,
+        op: &'a CallSubqueryExec,
         storage: &'a S,
         params: Arc<std::collections::BTreeMap<String, LoraValue>>,
         new_vars: &'a [VarId],
@@ -43,7 +65,7 @@ impl<'a, S: GraphStorage> CallSubquerySource<'a, S> {
         Self {
             upstream,
             plan,
-            inner,
+            op,
             storage,
             params,
             new_vars,
@@ -73,14 +95,16 @@ impl<'a, S: GraphStorage> RowSource for CallSubquerySource<'a, S> {
             // bottom Argument's single row, so MATCH inside the CALL
             // sees outer-bound variables and aggregations are computed
             // per outer row.
-            let mut inner_source = build_streaming_seeded(
-                self.plan,
-                self.inner,
-                self.storage,
-                self.params.clone(),
-                outer_row.clone(),
-            )?;
-            let inner_rows = drain(inner_source.as_mut())?;
+            let inner_rows = call_body_rows(self.op, |branch| {
+                let mut inner_source = build_streaming_seeded(
+                    self.plan,
+                    branch,
+                    self.storage,
+                    self.params.clone(),
+                    outer_row.clone(),
+                )?;
+                drain(inner_source.as_mut())
+            })?;
 
             if inner_rows.is_empty() {
                 // CALL with no inner rows: drop the outer row (inner join).

@@ -67,7 +67,19 @@ pub struct Foreach {
 pub struct CallSubquery {
     pub input: PlanNodeId,
     pub inner: PlanNodeId,
+    /// `CALL { ... UNION ... }`: the branches after `inner`, each already
+    /// projected onto `new_vars`. Empty for a subquery without `UNION`.
+    pub unions: Vec<CallUnionBranch>,
     pub new_vars: Vec<VarId>,
+}
+
+/// A `UNION` branch inside `CALL { ... }`.
+#[derive(Debug, Clone)]
+pub struct CallUnionBranch {
+    /// `UNION ALL` keeps duplicates; plain `UNION` drops, per outer row,
+    /// the rows another branch (or this one) already produced.
+    pub all: bool,
+    pub inner: PlanNodeId,
 }
 
 /// Assembles a path value from matched node and relationship VarIds.

@@ -216,12 +216,6 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
     ) -> Result<ResolvedCallSubquery, SemanticError> {
         let outer = self.visible_bindings();
 
-        if !call.body.unions.is_empty() {
-            return Err(SemanticError::UnsupportedFeature(
-                "UNION inside CALL { ... } is not yet supported".into(),
-            ));
-        }
-
         let inner_clauses = self.analyze_single_query(&call.body.head)?;
 
         let return_items: Vec<(String, VarId)> = match inner_clauses.last() {
@@ -249,6 +243,37 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
             }
         };
 
+        // `CALL { A UNION B }`: every branch sees the outer scope, not the
+        // bindings of the branch before it, and returns the same columns
+        // as the first, by name and in order.
+        let mut unions = Vec::with_capacity(call.body.unions.len());
+        if !call.body.unions.is_empty() {
+            let head_names = union_branch_columns(&inner_clauses)?;
+            for part in &call.body.unions {
+                self.replace_scope(outer.clone());
+                let clauses = self.analyze_single_query(&part.query)?;
+                let names = union_branch_columns(&clauses)?;
+                if names.len() != head_names.len() {
+                    return Err(SemanticError::UnionColumnCountMismatch(
+                        head_names.len(),
+                        names.len(),
+                    ));
+                }
+                for (head, branch) in head_names.iter().zip(&names) {
+                    if head != branch {
+                        return Err(SemanticError::UnionColumnNameMismatch(
+                            head.clone(),
+                            branch.clone(),
+                        ));
+                    }
+                }
+                unions.push(ResolvedUnionPart {
+                    all: part.all,
+                    clauses,
+                });
+            }
+        }
+
         let mut new_scope = outer;
         for (name, id) in &return_items {
             new_scope.insert(name.clone(), *id);
@@ -257,6 +282,7 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
 
         Ok(ResolvedCallSubquery {
             clauses: inner_clauses,
+            unions,
             return_vars: return_items.into_iter().map(|(_, id)| id).collect(),
         })
     }
@@ -376,6 +402,24 @@ impl<'a, S: GraphCatalog + ?Sized> Analyzer<'a, S> {
         for (name, id) in bindings {
             self.scopes.declare(name, id);
         }
+    }
+}
+
+/// The column names a `UNION` branch inside `CALL { ... }` returns. Each
+/// branch must end in a `RETURN` that names its columns: the outer query
+/// binds them by name.
+fn union_branch_columns(clauses: &[ResolvedClause]) -> Result<Vec<String>, SemanticError> {
+    match clauses.last() {
+        Some(ResolvedClause::Return(ret)) if !ret.include_existing => {
+            Ok(ret.items.iter().map(|p| p.name.to_string()).collect())
+        }
+        Some(ResolvedClause::Return(_)) => Err(SemanticError::UnsupportedFeature(
+            "RETURN * in a UNION branch inside CALL { ... } is not supported; name the columns"
+                .into(),
+        )),
+        _ => Err(SemanticError::UnsupportedFeature(
+            "each UNION branch inside CALL { ... } must end with RETURN".into(),
+        )),
     }
 }
 

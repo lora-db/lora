@@ -1167,14 +1167,16 @@ impl<'a, S: GraphStorage> Executor<'a, S> {
         let mut out = Vec::with_capacity(input_rows.len());
         let params = std::sync::Arc::new(self.ctx.params.clone());
         for outer_row in input_rows {
-            let mut inner_source = crate::pull::build_streaming_seeded(
-                plan,
-                op.inner,
-                self.ctx.storage,
-                params.clone(),
-                outer_row.clone(),
-            )?;
-            let inner_rows = crate::pull::drain(inner_source.as_mut())?;
+            let inner_rows = crate::pull::call_body_rows(op, |branch| {
+                let mut inner_source = crate::pull::build_streaming_seeded(
+                    plan,
+                    branch,
+                    self.ctx.storage,
+                    params.clone(),
+                    outer_row.clone(),
+                )?;
+                crate::pull::drain(inner_source.as_mut())
+            })?;
             for inner_row in inner_rows {
                 out.push(merge_optional_rows(&outer_row, &inner_row));
             }

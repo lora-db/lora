@@ -101,6 +101,7 @@ pub use traits::{collect_compiled, collect_compiled_with_deadline, PullExecutor}
 pub(crate) use aggregate::{
     classify_streamable_aggregates, fold_one, AggState, StreamableAggKind, StreamableAggSpec,
 };
+pub(crate) use call_subquery::call_body_rows;
 pub(crate) use context::StreamCtx;
 pub use hydration::hydrate_row;
 pub(crate) use hydration::{row_holds_entity, HydratingSource};
