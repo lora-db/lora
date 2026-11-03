@@ -377,6 +377,76 @@ out. Mutations connect, create and disconnect per member:
 `events: { connect: { Concert: [{ key: "c1" }] } }`. A single relationship
 to a union holds one node across all members.
 
+### Interface and union connections
+
+`<plural>Connection` pages an interface or union with cursors, like a
+`@node` type's connection. It takes `where`, `sort`, `first`/`after` and
+`last`/`before`, and `totalCount` counts every match across the members:
+
+```graphql
+{
+  eventsConnection(sort: [{ starts: ASC }], first: 2) {
+    totalCount
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    edges {
+      node {
+        __typename
+        key
+        title
+        ... on Concert {
+          band
+        }
+        ... on Exhibition {
+          artist
+        }
+      }
+    }
+  }
+}
+```
+
+Over two concerts and two exhibitions:
+
+```json
+{
+  "eventsConnection": {
+    "totalCount": 4,
+    "pageInfo": {
+      "hasNextPage": true,
+      "endCursor": "eyJzIjoiRXZlbnQ6LHN0YXJ0czpBU0MiLCJ2IjpbMTEsIkNvbmNlcnQiLCJjMiJdfQ"
+    },
+    "edges": [
+      {
+        "node": {
+          "__typename": "Exhibition",
+          "key": "e1",
+          "title": "Modern art",
+          "artist": "Ann"
+        }
+      },
+      {
+        "node": {
+          "__typename": "Concert",
+          "key": "c2",
+          "title": "Jazz brunch",
+          "band": "Trio"
+        }
+      }
+    ]
+  }
+}
+```
+
+The order is the list root's: the requested fields, then the type name,
+then the key. A cursor holds those values, so `after: endCursor` continues
+with `e2` and `c1`. Each member reads its own page past the cursor, sorted
+and limited, with its own indexes; the pages are merged and cut to
+`first`. `totalCount` adds up one count per member, and `maxTotalCount`
+caps the sum.
+
 ### Interface relationships
 
 An interface field under `@declareRelationship` is a relationship every
