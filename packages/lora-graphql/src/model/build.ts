@@ -650,10 +650,12 @@ export function buildModel(
     const plural =
       (directive(d("plural"), t, at)?.["value"] as string | undefined) ??
       defaultPlural(t.name);
-    const other = rootFieldOwners.get(plural);
-    if (other)
-      at(`root field \`${plural}\` collides with ${other}; set @plural`);
-    rootFieldOwners.set(plural, t.name);
+    for (const root of [plural, `${plural}Connection`]) {
+      const other = rootFieldOwners.get(root);
+      if (other)
+        at(`root field \`${root}\` collides with ${other}; set @plural`);
+      rootFieldOwners.set(root, t.name);
+    }
     abstracts.set(t.name, {
       kind: isInterfaceType(t) ? "interface" : "union",
       name: t.name,

@@ -168,7 +168,7 @@ export function buildObjects(
   const makeConnection = (
     name: string,
     edgeName: string,
-    nodeType: () => GraphQLObjectType,
+    nodeType: () => GraphQLObjectType | GraphQLInterfaceType | GraphQLUnionType,
     propertiesType?: () => GraphQLObjectType,
     aggregate?: () => GraphQLObjectType | undefined,
   ) => {
@@ -317,6 +317,21 @@ export function buildObjects(
     }
     return t;
   };
+
+  // `<plural>Connection` over an interface's implementations or a union's
+  // members: edges whose node is the abstract type, and totalCount.
+  const abstractConnections = new Map<string, GraphQLObjectType>();
+  for (const abstract of model.abstracts.values()) {
+    if (!abstract.read) continue;
+    abstractConnections.set(
+      abstract.name,
+      makeConnection(
+        names.connection(abstract.name),
+        names.edge(abstract.name),
+        () => abstractTypes.get(abstract.name)!,
+      ),
+    );
+  }
 
   const listArgs = (target: string): GraphQLFieldConfigArgumentMap => ({
     where: { type: whereOf(target) },
@@ -610,6 +625,7 @@ export function buildObjects(
     objects,
     connections,
     abstractTypes,
+    abstractConnections,
     plainObjects,
     connectionResolvers,
     listArgs,

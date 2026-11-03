@@ -151,14 +151,16 @@ function rootTargets(
     subscription.set(`${lowerFirst(node.name)}Changed`, write(["SUBSCRIBE"]));
   }
   for (const abstract of model.abstracts.values()) {
-    query.set(abstract.plural, {
+    const target: RootTarget = {
       kind: "abstract",
       type: abstract.name,
       members: abstract.members
         .map((m) => model.nodes.get(m))
         .filter((n): n is NodeType => n !== undefined)
         .sort(byName),
-    });
+    };
+    query.set(abstract.plural, target);
+    query.set(names.abstractConnectionRoot(abstract), target);
   }
   const relay: RootTarget = {
     kind: "relay",

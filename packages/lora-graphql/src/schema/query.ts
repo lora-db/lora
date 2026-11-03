@@ -42,6 +42,7 @@ export function buildQuery(
     objects,
     connections,
     abstractTypes,
+    abstractConnections,
     connectionResolvers,
     listArgs,
     connectionArgs,
@@ -242,7 +243,25 @@ export function buildQuery(
       description: `${abstract.name} nodes of every ${abstract.kind === "interface" ? "implementation" : "member"}, at most \`limit\` (default ${abstract.limit.default}, max ${abstract.limit.max}).`,
       args: listArgs(abstract.name),
       resolve: (_src, _args, context, info) =>
-        hooks.resolveAbstract(abstract, info, context),
+        hooks.resolveAbstract(abstract, info, context, false),
+    };
+    const { sort } = listArgs(abstract.name);
+    query[names.abstractConnectionRoot(abstract)] = {
+      type: nonNull(abstractConnections.get(abstract.name)!),
+      description: `${abstract.name} nodes of every ${abstract.kind === "interface" ? "implementation" : "member"}, merged in one order and paginated with keyset cursors; \`totalCount\` counts every match.`,
+      args: {
+        where: { type: whereOf(abstract.name) },
+        ...(sort ? { sort } : {}),
+        first: { type: GraphQLInt },
+        after: { type: GraphQLString },
+        last: {
+          type: GraphQLInt,
+          description: "Page backward: the last n before `before`.",
+        },
+        before: { type: GraphQLString },
+      },
+      resolve: (_src, _args, context, info) =>
+        hooks.resolveAbstract(abstract, info, context, true),
     };
   }
 
