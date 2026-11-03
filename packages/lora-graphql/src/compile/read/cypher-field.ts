@@ -106,7 +106,7 @@ export function bindStatement(
 ): string {
   args = normalized(field, args);
   checkListArguments(ctx, field, args);
-  ctx.reads.opaque = true;
+  noteReads(ctx, field);
   const texts = new Map<string, string>();
   for (const p of field.params) {
     if (p === "viewer") {
@@ -136,6 +136,37 @@ export function bindStatement(
     last = ref.end;
   }
   return out + field.statement.slice(last);
+}
+
+/**
+ * What the statement reads joins the read-set: its patterns' labels and
+ * relationship types, `@cypher(reads:)`, and the parent's label; opaque
+ * when the statement does not tell.
+ */
+function noteReads(ctx: CompileContext, field: CypherField): void {
+  const reads = field.reads;
+  if (!reads) {
+    ctx.reads.opaque = true;
+    return;
+  }
+  for (const l of reads.labels) ctx.reads.labels.add(l);
+  for (const r of reads.relationships) ctx.reads.relationships.add(r);
+  const owner = ctx.model.nodes.get(field.owner);
+  if (owner) ctx.reads.labels.add(owner.labels[0]!);
+  for (const name of reads.declared) {
+    const node = ctx.model.nodes.get(name);
+    const abstract = ctx.model.abstracts.get(name);
+    if (node) ctx.reads.labels.add(node.labels[0]!);
+    else if (abstract) {
+      for (const m of abstract.members) {
+        ctx.reads.labels.add(ctx.model.nodes.get(m)!.labels[0]!);
+      }
+    } else {
+      // A label or a relationship type: counted as both.
+      ctx.reads.labels.add(name);
+      ctx.reads.relationships.add(name);
+    }
+  }
 }
 
 /** `args` as `@normalize` changes them: what the rules and the statement see. */

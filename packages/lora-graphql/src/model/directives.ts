@@ -351,6 +351,8 @@ export const directiveTypeDefs = /* GraphQL */ `
     columnName: String
     "Rows the statement examines each time it runs, charged against maxCost: once for a root field, once per parent node for a field of a type. Without it only the rows the field returns are charged."
     cost: Int
+    "What the statement reads, for read-sets (execute({ readSet: true })): @node type names, labels or relationship types. Without it they are read from the statement's patterns; a statement whose patterns do not tell (a procedure call, a node with no label on a variable nothing bound, a relationship with no type) is opaque, and every write affects a read that ran it. Given, the names are added to what the patterns tell, and stand in for them when the patterns do not. Read fields only."
+    reads: [String!]
   ) on FIELD_DEFINITION
 
   "Require an authenticated request (a jwt in the context) for these operations."
