@@ -47,6 +47,11 @@ pub enum ResolvedClause {
 #[derive(Debug, Clone)]
 pub struct ResolvedCallSubquery {
     pub clauses: Vec<ResolvedClause>,
+    /// `CALL { head UNION branch ... }`: the branches after the head, each
+    /// analyzed against the outer scope. Every branch returns the head's
+    /// columns, by name and in order; its own output VarIds are mapped
+    /// onto [`Self::return_vars`] by position when it is planned.
+    pub unions: Vec<ResolvedUnionPart>,
     /// VarIds produced by the inner final RETURN that become
     /// available in the outer scope after the CALL.
     pub return_vars: Vec<VarId>,

@@ -327,6 +327,33 @@ MATCH (n:User)    RETURN n.name, 'user'
 UNION
 MATCH (n:Product) RETURN n.name, n.price, 'product'`} />
 
+### UNION inside CALL { }
+
+A `UNION` inside a `CALL { }` body combines the branches once per outer
+row. The query after the `CALL` can then sort, page and count the combined
+rows:
+
+<QueryCodeBlock code={String.raw`CALL {
+  MATCH (f:ImageFile) RETURN f
+  UNION ALL
+  MATCH (f:VideoFile) RETURN f
+}
+WITH f ORDER BY f.size DESC LIMIT 20
+RETURN f.key AS key, f.size AS size`} />
+
+Each branch sees the outer row's variables, but not the variables of the
+branch before it. Every branch ends in `RETURN` with the same column
+names in the same order. Plain `UNION` drops duplicate rows within each
+outer row, so the same row can still appear once for each outer row:
+
+<QueryCodeBlock code={String.raw`MATCH (p:Person)
+CALL {
+  WITH p MATCH (p)-[:LIKES]->(t) RETURN t.name AS thing
+  UNION
+  WITH p MATCH (p)-[:OWNS]->(t) RETURN t.name AS thing
+}
+RETURN p.name AS person, thing`} />
+
 ## Common patterns
 
 ### Pick N, then follow

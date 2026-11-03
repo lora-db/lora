@@ -483,7 +483,15 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
                     .collect::<Vec<_>>()
                     .join(", "),
             );
-            PlanDescription::with_children("CallSubquery", d, vec![n.input, n.inner])
+            if !n.unions.is_empty() {
+                d.insert(
+                    "union".to_string(),
+                    if n.distinct() { "distinct" } else { "all" }.to_string(),
+                );
+            }
+            let mut children = vec![n.input];
+            children.extend(n.branches());
+            PlanDescription::with_children("CallSubquery", d, children)
         }
         PhysicalOp::PathBuild(n) => {
             d.insert("output".to_string(), var_str(n.output));

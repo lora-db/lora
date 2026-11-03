@@ -577,7 +577,6 @@ fn union_all_summary_statistics() {
 // ============================================================
 
 #[test]
-#[ignore = "UNION inside CALL { } is not supported"]
 fn union_with_limit_on_each_branch() {
     // Per-branch LIMIT before UNION (requires subquery or specific syntax)
     let db = TestDb::new();

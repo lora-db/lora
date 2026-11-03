@@ -824,7 +824,10 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         let input_rows = self.execute_node(plan, op.input)?;
         let mut out = Vec::with_capacity(input_rows.len());
 
-        if crate::pull::subtree_has_write(plan, op.inner) {
+        if op
+            .branches()
+            .any(|branch| crate::pull::subtree_has_write(plan, branch))
+        {
             // A writing body runs on this executor, once per outer row,
             // with the outer row seeded into its bottom `Argument`. Each
             // run sees the writes of the runs before it.
@@ -832,7 +835,8 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
             for outer_row in input_rows {
                 self.check_deadline()?;
                 let prev = self.argument_seed.replace(outer_row.clone());
-                let inner_rows = self.execute_node(plan, op.inner);
+                let inner_rows =
+                    crate::pull::call_body_rows(op, |branch| self.execute_node(plan, branch));
                 self.argument_seed = prev;
                 let inner_rows = inner_rows?;
                 if unit {
@@ -851,14 +855,16 @@ impl<'a, S: GraphStorageMut> MutableExecutor<'a, S> {
         let params = std::sync::Arc::new(self.ctx.params.clone());
         let storage_ref: &S = &*self.ctx.storage;
         for outer_row in input_rows {
-            let mut inner_source = crate::pull::build_streaming_seeded(
-                plan,
-                op.inner,
-                storage_ref,
-                params.clone(),
-                outer_row.clone(),
-            )?;
-            let inner_rows = crate::pull::drain(inner_source.as_mut())?;
+            let inner_rows = crate::pull::call_body_rows(op, |branch| {
+                let mut inner_source = crate::pull::build_streaming_seeded(
+                    plan,
+                    branch,
+                    storage_ref,
+                    params.clone(),
+                    outer_row.clone(),
+                )?;
+                crate::pull::drain(inner_source.as_mut())
+            })?;
             for inner_row in inner_rows {
                 out.push(crate::executor::merge_optional_rows(&outer_row, &inner_row));
             }

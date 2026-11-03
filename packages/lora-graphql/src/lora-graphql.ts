@@ -57,7 +57,11 @@ import {
   COMPILED_TOTAL,
   CompileCache,
 } from "./compile/cache.js";
-import { compileAbstractRoot } from "./compile/read/abstract.js";
+import { names } from "./schema/names.js";
+import {
+  compileAbstractConnection,
+  compileAbstractRoot,
+} from "./compile/read/abstract.js";
 import {
   compileCypherRoot,
   MAX_LIST_ARGUMENT,
@@ -537,10 +541,10 @@ export class LoraGraphQL {
         checkFieldAuthentication(ctx, node.name, field);
         return claimsMaskedValue(ctx, node, field, value);
       },
-      resolveAbstract: (abstract, info, context) =>
+      resolveAbstract: (abstract, info, context, connection) =>
         span(info, context, () => {
           const compiled = this.#cachedCompile(info, context, (ctx) =>
-            compileAbstractRoot(
+            (connection ? compileAbstractConnection : compileAbstractRoot)(
               ctx,
               abstract,
               this.#args(ctx, info.parentType, info.fieldNodes),
@@ -862,9 +866,16 @@ export class LoraGraphQL {
       const abstract = [...this.model.abstracts.values()].find(
         (x) => x.read && x.plural === sel.name.value,
       );
+      const abstractConnection = [...this.model.abstracts.values()].find(
+        (x) => x.read && names.abstractConnectionRoot(x) === sel.name.value,
+      );
       if (cypher) compiled = compileCypherRoot(ctx, cypher, args, [sel]);
       else if (abstract) {
         compiled = compileAbstractRoot(ctx, abstract, args, [sel]);
+      } else if (abstractConnection) {
+        compiled = compileAbstractConnection(ctx, abstractConnection, args, [
+          sel,
+        ]);
       } else if (search) {
         compiled = compileSearch(
           ctx,

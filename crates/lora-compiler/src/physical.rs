@@ -60,7 +60,29 @@ pub struct ForeachExec {
 pub struct CallSubqueryExec {
     pub input: PhysicalNodeId,
     pub inner: PhysicalNodeId,
+    /// `UNION` branches after `inner`; see [`crate::logical::CallSubquery`].
+    pub unions: Vec<CallUnionBranchExec>,
     pub new_vars: Vec<VarId>,
+}
+
+/// See [`crate::logical::CallUnionBranch`].
+#[derive(Debug, Clone)]
+pub struct CallUnionBranchExec {
+    pub all: bool,
+    pub inner: PhysicalNodeId,
+}
+
+impl CallSubqueryExec {
+    /// The body's branch roots, `inner` first.
+    pub fn branches(&self) -> impl Iterator<Item = PhysicalNodeId> + '_ {
+        std::iter::once(self.inner).chain(self.unions.iter().map(|b| b.inner))
+    }
+
+    /// Whether the body's rows are deduplicated per outer row: some
+    /// branch is joined by plain `UNION`.
+    pub fn distinct(&self) -> bool {
+        self.unions.iter().any(|b| !b.all)
+    }
 }
 
 #[derive(Debug, Clone)]

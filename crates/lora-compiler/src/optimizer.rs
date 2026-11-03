@@ -600,6 +600,14 @@ fn lower_logical_op(op: LogicalOp) -> PhysicalOp {
         LogicalOp::CallSubquery(cs) => PhysicalOp::CallSubquery(CallSubqueryExec {
             input: cs.input,
             inner: cs.inner,
+            unions: cs
+                .unions
+                .into_iter()
+                .map(|b| crate::physical::CallUnionBranchExec {
+                    all: b.all,
+                    inner: b.inner,
+                })
+                .collect(),
             new_vars: cs.new_vars,
         }),
     }

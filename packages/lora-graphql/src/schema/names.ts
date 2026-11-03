@@ -2,7 +2,11 @@
 // and the compiler agree.
 
 import { lowerFirst } from "../model/build/shapes.js";
-import type { NodeType, RelationshipField } from "../model/types.js";
+import type {
+  AbstractType,
+  NodeType,
+  RelationshipField,
+} from "../model/types.js";
 
 export const upperFirst = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -31,6 +35,7 @@ export const names = {
   aggregateRoot: (t: NodeType) => `${t.plural}Aggregate`,
   groupedRoot: (t: NodeType) => `${t.plural}Grouped`,
   singleRoot: (t: NodeType) => lowerFirst(t.name),
+  abstractConnectionRoot: (t: AbstractType) => `${t.plural}Connection`,
 };
 
 /**

@@ -36,6 +36,8 @@ export interface SchemaHooks {
     abstract: AbstractType,
     info: GraphQLResolveInfo,
     context: unknown,
+    /** The `<plural>Connection` root, not the list. */
+    connection: boolean,
   ) => Promise<unknown>;
   subscribe: (
     node: NodeType,
