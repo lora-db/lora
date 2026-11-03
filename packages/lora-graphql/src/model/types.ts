@@ -267,6 +267,20 @@ export interface CypherField extends FieldBase {
   /** Whether the statement has a write clause (a Mutation field's may). */
   writes: boolean;
   /**
+   * What a read-only statement reads, for read-sets: the labels and
+   * relationship types its patterns name, with the names of
+   * `@cypher(reads:)` (type names, labels or relationship types, resolved
+   * when compiled). Undefined when that cannot be told (a procedure call,
+   * an unlabelled node nothing bound, a write): the read is opaque.
+   */
+  reads:
+    | {
+        labels: readonly string[];
+        relationships: readonly string[];
+        declared: readonly string[];
+      }
+    | undefined;
+  /**
    * Whether a Mutation field's statement returns a `created` or `updated`
    * column: the nodes in them are its write-set.
    */

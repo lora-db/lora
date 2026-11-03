@@ -1360,9 +1360,14 @@ lora.onWrite((change) => {
 });
 ```
 
-A read-set is label-level, and over-approximates: a `@cypher` statement
-can read anything, so a read that ran one (and any mutation) carries
-`opaque: true`, which every change affects. `@customResolver` fields
+A read-set is label-level, and over-approximates. A read-only `@cypher`
+field adds the labels and relationship types its statement's patterns
+name, its parent's label and the type it returns:
+`MATCH (a:ImageAsset {source: this.image}) RETURN a` reads `ImageAsset`.
+Where the text cannot tell (a procedure `CALL`, `MATCH (n)` with no label,
+`-->` with no type), `@cypher(reads: ["Festival", "PLAYS_AT"])` names
+type names, labels or relationship types; without it such a read, and
+any mutation, carries `opaque: true`, which every change affects. `@customResolver` fields
 are not seen; key the cache so they do not need to be.
 
 ## Subscriptions

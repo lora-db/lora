@@ -38,6 +38,7 @@ import { directive } from "./directive-args.js";
 import { buildScalarField } from "./scalar-field.js";
 import { authOps, readOnlyRules, rootFieldRules } from "./authorization.js";
 import { reportsWrites } from "./trigger.js";
+import { statementReads } from "../cypher-reads.js";
 
 const WRITE_CLAUSES = /\b(CREATE|MERGE|SET|DELETE|REMOVE|DETACH)\b/;
 
@@ -235,6 +236,28 @@ export function buildCypherField(
     );
   }
 
+  // What the statement reads, for read-sets. A Mutation field's read is
+  // opaque whatever it says; `reads:` names what the text cannot tell.
+  const declared = args["reads"] as readonly string[] | null | undefined;
+  if (declared && ctx.root === "Mutation") {
+    at("@cypher(reads:) applies to read fields; a mutation's reads are opaque");
+  }
+  for (const name of declared ?? []) {
+    if (!name.trim()) at("@cypher(reads:) names must not be empty");
+  }
+  const inferred =
+    ctx.root === "Mutation" || WRITE_CLAUSES.test(code)
+      ? undefined
+      : statementReads(statement, ctx.root === undefined ? ["this"] : []);
+  const reads =
+    ctx.root === "Mutation"
+      ? undefined
+      : inferred
+        ? { ...inferred, declared: declared ?? [] }
+        : declared
+          ? { labels: [], relationships: [], declared }
+          : undefined;
+
   // Opt-in filters and sorts: computed per row, so never through an index.
   let computed: ScalarField | undefined;
   if (
@@ -280,6 +303,7 @@ export function buildCypherField(
     args: cypherArgs,
     params,
     writes: WRITE_CLAUSES.test(code),
+    reads,
     reports: ctx.root === "Mutation" && reportsWrites(statement),
     computed,
     authentication: authOps(directive(d("authentication"), f, at)),
