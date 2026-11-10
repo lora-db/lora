@@ -33,7 +33,8 @@ use super::index_catalog::{
 };
 use super::point_index::PointRegistry;
 use super::property_index::{
-    EntityValues, PropertyIndexKey, PropertyIndexRegistry, PropertyIndexState, UNLABELLED,
+    EntityValues, PropertyIndexKey, PropertyIndexRegistry, PropertyIndexState, BUILD_RANGE,
+    UNLABELLED,
 };
 use super::record_slab::{BuiltLeaves, RecordSlab};
 use super::secondary_index_maintenance::SecondaryIndexMutation;
@@ -803,6 +804,34 @@ impl InMemoryGraph {
         })
     }
 
+    /// The nodes labelled `label`, in id order, read through the label
+    /// index: a scan of the label, not of the graph. An index build over
+    /// one label costs that label's nodes, however large the graph around
+    /// it.
+    pub(super) fn iter_nodes_labelled<'a>(
+        &'a self,
+        label: &str,
+    ) -> impl Iterator<Item = (NodeId, NodeRef<'a>)> + 'a {
+        self.nodes_by_label
+            .get(label)
+            .into_iter()
+            .flat_map(|ids| ids.iter())
+            .filter_map(move |id| Some((id, self.node_at(id)?)))
+    }
+
+    /// The relationships of type `rel_type`, in id order, read through the
+    /// type index (see [`Self::iter_nodes_labelled`]).
+    pub(super) fn iter_rels_typed<'a>(
+        &'a self,
+        rel_type: &str,
+    ) -> impl Iterator<Item = (RelationshipId, RelRef<'a>)> + 'a {
+        self.relationships_by_type
+            .get(rel_type)
+            .into_iter()
+            .flat_map(|ids| ids.iter())
+            .filter_map(move |id| Some((id, self.rel_at(id)?)))
+    }
+
     /// Add an entry to `node_id`'s list on `side`. Relies on
     /// the monotonic-id invariant: relationship ids are allocated once and
     /// never re-used, so the list can never see a duplicate.
@@ -1145,12 +1174,18 @@ impl InMemoryGraph {
     /// Lookups go through [`Self::try_ensure_node_property_index`], so two
     /// of them do not build the same index at once.
     pub(super) fn ensure_node_property_index(&self, key: &str) {
+        self.ensure_node_property_index_within(key, None);
+    }
+
+    /// [`Self::ensure_node_property_index`], reading only the blocks of
+    /// nodes `within` says hold `key` when it is given.
+    fn ensure_node_property_index_within(&self, key: &str, within: Option<&KeyBlocks>) {
         if self.indexes_read().node_properties.is_active(key) {
             return;
         }
 
         let built = if self.live_node_count >= PARALLEL_INDEX_MIN {
-            self.build_node_property_index_parallel(key)
+            self.build_node_property_index_parallel(key, within)
         } else {
             let mut built = PropertyIndexState::default();
             built.insert_bulk(
@@ -1180,14 +1215,27 @@ impl InMemoryGraph {
 
     /// [`PropertyIndexState::build_parallel`] over the nodes.
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
-    pub(super) fn build_node_property_index_parallel(&self, key: &str) -> PropertyIndexState {
+    pub(super) fn build_node_property_index_parallel(
+        &self,
+        key: &str,
+        within: Option<&KeyBlocks>,
+    ) -> PropertyIndexState {
         let Some(key_id) = self.dicts.keys.id_of(key) else {
             return PropertyIndexState::default();
         };
         PropertyIndexState::build_parallel(
             key,
             self.nodes.len() as u64,
-            |ids| self.node_slots_in(ids),
+            |ids| -> Box<dyn Iterator<Item = NodeId> + '_> {
+                match within {
+                    Some(blocks) => Box::new(
+                        blocks
+                            .holding(key_id, ids)
+                            .flat_map(|block| self.node_slots_in(block)),
+                    ),
+                    None => Box::new(self.node_slots_in(ids)),
+                }
+            },
             |id| {
                 let node = StoredNode::new(id, self.nodes.get(id as usize)?, &self.dicts);
                 let value = node.properties().get_id(key_id)?;
@@ -1198,7 +1246,11 @@ impl InMemoryGraph {
     }
 
     #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
-    pub(super) fn build_node_property_index_parallel(&self, key: &str) -> PropertyIndexState {
+    pub(super) fn build_node_property_index_parallel(
+        &self,
+        key: &str,
+        _within: Option<&KeyBlocks>,
+    ) -> PropertyIndexState {
         let mut built = PropertyIndexState::default();
         built.insert_bulk(
             key,
@@ -1214,14 +1266,27 @@ impl InMemoryGraph {
     }
 
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
-    fn build_relationship_property_index_parallel(&self, key: &str) -> PropertyIndexState {
+    fn build_relationship_property_index_parallel(
+        &self,
+        key: &str,
+        within: Option<&KeyBlocks>,
+    ) -> PropertyIndexState {
         let Some(key_id) = self.dicts.keys.id_of(key) else {
             return PropertyIndexState::default();
         };
         PropertyIndexState::build_parallel(
             key,
             self.relationships.len() as u64,
-            |ids| self.rel_slots_in(ids),
+            |ids| -> Box<dyn Iterator<Item = RelationshipId> + '_> {
+                match within {
+                    Some(blocks) => Box::new(
+                        blocks
+                            .holding(key_id, ids)
+                            .flat_map(|block| self.rel_slots_in(block)),
+                    ),
+                    None => Box::new(self.rel_slots_in(ids)),
+                }
+            },
             |id| {
                 let rel = StoredRel::new(id, self.relationships.get(id as usize)?, &self.dicts);
                 let value = rel.properties().get_id(key_id)?;
@@ -1232,7 +1297,11 @@ impl InMemoryGraph {
     }
 
     #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
-    fn build_relationship_property_index_parallel(&self, key: &str) -> PropertyIndexState {
+    fn build_relationship_property_index_parallel(
+        &self,
+        key: &str,
+        _within: Option<&KeyBlocks>,
+    ) -> PropertyIndexState {
         let mut built = PropertyIndexState::default();
         built.insert_bulk(
             key,
@@ -1245,6 +1314,53 @@ impl InMemoryGraph {
             &self.relationship_values(),
         );
         built
+    }
+
+    /// Where each of `keys` occurs among `entity`'s records: one pass
+    /// over them, on every core, reading the key ids only.
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    pub(super) fn key_blocks(&self, entity: StoredIndexEntity, keys: &[String]) -> KeyBlocks {
+        use rayon::prelude::*;
+        let index: std::collections::HashMap<u32, usize> = keys
+            .iter()
+            .filter_map(|key| self.dicts.keys.id_of(key))
+            .enumerate()
+            .map(|(at, id)| (id, at))
+            .collect();
+        let slab = match entity {
+            StoredIndexEntity::Node => &self.nodes,
+            StoredIndexEntity::Relationship => &self.relationships,
+        };
+        let ranges = (slab.len() as u64).div_ceil(BUILD_RANGE);
+        let masks = (0..ranges)
+            .into_par_iter()
+            .map(|range| {
+                let start = range * BUILD_RANGE;
+                let mut masks = vec![0u64; index.len()];
+                for (slot, bytes) in slab
+                    .iter_from(start as usize)
+                    .take_while(|(slot, _)| (*slot as u64) < start + BUILD_RANGE)
+                {
+                    let id = slot as u64;
+                    let bit = 1u64 << ((id - start) / KeyBlocks::BLOCK);
+                    let properties = match entity {
+                        StoredIndexEntity::Node => {
+                            StoredNode::new(id, bytes, &self.dicts).properties()
+                        }
+                        StoredIndexEntity::Relationship => {
+                            StoredRel::new(id, bytes, &self.dicts).properties()
+                        }
+                    };
+                    for key in properties.key_ids() {
+                        if let Some(&at) = index.get(&key) {
+                            masks[at] |= bit;
+                        }
+                    }
+                }
+                masks
+            })
+            .collect();
+        KeyBlocks { index, masks }
     }
 
     /// The node slots holding a record, among `ids`.
@@ -1269,12 +1385,17 @@ impl InMemoryGraph {
 
     /// As [`Self::ensure_node_property_index`].
     pub(super) fn ensure_relationship_property_index(&self, key: &str) {
+        self.ensure_relationship_property_index_within(key, None);
+    }
+
+    /// As [`Self::ensure_node_property_index_within`].
+    fn ensure_relationship_property_index_within(&self, key: &str, within: Option<&KeyBlocks>) {
         if self.indexes_read().relationship_properties.is_active(key) {
             return;
         }
 
         let built = if self.live_rel_count >= PARALLEL_INDEX_MIN {
-            self.build_relationship_property_index_parallel(key)
+            self.build_relationship_property_index_parallel(key, within)
         } else {
             let mut built = PropertyIndexState::default();
             built.insert_bulk(
@@ -1600,6 +1721,25 @@ impl InMemoryGraph {
                 }
             }
         }
+        // Each hash index reads one key of the records. With several to
+        // build over a large graph, one pass first notes where each key
+        // occurs, so a build reads the blocks holding its key instead of
+        // every record: together they cost about one scan, not one each.
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        let blocks_for = |entity: StoredIndexEntity, live: usize| {
+            let keys: Vec<String> = work
+                .iter()
+                .filter_map(|work| match work {
+                    Work::Hash(of, key) if *of == entity => Some(key.clone()),
+                    _ => None,
+                })
+                .collect();
+            (keys.len() > 1 && live >= PARALLEL_INDEX_MIN).then(|| self.key_blocks(entity, &keys))
+        };
+        #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
+        let blocks_for = |_: StoredIndexEntity, _: usize| None::<KeyBlocks>;
+        let node_blocks = blocks_for(StoredIndexEntity::Node, self.live_node_count);
+        let rel_blocks = blocks_for(StoredIndexEntity::Relationship, self.live_rel_count);
         let run = |work: Work| match work {
             Work::Populate(def) => {
                 self.populate_index_data(&def);
@@ -1607,9 +1747,11 @@ impl InMemoryGraph {
             }
             Work::Hash(entity, key) => {
                 match entity {
-                    StoredIndexEntity::Node => self.ensure_node_property_index(&key),
+                    StoredIndexEntity::Node => {
+                        self.ensure_node_property_index_within(&key, node_blocks.as_ref())
+                    }
                     StoredIndexEntity::Relationship => {
-                        self.ensure_relationship_property_index(&key)
+                        self.ensure_relationship_property_index_within(&key, rel_blocks.as_ref())
                     }
                 }
                 Ok(())
@@ -1919,16 +2061,14 @@ impl InMemoryGraph {
 
         let backfill: Vec<(u64, String)> = match entity {
             StoredIndexEntity::Node => self
-                .iter_nodes()
-                .filter(|(_, node)| node.labels().strs().any(|l| l == label))
+                .iter_nodes_labelled(label)
                 .filter_map(|(id, node)| match node.properties().get(property) {
                     Some(crate::ValueRef::String(value)) => Some((id, value.to_owned())),
                     _ => None,
                 })
                 .collect(),
             StoredIndexEntity::Relationship => self
-                .iter_rels()
-                .filter(|(_, rel)| rel.rel_type() == label)
+                .iter_rels_typed(label)
                 .filter_map(|(id, rel)| match rel.properties().get(property) {
                     Some(crate::ValueRef::String(value)) => Some((id, value.to_owned())),
                     _ => None,
@@ -1960,7 +2100,7 @@ impl InMemoryGraph {
         labels: &[String],
         properties: &[String],
     ) {
-        use super::fulltext_index::{term_counts_for_properties, TermCounts};
+        use super::fulltext_index::{ChunkTokeniser, FulltextIndex, TokenisedChunk};
 
         {
             let mut registry = self.fulltext_indexes_write(entity);
@@ -1970,38 +2110,72 @@ impl InMemoryGraph {
             .active_fulltext_indexes
             .fetch_add(1, Ordering::Relaxed);
 
-        // Backfill: walk every entity matching any label, tokenise covered
-        // string properties, install one posting batch per entity.
-        let backfill: Vec<(u64, TermCounts)> = match entity {
-            StoredIndexEntity::Node => self
-                .iter_nodes()
-                .filter(|(_, node)| {
-                    labels
-                        .iter()
-                        .any(|wanted| node.labels().strs().any(|l| l == wanted))
-                })
-                .map(|(id, node)| {
-                    let counts = term_counts_for_properties(node.properties(), properties);
-                    (id, counts)
-                })
-                .filter(|(_, c)| !c.is_empty())
-                .collect(),
-            StoredIndexEntity::Relationship => self
-                .iter_rels()
-                .filter(|(_, rel)| labels.iter().any(|wanted| wanted == rel.rel_type()))
-                .map(|(id, rel)| {
-                    let counts = term_counts_for_properties(rel.properties(), properties);
-                    (id, counts)
-                })
-                .filter(|(_, c)| !c.is_empty())
-                .collect(),
-        };
+        // Backfill. The covered entities come from the label index, each
+        // once and in id order: one with several covered labels is taken
+        // under the first of them it holds.
+        let mut ids: Vec<u64> = Vec::new();
+        for (at, label) in labels.iter().enumerate() {
+            let earlier = &labels[..at];
+            match entity {
+                StoredIndexEntity::Node => {
+                    ids.extend(
+                        self.iter_nodes_labelled(label)
+                            .filter(|(_, node)| {
+                                earlier.is_empty()
+                                    || !node.labels().strs().any(|l| earlier.iter().any(|e| e == l))
+                            })
+                            .map(|(id, _)| id),
+                    );
+                }
+                // A relationship has one type.
+                StoredIndexEntity::Relationship => {
+                    if !earlier.contains(label) {
+                        ids.extend(self.iter_rels_typed(label).map(|(id, _)| id));
+                    }
+                }
+            }
+        }
+        if labels.len() > 1 {
+            ids.sort_unstable();
+        }
 
+        // The covered properties' text only, tokenised on every core.
+        let tokenise = |ids: &[u64]| -> TokenisedChunk {
+            let mut tokeniser = ChunkTokeniser::default();
+            for &id in ids {
+                match entity {
+                    StoredIndexEntity::Node => {
+                        if let Some(node) = self.node_at(id) {
+                            tokeniser.add_selected(node.properties(), properties);
+                        }
+                    }
+                    StoredIndexEntity::Relationship => {
+                        if let Some(rel) = self.rel_at(id) {
+                            tokeniser.add_selected(rel.properties(), properties);
+                        }
+                    }
+                }
+                tokeniser.end_entity(id);
+            }
+            tokeniser.finish()
+        };
+        const CHUNK: usize = 1 << 14;
+        #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+        let chunks: Vec<TokenisedChunk> = {
+            use rayon::prelude::*;
+            ids.par_chunks(CHUNK).map(tokenise).collect()
+        };
+        #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
+        let chunks: Vec<TokenisedChunk> = ids.chunks(CHUNK).map(tokenise).collect();
+        drop(ids);
+
+        // Built apart and installed whole: the registry is locked only for
+        // the swap, so the other fulltext indexes of this open build
+        // beside it.
+        let built = FulltextIndex::from_chunks(labels.to_vec(), properties.to_vec(), chunks);
         let mut registry = self.fulltext_indexes_write(entity);
         if let Some(index) = registry.get_mut(name) {
-            for (id, counts) in backfill {
-                index.reindex_entity(id, counts);
-            }
+            *index = built;
         }
     }
 
@@ -2051,10 +2225,7 @@ impl InMemoryGraph {
         let mut registry = self.sorted_indexes_write(entity);
         match entity {
             StoredIndexEntity::Node => {
-                for (id, node) in self.iter_nodes() {
-                    if !node.labels().strs().any(|l| l == label) {
-                        continue;
-                    }
+                for (id, node) in self.iter_nodes_labelled(label) {
                     match node.properties().get(property) {
                         // A list is indexed by its elements too.
                         Some(crate::ValueRef::Other(value)) => {
@@ -2073,10 +2244,7 @@ impl InMemoryGraph {
                 }
             }
             StoredIndexEntity::Relationship => {
-                for (id, rel) in self.iter_rels() {
-                    if rel.rel_type() != label {
-                        continue;
-                    }
+                for (id, rel) in self.iter_rels_typed(label) {
                     match rel.properties().get(property) {
                         // A list is indexed by its elements too.
                         Some(crate::ValueRef::Other(value)) => {
@@ -2237,8 +2405,7 @@ impl InMemoryGraph {
 
         let backfill: Vec<(u64, LoraPoint)> = match entity {
             StoredIndexEntity::Node => self
-                .iter_nodes()
-                .filter(|(_, node)| node.labels().strs().any(|l| l == label))
+                .iter_nodes_labelled(label)
                 .filter_map(|(id, node)| {
                     match node.properties().get(property).map(|v| v.to_owned()) {
                         Some(PropertyValue::Point(point)) => Some((id, point)),
@@ -2247,8 +2414,7 @@ impl InMemoryGraph {
                 })
                 .collect(),
             StoredIndexEntity::Relationship => self
-                .iter_rels()
-                .filter(|(_, rel)| rel.rel_type() == label)
+                .iter_rels_typed(label)
                 .filter_map(|(id, rel)| {
                     match rel.properties().get(property).map(|v| v.to_owned()) {
                         Some(PropertyValue::Point(point)) => Some((id, point)),
@@ -2331,8 +2497,7 @@ impl InMemoryGraph {
     fn backfill_vector_index(&self, entity: StoredIndexEntity, label: &str, property: &str) {
         let backfill: Vec<(u64, crate::LoraVector)> = match entity {
             StoredIndexEntity::Node => self
-                .iter_nodes()
-                .filter(|(_, node)| node.labels().strs().any(|l| l == label))
+                .iter_nodes_labelled(label)
                 .filter_map(|(id, node)| {
                     match node.properties().get(property).map(|v| v.to_owned()) {
                         Some(PropertyValue::Vector(v)) => Some((id, v)),
@@ -2341,8 +2506,7 @@ impl InMemoryGraph {
                 })
                 .collect(),
             StoredIndexEntity::Relationship => self
-                .iter_rels()
-                .filter(|(_, rel)| rel.rel_type() == label)
+                .iter_rels_typed(label)
                 .filter_map(|(id, rel)| {
                     match rel.properties().get(property).map(|v| v.to_owned()) {
                         Some(PropertyValue::Vector(v)) => Some((id, v)),
@@ -3442,6 +3606,56 @@ pub(super) fn is_sorted(def: &IndexDefinition) -> bool {
 /// Entities from which a property index is built on every core: below
 /// it, splitting the work costs more than it saves.
 const PARALLEL_INDEX_MIN: usize = 1 << 17;
+
+/// Where some property keys occur among the record slots of nodes or of
+/// relationships, to the block of [`Self::BLOCK`] slots: what
+/// `InMemoryGraph::key_blocks` reads in one pass so that the hash index
+/// builds after it skip the blocks without their key.
+#[cfg_attr(
+    not(all(feature = "parallel", not(target_arch = "wasm32"))),
+    allow(dead_code)
+)]
+pub(super) struct KeyBlocks {
+    /// A key id's position in each range's masks.
+    index: std::collections::HashMap<u32, usize>,
+    /// Per range of [`BUILD_RANGE`] slots, per key: bit `b` is set when a
+    /// record in the range's `b`-th block holds the key.
+    masks: Vec<Vec<u64>>,
+}
+
+#[cfg_attr(
+    not(all(feature = "parallel", not(target_arch = "wasm32"))),
+    allow(dead_code)
+)]
+impl KeyBlocks {
+    /// Slots to a block: 64 blocks to a range, one mask bit each.
+    const BLOCK: u64 = BUILD_RANGE / 64;
+
+    /// The blocks of `ids` (one whole range, as
+    /// [`PropertyIndexState::build_parallel`] asks for) that hold the key
+    /// numbered `key`, in order. A key the pass was not given reads as
+    /// everywhere.
+    fn holding(
+        &self,
+        key: u32,
+        ids: std::ops::Range<u64>,
+    ) -> impl Iterator<Item = std::ops::Range<u64>> {
+        debug_assert!(ids.start.is_multiple_of(BUILD_RANGE) && ids.end == ids.start + BUILD_RANGE);
+        let mask = match self.index.get(&key) {
+            Some(&at) => self
+                .masks
+                .get((ids.start / BUILD_RANGE) as usize)
+                .map_or(0, |masks| masks[at]),
+            None => u64::MAX,
+        };
+        (0..64u64)
+            .filter(move |block| mask >> block & 1 == 1)
+            .map(move |block| {
+                let start = ids.start + block * Self::BLOCK;
+                start..start + Self::BLOCK
+            })
+    }
+}
 
 /// Data work a restore registers its catalogs without, to do it all at
 /// once in [`InMemoryGraph::run_deferred`].

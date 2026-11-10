@@ -47,6 +47,9 @@ use super::StoredIndexEntity;
 const TERM_PART: usize = 64;
 const ENTITY_LEAF: usize = 112;
 
+/// An entity's terms, in term order, sharing the posting lists' keys.
+type EntityTerms = Arc<[Arc<str>]>;
+
 pub(super) type TermCounts = BTreeMap<String, u32>;
 pub(super) type PropertyTermCounts = BTreeMap<String, TermCounts>;
 
@@ -63,20 +66,44 @@ pub fn standard_analyzer(text: &str) -> Vec<String> {
 fn analyze(text: &str, keep_prefix_marker: bool) -> Vec<(String, bool)> {
     let mut out = Vec::new();
     let mut buf = String::new();
+    for_each_token(text, keep_prefix_marker, &mut buf, |token, prefix| {
+        out.push((token.to_owned(), prefix))
+    });
+    out
+}
+
+/// The tokens of `text` in order, each with whether a `*` ended it (only
+/// with `keep_prefix_marker`), spelled in `buf`: a caller tokenising many
+/// texts keeps one buffer and allocates nothing per token.
+fn for_each_token(
+    text: &str,
+    keep_prefix_marker: bool,
+    buf: &mut String,
+    mut emit: impl FnMut(&str, bool),
+) {
+    buf.clear();
     for ch in text.chars() {
-        if ch.is_alphanumeric() {
-            for low in ch.to_lowercase() {
-                push_folded(&mut buf, low);
+        if ch.is_ascii() {
+            // Most text: no case table, no decomposition.
+            if ch.is_ascii_alphanumeric() {
+                buf.push(ch.to_ascii_lowercase());
+                continue;
             }
-        } else if !buf.is_empty() {
-            let prefix = keep_prefix_marker && ch == '*';
-            out.push((std::mem::take(&mut buf), prefix));
+        } else if ch.is_alphanumeric() {
+            for low in ch.to_lowercase() {
+                push_folded(buf, low);
+            }
+            continue;
+        }
+        if !buf.is_empty() {
+            emit(buf, keep_prefix_marker && ch == '*');
+            buf.clear();
         }
     }
     if !buf.is_empty() {
-        out.push((buf, false));
+        emit(buf, false);
+        buf.clear();
     }
-    out
 }
 
 /// Append `ch` to `buf` with diacritics removed. Canonical decomposition
@@ -218,6 +245,144 @@ impl FulltextIndex {
             postings: CowOrdMap::default(),
             entity_terms: CowMap::default(),
         }
+    }
+
+    /// An index of the entities `chunks` hold, which must come in
+    /// ascending entity order with each entity once. The same index
+    /// [`Self::reindex_entity`] builds entity by entity, without a walk of
+    /// the term map per term of each entity: the distinct terms are sorted
+    /// once, the postings are filed under their term's rank by counting,
+    /// and both maps are filled in order, on every core when the build
+    /// allows.
+    pub(super) fn from_chunks(
+        labels: Vec<String>,
+        properties: Vec<String>,
+        chunks: Vec<TokenisedChunk>,
+    ) -> Self {
+        let mut index = Self::new(labels, properties);
+        debug_assert!(chunks
+            .iter()
+            .flat_map(|chunk| chunk.entities.iter().map(|(id, _)| *id))
+            .is_sorted_by(|a, b| a < b));
+
+        // Number the distinct terms across the chunks, then rank them.
+        let mut numbers: HashMap<&str, u32> = HashMap::new();
+        let mut distinct: Vec<&str> = Vec::new();
+        let global: Vec<Vec<u32>> = chunks
+            .iter()
+            .map(|chunk| {
+                chunk
+                    .terms
+                    .iter()
+                    .map(|term| {
+                        *numbers.entry(term.as_str()).or_insert_with(|| {
+                            distinct.push(term.as_str());
+                            (distinct.len() - 1) as u32
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        drop(numbers);
+        if distinct.is_empty() {
+            return index;
+        }
+        let mut order: Vec<u32> = (0..distinct.len() as u32).collect();
+        par_sort_unstable_by(&mut order, |a, b| {
+            distinct[*a as usize].cmp(distinct[*b as usize])
+        });
+        let mut rank_of = vec![0u32; distinct.len()];
+        for (rank, number) in order.iter().enumerate() {
+            rank_of[*number as usize] = rank as u32;
+        }
+        let terms: Vec<Arc<str>> = order
+            .iter()
+            .map(|number| Arc::from(distinct[*number as usize]))
+            .collect();
+        drop(order);
+        // Each chunk's term numbers as ranks.
+        let ranks: Vec<Vec<u32>> = global
+            .into_iter()
+            .map(|numbers| {
+                numbers
+                    .into_iter()
+                    .map(|number| rank_of[number as usize])
+                    .collect()
+            })
+            .collect();
+        drop(rank_of);
+
+        // File every posting under its term's rank. The chunks are read in
+        // entity order, so each term's entities land in id order.
+        let mut starts = vec![0usize; terms.len() + 1];
+        for (chunk, ranks) in chunks.iter().zip(&ranks) {
+            for (term, _) in &chunk.counts {
+                starts[ranks[*term as usize] as usize + 1] += 1;
+            }
+        }
+        for rank in 0..terms.len() {
+            starts[rank + 1] += starts[rank];
+        }
+        let mut filed: Vec<(u64, u32)> = vec![(0, 0); starts[terms.len()]];
+        let mut next = starts.clone();
+        for (chunk, ranks) in chunks.iter().zip(&ranks) {
+            let mut from = 0;
+            for (id, end) in &chunk.entities {
+                for (term, tf) in &chunk.counts[from..*end as usize] {
+                    let at = &mut next[ranks[*term as usize] as usize];
+                    filed[*at] = (*id, *tf);
+                    *at += 1;
+                }
+                from = *end as usize;
+            }
+        }
+        drop(next);
+
+        // Each term's posting list: appends, in id order.
+        let lists: Vec<CowIdMap<u32>> = par_map_range(terms.len(), |rank| {
+            let mut list = CowIdMap::default();
+            for (id, tf) in &filed[starts[rank]..starts[rank + 1]] {
+                list.insert(*id, *tf);
+            }
+            list
+        });
+        drop(filed);
+
+        // Each entity's terms, in term order as `reindex_entity` files
+        // them, sharing the posting lists' keys.
+        let held: Vec<Vec<(u64, EntityTerms)>> = par_map_range(chunks.len(), |at| {
+            let (chunk, ranks) = (&chunks[at], &ranks[at]);
+            let mut out = Vec::with_capacity(chunk.entities.len());
+            let mut mine: Vec<u32> = Vec::new();
+            let mut from = 0;
+            for (id, end) in &chunk.entities {
+                mine.clear();
+                mine.extend(
+                    chunk.counts[from..*end as usize]
+                        .iter()
+                        .map(|(term, _)| ranks[*term as usize]),
+                );
+                mine.sort_unstable();
+                let held: EntityTerms = mine
+                    .iter()
+                    .map(|rank| terms[*rank as usize].clone())
+                    .collect();
+                out.push((*id, held));
+                from = *end as usize;
+            }
+            out
+        });
+        index.entity_terms = CowMap::with_shape(
+            held.iter()
+                .flatten()
+                .map(|(id, _)| super::cow::route(id))
+                .collect(),
+        );
+        for (id, terms) in held.into_iter().flatten() {
+            index.entity_terms.insert(id, terms);
+        }
+        index.postings = CowOrdMap::from_sorted(terms.into_iter().zip(lists));
+        index
     }
 
     pub(super) fn property_is_covered(&self, property: &str) -> bool {
@@ -420,31 +585,156 @@ pub(super) fn string_property_term_counts<'a>(
 ) -> PropertyTermCounts {
     let mut out = PropertyTermCounts::new();
     for (key, value) in properties.into() {
-        match value {
-            crate::ValueRef::String(value) => {
-                out.insert(key.to_string(), tokenize_to_term_counts(value));
-            }
-            // A list property indexes each of its strings, like Lucene's
-            // multi-valued fields; other elements are skipped.
-            crate::ValueRef::Other(other) => {
-                let crate::PropertyValue::List(items) = &*other.get() else {
-                    continue;
-                };
-                let mut counts = TermCounts::new();
-                for item in items {
-                    if let crate::PropertyValue::String(text) = item {
-                        merge_term_counts(&mut counts, tokenize_to_term_counts(text));
-                    }
-                }
-                if !counts.is_empty() {
-                    out.insert(key.to_string(), counts);
-                }
-            }
-            // Numbers, booleans, temporals, points and vectors are not text.
-            _ => {}
+        if let Some(counts) = value_term_counts(value) {
+            // A string with no token still has an (empty) entry.
+            out.insert(key.to_string(), counts);
         }
     }
     out
+}
+
+/// The text terms of one property value: a string's, or those of a
+/// list's strings (like Lucene's multi-valued fields; other elements are
+/// skipped). Numbers, booleans, temporals, points and vectors are not
+/// text.
+fn value_term_counts(value: crate::ValueRef<'_>) -> Option<TermCounts> {
+    match value {
+        crate::ValueRef::String(value) => Some(tokenize_to_term_counts(value)),
+        crate::ValueRef::Other(other) => {
+            let crate::PropertyValue::List(items) = &*other.get() else {
+                return None;
+            };
+            let mut counts = TermCounts::new();
+            for item in items {
+                if let crate::PropertyValue::String(text) = item {
+                    merge_term_counts(&mut counts, tokenize_to_term_counts(text));
+                }
+            }
+            (!counts.is_empty()).then_some(counts)
+        }
+        _ => None,
+    }
+}
+
+/// A run of entities tokenised for [`FulltextIndex::from_chunks`]: the
+/// distinct terms met, numbered in that order, and each entity's
+/// `(term number, frequency)` pairs.
+#[derive(Default)]
+pub(super) struct TokenisedChunk {
+    terms: Vec<String>,
+    /// Each entity with a term, and where its pairs end in `counts`.
+    entities: Vec<(u64, u32)>,
+    counts: Vec<(u32, u32)>,
+}
+
+/// Tokenises entities into a [`TokenisedChunk`]. A term is spelled once
+/// per chunk, not once per occurrence.
+#[derive(Default)]
+pub(super) struct ChunkTokeniser {
+    chunk: TokenisedChunk,
+    numbers: HashMap<String, u32>,
+    /// The current entity's term numbers, one per token.
+    tokens: Vec<u32>,
+    buf: String,
+}
+
+impl ChunkTokeniser {
+    /// Add the covered text of the current entity: its `selected`
+    /// properties' strings, and the strings of their lists (see
+    /// [`string_property_term_counts`]).
+    pub(super) fn add_selected<'a>(
+        &mut self,
+        properties: impl Into<crate::PropsRef<'a>>,
+        selected: &[String],
+    ) {
+        let properties = properties.into();
+        for property in selected {
+            match properties.get(property) {
+                Some(crate::ValueRef::String(text)) => self.add_text(text),
+                Some(crate::ValueRef::Other(other)) => {
+                    if let crate::PropertyValue::List(items) = &*other.get() {
+                        for item in items {
+                            if let crate::PropertyValue::String(text) = item {
+                                self.add_text(text);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn add_text(&mut self, text: &str) {
+        let Self {
+            chunk,
+            numbers,
+            tokens,
+            buf,
+        } = self;
+        for_each_token(text, false, buf, |token, _| {
+            let number = match numbers.get(token) {
+                Some(number) => *number,
+                None => {
+                    let number = chunk.terms.len() as u32;
+                    chunk.terms.push(token.to_owned());
+                    numbers.insert(token.to_owned(), number);
+                    number
+                }
+            };
+            tokens.push(number);
+        });
+    }
+
+    /// Close the current entity as `id`. One without a token is left out,
+    /// as an entity without terms is of the index.
+    pub(super) fn end_entity(&mut self, id: u64) {
+        if self.tokens.is_empty() {
+            return;
+        }
+        self.tokens.sort_unstable();
+        let mut at = 0;
+        while at < self.tokens.len() {
+            let term = self.tokens[at];
+            let run = self.tokens[at..].partition_point(|other| *other == term);
+            self.chunk.counts.push((term, run as u32));
+            at += run;
+        }
+        self.tokens.clear();
+        self.chunk
+            .entities
+            .push((id, self.chunk.counts.len() as u32));
+    }
+
+    pub(super) fn finish(self) -> TokenisedChunk {
+        self.chunk
+    }
+}
+
+/// `items` sorted by `compare`, on every core when the build allows.
+fn par_sort_unstable_by<T: Send>(
+    items: &mut [T],
+    compare: impl Fn(&T, &T) -> std::cmp::Ordering + Sync,
+) {
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    {
+        use rayon::prelude::*;
+        items.par_sort_unstable_by(compare);
+    }
+    #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
+    items.sort_unstable_by(compare);
+}
+
+/// `make(0), make(1), .. make(len - 1)`, on every core when the build
+/// allows.
+fn par_map_range<T: Send>(len: usize, make: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    {
+        use rayon::prelude::*;
+        (0..len).into_par_iter().map(&make).collect()
+    }
+    #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
+    (0..len).map(make).collect()
 }
 
 pub(super) fn term_counts_for_properties<'a>(

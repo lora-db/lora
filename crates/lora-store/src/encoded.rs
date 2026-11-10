@@ -295,6 +295,23 @@ impl<'a> Iterator for StoredPropsIter<'a> {
 impl ExactSizeIterator for StoredPropsIter<'_> {}
 
 impl<'a> StoredProps<'a> {
+    /// The key ids, in stored (key-name) order, stepping over the values:
+    /// which keys a record holds, for a scan that only asks that.
+    #[inline]
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    pub(crate) fn key_ids(self) -> impl Iterator<Item = u32> + 'a {
+        let bytes = self.bytes;
+        let mut pos = 0;
+        let count = varint::read(bytes, &mut pos);
+        (0..count).map(move |_| {
+            let id = varint::read(bytes, &mut pos) as u32;
+            let tag = bytes[pos];
+            pos += 1;
+            skip_payload(bytes, tag, &mut pos);
+            id
+        })
+    }
+
     /// The properties by key id, in stored (key-name) order.
     #[inline]
     pub(crate) fn iter_ids(self) -> impl Iterator<Item = (u32, ValueRef<'a>)> + 'a {
