@@ -471,8 +471,8 @@ interface SnapshotRowProps {
 function formatCompressionLabel(
   compression: snapshots.SnapshotHeader["compression"],
 ): string {
-  if (compression.format === "gzip") {
-    return `gzip · lvl ${compression.level}`;
+  if (compression.format === "gzip" || compression.format === "zstd") {
+    return `${compression.format} · lvl ${compression.level}`;
   }
   return "uncompressed";
 }

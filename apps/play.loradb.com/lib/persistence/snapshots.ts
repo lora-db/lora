@@ -25,8 +25,11 @@ export interface SnapshotHeader {
   /** WAL fence LSN if the snapshot was a checkpoint (always `null` from the
    * playground today — we save without a WAL). */
   walLsn: number | null;
-  /** Body codec. `gzip` carries the encoder level. */
-  compression: { format: "none" } | { format: "gzip"; level: number };
+  /** Body codec. `gzip` and `zstd` carry the encoder level. */
+  compression:
+    | { format: "none" }
+    | { format: "gzip"; level: number }
+    | { format: "zstd"; level: number };
   /** Whether the body is encrypted. The blob is unreadable without
    * credentials when `true`. */
   encrypted: boolean;
