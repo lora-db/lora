@@ -6,6 +6,7 @@ mod workspace;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
@@ -53,6 +54,11 @@ pub(crate) struct WalArchive {
     /// snapshot over a newer one.
     checkpoint_lock: Mutex<()>,
     worker: Option<JoinHandle<()>>,
+    /// Set once the open that made this read its snapshot and replayed
+    /// its WAL ([`Self::mark_opened`]). Until then nothing here writes:
+    /// an open that fails leaves the container and the work directory as
+    /// it found them.
+    opened: AtomicBool,
     _archive_lock: ArchiveLock,
 }
 
@@ -115,12 +121,24 @@ impl WalArchive {
             write_lock,
             checkpoint_lock: Mutex::new(()),
             worker,
+            opened: AtomicBool::new(false),
             _archive_lock: archive_lock,
         })
     }
 
     pub fn work_dir(&self) -> &Path {
         &self.work_dir
+    }
+
+    /// The work directory was read whole: its snapshot loaded and its WAL
+    /// replayed. From here a drop rewrites the container from it and
+    /// removes it. Before, a drop writes nothing: the open failed on
+    /// what the disk holds (a damaged snapshot, a corrupt or incomplete
+    /// WAL), and rewriting the container from that would replace the last
+    /// whole copy of the database with the damaged one and take away the
+    /// files a repair needs.
+    pub fn mark_opened(&self) {
+        self.opened.store(true, Ordering::Release);
     }
 
     /// The container's path under its database directory.
@@ -248,6 +266,22 @@ impl WalMirror for WalArchive {
 
 impl Drop for WalArchive {
     fn drop(&mut self) {
+        if !self.opened.load(Ordering::Acquire) {
+            // The open failed: stop the writer and leave the disk as it
+            // was found (see [`Self::mark_opened`]).
+            {
+                let (lock, cv) = &*self.state;
+                let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.dirty = false;
+                state.force = false;
+                state.shutdown = true;
+                cv.notify_one();
+            }
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+            return;
+        }
         {
             let (lock, cv) = &*self.state;
             match lock.lock() {
