@@ -338,7 +338,7 @@ mod scope_key_tests {
             assert_eq!(hashed.get(&(*l, *p) as &dyn ScopeKey), Some(&i));
             assert_eq!(sorted.get(&(*l, *p) as &dyn ScopeKey), Some(&i));
         }
-        assert!(hashed.get(&("A", "") as &dyn ScopeKey).is_none());
-        assert!(sorted.get(&("Ak", "k") as &dyn ScopeKey).is_none());
+        assert!(!hashed.contains_key(&("A", "") as &dyn ScopeKey));
+        assert!(!sorted.contains_key(&("Ak", "k") as &dyn ScopeKey));
     }
 }
