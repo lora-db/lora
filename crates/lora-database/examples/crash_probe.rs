@@ -18,6 +18,12 @@
 //!
 //! `preload` nodes are written before the first round, so a checkpoint
 //! takes long enough to be killed in the middle.
+//!
+//! The database carries a uniqueness constraint, a range index and a
+//! fulltext index, so every open after a kill rebuilds them from the
+//! snapshot and the replayed WAL, and the check reads the graph through
+//! each of them as well: an index that missed or repeated an entity
+//! fails the round like a lost write.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
@@ -59,10 +65,22 @@ fn max_id(db: &Database<lora_database::InMemoryGraph>) -> i64 {
         .unwrap()
 }
 
+/// The constraint and indexes every open rebuilds. Idempotent.
+fn ensure_schema(db: &Database<lora_database::InMemoryGraph>) {
+    for ddl in [
+        "CREATE CONSTRAINT p_id IF NOT EXISTS FOR (n:P) REQUIRE n.id IS UNIQUE",
+        "CREATE INDEX p_updates IF NOT EXISTS FOR (n:P) ON (n.updates)",
+        "CREATE FULLTEXT INDEX p_text IF NOT EXISTS FOR (n:P|Pad) ON EACH [n.name, n.s]",
+    ] {
+        db.execute(ddl, rows()).unwrap();
+    }
+}
+
 /// Child: write forever, printing `c <id>` after a create and `u <id>`
 /// after an update, and `s` after a sync.
 fn child(dir: &Path) {
     let db = Database::open_named("probe", options(dir)).unwrap();
+    ensure_schema(&db);
     println!("open");
     let mut next = max_id(&db) + 1;
     loop {
@@ -143,6 +161,34 @@ fn verify(dir: &Path, acked: &Acked) {
         }
     }
     assert!(extra <= 1, "{extra} unacknowledged updates");
+
+    // The same graph through the indexes the open rebuilt.
+    let ranged = query_rows(&db, "MATCH (n:P) WHERE n.updates >= 0 RETURN count(n) AS n");
+    assert_eq!(ranged[0]["n"].as_i64().unwrap(), max + 1, "range index");
+    if max >= 0 {
+        for id in [0, max / 2, max] {
+            let seek = query_rows(
+                &db,
+                &format!("MATCH (n:P {{id: {id}}}) RETURN count(n) AS n"),
+            );
+            assert_eq!(seek[0]["n"].as_i64().unwrap(), 1, "seek of id {id}");
+        }
+        // Every node's name is the one token `p<id>`: the ten digit
+        // prefixes together find each node once.
+        let mut found = 0;
+        for digit in 0..10 {
+            let hits = query_rows(
+                &db,
+                &format!(
+                    "CALL db.index.fulltext.queryNodes('p_text', 'p{digit}*') YIELD node \
+                     RETURN count(node) AS n, count(DISTINCT node.id) AS d"
+                ),
+            );
+            assert_eq!(hits[0]["n"], hits[0]["d"], "fulltext hits repeat a node");
+            found += hits[0]["n"].as_i64().unwrap();
+        }
+        assert_eq!(found, max + 1, "fulltext index");
+    }
 }
 
 fn main() {
@@ -156,6 +202,7 @@ fn main() {
     let preload: usize = args.get(3).map_or(0, |n| n.parse().unwrap());
     std::fs::create_dir_all(&dir).unwrap();
 
+    ensure_schema(&Database::open_named("probe", options(&dir)).unwrap());
     if preload > 0 {
         let db = Database::open_named("probe", options(&dir)).unwrap();
         db.execute(

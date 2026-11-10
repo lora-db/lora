@@ -66,9 +66,200 @@ fn a_property_index_built_on_every_core_matches_the_one_by_one_build() {
         },
         &graph.node_values(),
     );
-    let parallel = graph.build_node_property_index_parallel("k");
+    let parallel = graph.build_node_property_index_parallel("k", None);
     assert_eq!(serial.scoped_values.len(), 3, "A, B and unlabelled");
     assert!(serial.scoped_values == parallel.scoped_values);
+}
+
+/// A build told where its key occurs reads those blocks only, and gives
+/// the index a build reading every node gives: for a key on most nodes,
+/// one on a band of them and a few strays, and one on none.
+#[test]
+fn a_property_index_built_from_the_blocks_holding_its_key_matches_the_full_scan() {
+    let mut graph = InMemoryGraph::new();
+    for i in 0..NODES {
+        let mut properties = Properties::new();
+        if let Some(value) = value(i) {
+            properties.insert(intern("k"), value);
+        }
+        if (70_000..70_900).contains(&i) || i % 30_011 == 0 {
+            properties.insert(intern("rare"), PropertyValue::Int((i % 40) as i64));
+        }
+        if i == 0 {
+            properties.insert(intern("lost"), PropertyValue::Int(1));
+        }
+        let labels = if i % 2 == 0 {
+            vec!["A".to_string()]
+        } else {
+            Vec::new()
+        };
+        graph.create_node(labels, properties);
+    }
+    // No node holds `lost` any more, though the key is still numbered.
+    graph.remove_node_property(0, "lost");
+
+    let keys: Vec<String> = ["k", "rare", "lost", "never"].map(String::from).to_vec();
+    let blocks = graph.key_blocks(StoredIndexEntity::Node, &keys);
+    for key in &keys {
+        let full = graph.build_node_property_index_parallel(key, None);
+        let within = graph.build_node_property_index_parallel(key, Some(&blocks));
+        assert!(full.scoped_values == within.scoped_values, "{key}");
+        assert!(full.any_scope == within.any_scope, "{key}");
+    }
+    let rare = graph.build_node_property_index_parallel("rare", Some(&blocks));
+    assert!(!rare.scoped_values.is_empty());
+    // A key the pass was not given is read everywhere.
+    let unlisted = graph.key_blocks(StoredIndexEntity::Node, &["rare".to_string()]);
+    let full = graph.build_node_property_index_parallel("k", None);
+    let within = graph.build_node_property_index_parallel("k", Some(&unlisted));
+    assert!(full.scoped_values == within.scoped_values);
+}
+
+/// A fulltext index's content, comparable: each term's `(entity,
+/// frequency)` list and each entity's terms.
+type FulltextContent = (Vec<(String, Vec<(u64, u32)>)>, Vec<(u64, Vec<String>)>);
+
+fn fulltext_content(index: &super::fulltext_index::FulltextIndex) -> FulltextContent {
+    let postings = index
+        .postings
+        .iter()
+        .map(|(term, list)| {
+            (
+                term.to_string(),
+                list.iter().map(|(id, tf)| (*id, *tf)).collect(),
+            )
+        })
+        .collect();
+    let mut entities: Vec<(u64, Vec<String>)> = index
+        .entity_terms
+        .iter()
+        .map(|(id, terms)| (*id, terms.iter().map(|term| term.to_string()).collect()))
+        .collect();
+    entities.sort();
+    (postings, entities)
+}
+
+/// The index a backfill builds at once holds what indexing each entity in
+/// turn holds: over two labels sharing nodes, a string and a list
+/// property, repeated and accented words, and nodes without text.
+#[test]
+fn a_fulltext_index_built_at_once_matches_the_entity_by_entity_build() {
+    use super::fulltext_index::{term_counts_for_properties, FulltextIndex};
+    use super::index_catalog::{IndexRequest, StoredIndexKind};
+
+    let words = [
+        "Night",
+        "night",
+        "Sónar",
+        "Øya",
+        "love-song",
+        "42",
+        "the",
+        "The",
+        "x",
+    ];
+    let mut graph = InMemoryGraph::new();
+    for i in 0..40_000u64 {
+        let labels = match i % 4 {
+            0 => vec!["A".to_string()],
+            1 => vec!["B".to_string(), "A".to_string()],
+            2 => vec!["B".to_string()],
+            _ => vec!["C".to_string()],
+        };
+        let mut properties = Properties::new();
+        if i % 9 != 0 {
+            let w = |n: u64| words[(n % words.len() as u64) as usize];
+            properties.insert(
+                intern("title"),
+                PropertyValue::String(format!("{} {} t{} {}", w(i), w(i / 3), i % 500, w(i))),
+            );
+        }
+        if i % 5 == 0 {
+            properties.insert(
+                intern("names"),
+                PropertyValue::List(vec![
+                    PropertyValue::String(format!("alias{} night", i % 70)),
+                    PropertyValue::Int(7),
+                    PropertyValue::String("...".into()),
+                ]),
+            );
+        }
+        properties.insert(
+            intern("other"),
+            PropertyValue::String("unindexed words".into()),
+        );
+        graph.create_node(labels, properties);
+    }
+    let labels = vec!["A".to_string(), "B".to_string()];
+    let properties = vec!["title".to_string(), "names".to_string()];
+
+    let mut serial = FulltextIndex::from_chunks(labels.clone(), properties.clone(), Vec::new());
+    for (id, node) in graph.iter_nodes() {
+        if node.labels().strs().any(|l| labels.iter().any(|w| w == l)) {
+            let counts = term_counts_for_properties(node.properties(), &properties);
+            if !counts.is_empty() {
+                serial.reindex_entity(id, counts);
+            }
+        }
+    }
+
+    graph
+        .register_index(
+            IndexRequest {
+                explicit_name: Some("search".into()),
+                kind: StoredIndexKind::Fulltext,
+                entity: StoredIndexEntity::Node,
+                label: Some("A".into()),
+                additional_labels: vec!["B".into()],
+                properties: properties.clone(),
+                options: Default::default(),
+            },
+            false,
+        )
+        .unwrap();
+    let registry = graph.fulltext_indexes_read(StoredIndexEntity::Node);
+    let built = registry.get("search").expect("registered");
+    let (postings, entities) = fulltext_content(built);
+    assert!(
+        postings.len() > 300 && entities.len() > 20_000,
+        "{} terms, {} entities",
+        postings.len(),
+        entities.len()
+    );
+    assert!(postings.iter().any(|(term, _)| term == "sonar"));
+    assert_eq!((postings, entities), fulltext_content(&serial));
+    assert_eq!(
+        built.query("night sona*", Some(5)),
+        serial.query("night sona*", Some(5))
+    );
+}
+
+/// A sorted index over a label too small for the parallel path reads the
+/// label's nodes through the label index, and holds what a scan of every
+/// node finds.
+#[test]
+fn a_sorted_index_on_a_small_label_matches_the_scan_of_every_node() {
+    let mut graph = graph(value);
+    for i in 0..300u64 {
+        let mut properties = Properties::new();
+        if let Some(value) = value(i) {
+            properties.insert(intern("k"), value);
+        }
+        graph.create_node(vec!["Few".to_string(), "A".to_string()], properties);
+    }
+    let mut serial = SortedPropertyIndex::default();
+    serial.add_scope("Few", "k");
+    for (id, node) in graph.iter_nodes() {
+        if !node.labels().strs().any(|l| l == "Few") {
+            continue;
+        }
+        if let Some(value) = node.properties().get("k") {
+            serial.insert("Few", "k", id, &value.to_owned());
+        }
+    }
+    graph.activate_sorted_scope(StoredIndexEntity::Node, "Few", "k");
+    let built = graph.sorted_indexes_read(StoredIndexEntity::Node);
+    assert_eq!(entries(&serial, "Few"), entries(&built, "Few"));
 }
 
 /// A sorted scope's entries, comparable.

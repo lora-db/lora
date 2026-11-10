@@ -287,6 +287,10 @@ impl PropertyValueBuckets {
 /// the buckets of a key are copied only along the path a write takes.
 /// Held directly, not behind another `Arc`: a lookup is one pointer hop
 /// shorter.
+/// Entity ids a call of [`PropertyIndexState::build_parallel`]'s `ids`
+/// covers: it is asked for `[n * BUILD_RANGE, (n + 1) * BUILD_RANGE)`.
+pub(super) const BUILD_RANGE: u64 = 1 << 16;
+
 pub(super) type PropertyIndex = FastHashMap<Arc<str>, PropertyValueBuckets>;
 /// Scope (label / relationship type) → its per-key index, each behind
 /// `Arc` so a write copies only the scopes it touches.
@@ -461,7 +465,7 @@ impl PropertyIndexState {
         use super::cow::{top_slot, TOP_SLOTS};
         use rayon::prelude::*;
 
-        const RANGE: u64 = 1 << 16;
+        const RANGE: u64 = BUILD_RANGE;
         let route_of = |probe: &Probe<'_>| PropertyValueBuckets::shape_route(probe).1;
 
         // Per range, per slot: the entities' offsets in the range.

@@ -30,8 +30,9 @@ fn main() {
     let runs: usize = args.get(2).map_or(3, |n| n.parse().expect("run count"));
     for run in 1..=runs {
         let started = Instant::now();
+        let name = std::env::var("LORA_PROBE_NAME").unwrap_or_else(|_| "probe".into());
         let db = Database::open_named(
-            "probe",
+            name.as_str(),
             DatabaseOpenOptions::default().with_database_dir(&dir),
         )
         .unwrap();

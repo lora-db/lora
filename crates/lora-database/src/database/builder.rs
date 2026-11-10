@@ -173,6 +173,9 @@ impl Database<InMemoryGraph> {
             snapshot_lsn,
             false,
         )?;
+        // The disk's state is read whole: from here the container may be
+        // rewritten from it. An open that failed above left it untouched.
+        archive.mark_opened();
         let mirror: Arc<dyn WalMirror> = archive.clone();
         let recorder = Arc::new(WalRecorder::new_with_mirror(wal, Some(mirror)));
         let wal_bytes = archive.wal_bytes()?;
