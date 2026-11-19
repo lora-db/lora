@@ -6,8 +6,7 @@
   "packageManager": "yarn@4.5.1",
   "scripts": {
     "dev": "next dev",
-    "prebuild": "node scripts/build-og.mjs",
-    "build": "next build",
+    "build": "node scripts/build-og.mjs && next build",
     "build-og": "node scripts/build-og.mjs",
     "start": "next start",
     "typecheck": "tsc -p tsconfig.json --noEmit",

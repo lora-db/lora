@@ -39,12 +39,10 @@
       "import": "./dist/parser.js",
       "default": "./dist/parser.js"
     },
-    "./styles.css": "./dist/style.css",
-    "./wasm/*": "./wasm/*"
+    "./styles.css": "./dist/style.css"
   },
   "files": [
     "dist/",
-    "wasm/",
     "README.md",
     "LICENSE"
   ],
@@ -56,8 +54,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build:wasm": "wasm-pack build . --target bundler --release --out-dir wasm",
-    "postbuild:wasm": "node -e \"try { require('fs').rmSync('wasm/.gitignore'); } catch {}\" && node ./scripts/wasm-opt-size.mjs",
+    "build:wasm": "wasm-pack build . --target bundler --release --out-dir wasm && node ./scripts/wasm-opt-size.mjs",
     "build:lib": "vite build",
     "build": "yarn build:wasm && yarn build:lib",
     "dev": "vite",

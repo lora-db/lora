@@ -107,6 +107,9 @@ jobs:
       - name: npm pack (dry-run)
         run: npm pack --dry-run
 
+      - name: Verify tarball contains the WASM builds
+        run: corepack yarn run verify:pack
+
       - name: npm pack (produce tarball)
         run: npm pack
 
