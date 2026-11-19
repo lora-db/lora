@@ -202,6 +202,14 @@ always gives the same graph. 100,000 vectors of 64 dimensions build in
 about 6 seconds on a 10-core laptop. Vectors written later are added one
 at a time as part of their write.
 
+A query searches every layer of the graph with its full candidate list,
+not only the bottom one, so a query that lies between clusters (a taste
+profile between two genres) still reaches the true neighbours in each.
+On 100,000 clustered 64-dimension vectors with such queries, the share
+of the true top 20 found is about 94% at the default `ef_search` of 100
+(0.4 ms), 98% at 200 (0.6 ms) and 99.5% at 400 (0.9 ms). Queries close to
+one cluster find 99% at the default.
+
 Memory: a flat index keeps each vector as 4-byte coordinates (about
 4.8 bytes per dimension, counting its bookkeeping); an HNSW index adds
 its links, about 9 bytes per dimension at 64 dimensions with the default
