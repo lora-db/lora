@@ -39,6 +39,12 @@ focuses on the *types*.
 When in doubt, use `DateTime` for instants and `Date` for calendar days
 — they cover most real-world needs.
 
+Store instants as temporals, not as ISO strings: they compare, sort and
+index correctly, and they are smaller. In memory a `DateTime` property
+takes about 13 bytes (11 for its value), a `Date` about 6, against 26 for
+`'2026-11-18T12:00:00.123Z'` as a string. On a log of append-only events
+with two timestamps each, that is about 26 bytes less per event.
+
 ## Writing temporals
 
 ### Literals via casts

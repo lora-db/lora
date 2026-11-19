@@ -84,6 +84,18 @@ impl ZoneId {
         self.0.get() as usize - 1
     }
 
+    /// The handle, for an in-process encoding only (records in memory):
+    /// another process numbers zones its own way.
+    pub(crate) fn handle(self) -> u16 {
+        self.0.get()
+    }
+
+    /// The zone a [`Self::handle`] of this process names.
+    pub(crate) fn from_handle(handle: u16) -> Option<Self> {
+        let id = Self(NonZeroU16::new(handle)?);
+        (id.index() < registry().names.len()).then_some(id)
+    }
+
     fn tz(self) -> &'static TimeZone {
         let registry = registry();
         registry.zones[self.index()].get_or_init(|| {

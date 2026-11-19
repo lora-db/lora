@@ -46,6 +46,8 @@ const TAG_FLOAT: u8 = 4;
 const TAG_STRING: u8 = 5;
 const TAG_OTHER: u8 = 6;
 const TAG_NUMBERED: u8 = 7;
+/// A temporal value in [`temporal`]'s compact form, behind its length.
+const TAG_TEMPORAL: u8 = 8;
 
 #[inline]
 fn zigzag(value: i64) -> u64 {
@@ -69,7 +71,8 @@ fn skip_payload(bytes: &[u8], tag: u8, pos: &mut usize) {
         }
         TAG_FLOAT => *pos += 8,
         TAG_NULL | TAG_FALSE | TAG_TRUE => {}
-        // TAG_STRING and TAG_OTHER, as `read_value` reads them.
+        // TAG_STRING, TAG_OTHER and TAG_TEMPORAL, as `read_value` reads
+        // them.
         _ => {
             let len = varint::read(bytes, pos) as usize;
             *pos += len;
@@ -82,14 +85,20 @@ fn skip_payload(bytes: &[u8], tag: u8, pos: &mut usize) {
 // ---------------------------------------------------------------------------
 
 /// A stored value of a kind [`crate::ValueRef`] does not carry inline:
-/// its `codec` bytes, decoded on request.
+/// its bytes, decoded on request.
 #[derive(Clone, Copy)]
 pub(crate) struct EncodedOther<'a> {
     bytes: &'a [u8],
+    /// [`temporal`]'s form rather than `codec`'s.
+    temporal: bool,
 }
 
 impl EncodedOther<'_> {
     pub(crate) fn decode(self) -> PropertyValue {
+        if self.temporal {
+            return temporal::read(self.bytes)
+                .expect("a stored temporal value decodes: it was encoded by this process");
+        }
         crate::codec::decode_stored_property_value(self.bytes)
             .expect("a stored property value decodes: it was encoded by this process")
     }
@@ -124,7 +133,10 @@ fn read_value<'a>(
             let len = varint::read(bytes, pos) as usize;
             let raw = &bytes[*pos..*pos + len];
             *pos += len;
-            ValueRef::Other(OtherValue::encoded(EncodedOther { bytes: raw }))
+            ValueRef::Other(OtherValue::encoded(EncodedOther {
+                bytes: raw,
+                temporal: tag == TAG_TEMPORAL,
+            }))
         }
     }
 }
@@ -165,6 +177,13 @@ fn write_value_numbered(
             out.extend_from_slice(&v.to_le_bytes());
         }
         other => {
+            if let Some(compact) = temporal::write(other) {
+                debug_assert_eq!(temporal::read(&compact).as_ref(), Some(other));
+                out.push(TAG_TEMPORAL);
+                varint::push(out, compact.len() as u64);
+                out.extend_from_slice(&compact);
+                return;
+            }
             let encoded = crate::codec::encode_stored_property_value(other)
                 .expect("a property value encodes: lengths fit in u64");
             // Reads decode these bytes and treat a failure as a bug, so
@@ -177,6 +196,225 @@ fn write_value_numbered(
             out.push(TAG_OTHER);
             varint::push(out, encoded.len() as u64);
             out.extend_from_slice(&encoded);
+        }
+    }
+}
+
+/// Temporal values in records, in a form private to this process (a zone
+/// is its handle): the `codec` form spends four bytes on every field, 33
+/// on a date-time, which made a `DATETIME` property cost more than the
+/// same instant as a string. Here a date-time takes 9 to 13 bytes.
+///
+/// ```text
+/// kind byte, then by kind (varints; zz = zigzag):
+///   date            zz year, month * 32 + day
+///   local time      second of day, fraction
+///   time            second of day, fraction, zz offset
+///   local datetime  zz year, month * 32 + day, second of day, fraction
+///   datetime        ... as local datetime, zz offset
+///   zoned datetime  ... as datetime, zone handle
+///   duration        zz months, zz days, zz seconds, zz nanoseconds
+/// fraction: millis * 2 when whole milliseconds, else nanos * 2 + 1
+/// ```
+///
+/// A value with a field outside its calendar range (which no constructor
+/// makes) keeps the `codec` form, so every value round-trips.
+mod temporal {
+    use super::{unzigzag, zigzag};
+    use crate::varint;
+    use crate::{
+        LoraDate, LoraDateTime, LoraDuration, LoraLocalDateTime, LoraLocalTime, LoraTime,
+        PropertyValue, ZoneId,
+    };
+
+    const DATE: u8 = 0;
+    const LOCAL_TIME: u8 = 1;
+    const TIME: u8 = 2;
+    const LOCAL_DATE_TIME: u8 = 3;
+    const DATE_TIME: u8 = 4;
+    const ZONED_DATE_TIME: u8 = 5;
+    const DURATION: u8 = 6;
+
+    pub(super) fn write(value: &PropertyValue) -> Option<Vec<u8>> {
+        let mut out = Vec::with_capacity(16);
+        match value {
+            PropertyValue::Date(d) => {
+                out.push(DATE);
+                date(&mut out, d.year, d.month, d.day)?;
+            }
+            PropertyValue::LocalTime(t) => {
+                out.push(LOCAL_TIME);
+                time(&mut out, t.hour, t.minute, t.second, t.nanosecond)?;
+            }
+            PropertyValue::Time(t) => {
+                out.push(TIME);
+                time(&mut out, t.hour, t.minute, t.second, t.nanosecond)?;
+                varint::push(&mut out, zigzag(i64::from(t.offset_seconds)));
+            }
+            PropertyValue::LocalDateTime(t) => {
+                out.push(LOCAL_DATE_TIME);
+                date(&mut out, t.year, t.month, t.day)?;
+                time(&mut out, t.hour, t.minute, t.second, t.nanosecond)?;
+            }
+            PropertyValue::DateTime(t) => {
+                out.push(if t.zone.is_some() {
+                    ZONED_DATE_TIME
+                } else {
+                    DATE_TIME
+                });
+                date(&mut out, t.year, t.month, t.day)?;
+                time(&mut out, t.hour, t.minute, t.second, t.nanosecond)?;
+                varint::push(&mut out, zigzag(i64::from(t.offset_seconds)));
+                if let Some(zone) = t.zone {
+                    varint::push(&mut out, u64::from(zone.handle()));
+                }
+            }
+            PropertyValue::Duration(d) => {
+                out.push(DURATION);
+                for field in [d.months, d.days, d.seconds, d.nanoseconds] {
+                    varint::push(&mut out, zigzag(field));
+                }
+            }
+            _ => return None,
+        }
+        Some(out)
+    }
+
+    fn date(out: &mut Vec<u8>, year: i32, month: u32, day: u32) -> Option<()> {
+        if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+            return None;
+        }
+        varint::push(out, zigzag(i64::from(year)));
+        varint::push(out, u64::from(month * 32 + day));
+        Some(())
+    }
+
+    fn time(out: &mut Vec<u8>, hour: u32, minute: u32, second: u32, nanos: u32) -> Option<()> {
+        if hour > 23 || minute > 59 || second > 59 || nanos > 999_999_999 {
+            return None;
+        }
+        varint::push(out, u64::from(hour * 3600 + minute * 60 + second));
+        let fraction = if nanos.is_multiple_of(1_000_000) {
+            u64::from(nanos / 1_000_000) * 2
+        } else {
+            u64::from(nanos) * 2 + 1
+        };
+        varint::push(out, fraction);
+        Some(())
+    }
+
+    /// The value [`write`] encoded, or `None` on bytes it did not write.
+    pub(super) fn read(bytes: &[u8]) -> Option<PropertyValue> {
+        let mut r = Reader { bytes, pos: 1 };
+        let value = match *bytes.first()? {
+            DATE => {
+                let (year, month, day) = r.date()?;
+                PropertyValue::Date(LoraDate { year, month, day })
+            }
+            LOCAL_TIME => {
+                let (hour, minute, second, nanosecond) = r.time()?;
+                PropertyValue::LocalTime(LoraLocalTime {
+                    hour,
+                    minute,
+                    second,
+                    nanosecond,
+                })
+            }
+            TIME => {
+                let (hour, minute, second, nanosecond) = r.time()?;
+                PropertyValue::Time(LoraTime {
+                    hour,
+                    minute,
+                    second,
+                    nanosecond,
+                    offset_seconds: r.i32()?,
+                })
+            }
+            LOCAL_DATE_TIME => {
+                let (year, month, day) = r.date()?;
+                let (hour, minute, second, nanosecond) = r.time()?;
+                PropertyValue::LocalDateTime(LoraLocalDateTime {
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    nanosecond,
+                })
+            }
+            kind @ (DATE_TIME | ZONED_DATE_TIME) => {
+                let (year, month, day) = r.date()?;
+                let (hour, minute, second, nanosecond) = r.time()?;
+                let offset_seconds = r.i32()?;
+                let zone = if kind == ZONED_DATE_TIME {
+                    Some(ZoneId::from_handle(u16::try_from(r.u64()?).ok()?)?)
+                } else {
+                    None
+                };
+                PropertyValue::DateTime(LoraDateTime {
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    nanosecond,
+                    offset_seconds,
+                    zone,
+                })
+            }
+            DURATION => PropertyValue::Duration(LoraDuration {
+                months: r.i64()?,
+                days: r.i64()?,
+                seconds: r.i64()?,
+                nanoseconds: r.i64()?,
+            }),
+            _ => return None,
+        };
+        (r.pos == bytes.len()).then_some(value)
+    }
+
+    struct Reader<'a> {
+        bytes: &'a [u8],
+        pos: usize,
+    }
+
+    impl Reader<'_> {
+        fn u64(&mut self) -> Option<u64> {
+            // `varint::read` indexes past the end on a truncated varint.
+            let last = self.bytes[self.pos..].iter().position(|b| b & 0x80 == 0)?;
+            (last < 10).then(|| varint::read(self.bytes, &mut self.pos))
+        }
+
+        fn i64(&mut self) -> Option<i64> {
+            self.u64().map(unzigzag)
+        }
+
+        fn i32(&mut self) -> Option<i32> {
+            i32::try_from(self.i64()?).ok()
+        }
+
+        fn date(&mut self) -> Option<(i32, u32, u32)> {
+            let year = self.i32()?;
+            let packed = u32::try_from(self.u64()?).ok()?;
+            Some((year, packed / 32, packed % 32))
+        }
+
+        fn time(&mut self) -> Option<(u32, u32, u32, u32)> {
+            let second_of_day = u32::try_from(self.u64()?).ok()?;
+            let fraction = self.u64()?;
+            let nanos = if fraction % 2 == 0 {
+                fraction / 2 * 1_000_000
+            } else {
+                fraction / 2
+            };
+            Some((
+                second_of_day / 3600,
+                second_of_day / 60 % 60,
+                second_of_day % 60,
+                u32::try_from(nanos).ok()?,
+            ))
         }
     }
 }
@@ -810,6 +1048,110 @@ mod tests {
                 srid: crate::SRID_WGS84,
             }),
         ]
+        .into_iter()
+        .chain(temporals())
+        .collect()
+    }
+
+    /// Every temporal kind, at the edges of the compact form.
+    fn temporals() -> Vec<PropertyValue> {
+        let dt = |year, nanosecond, offset_seconds, zone: Option<&str>| {
+            PropertyValue::DateTime(crate::LoraDateTime {
+                year,
+                month: 12,
+                day: 31,
+                hour: 23,
+                minute: 59,
+                second: 59,
+                nanosecond,
+                offset_seconds,
+                zone: zone.map(|z| crate::ZoneId::lookup(z).unwrap()),
+            })
+        };
+        vec![
+            PropertyValue::Date(LoraDate {
+                year: -999_999_999,
+                month: 1,
+                day: 1,
+            }),
+            dt(2026, 0, 0, None),
+            dt(2026, 123_000_000, 3600, None),
+            dt(-44, 1, -50_400, None),
+            dt(i32::MAX, 999_999_999, 64_800, Some("Europe/Amsterdam")),
+            PropertyValue::LocalDateTime(crate::LoraLocalDateTime {
+                year: 1970,
+                month: 1,
+                day: 1,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                nanosecond: 500,
+            }),
+            PropertyValue::Time(crate::LoraTime {
+                hour: 12,
+                minute: 30,
+                second: 5,
+                nanosecond: 7_000_000,
+                offset_seconds: -3600,
+            }),
+            PropertyValue::LocalTime(crate::LoraLocalTime {
+                hour: 0,
+                minute: 0,
+                second: 0,
+                nanosecond: 0,
+            }),
+            PropertyValue::Duration(crate::LoraDuration {
+                months: -14,
+                days: 3,
+                seconds: i64::MIN,
+                nanoseconds: 999_999_999,
+            }),
+        ]
+    }
+
+    #[test]
+    fn a_temporal_is_compact_and_round_trips() {
+        for value in temporals() {
+            let compact = temporal::write(&value).expect("in range");
+            assert_eq!(temporal::read(&compact), Some(value.clone()), "{value:?}");
+            let codec = crate::codec::encode_stored_property_value(&value).unwrap();
+            assert!(
+                compact.len() < codec.len(),
+                "{value:?}: {} >= {}",
+                compact.len(),
+                codec.len()
+            );
+        }
+        // A date-time to the millisecond, the common case: 11 bytes, where
+        // the codec took 33.
+        let at = crate::LoraDateTime::parse("2026-11-18T12:00:00.123Z").unwrap();
+        assert_eq!(
+            temporal::write(&PropertyValue::DateTime(at)).unwrap().len(),
+            11
+        );
+        // Bytes it did not write are refused, not misread.
+        assert_eq!(temporal::read(&[]), None);
+        assert_eq!(temporal::read(&[99]), None);
+        assert_eq!(temporal::read(&[0, 0x80]), None);
+    }
+
+    #[test]
+    fn a_temporal_out_of_its_calendar_keeps_the_codec_form() {
+        let odd = PropertyValue::Date(LoraDate {
+            year: 2026,
+            month: 13,
+            day: 40,
+        });
+        assert_eq!(temporal::write(&odd), None);
+        let mut dicts = Dicts::default();
+        let node = NodeRecord {
+            id: 1,
+            labels: Labels::new(),
+            properties: props(&[("d", odd.clone())]),
+        };
+        let blob = encode_node(&node, &mut dicts);
+        let stored = StoredNode::new(1, &blob, &dicts);
+        assert_eq!(stored.properties().get("d").unwrap().to_owned(), odd);
     }
 
     #[test]
