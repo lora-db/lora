@@ -6,10 +6,11 @@ pub mod limits;
 pub mod profile;
 mod pull;
 mod value;
+pub mod vector_filter;
 
 pub use cancel::CancellableDeadline;
 pub use errors::{ExecResult, ExecutorError};
-pub use eval::{fold_call, FulltextPage};
+pub use eval::{fold_call, point_from_map, FulltextPage};
 pub use executor::{
     value_matches_property_value, ExecutionContext, Executor, MutableExecutionContext,
     MutableExecutor,

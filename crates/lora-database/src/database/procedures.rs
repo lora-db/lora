@@ -15,10 +15,11 @@
 //! contract.
 
 use std::any::Any;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use anyhow::Result;
 use lora_ast::{Expr, ProcedureInvocationKind, StandaloneCall, YieldItem};
+use lora_executor::vector_filter::VectorOptions;
 use lora_executor::{FulltextPage, LoraValue, Row};
 use lora_store::{
     GraphStorage, GraphStorageMut, IndexDefinition, LoraVector, StoredIndexEntity, StoredIndexKind,
@@ -93,7 +94,7 @@ where
         params: &BTreeMap<String, LoraValue>,
         entity: StoredIndexEntity,
     ) -> Result<Vec<Row>> {
-        let (index_name, k, query_vec, restrict_to) = parse_vector_args(args, params)?;
+        let (index_name, k, query_vec, options) = parse_vector_args(args, params)?;
         let snapshot = self.read_store();
         let def = snapshot
             .get_index(&index_name)
@@ -124,7 +125,8 @@ where
             }
         }
 
-        let scored = snapshot.vector_search(&index_name, &query_vec, k, restrict_to.as_ref());
+        let allowed = options.allowed_ids(&*snapshot, entity, def.label.as_deref());
+        let scored = snapshot.vector_search(&index_name, &query_vec, k, allowed.as_ref());
         Ok(hydrated(scored_rows(scored, Some(k), entity), &*snapshot))
     }
 
@@ -218,19 +220,11 @@ fn validate_procedure_index(
 }
 
 fn scored_rows(
-    mut scored: Vec<(u64, f64)>,
+    scored: Vec<(u64, f64)>,
     limit: Option<usize>,
     entity: StoredIndexEntity,
 ) -> Vec<Row> {
-    scored.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
-    });
-    if let Some(limit) = limit {
-        scored.truncate(limit);
-    }
-    scored
+    lora_executor::vector_filter::top_k(scored, limit.unwrap_or(usize::MAX))
         .into_iter()
         .map(|(id, score)| {
             let (name, value) = match entity {
@@ -295,7 +289,7 @@ fn parse_fulltext_args(
 fn parse_vector_args(
     args: &[Expr],
     params: &BTreeMap<String, LoraValue>,
-) -> Result<(String, usize, LoraVector, Option<BTreeSet<u64>>)> {
+) -> Result<(String, usize, LoraVector, VectorOptions)> {
     if args.len() < 3 || args.len() > 4 {
         return Err(invalid_params_error(format!(
             "vector procedure expects 3 or 4 arguments (indexName, k, query, options?); got {}",
@@ -308,81 +302,13 @@ fn parse_vector_args(
         return Err(invalid_params_error("k must be positive"));
     }
     let query = eval_vector_arg(&args[2], params)?;
-    let restrict_to = if args.len() == 4 {
-        parse_vector_options(&args[3], params)?
-    } else {
-        None
+    let options = match args.get(3) {
+        Some(expr) => {
+            VectorOptions::parse(&resolve_literal(expr, params)?).map_err(invalid_params_error)?
+        }
+        None => VectorOptions::default(),
     };
-    Ok((name, k, query, restrict_to))
-}
-
-/// Parse the optional 4th-argument options map. Currently the only
-/// honored key is `restrictTo`, a list of entity ids that limits
-/// returned results. Unknown keys are rejected so users notice
-/// typos at call time rather than silently getting unfiltered
-/// behaviour.
-fn parse_vector_options(
-    expr: &Expr,
-    params: &BTreeMap<String, LoraValue>,
-) -> Result<Option<BTreeSet<u64>>> {
-    let entries = match expr {
-        Expr::Map(items, _) => items.clone(),
-        // A $param map binding lands as LoraValue::Map after
-        // resolution; we don't currently take that path because
-        // resolve_literal would need a Map arm. For now, require an
-        // inline map literal in the procedure call.
-        other => {
-            return Err(invalid_params_error(format!(
-                "vector procedure options must be a MAP literal like {{restrictTo: [...]}}, got {other:?}"
-            )));
-        }
-    };
-    let mut restrict_to: Option<BTreeSet<u64>> = None;
-    for (key, value) in entries {
-        match key.as_str() {
-            "restrictTo" => {
-                let resolved = resolve_literal(&value, params)?;
-                restrict_to = Some(coerce_id_set(&resolved)?);
-            }
-            other => {
-                return Err(invalid_params_error(format!(
-                    "unknown option `{other}` for db.index.vector.queryNodes (known: `restrictTo`)"
-                )));
-            }
-        }
-    }
-    Ok(restrict_to)
-}
-
-fn coerce_id_set(value: &LoraValue) -> Result<BTreeSet<u64>> {
-    let items = match value {
-        LoraValue::List(xs) => xs,
-        other => {
-            return Err(invalid_params_error(format!(
-                "`restrictTo` must be a LIST of node ids, got {other:?}"
-            )));
-        }
-    };
-    let mut out = BTreeSet::new();
-    for item in items {
-        match item {
-            LoraValue::Int(n) if *n >= 0 => {
-                out.insert(*n as u64);
-            }
-            LoraValue::Node(id) => {
-                out.insert(*id);
-            }
-            LoraValue::Relationship(id) => {
-                out.insert(*id);
-            }
-            other => {
-                return Err(invalid_params_error(format!(
-                    "`restrictTo` entries must be non-negative integers or node/relationship references, got {other:?}"
-                )));
-            }
-        }
-    }
-    Ok(out)
+    Ok((name, k, query, options))
 }
 
 fn eval_string_arg(
@@ -476,9 +402,30 @@ fn resolve_literal(expr: &Expr, params: &BTreeMap<String, LoraValue>) -> Result<
         Expr::FunctionCall { name, args, .. } if matches_vector_ctor(name) => {
             resolve_vector_ctor(args, params)
         }
+        Expr::FunctionCall { name, args, .. } if matches_point_ctor(name) => {
+            let [arg] = args.as_slice() else {
+                return Err(invalid_params_error("point() expects one coordinate map"));
+            };
+            match resolve_literal(arg, params)? {
+                LoraValue::Map(map) => Ok(lora_executor::point_from_map(&map)
+                    .map_err(invalid_params_error)?
+                    .map_or(LoraValue::Null, |p| LoraValue::Point(Box::new(p)))),
+                other => Err(invalid_params_error(format!(
+                    "point() expects a coordinate map, got {other:?}"
+                ))),
+            }
+        }
         other => Err(invalid_params_error(format!(
             "procedure arguments must be literals or $params; got {other:?}"
         ))),
+    }
+}
+
+fn matches_point_ctor(name: &[String]) -> bool {
+    match name {
+        [n] => n.eq_ignore_ascii_case("point"),
+        [ns, op] => ns.eq_ignore_ascii_case("geo") && op.eq_ignore_ascii_case("point"),
+        _ => false,
     }
 }
 

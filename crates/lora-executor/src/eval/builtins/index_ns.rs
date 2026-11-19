@@ -7,7 +7,7 @@
 //! other bound rows. Each hit is a map `{node|relationship, score}`,
 //! highest score first (ties broken by id, matching standalone CALL).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use lora_store::{
     GraphStorage, IndexConfigValue, LoraVector, RawCoordinate, StoredIndexEntity, StoredIndexKind,
@@ -17,6 +17,7 @@ use lora_store::{
 use super::super::errors::set_eval_error;
 use super::super::expr::EvalContext;
 use crate::value::LoraValue;
+use crate::vector_filter::VectorOptions;
 
 pub(super) fn dispatch<S: GraphStorage>(
     op: &str,
@@ -129,12 +130,9 @@ fn vector<S: GraphStorage>(
             ))
         }
     };
-    let restrict_to = match args.get(3) {
-        None | Some(LoraValue::Null) => None,
-        Some(LoraValue::Map(options)) => restrict_to(options)?,
-        Some(other) => return Err(format!("vector options must be a MAP, got {other:?}")),
-    };
+    let options = VectorOptions::parse(args.get(3).unwrap_or(&LoraValue::Null))?;
     let def = check_index(ctx, &name, StoredIndexKind::Vector, entity)?;
+    let restrict_to = options.allowed_ids(ctx.storage, entity, def.label.as_deref());
     if let Some(IndexConfigValue::Integer(dim)) = def.options.get("vector.dimensions") {
         if query.dimension as i64 != *dim {
             return Err(format!(
@@ -176,11 +174,8 @@ fn check_index<S: GraphStorage>(
     Ok(def)
 }
 
-fn hits(mut scored: Vec<(u64, f64)>, limit: Option<usize>, entity: StoredIndexEntity) -> LoraValue {
-    scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    if let Some(limit) = limit {
-        scored.truncate(limit);
-    }
+fn hits(scored: Vec<(u64, f64)>, limit: Option<usize>, entity: StoredIndexEntity) -> LoraValue {
+    let scored = crate::vector_filter::top_k(scored, limit.unwrap_or(usize::MAX));
     let (key, wrap): (&str, fn(u64) -> LoraValue) = match entity {
         StoredIndexEntity::Node => ("node", LoraValue::Node),
         StoredIndexEntity::Relationship => ("relationship", LoraValue::Relationship),
@@ -219,38 +214,4 @@ fn float32_vector(items: &[LoraValue]) -> Result<LoraVector, String> {
     let dim = raw.len() as i64;
     LoraVector::try_new(raw, dim, VectorCoordinateType::Float32)
         .map_err(|e| format!("invalid query vector: {e}"))
-}
-
-fn restrict_to(options: &BTreeMap<String, LoraValue>) -> Result<Option<BTreeSet<u64>>, String> {
-    let mut out = None;
-    for (key, value) in options {
-        match key.as_str() {
-            "restrictTo" => {
-                let LoraValue::List(items) = value else {
-                    return Err(format!("`restrictTo` must be a LIST of ids, got {value:?}"));
-                };
-                let mut ids = BTreeSet::new();
-                for item in items {
-                    match item {
-                        LoraValue::Int(n) if *n >= 0 => {
-                            ids.insert(*n as u64);
-                        }
-                        LoraValue::Node(id) | LoraValue::Relationship(id) => {
-                            ids.insert(*id);
-                        }
-                        other => {
-                            return Err(format!("`restrictTo` entries must be ids, got {other:?}"))
-                        }
-                    }
-                }
-                out = Some(ids);
-            }
-            other => {
-                return Err(format!(
-                    "unknown vector option `{other}` (known: `restrictTo`)"
-                ))
-            }
-        }
-    }
-    Ok(out)
 }
