@@ -640,6 +640,15 @@ impl Row {
     }
 
     #[inline]
+    /// `key`'s value when the row shares it behind an `Arc` (a large list
+    /// or map), so a cache can hold it alive and key on its address.
+    pub(crate) fn get_shared(&self, key: VarId) -> Option<&Arc<LoraValue>> {
+        match self.slot(key)? {
+            SlotValue::Shared(value) => Some(value),
+            SlotValue::Inline(_) => None,
+        }
+    }
+
     fn slot(&self, key: VarId) -> Option<&SlotValue> {
         self.entries
             .get(key.0 as usize)

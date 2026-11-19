@@ -177,6 +177,7 @@ impl DeadlineScope {
             EVAL_TICK.with(|t| t.set(0));
         }
         ACTIVE.with(|a| a.set(deadline.or(prev)));
+        crate::eval::in_index::scope_enter();
         Self { prev }
     }
 }
@@ -185,6 +186,7 @@ impl Drop for DeadlineScope {
     fn drop(&mut self) {
         let prev = self.prev;
         ACTIVE.with(|a| a.set(prev));
+        crate::eval::in_index::scope_exit();
         if prev.is_none() {
             EVAL_TRIPPED.with(|t| t.set(false));
         }

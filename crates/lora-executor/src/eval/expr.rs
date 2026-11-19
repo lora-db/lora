@@ -70,6 +70,14 @@ pub fn eval_expr<S: GraphStorage>(
             rhs,
         } => {
             let l = eval_expr(lhs, row, ctx);
+            if let Some((owner, r)) = stable_ref(rhs, row, ctx) {
+                if let LoraValue::List(items) = r {
+                    if let Some(found) = super::in_index::lookup(owner, items, &l) {
+                        return found;
+                    }
+                }
+                return eval_in(&l, r);
+            }
             let r = eval_ref(rhs, row, ctx);
             eval_in(&l, &r)
         }
@@ -243,30 +251,7 @@ pub fn eval_expr<S: GraphStorage>(
         ResolvedExpr::Index { expr, index } => {
             let base = eval_ref(expr, row, ctx);
             let idx = eval_expr(index, row, ctx);
-            match (&*base, idx) {
-                (LoraValue::List(items), LoraValue::Int(i)) => {
-                    let i = if i < 0 {
-                        match i64::try_from(items.len())
-                            .ok()
-                            .and_then(|len| len.checked_add(i))
-                        {
-                            Some(i) if i >= 0 => i as usize,
-                            _ => return LoraValue::Null,
-                        }
-                    } else {
-                        i as usize
-                    };
-                    items.get(i).cloned().unwrap_or(LoraValue::Null)
-                }
-                (LoraValue::Map(m), LoraValue::String(key)) => {
-                    m.get(&key).cloned().unwrap_or(LoraValue::Null)
-                }
-                // `n[k]` reads the property `n.k` would.
-                (LoraValue::Node(_) | LoraValue::Relationship(_), LoraValue::String(key)) => {
-                    eval_property(&base, &key, ctx)
-                }
-                _ => LoraValue::Null,
-            }
+            eval_index(&base, idx, ctx)
         }
 
         ResolvedExpr::Slice { expr, from, to } => {
@@ -497,7 +482,143 @@ fn eval_source<'r, S: GraphStorage>(
             Some(branch) => eval_source(branch, row, ctx),
             None => Source::Value(LoraValue::Null),
         },
+        // `m.l` and `tiers[r]` on a carried map or list read the part in
+        // place: `x IN m.l` per row must not copy `m.l` each time.
+        ResolvedExpr::Property {
+            expr: base,
+            property,
+        } if reads_in_place(base) => match eval_source(base, row, ctx) {
+            Source::Var(_, LoraValue::Map(map)) => match map_entry(map, property) {
+                Some(value) => Source::Var(None, value),
+                None => Source::Value(LoraValue::Null),
+            },
+            Source::Var(_, value) => Source::Value(eval_property(value, property, ctx)),
+            Source::Value(value) => Source::Value(eval_property(&value, property, ctx)),
+        },
+        ResolvedExpr::Index { expr: base, index } if reads_in_place(base) => {
+            let source = eval_source(base, row, ctx);
+            let idx = eval_expr(index, row, ctx);
+            match source {
+                Source::Var(_, value) => match index_ref(value, &idx) {
+                    Some(part) => Source::Var(None, part),
+                    None => Source::Value(eval_index(value, idx, ctx)),
+                },
+                Source::Value(value) => Source::Value(eval_index(&value, idx, ctx)),
+            }
+        }
         _ => Source::Value(eval_expr(expr, row, ctx)),
+    }
+}
+
+/// `expr`'s value when it sits in a value that outlives the row's
+/// evaluation and is never changed while it does: a row value shared behind
+/// an `Arc`, a parameter, or a map entry or element of one of those. What
+/// [`super::in_index`] may index.
+fn stable_ref<'r, S: GraphStorage>(
+    expr: &ResolvedExpr,
+    row: &'r Row,
+    ctx: &EvalContext<'r, S>,
+) -> Option<(super::in_index::ListOwner<'r>, &'r LoraValue)> {
+    use super::in_index::ListOwner;
+    match expr {
+        ResolvedExpr::Variable(var) => {
+            let shared = row.get_shared(*var)?;
+            Some((ListOwner::Shared(shared), &**shared))
+        }
+        ResolvedExpr::Parameter(name) => Some((ListOwner::Parameter, ctx.params.get(name)?)),
+        ResolvedExpr::Property {
+            expr: base,
+            property,
+        } => {
+            let (owner, value) = stable_ref(base, row, ctx)?;
+            match value {
+                LoraValue::Map(map) => Some((owner, map_entry(map, property)?)),
+                _ => None,
+            }
+        }
+        ResolvedExpr::Index { expr: base, index } => {
+            if !matches!(
+                **index,
+                ResolvedExpr::Literal(_) | ResolvedExpr::Variable(_) | ResolvedExpr::Parameter(_)
+            ) {
+                return None;
+            }
+            let (owner, value) = stable_ref(base, row, ctx)?;
+            let idx = eval_expr(index, row, ctx);
+            Some((owner, index_ref(value, &idx)?))
+        }
+        _ => None,
+    }
+}
+
+/// A map's entry, or for a hydrated entity map, its property: the lookup
+/// [`eval_property`] makes, by reference.
+fn map_entry<'a>(map: &'a BTreeMap<String, LoraValue>, key: &str) -> Option<&'a LoraValue> {
+    map.get(key).or_else(|| match map.get("properties") {
+        Some(LoraValue::Map(props)) => props.get(key),
+        _ => None,
+    })
+}
+
+/// The element `base[idx]` names inside a list or map, by reference.
+/// `None` when the read is not a plain element (a node's property, a
+/// missing key, an index out of range).
+fn index_ref<'a>(base: &'a LoraValue, idx: &LoraValue) -> Option<&'a LoraValue> {
+    match (base, idx) {
+        (LoraValue::List(items), LoraValue::Int(i)) => {
+            list_position(items.len(), *i).and_then(|i| items.get(i))
+        }
+        (LoraValue::Map(m), LoraValue::String(key)) => m.get(key),
+        _ => None,
+    }
+}
+
+/// The position `i` names in a list of `len` elements; a negative `i`
+/// counts from the end.
+fn list_position(len: usize, i: i64) -> Option<usize> {
+    if i < 0 {
+        i64::try_from(len)
+            .ok()
+            .and_then(|len| len.checked_add(i))
+            .filter(|i| *i >= 0)
+            .map(|i| i as usize)
+    } else {
+        usize::try_from(i).ok()
+    }
+}
+
+/// `base[idx]`.
+fn eval_index<S: GraphStorage>(
+    base: &LoraValue,
+    idx: LoraValue,
+    ctx: &EvalContext<'_, S>,
+) -> LoraValue {
+    match (base, idx) {
+        (LoraValue::List(items), LoraValue::Int(i)) => list_position(items.len(), i)
+            .and_then(|i| items.get(i))
+            .cloned()
+            .unwrap_or(LoraValue::Null),
+        (LoraValue::Map(m), LoraValue::String(key)) => {
+            m.get(&key).cloned().unwrap_or(LoraValue::Null)
+        }
+        // `n[k]` reads the property `n.k` would.
+        (LoraValue::Node(_) | LoraValue::Relationship(_), LoraValue::String(key)) => {
+            eval_property(base, &key, ctx)
+        }
+        _ => LoraValue::Null,
+    }
+}
+
+/// Whether `expr`'s value can be read where it sits: a variable, a
+/// parameter, a `coalesce` / `CASE` handing one back, or a property or
+/// element of one of those.
+fn reads_in_place(expr: &ResolvedExpr) -> bool {
+    match expr {
+        ResolvedExpr::Variable(_) | ResolvedExpr::Parameter(_) => true,
+        ResolvedExpr::Property { expr, .. } | ResolvedExpr::Index { expr, .. } => {
+            reads_in_place(expr)
+        }
+        _ => passes_through(expr),
     }
 }
 
@@ -519,7 +640,7 @@ pub(crate) fn eval_ref<'r, S: GraphStorage>(
     match expr {
         ResolvedExpr::Variable(var) => Cow::Borrowed(row.get(*var).unwrap_or(&NULL)),
         ResolvedExpr::Parameter(name) => Cow::Borrowed(ctx.params.get(name).unwrap_or(&NULL)),
-        _ if passes_through(expr) => match eval_source(expr, row, ctx) {
+        _ if reads_in_place(expr) => match eval_source(expr, row, ctx) {
             Source::Var(_, value) => Cow::Borrowed(value),
             Source::Value(value) => Cow::Owned(value),
         },
@@ -532,7 +653,7 @@ static NULL: LoraValue = LoraValue::Null;
 /// Whether `expr`'s value can be a variable's, read in place.
 #[inline]
 fn reads_variable(expr: &ResolvedExpr) -> bool {
-    matches!(expr, ResolvedExpr::Variable(_)) || passes_through(expr)
+    reads_in_place(expr)
 }
 
 /// A comparison with an operand that is a variable's value: a carried list

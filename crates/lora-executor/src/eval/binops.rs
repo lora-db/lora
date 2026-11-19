@@ -204,7 +204,7 @@ pub(super) fn substring_by_chars(s: &str, start: i64, length: Option<i64>) -> St
     }
 }
 
-pub(super) fn value_eq(a: &LoraValue, b: &LoraValue) -> bool {
+pub(crate) fn value_eq(a: &LoraValue, b: &LoraValue) -> bool {
     match (a, b) {
         (LoraValue::Null, LoraValue::Null) => true,
         (LoraValue::Bool(x), LoraValue::Bool(y)) => x == y,

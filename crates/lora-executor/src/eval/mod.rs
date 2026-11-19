@@ -35,11 +35,12 @@ mod errors;
 mod expr;
 mod fold;
 mod functions;
+pub(crate) mod in_index;
 mod point;
 mod regex;
 mod vector;
 
-pub(crate) use binops::compare_values;
+pub(crate) use binops::{compare_values, value_eq};
 pub use builtins::FulltextPage;
 pub use errors::clear_eval_error;
 pub(crate) use errors::take_eval_error;
@@ -49,3 +50,11 @@ pub use expr::{
 };
 pub(crate) use expr::{eval_ref, eval_status};
 pub use fold::fold_call;
+
+/// `point(map)`: a POINT from a coordinate map, as the Cypher function
+/// builds it. `Ok(None)` for a null coordinate.
+pub fn point_from_map(
+    map: &std::collections::BTreeMap<String, crate::value::LoraValue>,
+) -> Result<Option<lora_store::LoraPoint>, String> {
+    point::build_point_from_map(map)
+}
