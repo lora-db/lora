@@ -55,13 +55,12 @@ Lookup indexes are catalog entries over labels or relationship types:
 <CypherSnippet code={String.raw`CREATE LOOKUP INDEX node_labels FOR (n) ON EACH node.labels(n);
 CREATE LOOKUP INDEX rel_types FOR ()-[r]-() ON EACH edge.type(r);`} />
 
-Composite RANGE indexes are accepted and shown in the catalog:
+A composite RANGE index covers several properties. Each property also
+gets the single-property seeks above, and the index as a whole answers
+an equality on its leading properties with an ordered range on its last
+one: see [Ordered seeks on a composite index](#ordered-seeks-on-a-composite-index).
 
-<QueryCodeBlock code={String.raw`CREATE INDEX person_age_country FOR (p:Person) ON (p.age, p.country);`} />
-
-Current optimizer rewrites use single-property scopes. Keep composite
-indexes for catalog policy and future planner work rather than expecting
-multi-column seek behavior today.
+<QueryCodeBlock code={String.raw`CREATE INDEX activity_person_at FOR (a:Activity) ON (a.person, a.at);`} />
 
 ## Vector indexes
 
@@ -100,12 +99,48 @@ ties broken by ascending entity id.
 
 ### Restricting results
 
-An optional fourth argument takes an options map. Its only key is
-`restrictTo`, a list of entity ids (or node / relationship values) that
+An optional fourth argument takes an options map with two keys, both
+optional.
+
+`restrictTo` is a list of entity ids (or node / relationship values) that
 the results may come from:
 
 <QueryCodeBlock code={String.raw`CALL db.index.vector.queryNodes('movie_embedding', 5, $query, {restrictTo: $ids})
 YIELD node, score;`} />
+
+`where` filters by the entity's properties. Each entry is
+`property: condition`, all of which must hold:
+
+| Condition | Holds when the property |
+|---|---|
+| a scalar, `{eq: v}` | equals `v` |
+| a list, `{in: [...]}` | equals one of the values |
+| `{gt: v}`, `{gte: v}`, `{lt: v}`, `{lte: v}` | compares so with `v`; combine one lower and one upper bound for a range |
+| `{withinBBox: [lowerLeft, upperRight]}` | is a point inside the box, as [`geo.within_bbox`](../functions/spatial#geowithin_bbox) |
+
+<QueryCodeBlock code={String.raw`CALL db.index.vector.queryNodes('event_taste', 20, $taste, {where: {
+  location: {withinBBox: [$southWest, $northEast]},
+  startsAt: {gte: $from, lt: $to},
+  status: 'confirmed'
+}})
+YIELD node, score
+RETURN node.name AS event, score;`} />
+
+The filter runs before the search, not after it, so the query still
+returns `k` hits when `k` entities match. It reads a RANGE or POINT
+index on one of the properties where one exists (the most selective
+kind of condition first: a short `in` list, then a box, then a closed
+range), checks every candidate against all conditions, and then scores
+only the candidates. A filter on unindexed properties scans the label.
+With both keys, a result must satisfy both. Comparisons follow Cypher:
+a `null` property never matches, and a condition of `null` is rejected,
+as are unknown operators and both `gt` and `gte` on one property.
+
+On 300,000 events with 64-dimension vectors, the 20 nearest events in a
+country-sized box and a 60-day window take about 0.4 ms this way, against
+1.6 ms for collecting the ids in a `MATCH` and passing them as
+`restrictTo`, and 2 ms for sorting the matches by
+`vector.similarity`.
 
 Unknown option keys are rejected. When the `CALL` stands alone (nothing
 after `YIELD`), the options must be an inline map literal — values
@@ -155,10 +190,23 @@ keys are validated for every vector index but only take effect with
 relationship type and property can carry only one vector index, so
 switching provider means `DROP INDEX` and creating it again.
 
-With `restrictTo`, HNSW widens its search internally, but a very
-selective filter can still return fewer than `k` hits; raise
+With `restrictTo` or `where`, HNSW widens its search internally, but a
+very selective filter can still return fewer than `k` hits; raise
 `vector.hnsw.ef_search` or use a flat index for tightly filtered
-queries. Snapshots carry the HNSW graph, so a restore returns the same
+queries.
+
+Building an HNSW index over existing data (`CREATE VECTOR INDEX` on a
+populated label, or the first query of a lazily populated one) uses
+every core. The result does not depend on the core count: the same data
+always gives the same graph. 100,000 vectors of 64 dimensions build in
+about 6 seconds on a 10-core laptop. Vectors written later are added one
+at a time as part of their write.
+
+Memory: a flat index keeps each vector as 4-byte coordinates (about
+4.8 bytes per dimension, counting its bookkeeping); an HNSW index adds
+its links, about 9 bytes per dimension at 64 dimensions with the default
+`m`. Both are on top of the vector stored in the node itself.
+`vector.hnsw.quantization: 'int8'` stores 1 byte per coordinate. Snapshots carry the HNSW graph, so a restore returns the same
 results as before; after a WAL recovery the graph is rebuilt
 from the stored vectors.
 
@@ -327,6 +375,46 @@ RETURN v`} />
 See [`geo.within_bbox`](../functions/spatial#geowithin_bbox) for the full
 semantics.
 
+The POINT index files points in grid cells: 100 units wide for
+Cartesian points and 0.25 degrees for WGS-84 points, unless the index
+sets `cellSize` in its `indexConfig` (which then applies to both). A
+`geo.distance(p.location, $here) <= radius` seek on WGS-84 points reads
+the cells within the radius in metres, including across a pole or the
+antimeridian.
+
+### Ordered seeks on a composite index
+
+With a composite RANGE index on `(a, b)`, a query that fixes `a` with
+`=`, bounds `b` (or tests `b IS NOT NULL`) and sorts on `b` reads its
+rows from the index in order. A `LIMIT` then stops after that many
+index entries, however many rows match:
+
+<QueryCodeBlock code={String.raw`CREATE INDEX activity_person_at FOR (a:Activity) ON (a.person, a.at);
+
+MATCH (a:Activity)
+WHERE a.person = $person AND a.at >= $since
+RETURN a
+ORDER BY a.at DESC
+LIMIT 20
+;// NodeByPropertyRangeScan, prefix: person, order: DESC`} />
+
+An index on three or more properties works the same way with an
+equality on every property but the last. The equality values may be
+parameters or literals; the predicate still runs on every row, so the
+results are those of the plan without the index. On 300,000 activities
+of 20 people, the query above takes 0.02 ms, against 10 ms without the
+composite index. Without a bound or `IS NOT NULL` on the last property,
+rows that lack it would be missing from the index, so the planner does
+not use it.
+
+### IS NOT NULL
+
+`n.key IS NOT NULL` seeks a RANGE index on `key`: it lists the nodes the
+index holds, including values without an order (durations, points). It
+pays off when few nodes of the label have the property. For 200 of
+200,000 it takes 0.04 ms instead of a 25 to 40 ms label scan; when half or more
+of the label has it, the scan runs as before.
+
 ### List properties
 
 A RANGE index on a property that holds lists keeps each list twice: whole,
@@ -380,8 +468,9 @@ index list.
   via `vector.indexProvider: 'hnsw'` and returns approximate results.
 - Full-text query strings use term intersection and term-frequency
   scoring, not a Lucene-style query language.
-- Composite RANGE indexes are cataloged, but current planner rewrites
-  are single-property.
+- A composite RANGE index is used for ordered seeks with an equality on
+  its leading properties; other predicates use its properties one at a
+  time.
 - FULLTEXT indexes require `ON EACH [...]`; non-full-text indexes use
   `ON (...)`.
 
