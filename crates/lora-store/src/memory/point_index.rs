@@ -40,8 +40,16 @@ use super::index_catalog::IndexConfigValue;
 /// Default cell side. Tuned for cartesian space at world scale; WGS-84
 /// users with denser data should use `OPTIONS { indexConfig: { ... } }`
 /// to override (config plumbed in [`super::index_catalog`]).
+/// Cell side for cartesian points, in their own units.
 const DEFAULT_CELL_SIZE: f64 = 100.0;
-const MAX_CELLS_TO_ENUMERATE: u128 = 100_000;
+/// Cell side for WGS-84 points, in degrees (~28 km of latitude). With the
+/// cartesian default of 100 every point on Earth shared a handful of
+/// cells, so a box around one country read every indexed point.
+const DEFAULT_GEOGRAPHIC_CELL_SIZE: f64 = 0.25;
+/// Metres per degree of latitude, rounded down so an envelope built from
+/// it is never smaller than the circle (mean Earth radius 6371 km gives
+/// 111 195 m).
+const METRES_PER_DEGREE: f64 = 111_000.0;
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct PointRegistry {
@@ -57,27 +65,120 @@ pub(super) struct PointScope {
 impl Default for PointScope {
     fn default() -> Self {
         Self {
-            grid: PointGrid::with_cell_size(DEFAULT_CELL_SIZE),
+            grid: PointGrid::new(None),
             refcount: 0,
         }
     }
 }
 
+/// Two grids: cartesian points are bucketed in their units, geographic
+/// ones in degrees. A query asks both; candidates are refiltered by the
+/// caller, which also drops points of another SRID.
 #[derive(Debug, Clone)]
 pub(super) struct PointGrid {
+    pub(super) planar: Cells,
+    pub(super) geographic: Cells,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct Cells {
     cell_size: f64,
-    /// Copy-on-write (see [`super::cow`]) so a write's staged graph copy
-    /// shares the grid and copies only the path to the cell it changes.
-    ///
-    /// Each cell maps entity id → point, in id-sorted chunks (see
-    /// [`CowIdMap`]), so in a dense cell (every festival in one city) a
-    /// write copies one chunk and removes by id instead of scanning the
-    /// whole cell.
     pub(super) cells: CowMap<(i32, i32), CowIdMap<LoraPoint>>,
 }
 
 impl PointGrid {
-    pub(super) fn with_cell_size(cell_size: f64) -> Self {
+    /// `cell_size` (the index's `cellSize` option) applies to both grids.
+    pub(super) fn new(cell_size: Option<f64>) -> Self {
+        Self {
+            planar: Cells::with_cell_size(cell_size.unwrap_or(DEFAULT_CELL_SIZE)),
+            geographic: Cells::with_cell_size(cell_size.unwrap_or(DEFAULT_GEOGRAPHIC_CELL_SIZE)),
+        }
+    }
+
+    fn cells_for(&mut self, point: &LoraPoint) -> &mut Cells {
+        if point.is_geographic() {
+            &mut self.geographic
+        } else {
+            &mut self.planar
+        }
+    }
+
+    fn insert(&mut self, point: LoraPoint, id: u64) {
+        self.cells_for(&point).insert(point, id);
+    }
+
+    fn remove(&mut self, point: &LoraPoint, id: u64) {
+        self.cells_for(point).remove(point, id);
+    }
+
+    fn candidates_in_bbox(&self, min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> BTreeSet<u64> {
+        let mut out = Vec::new();
+        self.planar
+            .extend_in_bbox(min_x, min_y, max_x, max_y, &mut out);
+        self.geographic
+            .extend_in_bbox(min_x, min_y, max_x, max_y, &mut out);
+        out.into_iter().collect()
+    }
+
+    /// Ids within `radius` of `center`: a cartesian square of side
+    /// `2 * radius`, and for geographic points (radius in metres) the
+    /// latitude/longitude envelope of that circle.
+    fn candidates_within(&self, center: (f64, f64), radius: f64) -> BTreeSet<u64> {
+        let r = radius.abs();
+        let mut out = Vec::new();
+        self.planar.extend_in_bbox(
+            center.0 - r,
+            center.1 - r,
+            center.0 + r,
+            center.1 + r,
+            &mut out,
+        );
+        if !self.geographic.cells.is_empty() {
+            for (min_x, min_y, max_x, max_y) in geographic_envelope(center, r) {
+                self.geographic
+                    .extend_in_bbox(min_x, min_y, max_x, max_y, &mut out);
+            }
+        }
+        out.into_iter().collect()
+    }
+}
+
+/// The boxes (one, or two across the antimeridian) holding every point
+/// within `radius` metres of `center` (longitude, latitude).
+fn geographic_envelope(center: (f64, f64), radius: f64) -> Vec<(f64, f64, f64, f64)> {
+    const WHOLE: (f64, f64, f64, f64) = (-180.0, -90.0, 180.0, 90.0);
+    let (lon, lat) = center;
+    let d_lat = radius / METRES_PER_DEGREE;
+    let (min_lat, max_lat) = (lat - d_lat, lat + d_lat);
+    if !d_lat.is_finite() || min_lat <= -90.0 || max_lat >= 90.0 {
+        // The circle holds a pole: every longitude.
+        return vec![(WHOLE.0, min_lat.max(-90.0), WHOLE.2, max_lat.min(90.0))];
+    }
+    // A degree of longitude is shortest at the latitude farthest from the
+    // equator.
+    let widest = min_lat.abs().max(max_lat.abs()).to_radians().cos();
+    let d_lon = radius / (METRES_PER_DEGREE * widest);
+    if !d_lon.is_finite() || d_lon >= 180.0 {
+        return vec![(WHOLE.0, min_lat, WHOLE.2, max_lat)];
+    }
+    let (west, east) = (lon - d_lon, lon + d_lon);
+    if west < -180.0 {
+        vec![
+            (-180.0, min_lat, east, max_lat),
+            (west + 360.0, min_lat, 180.0, max_lat),
+        ]
+    } else if east > 180.0 {
+        vec![
+            (west, min_lat, 180.0, max_lat),
+            (-180.0, min_lat, east - 360.0, max_lat),
+        ]
+    } else {
+        vec![(west, min_lat, east, max_lat)]
+    }
+}
+
+impl Cells {
+    fn with_cell_size(cell_size: f64) -> Self {
         Self {
             cell_size: if cell_size.is_finite() && cell_size > 0.0 {
                 cell_size
@@ -89,6 +190,8 @@ impl PointGrid {
     }
 
     fn cell_for(&self, x: f64, y: f64) -> (i32, i32) {
+        // `as` saturates, so a far-off or infinite coordinate lands in an
+        // edge cell instead of wrapping.
         (
             (x / self.cell_size).floor() as i32,
             (y / self.cell_size).floor() as i32,
@@ -121,49 +224,39 @@ impl PointGrid {
         }
     }
 
-    fn cells_in_bbox(
-        &self,
-        min_x: f64,
-        min_y: f64,
-        max_x: f64,
-        max_y: f64,
-    ) -> Option<Vec<(i32, i32)>> {
+    /// Adds the ids in the cells overlapping the box. A box spanning more
+    /// cells than are occupied walks the occupied ones instead, so a huge
+    /// box costs what the index holds, never more.
+    fn extend_in_bbox(&self, min_x: f64, min_y: f64, max_x: f64, max_y: f64, out: &mut Vec<u64>) {
+        if self.cells.is_empty()
+            || min_x.is_nan()
+            || min_y.is_nan()
+            || max_x.is_nan()
+            || max_y.is_nan()
+        {
+            return;
+        }
         let (lo_x, lo_y) = self.cell_for(min_x, min_y);
         let (hi_x, hi_y) = self.cell_for(max_x, max_y);
-        let width = (hi_x as i64 - lo_x as i64).unsigned_abs() as u128 + 1;
-        let height = (hi_y as i64 - lo_y as i64).unsigned_abs() as u128 + 1;
-        let cell_count = width.saturating_mul(height);
-        if cell_count > MAX_CELLS_TO_ENUMERATE {
-            return None;
+        let width = (hi_x as i64 - lo_x as i64).unsigned_abs() + 1;
+        let height = (hi_y as i64 - lo_y as i64).unsigned_abs() + 1;
+        if width.saturating_mul(height) > self.cells.len() as u64 {
+            let inside =
+                |&(x, y): &(i32, i32)| (lo_x..=hi_x).contains(&x) && (lo_y..=hi_y).contains(&y);
+            for (cell, bucket) in self.cells.iter() {
+                if inside(cell) {
+                    out.extend(bucket.keys());
+                }
+            }
+            return;
         }
-
-        let mut out = Vec::with_capacity(cell_count as usize);
         for cx in lo_x..=hi_x {
             for cy in lo_y..=hi_y {
-                out.push((cx, cy));
+                if let Some(bucket) = self.cells.get(&(cx, cy)) {
+                    out.extend(bucket.keys());
+                }
             }
         }
-        Some(out)
-    }
-
-    fn candidates_in_bbox(&self, min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> BTreeSet<u64> {
-        let Some(cells) = self.cells_in_bbox(min_x, min_y, max_x, max_y) else {
-            return self.all_ids();
-        };
-        // Cells iterate their ids in no particular order: collecting sorts
-        // them once and builds the set in one go.
-        cells
-            .iter()
-            .filter_map(|cell| self.cells.get(cell))
-            .flat_map(|bucket| bucket.keys())
-            .collect()
-    }
-
-    fn all_ids(&self) -> BTreeSet<u64> {
-        self.cells
-            .values()
-            .flat_map(|bucket| bucket.keys())
-            .collect()
     }
 }
 
@@ -204,7 +297,7 @@ impl PointRegistry {
     ) -> bool {
         let key = ScopedPropertyKey::new(label, property);
         let entry = self.by_scope.entry(key).or_insert_with(|| PointScope {
-            grid: PointGrid::with_cell_size(cell_size.unwrap_or(DEFAULT_CELL_SIZE)),
+            grid: PointGrid::new(cell_size),
             refcount: 0,
         });
         let was_empty = entry.refcount == 0;
@@ -284,16 +377,7 @@ impl PointRegistry {
         max_distance: f64,
     ) -> Option<BTreeSet<u64>> {
         let scope = self.by_scope.get(&(label, property) as &dyn ScopeKey)?;
-        // Conservative bounding box: a square of side 2 * max_distance.
-        // For WGS-84 this overcollects near the poles (the square in
-        // (lat, lon) space is wider than the actual great-circle
-        // circle), and the refilter trims it.
-        let r = max_distance.abs();
-        Some(
-            scope
-                .grid
-                .candidates_in_bbox(center.0 - r, center.1 - r, center.0 + r, center.1 + r),
-        )
+        Some(scope.grid.candidates_within(center, max_distance))
     }
 }
 
@@ -384,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn huge_bbox_falls_back_to_all_indexed_ids() {
+    fn huge_bbox_walks_the_occupied_cells() {
         let mut reg = PointRegistry::default();
         reg.add_scope("Place", "loc", Some(1.0));
         reg.insert("Place", "loc", 1, p(0.0, 0.0));
