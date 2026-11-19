@@ -361,11 +361,21 @@ atom = {
     // would be re-read as a variable and the outer `CASE` would parse its
     // body a second time, doubling the work per nesting level.
     | !CASE ~ variable
+    | pattern_predicate
     | parenthesized_expression
 }
 
 exists_subquery = {
-    EXISTS ~ lbrace ~ (MATCH ~ pattern ~ where_clause? | pattern) ~ rbrace
+    EXISTS ~ lbrace ~ MATCH? ~ pattern ~ where_clause? ~ rbrace
+}
+
+// `(a)-[:R]->(b)` as a boolean, e.g. `WHERE NOT (p)-[:BLOCKS]-(q)`.
+// Lowered to `EXISTS { (a)-[:R]->(b) }`. It needs at least one
+// relationship, so `(a)` stays a parenthesized expression; the lookahead
+// skips the parentheses first so arithmetic such as `(a) - 1` is not
+// parsed as a pattern before falling back.
+pattern_predicate = {
+    &(paren_skip ~ (dash | left_arrow)) ~ node_pattern ~ pattern_element_chain+
 }
 
 // `COUNT { (a)-[:R]->(b) WHERE ... }` — the number of matches of a

@@ -389,6 +389,24 @@ pub(super) fn lower_exists_subquery(pair: Pair<Rule>) -> Result<Expr, ParseError
     })
 }
 
+/// `(a)-[:R]->(b)` used as a boolean: the same as `EXISTS { (a)-[:R]->(b) }`.
+pub(super) fn lower_pattern_predicate(pair: Pair<Rule>) -> Result<Expr, ParseError> {
+    let span = pair_span(&pair);
+    let element = lower_pattern_element(pair)?;
+    Ok(Expr::ExistsSubquery {
+        pattern: Pattern {
+            parts: vec![PatternPart {
+                binding: None,
+                element,
+                span,
+            }],
+            span,
+        },
+        where_: None,
+        span,
+    })
+}
+
 pub(super) fn lower_function_invocation(pair: Pair<Rule>) -> Result<Expr, ParseError> {
     let span = pair_span(&pair);
     let mut name = Vec::new();

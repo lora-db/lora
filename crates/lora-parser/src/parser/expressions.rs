@@ -1,8 +1,8 @@
 use super::limits::DepthGuard;
 use super::literals::{
     lower_exists_subquery, lower_function_invocation, lower_list_predicate, lower_literal,
-    lower_parameter, lower_reduce_expression, lower_schema_name, lower_signed_integer_literal,
-    lower_variable,
+    lower_parameter, lower_pattern_predicate, lower_reduce_expression, lower_schema_name,
+    lower_signed_integer_literal, lower_variable,
 };
 use super::util::{merge_spans, pair_span, single_inner, unexpected_rule};
 use super::Rule;
@@ -47,6 +47,7 @@ fn lower_expression_inner(pair: Pair<Rule>) -> Result<Expr, ParseError> {
         Rule::try_cast_call_expression => lower_type_cast_call_expression(pair, true),
         Rule::parenthesized_expression => lower_parenthesized_expression(pair),
         Rule::exists_subquery => lower_exists_subquery(pair),
+        Rule::pattern_predicate => lower_pattern_predicate(pair),
         Rule::count_subquery => lower_count_subquery(pair),
         Rule::label_predicate => lower_label_predicate(pair),
         _ => Err(unexpected_rule("expression", pair)),

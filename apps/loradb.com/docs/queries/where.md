@@ -189,6 +189,22 @@ This is the anti-join pattern — cheaper than
 `OPTIONAL MATCH … WHERE other IS NULL` when you don't need the optional
 result.
 
+A `WHERE` inside the braces filters the pattern's matches. `MATCH` is
+optional:
+
+<QueryCodeBlock code={String.raw`// People active since $since
+MATCH (p:Person)
+WHERE EXISTS { (p)-[:DID]->(a) WHERE a.at >= $since }
+RETURN p.name`} />
+
+A relationship pattern on its own is a predicate too, the short form of
+`EXISTS { }`. It needs at least one relationship, so `(a)` stays a
+parenthesized expression:
+
+<QueryCodeBlock code={String.raw`MATCH (p:Person), (q:Person)
+WHERE p <> q AND NOT (p)-[:BLOCKS]-(q)
+RETURN p.name, q.name`} />
+
 When the subquery's start node is not bound by the outer row, give it
 an inline property map, for example
 <CypherCode code="EXISTS { MATCH (v:Person {subject: $s}) WHERE v.verified }" />.
