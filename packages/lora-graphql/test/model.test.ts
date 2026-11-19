@@ -65,7 +65,7 @@ describe("model validation", () => {
       "B.key: @key must be String, ID, Int or BigInt",
       "B.key: @key fields must be non-null",
       "C: only one @key field is allowed (found k1, k2)",
-      "D: object types need @node or @relationshipProperties, unless a @cypher field returns them",
+      "D: object types need @node or @relationshipProperties, unless a @cypher or @customResolver field returns them",
     ]);
   });
 
@@ -123,7 +123,7 @@ describe("model validation", () => {
       "Person.id: @relayId adds a global `id` field; rename this field or map it with @alias",
       "Person: @limit(max: 1000) exceeds the global maximum 100",
       "Persons: primary label `Person` is already used by Person",
-      "Query.hello: Query fields are generated; a custom one needs @cypher",
+      "Query.hello: Query fields are generated; a custom one needs @cypher or @customResolver",
     ]);
   });
 

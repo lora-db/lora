@@ -64,6 +64,7 @@ import {
 } from "./compile/read/abstract.js";
 import {
   compileCypherRoot,
+  checkedArguments,
   MAX_LIST_ARGUMENT,
 } from "./compile/read/cypher-field.js";
 import { compileRoot, rebindableVariables } from "./compile/read/root.js";
@@ -129,6 +130,8 @@ import { emptyQuantifierRule } from "./quantifier-rule.js";
 import { buildModel } from "./model/build.js";
 import { Observer, type StatementMeta } from "./observe.js";
 import type {
+  AbstractType,
+  CustomField,
   CypherField,
   GraphModel,
   NodeType,
@@ -173,6 +176,7 @@ import {
   checkFieldAuthentication,
   claimsMaskedValue,
   rootFieldGuard,
+  abstractRootGuard,
 } from "./compile/auth.js";
 import { printExpr } from "./compile/cypher.js";
 import { MAX_FILTER_DEPTH } from "./compile/cost.js";
@@ -338,13 +342,14 @@ export class LoraGraphQL {
         }
       }
     }
-    for (const n of this.model.nodes.values()) {
-      for (const f of n.fields.values()) {
-        if (f.kind === "custom" && !this.#resolvers[n.name]?.[f.name]) {
-          missing.push(
-            `${n.name}.${f.name}: @customResolver needs resolvers.${n.name}.${f.name}`,
-          );
-        }
+    for (const f of [
+      ...[...this.model.nodes.values()].flatMap((n) => [...n.fields.values()]),
+      ...this.model.customRoots,
+    ]) {
+      if (f.kind === "custom" && !this.#resolvers[f.owner]?.[f.name]) {
+        missing.push(
+          `${f.owner}.${f.name}: @customResolver needs resolvers.${f.owner}.${f.name}`,
+        );
       }
     }
     if (missing.length > 0) {
@@ -518,7 +523,25 @@ export class LoraGraphQL {
     if (this.#schema) return this.#schema;
     const schema = buildSchema(this.model, {
       scalars: this.#scalars,
-      customResolver: (node, field) => this.#resolvers[node.name]![field.name]!,
+      customResolver: (node, field) => {
+        const resolve = this.#resolvers[node.name]![field.name]!;
+        if (field.args.length === 0) return resolve;
+        return (source, args, context, info) =>
+          resolve(
+            source,
+            checkedArguments(
+              this.#context(infoContext(info), context),
+              field,
+              args,
+            ),
+            context,
+            info,
+          );
+      },
+      resolveCustomRoot: (field, source, args, context, info) =>
+        span(info, context, () =>
+          this.#resolveCustomRoot(field, source, args, context, info),
+        ),
       subscribe: (node, args, context) =>
         this.#subscriptions.subscribe(node, args, context),
       resolveChangedNode: (node, event, info, context) =>
@@ -542,7 +565,8 @@ export class LoraGraphQL {
         return claimsMaskedValue(ctx, node, field, value);
       },
       resolveAbstract: (abstract, info, context, connection) =>
-        span(info, context, () => {
+        span(info, context, async () => {
+          await this.#guardAbstractRoot(abstract, info, context);
           const compiled = this.#cachedCompile(info, context, (ctx) =>
             (connection ? compileAbstractConnection : compileAbstractRoot)(
               ctx,
@@ -1529,9 +1553,108 @@ export class LoraGraphQL {
     return value;
   }
 
-  /** Run a root @cypher field's `viewer` guard; FORBIDDEN when it fails. */
+  /**
+   * A `@customResolver` field on Query or Mutation: its `@authentication`
+   * and `@authorization` decide first, as on a root @cypher field, then
+   * the resolver runs with the checked arguments. What it reads or writes
+   * is its own: it is not part of a statement, a read-set or a write-set.
+   */
+  async #resolveCustomRoot(
+    field: CustomField,
+    source: unknown,
+    args: Record<string, unknown>,
+    context: unknown,
+    info: GraphQLResolveInfo,
+  ): Promise<unknown> {
+    const ctx = this.#context(infoContext(info), context);
+    const op =
+      field.owner === "Mutation"
+        ? [...(field.authentication ?? [])][0]
+        : ("READ" as const);
+    if (op) checkFieldAuthentication(ctx, field.owner, field, op);
+    const rule = rootFieldGuard(ctx, field);
+    if (rule) {
+      await this.#checkGuard(
+        field,
+        {
+          text: `RETURN coalesce(${printExpr(rule)}, false) AS allowed`,
+          params: ctx.params,
+        },
+        context,
+      );
+    }
+    const checked = checkedArguments(ctx, field, args);
+    const resolve = this.#resolvers[field.owner]![field.name]!;
+    if (field.owner !== "Mutation") {
+      // What the resolver reads is not known: a response cache keyed by
+      // read-set must treat the response as reading everything.
+      const collector =
+        typeof context === "object" && context !== null
+          ? this.#readSets.get(context)
+          : undefined;
+      if (collector) collector.opaque = true;
+      return resolve(source as Record<string, unknown>, checked, context, info);
+    }
+    const value = await resolve(
+      source as Record<string, unknown>,
+      checked,
+      context,
+      info,
+    );
+    // Nor what it writes: reported as broad, as a @cypher mutation that
+    // returns no write-set is, when its transaction (if any) commits.
+    const change: WriteChange = {
+      operation: "CYPHER",
+      field: field.name,
+      created: [],
+      updated: [],
+      deleted: [],
+      connected: [],
+      disconnected: [],
+      entities: [],
+      types: [],
+      relationshipTypes: [],
+      broad: true,
+    };
+    const owned = (context as LoraGraphQLContext | undefined)?.transaction;
+    if (owned) owned.record(change);
+    else this.#changes.emit(change);
+    return value;
+  }
+
+  /**
+   * `@authentication` and `@authorization` on an interface or union guard
+   * its root fields, as a root @cypher field's do: the claims decide here,
+   * a `viewer` test runs before the read. Each member's rules still hold
+   * for its rows in the read itself.
+   */
+  async #guardAbstractRoot(
+    abstract: AbstractType,
+    info: GraphQLResolveInfo,
+    context: unknown,
+  ): Promise<void> {
+    if (!abstract.authentication && !abstract.authorization) return;
+    const ctx = this.#context(infoContext(info), context);
+    const root = {
+      ...abstractRootGuard(abstract),
+      name: info.fieldName,
+    };
+    checkFieldAuthentication(ctx, root.owner, root, "READ");
+    const rule = rootFieldGuard(ctx, root);
+    if (!rule) return;
+    await this.#checkGuard(
+      root,
+      {
+        text: `RETURN coalesce(${printExpr(rule)}, false) AS allowed`,
+        params: ctx.params,
+      },
+      context,
+    );
+  }
+
+  /** Run a root field's `viewer` guard; FORBIDDEN when it fails. */
   async #checkGuard(
-    field: CypherField,
+    field: { name: string; owner: string },
     guard: Statement,
     context: unknown,
   ): Promise<void> {

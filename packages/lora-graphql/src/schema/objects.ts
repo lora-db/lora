@@ -454,6 +454,7 @@ export function buildObjects(
             fields[f.name] = {
               type: f.type.required ? nonNull(t) : t,
               description: f.description,
+              args: cypherArgs(f),
               resolve: hooks.customResolver(node, f),
             };
             continue;
@@ -584,7 +585,47 @@ export function buildObjects(
               const item =
                 f.type.list && f.type.itemRequired ? nonNull(base) : base;
               const t: GraphQLOutputType = f.type.list ? listOf(item) : item;
-              return [f.name, { type: f.type.required ? nonNull(t) : t }];
+              const type = f.type.required ? nonNull(t) : t;
+              // A map holding nodes is projected per response key; any
+              // other is the statement's own map, read by field name.
+              if (!plain.holdsNodes) return [f.name, { type }];
+              return [
+                f.name,
+                {
+                  type,
+                  resolve: f.node ? nodesByResponseKey : byResponseKey,
+                },
+              ];
+            }),
+          ),
+      }),
+    );
+  }
+
+  // Input object types: the shapes of @cypher and @customResolver
+  // arguments.
+  const inputObjects = new Map<string, GraphQLInputObjectType>();
+  for (const input of model.inputs.values()) {
+    inputObjects.set(
+      input.name,
+      new GraphQLInputObjectType({
+        name: input.name,
+        description: input.description,
+        fields: () =>
+          Object.fromEntries(
+            [...input.fields.values()].map((f) => {
+              const base = namedType(f.type.named) as GraphQLInputType;
+              const item =
+                f.type.list && f.type.itemRequired ? nonNull(base) : base;
+              const t: GraphQLInputType = f.type.list ? listOf(item) : item;
+              return [
+                f.name,
+                {
+                  type: f.type.required ? nonNull(t) : t,
+                  defaultValue: f.defaultValue,
+                  description: f.description,
+                },
+              ];
             }),
           ),
       }),
@@ -595,18 +636,21 @@ export function buildObjects(
     objects.get(named) ??
     abstractTypes.get(named) ??
     plainObjects.get(named) ??
+    inputObjects.get(named) ??
     enums.get(named) ??
     customScalar(named) ??
     baseType(named as ScalarType, undefined);
 
-  function cypherOutput(f: CypherField): GraphQLOutputType {
+  function cypherOutput(f: { type: CypherField["type"] }): GraphQLOutputType {
     const base = namedType(f.type.named) as GraphQLOutputType;
     const item = f.type.list && f.type.itemRequired ? nonNull(base) : base;
     const t: GraphQLOutputType = f.type.list ? listOf(item) : item;
     return f.type.required ? nonNull(t) : t;
   }
 
-  function cypherArgs(f: CypherField): GraphQLFieldConfigArgumentMap {
+  function cypherArgs(f: {
+    args: CypherField["args"];
+  }): GraphQLFieldConfigArgumentMap {
     const out: GraphQLFieldConfigArgumentMap = {};
     for (const a of f.args) {
       const base = namedType(a.type.named) as GraphQLInputType;

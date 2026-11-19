@@ -75,7 +75,9 @@ arguments a default.
 - **Interfaces and unions** over `@node` types. Each node is projected as
   the member its label says.
 - **An object type without `@node`**, whose fields are read from a
-  returned map:
+  returned map. A field may also hold one node, projected with the
+  client's selection (see
+  [nodes with a value per row](#nodes-with-row-values)):
 
   ```graphql
   type FestivalStats {
@@ -103,6 +105,109 @@ statement's last top-level `RETURN` has exactly one item, written
 
 Lists must be written `[T!]` or `[T!]!`: nested lists and nullable items
 are refused.
+
+## Nodes with a value per row {#nodes-with-row-values}
+
+A ranked list often needs something beside each node: a score, a reason,
+a distance. An object type without `@node` may hold a `@node` type in a
+field, so the statement returns one map per row, such as
+`{ event: e, score: s }`, and the client selects into the node as it
+would anywhere else.
+
+```graphql title="schema.graphql"
+type Claims @jwt {
+  sub: String! @viewer(type: "Person", field: "key")
+}
+
+type Person @node {
+  key: String! @key
+}
+
+type Venue @node {
+  key: String! @key
+  name: String!
+}
+
+type Event @node
+  @authorization(
+    filter: [{ operations: [READ], where: { node: { draft: { eq: false } } } }]
+  ) {
+  key: String! @key
+  title: String!
+  draft: Boolean!
+  venue: Venue @relationship(type: "AT", direction: OUT)
+}
+
+type Recommendation {
+  event: Event!
+  score: Float!
+}
+
+type Query {
+  recommendedEvents: [Recommendation!]!
+    @authentication
+    @cypher(
+      statement: """
+      MATCH (:Person {key: $viewer})-[l:LIKES]->(:Venue)<-[:AT]-(e:Event)
+      WITH e, sum(l.weight) AS score
+      ORDER BY score DESC
+      RETURN { event: e, score: score } AS rec
+      """
+    )
+}
+```
+
+```cypher title="seed"
+CREATE (ada:Person {key: 'ada'}),
+       (p:Venue {key: 'paradiso', name: 'Paradiso'}),
+       (m:Venue {key: 'melkweg', name: 'Melkweg'}),
+       (ada)-[:LIKES {weight: 0.9}]->(p),
+       (ada)-[:LIKES {weight: 0.4}]->(m),
+       (:Event {key: 'dub', title: 'Dub night', draft: false})-[:AT]->(p),
+       (:Event {key: 'tba', title: 'To be announced', draft: true})-[:AT]->(p),
+       (:Event {key: 'folk', title: 'Folk night', draft: false})-[:AT]->(m)
+```
+
+```graphql title="As ada"
+{
+  recommendedEvents {
+    score
+    event {
+      title
+      venue {
+        name
+      }
+    }
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "recommendedEvents": [
+      {
+        "score": 0.9,
+        "event": { "title": "Dub night", "venue": { "name": "Paradiso" } }
+      },
+      {
+        "score": 0.4,
+        "event": { "title": "Folk night", "venue": { "name": "Melkweg" } }
+      }
+    ]
+  }
+}
+```
+
+- The node is projected like any node a statement returns: `Event`'s read
+  rules apply. The draft event's row is gone because `event` is non-null;
+  the rest of the ranking stays. A nullable node field reads `null`
+  instead, and keeps the row.
+- A field holds one node. Return one row per node rather than a list of
+  them.
+- Only a `@cypher` statement can return such a type, since the read rules
+  are compiled into it; a `@customResolver` field returning one is a model
+  error.
 
 ## The caller: $viewer {#the-caller-viewer}
 
@@ -248,6 +353,44 @@ type Mutation {
 
 `emptyToNull` needs a nullable argument: the statement would get a
 `null` for one declared `String!`, so that is a model error.
+
+### Input object arguments {#input-object-arguments}
+
+An argument may take an input object type. The statement gets it as a
+map, nested input objects included, with the defaults the input type
+declares filled in:
+
+```graphql
+input DateWindow {
+  from: Date!
+  to: Date!
+}
+
+input EventSearch {
+  genres: [String!]! = []
+  window: DateWindow
+}
+
+type Query {
+  findEvents(search: EventSearch!, limit: Int = 20 @range(min: 1, max: 100)): [Event!]!
+    @cypher(
+      statement: """
+      MATCH (e:Event)
+      WHERE (size($search.genres) = 0 OR e.genre IN $search.genres)
+        AND ($search.window IS NULL OR e.date >= $search.window.from)
+        AND ($search.window IS NULL OR e.date <= $search.window.to)
+      RETURN e ORDER BY e.date LIMIT $limit
+      """
+    )
+}
+```
+
+A field the client leaves out with no default is absent from the map,
+and reads as `null` in Cypher. The fields of an input object type are
+scalars, enums or other input object types, and take no directives:
+graphql-js checks their types, while value rules (`@length`, `@range`,
+...) go on scalar arguments. An input object type that no argument takes
+is a model error.
 
 ## Reads and writes
 
@@ -519,10 +662,37 @@ type Festival @node {
 ```
 
 The statement then runs once per candidate node, before the filter. No
-index can help, so this suits small labels or filters that are already
-selective. It works in root fields only: used through a relationship
-filter or a nested sort it is `BAD_USER_INPUT`. The model warns, so
-`lora-graphql check` reports each such field.
+index can help, so this suits small labels, filters that are already
+selective, and statements that are cheap per row. It works in root fields
+only: used through a relationship filter or a nested sort it is
+`BAD_USER_INPUT`.
+
+Through an interface, a computed field filters the interface's root
+lists too (`mediaFiles(where: { pathText: { contains: "dog" } })`): each
+implementation runs its own statement per candidate, as its own root list
+would. Every implementation declares `@filterable` for the operators the
+interface offers, and an interface root cannot sort by a computed field;
+both are model errors.
+
+Without `cost`, the model warns, so `lora-graphql check` reports each
+such field. Declaring what one run costs accepts it: the warning goes,
+and the cost limit charges the statement for every row it runs on. A
+statement that follows one relationship and computes a score is a good
+fit:
+
+```graphql
+type Event @node {
+  key: String! @key
+  viewerScore: Float
+    @cypher(
+      statement: """
+      RETURN coalesce(head([(p:Person {key: $viewer})-[r:LIKES]->(this) | r.weight]), 0.0) AS s
+      """
+      cost: 1
+    )
+    @sortable
+}
+```
 
 ## Cost
 
@@ -557,8 +727,12 @@ default. A walk of variable length estimates poorly, so declare `cost`
 for those. It is charged once for a root field and once per
 parent row for a field of a type: a page of 25 festivals selecting
 `similar` costs 25 × 2000 on top of the page, and is refused with
-`COST_EXCEEDED` before it runs when that is over `maxCost`. A filter on
-a computed `@cypher` field is charged the same per row it examines.
+`COST_EXCEEDED` before it runs when that is over `maxCost`. A filter or
+a sort on a computed `@cypher` field is charged the same for every row it
+examines: a sort computes the value for every match before the page is
+cut, so `events(sort: [{ viewerScore: DESC }])` over 5,000 events costs
+5,000 × (1 + `cost`). A field that the filter and the sort both use is
+charged once.
 
 Keep such statements anchored on `this` and bounded with `LIMIT`, and
 prefer selecting them on single lookups and small pages.

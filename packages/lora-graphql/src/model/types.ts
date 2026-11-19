@@ -242,6 +242,8 @@ export interface CypherArgument {
   range?: { min?: number | undefined; max?: number | undefined } | undefined;
   /** The other value rules of the argument, as on a field. */
   constraints?: FieldConstraints | undefined;
+  /** The input object type the argument takes, when it is one. */
+  input?: string | undefined;
 }
 
 export interface CypherField extends FieldBase {
@@ -304,6 +306,8 @@ export interface CustomField extends FieldBase {
   /** Selection on the owner type, e.g. `name genre { name }`. */
   requires: string | undefined;
   type: TypeShape;
+  /** Arguments, passed to the resolver as GraphQL passes them. */
+  args: readonly CypherArgument[];
   description: string | undefined;
 }
 
@@ -465,6 +469,17 @@ export interface AbstractType {
   plural: string;
   read: boolean;
   limit: PageLimit;
+  /**
+   * `@authorization(validate:)` on the interface or union: guards its
+   * root fields only (`<plural>`, `<plural>Connection`), tested on claims
+   * and the caller's node before the statement runs. Each member's own
+   * rules still hold for every row.
+   */
+  authorization: Authorization | undefined;
+  /** `@authentication` on the interface or union: guards its root fields. */
+  authentication: ReadonlySet<AuthOperation> | undefined;
+  /** Claims `@authentication(jwt:)` requires, when set. */
+  authenticationJwt: AuthorizationWhere | undefined;
   description: string | undefined;
 }
 
@@ -481,7 +496,35 @@ export interface DeclaredRelationship {
  */
 export interface PlainObjectType {
   name: string;
-  fields: ReadonlyMap<string, { name: string; type: TypeShape }>;
+  /**
+   * `node` names the @node type of a field holding one node: the map's
+   * value at that key is projected like any node the statement returns,
+   * under that type's read rules.
+   */
+  fields: ReadonlyMap<
+    string,
+    { name: string; type: TypeShape; node?: string | undefined }
+  >;
+  /** Whether a field holds a node: such maps come from @cypher only. */
+  holdsNodes: boolean;
+  description: string | undefined;
+}
+
+/**
+ * An input object type: the shape of a `@cypher` or `@customResolver`
+ * argument. Its fields are scalars, enums or other input object types.
+ */
+export interface InputObjectType {
+  name: string;
+  fields: ReadonlyMap<
+    string,
+    {
+      name: string;
+      type: TypeShape;
+      defaultValue: unknown;
+      description: string | undefined;
+    }
+  >;
   description: string | undefined;
 }
 
@@ -506,6 +549,10 @@ export interface GraphModel {
   /** `@cypher` fields declared on `Query` and `Mutation`. */
   queries: readonly CypherField[];
   mutations: readonly CypherField[];
+  /** `@customResolver` fields on Query and Mutation. */
+  customRoots: readonly CustomField[];
+  /** Input object types taken by arguments. */
+  inputs: ReadonlyMap<string, InputObjectType>;
   /** Problems that do not stop the model, e.g. an unused @cypher argument. */
   warnings: readonly ModelWarning[];
   /** Custom scalars (`@storedAs`), by name: their storage type. */

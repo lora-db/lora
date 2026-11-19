@@ -9,7 +9,7 @@ import {
 } from "graphql";
 import { rootFilterCost } from "../cost.js";
 import type { Statement } from "../../driver.js";
-import type { NodeType } from "../../model/types.js";
+import type { CypherField, NodeType } from "../../model/types.js";
 import { names } from "../../schema/names.js";
 import { authFilter, checkAuthentication } from "../auth.js";
 import { bind, type CompileContext } from "../context.js";
@@ -45,6 +45,7 @@ import {
   resolvePage,
   sortItems,
   cursorValues,
+  type SortKey,
 } from "./sort.js";
 import { rootMatch } from "./match.js";
 import {
@@ -110,7 +111,14 @@ function compileList(
   const sort = resolveSort(ctx, node, args["sort"], false);
   const where = args["where"] as Where | undefined;
   const root = rootMatch(ctx, node, where, sort);
-  ctx.cost += rootFilterCost(ctx, node, where, limit);
+  ctx.cost += rootFilterCost(
+    ctx,
+    node,
+    where,
+    limit,
+    false,
+    computedSorts(sort),
+  );
   const projection = projectNode(ctx, node, "this", sets, limit);
   const clauses: Clause[] = [
     ...root.clauses,
@@ -227,7 +235,14 @@ function compileConnection(
   // The page, unless only counts or aggregates were asked for.
   if (sel.page) {
     const root = rootMatch(ctx, node, where, sort, cursor);
-    ctx.cost += rootFilterCost(ctx, node, where, first + 1);
+    ctx.cost += rootFilterCost(
+      ctx,
+      node,
+      where,
+      first + 1,
+      false,
+      computedSorts(sort),
+    );
     expectation = root.expectation;
     const projection = projectNode(ctx, node, "this", sel.node, first + 1);
     statements.push({
@@ -360,4 +375,13 @@ function setPath(
     cur = (cur[part] ??= {}) as Record<string, unknown>;
   }
   cur[path[path.length - 1]!] = value;
+}
+
+/** The computed (`@cypher`) fields a sort uses. */
+function computedSorts(sort: readonly SortKey[]): CypherField[] {
+  return [
+    ...new Set(
+      sort.flatMap((k) => (k.field.computedBy ? [k.field.computedBy] : [])),
+    ),
+  ];
 }

@@ -13,9 +13,11 @@ import {
   type OperationDefinitionNode,
   type SelectionSetNode,
 } from "graphql";
+import { abstractRootGuard } from "../compile/auth.js";
 import { newContext } from "../compile/context.js";
 import type {
   AuthOperation,
+  CustomField,
   CypherField,
   Field,
   GraphModel,
@@ -105,9 +107,15 @@ function strictest(verdicts: AccessVerdict[]): AccessVerdict {
 
 type RootTarget =
   | { kind: "node"; node: NodeType; ops: AuthOperation[] }
-  | { kind: "abstract"; type: string; members: NodeType[] }
+  | {
+      kind: "abstract";
+      type: string;
+      members: NodeType[];
+      /** The interface's or union's own rules on its root fields. */
+      guard: ReturnType<typeof abstractRootGuard> | undefined;
+    }
   | { kind: "relay"; members: NodeType[] }
-  | { kind: "cypher"; field: CypherField };
+  | { kind: "cypher"; field: CypherField | CustomField };
 
 /** Every generated or declared root field, by operation type and name. */
 function rootTargets(
@@ -158,6 +166,10 @@ function rootTargets(
         .map((m) => model.nodes.get(m))
         .filter((n): n is NodeType => n !== undefined)
         .sort(byName),
+      guard:
+        abstract.authentication || abstract.authorization
+          ? abstractRootGuard(abstract)
+          : undefined,
     };
     query.set(abstract.plural, target);
     query.set(names.abstractConnectionRoot(abstract), target);
@@ -174,6 +186,12 @@ function rootTargets(
     query.set(field.name, { kind: "cypher", field });
   for (const field of model.mutations)
     mutation.set(field.name, { kind: "cypher", field });
+  for (const field of model.customRoots) {
+    (field.owner === "Query" ? query : mutation).set(field.name, {
+      kind: "cypher",
+      field,
+    });
+  }
   return { query, mutation, subscription };
 }
 
@@ -381,6 +399,12 @@ export function operationAccess(
           });
         }
       } else {
+        if (target.kind === "abstract" && target.guard) {
+          parts.push({
+            label: target.type,
+            ...rootFieldVerdict(context(p), target.guard),
+          });
+        }
         for (const member of target.members) {
           parts.push({
             label: member.name,
@@ -575,11 +599,30 @@ export function accessMatrix(
       }
     }
   }
+  // Interface and union roots with rules of their own.
+  for (const abstract of [...model.abstracts.values()].sort(byName)) {
+    if (!abstract.read) continue;
+    if (!abstract.authentication && !abstract.authorization) continue;
+    for (const p of principals) {
+      out.push({
+        type: abstract.name,
+        operation: "READ",
+        principal: p.name,
+        ...rootFieldVerdict(context(p), abstractRootGuard(abstract)),
+      });
+    }
+  }
   // Root @cypher fields, guarded or not: a hand-written write is exactly
   // what an audit wants listed.
   for (const field of [
-    ...[...model.queries].sort(byName),
-    ...[...model.mutations].sort(byName),
+    ...[
+      ...model.queries,
+      ...model.customRoots.filter((f) => f.owner === "Query"),
+    ].sort(byName),
+    ...[
+      ...model.mutations,
+      ...model.customRoots.filter((f) => f.owner === "Mutation"),
+    ].sort(byName),
   ]) {
     for (const p of principals) {
       out.push({

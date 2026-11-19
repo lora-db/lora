@@ -88,7 +88,7 @@ Subscriptions have their own limits:
 | `triggers` | `Record<string, { create?, update?, delete? }>`: [trigger functions](/docs/graphql/triggers#trigger-functions) per node type, called inside the mutation's transaction |
 | `triggerTimeoutMs` | Most time one trigger function may take, in milliseconds (default 1000; 0 disables). Past it the mutation fails with `TIMEOUT` and rolls back |
 | `singleCallMutations` | Send a create (with the nodes it creates and connects), or an update of one node by key that sets or adjusts scalar fields and connects or creates related nodes, as one call that begins, runs and commits, with its rule checks as `assert()` statements, so the writer lock is never held across a hop to JavaScript (default true). Schemas with triggers or a READ validate rule keep a transaction, as does a caller-owned one. `false` keeps every mutation in a transaction |
-| `resolvers` | `Record<Type, Record<field, GraphQLFieldResolver>>`: resolvers of `@customResolver` fields |
+| `resolvers` | `Record<Type, Record<field, GraphQLFieldResolver>>`: resolvers of `@customResolver` fields, on node types and on `Query` and `Mutation` |
 | `scalars` | `Record<string, GraphQLScalarType>`: implementations of `@storedAs` custom scalars. Without one, values pass through |
 | `validators` | `Record<Type, StandardSchemaV1 \| { create?, update?, upsert? }>`: a validator per node type, from any Standard Schema library (zod, valibot, arktype, yup). See [validators](/docs/graphql/directives#validators) |
 | `changeFeed` | `true` feeds subscriptions and `changes()` from the engine's committed change feed. Needs a driver with `changes()` (`@loradb/lora-node`); throws at construction otherwise |
@@ -109,7 +109,8 @@ type PopulatedByCallback = (args: {
 ```
 
 A `@customResolver` resolver's source object holds the node's selected
-fields plus the fields named in `requires`.
+fields plus the fields named in `requires` (on `Query` and `Mutation`, the
+root value). Its arguments arrive normalized and checked.
 
 ### Observability
 
@@ -456,8 +457,9 @@ labels and relationship types the operation read. It does not show up in
 response when [`affects(readSet, change)`](#affectsreads-change) says a
 write touched it. A mutation, or a query with a `@cypher` field, has
 `readSet.opaque: true`: the library cannot tell what it read, so
-`affects()` answers `true` for every change. A `@customResolver` that reads
-the database on its own is not in the read-set.
+`affects()` answers `true` for every change, and so does a query with a
+`Query` field resolved by `@customResolver`. A `@customResolver` field on a
+node type that reads the database on its own is not in the read-set.
 
 ```ts
 const result = await lora.execute({ source, variables, context, readSet: true });

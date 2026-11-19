@@ -368,7 +368,7 @@ export const directiveTypeDefs = /* GraphQL */ `
     ]
     "Claims the request must also satisfy, such as a role in roles."
     jwt: AuthorizationWhere
-  ) on OBJECT | FIELD_DEFINITION
+  ) on OBJECT | INTERFACE | UNION | FIELD_DEFINITION
 
   "Row-level rules over the node and the request's claims, compiled into the statements."
   directive @authorization(
@@ -380,7 +380,7 @@ export const directiveTypeDefs = /* GraphQL */ `
     public: [AuthOperation!]
     "On a scalar field: a row failing unless reads the field as value (null when left out) instead of failing the request."
     mask: [AuthorizationMask!]
-  ) on OBJECT | FIELD_DEFINITION
+  ) on OBJECT | INTERFACE | UNION | FIELD_DEFINITION
 
   "Named rules over claims, usable in any rule as { rule: name }, on \`extend schema\`."
   directive @authorizationRules(

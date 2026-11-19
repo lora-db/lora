@@ -8,6 +8,7 @@
 
 import { requestError } from "../errors.js";
 import type {
+  AbstractType,
   AuthOperation,
   Authorization,
   AuthorizationValidateRule,
@@ -590,6 +591,27 @@ export function rootFieldGuard(
     throw requestError("FORBIDDEN", `not allowed to run ${label}`);
   }
   return toExpr(folded);
+}
+
+/**
+ * The guard an interface's or union's `@authentication` and
+ * `@authorization` put on its root fields, in the shape of a root field
+ * (named by its list root; the resolver names the field it serves).
+ */
+export function abstractRootGuard(abstract: AbstractType): {
+  name: string;
+  owner: string;
+  authentication: ReadonlySet<AuthOperation> | undefined;
+  authenticationJwt: AuthorizationWhere | undefined;
+  authorization: Authorization | undefined;
+} {
+  return {
+    name: abstract.plural,
+    owner: "Query",
+    authentication: abstract.authentication,
+    authenticationJwt: abstract.authenticationJwt,
+    authorization: abstract.authorization,
+  };
 }
 
 /** A rule needs a claim the request lacks: the whole rule denies. */

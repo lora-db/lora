@@ -396,7 +396,7 @@ describe("filter and sort on @cypher fields", () => {
     );
     expect(r.errors?.[0]?.message).toContain("sort by it in a root field only");
     expect(h.lora.model.warnings.map((w) => w.message)).toContain(
-      "filtering or sorting by followerCount runs its statement for every Festival considered: no index applies",
+      "filtering or sorting by followerCount runs its statement for every Festival considered: no index applies. Declare @cypher(cost:) with what one run costs to accept that",
     );
   });
 });
@@ -690,7 +690,7 @@ describe("@cypher returning interfaces, unions and plain objects", () => {
     await expect(
       festivalHarness({ typeDefs: broken, seed: [] }),
     ).rejects.toThrow(
-      "Orphan: object types need @node or @relationshipProperties, unless a @cypher field returns them",
+      "Orphan: object types need @node or @relationshipProperties, unless a @cypher or @customResolver field returns them",
     );
   });
 });

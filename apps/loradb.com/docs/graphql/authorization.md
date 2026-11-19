@@ -865,6 +865,20 @@ See it run in the
   relationship and `@cypher` fields with READ rules, `<field>Exists` and
   `<field>Connection`.
 
+### Interface and union roots {#interface-roots}
+
+An interface or union over node types has root fields of its own
+(`<plural>`, `<plural>Connection`). Without rules of its own, they read
+each implementation under that implementation's rules. `@authentication`
+and `@authorization(validate:)` on the interface or union guard those
+roots on top: the rules test `jwt` and `viewer` before the statement
+runs, like a root `@cypher` field's, and a caller who fails gets
+`FORBIDDEN` (or `UNAUTHENTICATED` without a token). The implementations'
+own roots and relationship fields typed by the interface are not
+affected. The
+[admin-only interface recipe](/docs/graphql/authorization-recipes#interface-roots)
+shows each caller's response.
+
 ### Checking access {#checking-access}
 
 - `lora-graphql access` (or `lora.accessMatrix()`) prints who may do what:

@@ -41,6 +41,7 @@
   "bin": "./dist/cli.js",
   "files": [
     "dist/",
+    "docs/",
     "README.md",
     "LICENSE"
   ],
@@ -52,7 +53,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && yarn run docs:bundle",
+    "docs:bundle": "node ../../scripts/bundle-package-docs.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:graphql17": "LORA_GRAPHQL_VERSION=17 vitest run",

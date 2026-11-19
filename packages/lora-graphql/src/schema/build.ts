@@ -68,6 +68,16 @@ export function buildSchema(
         hooks.resolveCypher(f, info, context),
     };
   }
+  for (const f of model.customRoots) {
+    if (f.owner !== "Mutation") continue;
+    mutation[f.name] = {
+      type: cypherOutput(f),
+      description: f.description,
+      args: cypherArgs(f),
+      resolve: (src, args, context, info) =>
+        hooks.resolveCustomRoot(f, src, args, context, info),
+    };
+  }
 
   const subscription = buildSubscriptions(
     model,

@@ -203,7 +203,7 @@ function leastValue(type: SortKey["field"]["type"]): Expr | undefined {
 }
 
 /** The computed (`@cypher`) fields a root filter or sort refers to. */
-function computedFields(
+export function computedFields(
   node: NodeType,
   where: Where | undefined,
   sort: SortKey[],

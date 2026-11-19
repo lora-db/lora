@@ -23,11 +23,13 @@ you plan a production deployment.
   sorts are opt in, per type and per field.
 - **JWT verification.** Your server verifies tokens and passes the claims.
 - **Federation.**
-- **Input object arguments on `@cypher` fields**, and user-defined
-  `Subscription` fields. `Query` and `Mutation` fields are `@cypher`
-  fields.
-- **Aggregates, connections and single lookups on interfaces and
-  unions.** They get a list root only.
+- **User-defined `Subscription` fields.** `Query` and `Mutation` fields
+  are `@cypher` or `@customResolver` fields.
+- **Value rules inside input objects.** `@length`, `@range` and the other
+  validation directives go on scalar arguments, not on the fields of an
+  input object type.
+- **Aggregates and single lookups on interfaces and unions.** They get a
+  list root and a connection.
 - **Reading the properties of a single relationship.** Only list
   relationships have a connection. See
   [relationships](/docs/graphql/relationships#reading).

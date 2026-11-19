@@ -5,6 +5,8 @@ import {
   isEnumType,
   isInterfaceType,
   isObjectType,
+  isInputObjectType,
+  type GraphQLInputObjectType,
   isScalarType,
   isUnionType,
   parse,
@@ -32,8 +34,10 @@ import type {
   AuthOperation,
   Authorization,
   AuthorizationWhere,
+  CustomField,
   CypherField,
   EnumType,
+  InputObjectType,
   Field,
   ModelWarning,
   MutationOperation,
@@ -65,6 +69,7 @@ import {
   lowerFirst,
   defaultPlural,
   shapeOf,
+  unwrapInput,
 } from "./build/shapes.js";
 import { directive, directiveNodes } from "./build/directive-args.js";
 import { buildScalarField, defaultMatches } from "./build/scalar-field.js";
@@ -72,7 +77,7 @@ import {
   declareRelationship,
   buildRelationshipField,
 } from "./build/relationship-field.js";
-import { buildCypherField } from "./build/cypher-field.js";
+import { buildArguments, buildCypherField } from "./build/cypher-field.js";
 import {
   authOps,
   readAuthorization,
@@ -82,6 +87,7 @@ import {
   relationshipRuleOperations,
   isRelationshipRule,
   memberAuthorization,
+  rootFieldRules,
 } from "./build/authorization.js";
 import {
   checkAuthorizationWhere,
@@ -174,6 +180,7 @@ export function buildModel(
   const rootTypes: GraphQLObjectType[] = [];
   const interfaceTypes: GraphQLInterfaceType[] = [];
   const unionTypes: GraphQLUnionType[] = [];
+  const inputTypes: GraphQLInputObjectType[] = [];
   let jwtShape: Map<string, string> | undefined;
   let jwtType: string | undefined;
   let viewer: ViewerMapping | undefined;
@@ -213,11 +220,15 @@ export function buildModel(
       unionTypes.push(t);
       continue;
     }
+    if (isInputObjectType(t)) {
+      inputTypes.push(t);
+      continue;
+    }
     if (!isObjectType(t)) {
       problems.push({
-        type: t.name,
+        type: (t as { name: string }).name,
         message:
-          "only object types, interfaces, unions, enums and scalars are supported",
+          "only object types, input object types, interfaces, unions, enums and scalars are supported",
       });
       continue;
     }
@@ -283,28 +294,96 @@ export function buildModel(
 
   const nodeNames = new Set(nodeTypes.map((t) => t.name));
   const plainNames = new Set(plainTypes.map((t) => t.name));
-  const objects = new Map<string, PlainObjectType>();
-  for (const t of plainTypes) {
-    const fields = new Map<string, { name: string; type: TypeShape }>();
+  const inputNames = new Set(inputTypes.map((t) => t.name));
+  const inputs = new Map<string, InputObjectType>();
+  for (const t of inputTypes) {
+    const fields = new Map<
+      string,
+      {
+        name: string;
+        type: TypeShape;
+        defaultValue: unknown;
+        description: string | undefined;
+      }
+    >();
     for (const f of Object.values(t.getFields())) {
       const named = getNamedType(f.type).name;
+      if (!isScalarLike(named, schema) && !inputNames.has(named)) {
+        problems.push({
+          type: t.name,
+          field: f.name,
+          message:
+            "fields of an input object type are scalars, enums or input object types",
+        });
+        continue;
+      }
+      if (f.astNode?.directives?.length) {
+        problems.push({
+          type: t.name,
+          field: f.name,
+          message: "fields of an input object type take no directives",
+        });
+      }
+      fields.set(f.name, {
+        name: f.name,
+        type: { named, ...unwrapInput(f.type) },
+        defaultValue: f.defaultValue,
+        description: f.description ?? undefined,
+      });
+    }
+    if (t.astNode?.directives?.length) {
+      problems.push({
+        type: t.name,
+        message: "an input object type takes no directives",
+      });
+    }
+    inputs.set(t.name, {
+      name: t.name,
+      fields,
+      description: t.description ?? undefined,
+    });
+  }
+  const objects = new Map<string, PlainObjectType>();
+  for (const t of plainTypes) {
+    const fields = new Map<
+      string,
+      { name: string; type: TypeShape; node?: string | undefined }
+    >();
+    for (const f of Object.values(t.getFields())) {
+      const named = getNamedType(f.type).name;
+      const shape = shapeOf(unwrap(f.type));
+      if (nodeNames.has(named)) {
+        if (shape.list) {
+          problems.push({
+            type: t.name,
+            field: f.name,
+            message:
+              "a field of an object type without @node holds one node, not a list; return one row per node",
+          });
+          continue;
+        }
+        fields.set(f.name, {
+          name: f.name,
+          type: { named, ...shape },
+          node: named,
+        });
+        continue;
+      }
       if (!isScalarLike(named, schema)) {
         problems.push({
           type: t.name,
           field: f.name,
           message:
-            "fields of an object type without @node are scalars or enums",
+            "fields of an object type without @node are scalars, enums or one @node type",
         });
         continue;
       }
-      fields.set(f.name, {
-        name: f.name,
-        type: { named, ...shapeOf(unwrap(f.type)) },
-      });
+      fields.set(f.name, { name: f.name, type: { named, ...shape } });
     }
     objects.set(t.name, {
       name: t.name,
       fields,
+      holdsNodes: [...fields.values()].some((f) => f.node !== undefined),
       description: t.description ?? undefined,
     });
   }
@@ -397,6 +476,13 @@ export function buildModel(
             });
           }
         }
+        if (objects.get(named.name)?.holdsNodes) {
+          problems.push({
+            type: t.name,
+            field: f.name,
+            message: `${named.name} holds nodes, which only a @cypher statement can return: their read rules are compiled into it`,
+          });
+        }
         fields.set(f.name, {
           kind: "custom",
           authentication: authOps(
@@ -406,6 +492,11 @@ export function buildModel(
           owner: t.name,
           requires: custom["requires"] as string | undefined,
           type: { named: named.name, ...shapeOf(unwrap(f.type)) },
+          args: buildArguments(f, d, at0(t.name, f.name), {
+            schema,
+            inputNames,
+            reserved: false,
+          }),
           description: f.description ?? undefined,
         });
         continue;
@@ -414,6 +505,7 @@ export function buildModel(
         const cypher = buildCypherField(t.name, f, d, problems, warnings, {
           nodeNames,
           plainNames,
+          inputNames,
           schema,
           root: undefined,
           viewer: viewer !== undefined,
@@ -635,6 +727,28 @@ export function buildModel(
         // implementation supports (and indexes).
         for (const m of members) {
           const mf = nodes.get(m)?.fields.get(f.name);
+          if (mf?.kind === "cypher") {
+            // A computed field filters per row; it cannot be told to
+            // from here, and the interface's merged sort reads a property.
+            const missing = [...field.filters].filter(
+              (op) => !mf.computed?.filters.has(op),
+            );
+            if (missing.length > 0) {
+              problems.push({
+                type: t.name,
+                field: f.name,
+                message: `${m}.${f.name} is a @cypher field: give it @filterable for ${missing.join(", ")} too, so its statement runs for the interface's filter`,
+              });
+            }
+            if (field.sortable) {
+              problems.push({
+                type: t.name,
+                field: f.name,
+                message: `${m}.${f.name} is a @cypher field: an interface root cannot sort by it; sort the implementation's own root`,
+              });
+            }
+            continue;
+          }
           if (mf?.kind !== "scalar") continue;
           (mf as unknown as { filters: ReadonlySet<FilterOperator> }).filters =
             new Set([...mf.filters, ...field.filters]);
@@ -656,6 +770,18 @@ export function buildModel(
         at(`root field \`${root}\` collides with ${other}; set @plural`);
       rootFieldOwners.set(root, t.name);
     }
+    const kindName = isInterfaceType(t) ? "an interface" : "a union";
+    const authentication = directive(d("authentication"), t, at);
+    const authorization = rootFieldRules(
+      directive(d("authorization"), t, at),
+      at,
+      `@authorization on ${kindName} guards its root fields, so it`,
+    );
+    if (authorization?.bypass !== undefined || authorization?.public) {
+      at(
+        `@authorization on ${kindName} takes validate rules only; bypass and public belong on the @node types`,
+      );
+    }
     abstracts.set(t.name, {
       kind: isInterfaceType(t) ? "interface" : "union",
       name: t.name,
@@ -664,6 +790,13 @@ export function buildModel(
       relationships,
       plural,
       read: (query["read"] as boolean | undefined) ?? true,
+      authorization,
+      authentication: authentication
+        ? new Set(authentication["operations"] as AuthOperation[])
+        : undefined,
+      authenticationJwt: authentication?.["jwt"] as
+        | AuthorizationWhere
+        | undefined,
       limit: resolveLimit(
         directive(d("limit"), t, at),
         globalLimit,
@@ -725,19 +858,77 @@ export function buildModel(
 
   const queries: CypherField[] = [];
   const mutationFields: CypherField[] = [];
+  const customRoots: CustomField[] = [];
   for (const t of rootTypes) {
     for (const f of Object.values(t.getFields())) {
+      const at = at0(t.name, f.name);
+      const custom = directive(d("customResolver"), f, at);
+      if (custom !== undefined) {
+        if (f.astNode?.directives?.some((x) => x.name.value === "cypher")) {
+          at("@cypher cannot be combined with @customResolver");
+          continue;
+        }
+        if (custom["requires"] != null) {
+          at("requires: a root field has no node to read it from");
+        }
+        const named = getNamedType(f.type).name;
+        if (!isScalarLike(named, schema) && !plainNames.has(named)) {
+          at(
+            "a root @customResolver field returns scalars, enums or object types without @node",
+          );
+        } else if (objects.get(named)?.holdsNodes) {
+          at(
+            `${named} holds nodes, which only a @cypher statement can return: their read rules are compiled into it`,
+          );
+        }
+        const unwrapped = unwrap(f.type);
+        const shape = shapeOf(unwrapped);
+        if (unwrapped.depth > 1) at("nested lists are not supported");
+        const authentication = directive(d("authentication"), f, at);
+        const authorization = rootFieldRules(
+          directive(d("authorization"), f, at),
+          at,
+          "a root @customResolver field",
+        );
+        if (rootFieldOwners.has(f.name) && t.name === "Query") {
+          at(
+            `collides with a generated field of ${rootFieldOwners.get(f.name)}`,
+          );
+        }
+        customRoots.push({
+          kind: "custom",
+          name: f.name,
+          owner: t.name,
+          requires: undefined,
+          type: { named, ...shape },
+          args: buildArguments(f, d, at, {
+            schema,
+            inputNames,
+            reserved: false,
+          }),
+          authentication: authentication
+            ? new Set(authentication["operations"] as AuthOperation[])
+            : undefined,
+          authenticationJwt: authentication?.["jwt"] as
+            | AuthorizationWhere
+            | undefined,
+          authorization,
+          description: f.description ?? undefined,
+        });
+        continue;
+      }
       if (!f.astNode?.directives?.some((x) => x.name.value === "cypher")) {
         problems.push({
           type: t.name,
           field: f.name,
-          message: `${t.name} fields are generated; a custom one needs @cypher`,
+          message: `${t.name} fields are generated; a custom one needs @cypher or @customResolver`,
         });
         continue;
       }
       const field = buildCypherField(t.name, f, d, problems, warnings, {
         nodeNames,
         plainNames,
+        inputNames,
         schema,
         root: t.name as "Query" | "Mutation",
         viewer: viewer !== undefined,
@@ -1259,8 +1450,21 @@ export function buildModel(
     }
   }
 
-  // Rules on root @cypher fields: claims and the caller's node, no node.
-  for (const f of [...queries, ...mutationFields]) {
+  // Rules on root @cypher and @customResolver fields: claims and the
+  // caller's node, no node.
+  for (const f of [...queries, ...mutationFields, ...customRoots]) {
+    if (f.authenticationJwt) {
+      checkRuleWhere(
+        nodes,
+        relationshipProperties,
+        undefined,
+        f.owner,
+        f.name,
+        { jwt: f.authenticationJwt },
+        problems,
+        jwtShape,
+      );
+    }
     if (!f.authorization) continue;
     desugar(undefined, f.owner, f.name, f.authorization.validate);
     for (const rule of f.authorization.validate) {
@@ -1275,7 +1479,46 @@ export function buildModel(
         jwtShape,
         viewerNode,
         undefined,
-        "a root @cypher field has no node: its rules test jwt and viewer",
+        `a root ${f.kind === "cypher" ? "@cypher" : "@customResolver"} field has no node: its rules test jwt and viewer`,
+      );
+    }
+  }
+
+  // Rules on an interface or union: they guard its root fields, so like
+  // a root @cypher field's they test claims and the caller's node.
+  for (const abstract of abstracts.values()) {
+    if (abstract.authenticationJwt) {
+      checkRuleWhere(
+        nodes,
+        relationshipProperties,
+        undefined,
+        abstract.name,
+        undefined,
+        { jwt: abstract.authenticationJwt },
+        problems,
+        jwtShape,
+      );
+    }
+    if (!abstract.authorization) continue;
+    desugar(
+      undefined,
+      abstract.name,
+      undefined,
+      abstract.authorization.validate,
+    );
+    for (const rule of abstract.authorization.validate) {
+      checkRuleWhere(
+        nodes,
+        relationshipProperties,
+        undefined,
+        abstract.name,
+        undefined,
+        rule.where,
+        problems,
+        jwtShape,
+        viewerNode,
+        undefined,
+        `@authorization on ${abstract.kind === "interface" ? "an interface" : "a union"} guards its root fields: its rules test jwt and viewer, and each ${abstract.kind === "interface" ? "implementation" : "member"} keeps its own rules for its rows`,
       );
     }
   }
@@ -1357,14 +1600,48 @@ export function buildModel(
       ...[...nodes.values()].flatMap((n) => [...n.fields.values()]),
       ...queries,
       ...mutationFields,
-    ].flatMap((f) => (f.kind === "cypher" && f.object ? [f.object] : [])),
+      ...customRoots,
+    ].flatMap((f) =>
+      f.kind === "cypher" && f.object
+        ? [f.object]
+        : f.kind === "custom" && objects.has(f.type.named)
+          ? [f.type.named]
+          : [],
+    ),
   );
   for (const name of objects.keys()) {
     if (!returned.has(name)) {
       problems.push({
         type: name,
         message:
-          "object types need @node or @relationshipProperties, unless a @cypher field returns them",
+          "object types need @node or @relationshipProperties, unless a @cypher or @customResolver field returns them",
+      });
+    }
+  }
+  // An input object type exists to shape arguments.
+  const taken = new Set<string>();
+  const take = (name: string) => {
+    if (taken.has(name)) return;
+    taken.add(name);
+    for (const f of inputs.get(name)?.fields.values() ?? []) {
+      if (inputs.has(f.type.named)) take(f.type.named);
+    }
+  };
+  for (const f of [
+    ...[...nodes.values()].flatMap((n) => [...n.fields.values()]),
+    ...queries,
+    ...mutationFields,
+    ...customRoots,
+  ]) {
+    if (f.kind !== "cypher" && f.kind !== "custom") continue;
+    for (const a of f.args) if (a.input) take(a.input);
+  }
+  for (const name of inputs.keys()) {
+    if (!taken.has(name)) {
+      problems.push({
+        type: name,
+        message:
+          "input object types shape arguments; no @cypher or @customResolver argument takes this one",
       });
     }
   }
@@ -1379,6 +1656,8 @@ export function buildModel(
     relationshipProperties,
     queries,
     mutations: mutationFields,
+    customRoots,
+    inputs,
     warnings,
     objects,
     scalars,

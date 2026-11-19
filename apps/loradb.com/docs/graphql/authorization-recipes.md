@@ -1434,6 +1434,179 @@ mutation {
 { "data": { "publishListing": null } }
 ```
 
+## An admin-only interface root {#interface-roots}
+
+An interface over several node types gets roots of its own
+(`mediaFiles`, `mediaFilesConnection`) that list every implementation in
+one order. `@authorization(validate:)` and `@authentication` on the
+interface guard exactly those roots: here only an admin may browse every
+file at once, while each type keeps the rule that decides which of its
+rows a caller reads.
+
+```graphql title="schema.graphql"
+type Claims @jwt {
+  sub: String! @viewer(type: "Person", field: "key")
+  roles: [String!]
+  tenant: String
+}
+
+type Person @node {
+  key: String! @key
+}
+
+interface MediaFile
+  @authorization(
+    validate: [{ where: { jwt: { roles: { includes: "admin" } } } }]
+  ) {
+  key: String!
+  path: String! @filterable @sortable
+}
+
+type Image implements MediaFile @node
+  @authorization(
+    filter: [
+      {
+        operations: [READ]
+        where: {
+          OR: [
+            { node: { public: { eq: true } } }
+            { node: { owner: { isViewer: true } } }
+          ]
+        }
+      }
+    ]
+  ) {
+  key: String! @key
+  path: String! @filterable @sortable
+  public: Boolean!
+  owner: Person! @relationship(type: "UPLOADED", direction: IN)
+}
+
+type Video implements MediaFile @node
+  @authorization(
+    filter: [
+      { operations: [READ], where: { node: { owner: { isViewer: true } } } }
+    ]
+  ) {
+  key: String! @key
+  path: String! @filterable @sortable
+  owner: Person! @relationship(type: "UPLOADED", direction: IN)
+}
+```
+
+- The interface's rules run before the statement, on the claims and (with
+  `viewer:`) the caller's node. There is no row yet, so they take
+  `validate` rules over `jwt` and `viewer`; a `filter`, a mask or a
+  `node` test is refused at startup.
+- They guard the interface's roots only. `images`, `videos` and a
+  relationship field typed `MediaFile` answer to the implementations'
+  rules alone.
+- Under the interface's rule each implementation's rules still hold for
+  its rows: an admin passes the root, then reads what `Image` and `Video`
+  let them read. Add `@authorizationDefaults(bypass:)` for a role that
+  should see everything.
+- The same works on a union.
+
+```cypher title="seed"
+CREATE (ada:Person {key: 'ada'}), (root:Person {key: 'root'}),
+       (ada)-[:UPLOADED]->(:Image {key: 'i1', path: '/ada/cat.jpg', public: true}),
+       (ada)-[:UPLOADED]->(:Image {key: 'i2', path: '/ada/id.jpg', public: false}),
+       (ada)-[:UPLOADED]->(:Video {key: 'v1', path: '/ada/talk.mp4'}),
+       (root)-[:UPLOADED]->(:Video {key: 'v2', path: '/root/intro.mp4'})
+```
+
+Ada reads her own files through each type's root:
+
+```graphql title="As ada"
+{
+  images(sort: [{ path: ASC }]) {
+    path
+  }
+  videos {
+    path
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "images": [{ "path": "/ada/cat.jpg" }, { "path": "/ada/id.jpg" }],
+    "videos": [{ "path": "/ada/talk.mp4" }]
+  }
+}
+```
+
+The interface root is for admins, so Ada is refused before anything is
+read:
+
+```graphql title="As ada"
+{
+  mediaFiles {
+    path
+  }
+}
+```
+
+```json
+{
+  "data": null,
+  "errors": [
+    {
+      "message": "not allowed to run Query.mediaFiles",
+      "extensions": { "code": "FORBIDDEN" }
+    }
+  ]
+}
+```
+
+Without a token the rule cannot pass, so the answer is
+`UNAUTHENTICATED`:
+
+```graphql title="Anonymous"
+{
+  mediaFilesConnection {
+    totalCount
+  }
+}
+```
+
+```json
+{
+  "data": null,
+  "errors": [
+    {
+      "message": "Query.mediaFilesConnection needs an authenticated request",
+      "extensions": { "code": "UNAUTHENTICATED" }
+    }
+  ]
+}
+```
+
+An admin lists every implementation in one order. Ada's private image
+and video are still absent: the admin passed the interface's rule, not
+the types' filters.
+
+```graphql title="As root"
+{
+  mediaFiles(sort: [{ path: ASC }]) {
+    __typename
+    path
+  }
+}
+```
+
+```json
+{
+  "data": {
+    "mediaFiles": [
+      { "__typename": "Image", "path": "/ada/cat.jpg" },
+      { "__typename": "Video", "path": "/root/intro.mp4" }
+    ]
+  }
+}
+```
+
 ## Removed content {#removed-content}
 
 Moderation removes a post by stamping `removedAt`, and restores it by

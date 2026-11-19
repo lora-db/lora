@@ -55,7 +55,10 @@ export interface AccessEntry {
 
 export function rootFieldVerdict(
   ctx: CompileContext,
-  field: CypherField,
+  field: Pick<
+    CypherField,
+    "name" | "owner" | "authentication" | "authenticationJwt" | "authorization"
+  >,
 ): Pick<AccessEntry, "verdict" | "by"> {
   const by = [
     ...(field.authentication?.size ? ["@authentication"] : []),

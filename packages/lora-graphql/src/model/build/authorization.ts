@@ -59,16 +59,15 @@ export function readOnlyRules(
 export function rootFieldRules(
   args: Record<string, unknown> | undefined,
   at: (message: string) => void,
+  what = "a root @cypher field",
 ): Authorization | undefined {
   const rules = readAuthorization(args);
   if (!rules) return undefined;
   if (rules.filter.length > 0) {
-    at(
-      "a root @cypher field takes validate rules: there are no rows to filter",
-    );
+    at(`${what} takes validate rules: there are no rows to filter`);
   }
   if (rules.mask?.length) {
-    at("a root @cypher field takes validate rules: there is no row to mask");
+    at(`${what} takes validate rules: there is no row to mask`);
   }
   return rules;
 }

@@ -188,18 +188,27 @@ export function rootFilterCost(
   fallback: number,
   /** Every match is read (a count or aggregate), not just a page. */
   all = false,
+  /** Computed (`@cypher`) fields the sort uses. */
+  sortedBy: ReadonlyArray<{ name: string; cost: number }> = [],
 ): number {
+  // A sort by a computed field runs its statement for every match before
+  // the page is cut; one the filter computes already is not run twice.
+  const sorted = sortedBy.filter((f) => where?.[f.name] == null);
+  const sortCost = sorted.reduce((sum, f) => sum + 1 + f.cost, 0);
   const keyed = keyedRows(node, where);
   if (keyed !== undefined)
-    return keyed * (1 + perRowCost(ctx, node, where, true));
+    return keyed * (1 + perRowCost(ctx, node, where, true) + sortCost);
   const label = labelRows(ctx, node, fallback);
   const rows = Math.min(
     label,
     anchoredRows(ctx, node, where) ?? label,
     valueRows(ctx, node, where) ?? label,
   );
-  const scan = all || (hasPredicate(where) && !seeks(ctx, node, where!));
-  return (scan ? rows : 0) + rows * perRowCost(ctx, node, where);
+  const scan =
+    all ||
+    sorted.length > 0 ||
+    (hasPredicate(where) && !seeks(ctx, node, where!));
+  return (scan ? rows : 0) + rows * (perRowCost(ctx, node, where) + sortCost);
 }
 
 /**

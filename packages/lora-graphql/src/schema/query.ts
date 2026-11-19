@@ -274,6 +274,16 @@ export function buildQuery(
         hooks.resolveCypher(f, info, context),
     };
   }
+  for (const f of model.customRoots) {
+    if (f.owner !== "Query") continue;
+    query[f.name] = {
+      type: cypherOutput(f),
+      description: f.description,
+      args: cypherArgs(f),
+      resolve: (src, args, context, info) =>
+        hooks.resolveCustomRoot(f, src, args, context, info),
+    };
+  }
 
   return query;
 }

@@ -291,10 +291,12 @@ type Mutation {
       problems(
         `type Person @node {
   key: String! @key
-  label(tags: [String!] @size(max: 2)): String @customResolver
+  label(tags: [String!] @size(max: 2)): String
 }`,
       ),
-    ).toContain("argument tags: @size applies to arguments of @cypher fields");
+    ).toContain(
+      "argument tags: @size applies to arguments of @cypher and @customResolver fields",
+    );
   });
 });
 
@@ -359,10 +361,12 @@ type Query {
       problems(
         `type Person @node {
   key: String! @key
-  label(n: Int @range(max: 2)): String @customResolver
+  label(n: Int @range(max: 2)): String
 }`,
       ),
-    ).toContain("argument n: @range applies to arguments of @cypher fields");
+    ).toContain(
+      "argument n: @range applies to arguments of @cypher and @customResolver fields",
+    );
   });
 });
 

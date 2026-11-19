@@ -1,16 +1,25 @@
 // `@cypher` fields: root fields on Query and Mutation, object fields run
 // once per parent, and the binding of their statement's parameters.
 
-import type { FieldNode, SelectionSetNode } from "graphql";
+import type { FieldNode, GraphQLObjectType, SelectionSetNode } from "graphql";
 import { requestError, validationError, type Violation } from "../../errors.js";
 import { checkValue, normalizeValue } from "../../model/constraints.js";
 import { scanParams } from "../../model/cypher-lexer.js";
-import type { CypherField } from "../../model/types.js";
+import type { CypherField, PlainObjectType } from "../../model/types.js";
 import { authFilter, checkAuthentication, viewerKey } from "../auth.js";
 import { bind, freshVar, noteClaim, type CompileContext } from "../context.js";
-import { fn, printExpr, v, type Clause, type Expr } from "../cypher.js";
+import {
+  and,
+  fn,
+  isNull,
+  printExpr,
+  prop,
+  v,
+  type Clause,
+  type Expr,
+} from "../cypher.js";
 import { outOfRange } from "../../model/inputs.js";
-import { subSelections } from "../selection.js";
+import { collectFields, subSelections } from "../selection.js";
 import type { CompiledRead, Args, Projection } from "./types.js";
 import { finish, collectOne } from "./common.js";
 import { projectAbstract } from "./abstract.js";
@@ -74,6 +83,19 @@ export function compileCypherRoot(
         items: [{ expr: v(column), alias: "this" }],
         where: projection.where,
       },
+      ...projection.pre,
+      { kind: "return", items: [{ expr: projection.expr, alias: "this" }] },
+    );
+  } else if (field.object && ctx.model.objects.get(field.object)?.holdsNodes) {
+    const projection = projectObject(
+      ctx,
+      ctx.model.objects.get(field.object)!,
+      "this",
+      subSelections(fieldNodes),
+      field.type.list ? undefined : 1,
+    );
+    clauses.push(
+      { kind: "with", items: [{ expr: v(column), alias: "this" }] },
       ...projection.pre,
       { kind: "return", items: [{ expr: projection.expr, alias: "this" }] },
     );
@@ -170,7 +192,25 @@ function noteReads(ctx: CompileContext, field: CypherField): void {
 }
 
 /** `args` as `@normalize` changes them: what the rules and the statement see. */
-function normalized(field: CypherField, args: Args): Args {
+/** What argument checks need of a field: where it is, what it takes. */
+type ArgumentOwner = Pick<CypherField, "owner" | "name" | "args">;
+
+/**
+ * The arguments of a `@cypher` or `@customResolver` field as its
+ * statement or resolver gets them: `@normalize`d, then checked against
+ * the value rules, `@range`, `@size(max:)` and `maxListArgument`.
+ */
+export function checkedArguments(
+  ctx: CompileContext,
+  field: ArgumentOwner,
+  args: Args,
+): Args {
+  const out = normalized(field, args);
+  checkListArguments(ctx, field, out);
+  return out;
+}
+
+function normalized(field: ArgumentOwner, args: Args): Args {
   let out = args;
   for (const a of field.args) {
     const value = args[a.name];
@@ -194,7 +234,7 @@ export const MAX_LIST_ARGUMENT = 1000;
  */
 function checkListArguments(
   ctx: CompileContext,
-  field: CypherField,
+  field: ArgumentOwner,
   args: Args,
 ): void {
   const violations: Violation[] = [];
@@ -311,6 +351,20 @@ export function projectCypher(
       ...nested.pre,
       ...gather(nested.expr),
     );
+  } else if (field.object && ctx.model.objects.get(field.object)?.holdsNodes) {
+    const x = freshVar(ctx, `${out}_row`);
+    const projection = projectObject(
+      ctx,
+      ctx.model.objects.get(field.object)!,
+      x,
+      sets,
+      field.type.list ? undefined : rows,
+    );
+    body.push(
+      { kind: "with", items: [{ expr: v(column), alias: x }] },
+      ...projection.pre,
+      ...gather(projection.expr),
+    );
   } else {
     ctx.cost += rows;
     body.push(...gather(v(column)));
@@ -319,4 +373,71 @@ export function projectCypher(
     pre: [{ kind: "call", imports: [parent], body }],
     expr: v(out),
   };
+}
+
+/**
+ * A map of an object type without @node that holds nodes, bound to
+ * `row`: each selected field under its response key, a node field
+ * projected like any node a statement returns, under its type's read
+ * rules. A node the caller may not read reads as null, and drops the
+ * row when the field is non-null: the rest of a ranking stays.
+ */
+function projectObject(
+  ctx: CompileContext,
+  plain: PlainObjectType,
+  row: string,
+  sets: readonly SelectionSetNode[],
+  /** Rows the statement yields, for the cost estimate; per type when unset. */
+  rows: number | undefined,
+): { pre: Clause[]; expr: Expr } {
+  const type = ctx.schema.getType(plain.name) as GraphQLObjectType;
+  const pre: Clause[] = [];
+  const entries: Array<{ key: string; value: Expr }> = [];
+  const kept = [row];
+  const required: Expr[] = [];
+  for (const [key, selected] of collectFields(ctx, type, sets)) {
+    const name = selected[0]!.name.value;
+    const f = plain.fields.get(name);
+    if (!f) continue;
+    if (!f.node) {
+      entries.push({ key, value: prop(v(row), name) });
+      continue;
+    }
+    const target = ctx.model.nodes.get(f.node)!;
+    checkAuthentication(ctx, target, "READ");
+    ctx.reads.labels.add(target.labels[0]!);
+    const x = freshVar(ctx, `${row}_${key}`);
+    const out = freshVar(ctx, `${row}_${key}_value`);
+    const nested = projectNode(
+      ctx,
+      target,
+      x,
+      subSelections(selected),
+      rows ?? target.limit.max,
+    );
+    pre.push({
+      kind: "call",
+      imports: [row],
+      body: [
+        {
+          kind: "with",
+          items: [{ expr: prop(v(row), name), alias: x }],
+          where: and(isNull(v(x), true), authFilter(ctx, target, x, "READ")),
+        },
+        ...nested.pre,
+        ...collectOne(nested.expr, out),
+      ],
+    });
+    entries.push({ key, value: v(out) });
+    kept.push(out);
+    if (f.type.required) required.push(isNull(v(out), true));
+  }
+  if (required.length > 0) {
+    pre.push({
+      kind: "with",
+      items: kept.map((name) => ({ expr: v(name), alias: name })),
+      where: and(...required),
+    });
+  }
+  return { pre, expr: { kind: "map", entries } };
 }

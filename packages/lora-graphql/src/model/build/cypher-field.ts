@@ -51,6 +51,7 @@ export function buildCypherField(
   ctx: {
     nodeNames: Set<string>;
     plainNames: Set<string>;
+    inputNames: ReadonlySet<string>;
     schema: GraphQLSchema;
     root: "Query" | "Mutation" | undefined;
     /** Whether the @jwt type has a @viewer claim (enables `$viewer`). */
@@ -110,96 +111,11 @@ export function buildCypherField(
     return undefined;
   }
 
-  const cypherArgs: CypherArgument[] = [];
-  for (const a of f.args) {
-    const argNamed = getNamedType(a.type).name;
-    if (!isScalarLike(argNamed, ctx.schema)) {
-      at(`argument ${a.name}: @cypher arguments must be scalars or enums`);
-      continue;
-    }
-    if (a.name === "jwt")
-      at("argument `jwt` is reserved for the request's claims");
-    if (a.name === "viewer")
-      at("argument `viewer` is reserved for the caller's @viewer key");
-    const argShape = unwrapInput(a.type);
-    // A plain `@size(max:)` or `@range(min:, max:)` keeps its own check
-    // and message; any other rule, or argument of these two, is read as
-    // on a field.
-    const quiet = () => undefined;
-    const sizeArgs = directive(d("size"), a, quiet);
-    const rangeArgs = directive(d("range"), a, quiet);
-    const plainSize =
-      sizeArgs !== undefined &&
-      sizeArgs["min"] == null &&
-      sizeArgs["unique"] == null &&
-      sizeArgs["message"] == null;
-    const plainRange =
-      rangeArgs !== undefined &&
-      rangeArgs["exclusiveMin"] == null &&
-      rangeArgs["exclusiveMax"] == null &&
-      rangeArgs["message"] == null;
-    let size: number | undefined;
-    if (plainSize) {
-      directive(d("size"), a, at);
-      size = (sizeArgs["max"] ?? undefined) as number | undefined;
-      if (size === undefined) {
-        at(`argument ${a.name}: @size needs max, min or unique`);
-      } else if (!argShape.list) {
-        at(`argument ${a.name}: @size applies to list arguments`);
-      } else if (size < 1) {
-        at(`argument ${a.name}: @size(max:) must be at least 1`);
-      }
-    }
-    const range = plainRange
-      ? cypherArgumentRange(a, argNamed, d("range"), at)
-      : undefined;
-    const defaultValue = argumentDefault(a);
-    if (range && outOfRange(defaultValue, range) !== undefined) {
-      at(`argument ${a.name}: its default is outside @range`);
-    }
-    const argType = ctx.schema.getType(argNamed);
-    const constraints = readConstraints(
-      d,
-      a,
-      (message) => at(`argument ${a.name}: ${message}`),
-      {
-        type:
-          BUILTIN_SCALARS[argNamed] ??
-          (argType && isEnumType(argType)
-            ? "Enum"
-            : ((argType && storageOf(argType)) ?? "String")),
-        list: argShape.list,
-        vector: false,
-        timestamp: false,
-        defaultValue:
-          defaultValue === undefined ? undefined : { value: defaultValue },
-        defaultLabel: "its default",
-        scalar:
-          argType && isScalarType(argType) && !(argNamed in BUILTIN_SCALARS)
-            ? argType
-            : undefined,
-        skip: new Set([
-          ...(plainSize ? ["size"] : []),
-          ...(plainRange ? ["range"] : []),
-        ]),
-      },
-    );
-    // The statement would get a null for an argument declared non-null.
-    if (constraints?.normalize?.emptyToNull && argShape.required) {
-      at(
-        `argument ${a.name}: @normalize(emptyToNull:) needs a nullable argument`,
-      );
-    }
-    cypherArgs.push({
-      name: a.name,
-      type: { named: argNamed, ...argShape },
-      defaultValue,
-      description: a.description ?? undefined,
-      ...(size !== undefined ? { maxItems: size } : {}),
-      ...(range ? { range } : {}),
-      ...(constraints ? { constraints } : {}),
-    });
-  }
+  const cypherArgs = buildArguments(f, d, at, {
+    schema: ctx.schema,
+    inputNames: ctx.inputNames,
+    reserved: true,
+  });
 
   const params = [...new Set(scanParams(statement).map((p) => p.name))];
   const known = new Set([...cypherArgs.map((a) => a.name), "jwt", "viewer"]);
@@ -282,9 +198,13 @@ export function buildCypherField(
         problems,
         { allowKey: false },
       );
-      warn(
-        `filtering or sorting by ${f.name} runs its statement for every ${owner} considered: no index applies`,
-      );
+      // A declared cost says what one run costs: the author has weighed
+      // a run per row, and the cost limit charges it per row considered.
+      if (args["cost"] == null) {
+        warn(
+          `filtering or sorting by ${f.name} runs its statement for every ${owner} considered: no index applies. Declare @cypher(cost:) with what one run costs to accept that`,
+        );
+      }
     }
   }
 
@@ -399,4 +319,130 @@ function inferColumn(statement: string): string | undefined {
   }
   const bare = item.trim();
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(bare) ? bare : undefined;
+}
+
+/**
+ * The arguments of a `@cypher` or `@customResolver` field: scalars and
+ * enums with their value rules, and input object types.
+ */
+export function buildArguments(
+  f: GraphQLField<unknown, unknown>,
+  d: (n: string) => GraphQLDirective,
+  at: (message: string) => void,
+  ctx: {
+    schema: GraphQLSchema;
+    inputNames: ReadonlySet<string>;
+    /** `jwt` and `viewer` name statement parameters of their own. */
+    reserved: boolean;
+  },
+): CypherArgument[] {
+  const out: CypherArgument[] = [];
+  for (const a of f.args) {
+    const argNamed = getNamedType(a.type).name;
+    const argShape = unwrapInput(a.type);
+    if (ctx.reserved && a.name === "jwt")
+      at("argument `jwt` is reserved for the request's claims");
+    if (ctx.reserved && a.name === "viewer")
+      at("argument `viewer` is reserved for the caller's @viewer key");
+    if (ctx.inputNames.has(argNamed)) {
+      // An input object reaches the statement or resolver as a map. Its
+      // fields carry no value rules: graphql-js checks their types.
+      if (a.astNode?.directives?.length) {
+        at(`argument ${a.name}: an input object argument takes no directives`);
+      }
+      out.push({
+        name: a.name,
+        type: { named: argNamed, ...argShape },
+        defaultValue: argumentDefault(a),
+        description: a.description ?? undefined,
+        input: argNamed,
+      });
+      continue;
+    }
+    if (!isScalarLike(argNamed, ctx.schema)) {
+      at(
+        `argument ${a.name}: arguments must be scalars, enums or input object types`,
+      );
+      continue;
+    }
+    // A plain `@size(max:)` or `@range(min:, max:)` keeps its own check
+    // and message; any other rule, or argument of these two, is read as
+    // on a field.
+    const quiet = () => undefined;
+    const sizeArgs = directive(d("size"), a, quiet);
+    const rangeArgs = directive(d("range"), a, quiet);
+    const plainSize =
+      sizeArgs !== undefined &&
+      sizeArgs["min"] == null &&
+      sizeArgs["unique"] == null &&
+      sizeArgs["message"] == null;
+    const plainRange =
+      rangeArgs !== undefined &&
+      rangeArgs["exclusiveMin"] == null &&
+      rangeArgs["exclusiveMax"] == null &&
+      rangeArgs["message"] == null;
+    let size: number | undefined;
+    if (plainSize) {
+      directive(d("size"), a, at);
+      size = (sizeArgs["max"] ?? undefined) as number | undefined;
+      if (size === undefined) {
+        at(`argument ${a.name}: @size needs max, min or unique`);
+      } else if (!argShape.list) {
+        at(`argument ${a.name}: @size applies to list arguments`);
+      } else if (size < 1) {
+        at(`argument ${a.name}: @size(max:) must be at least 1`);
+      }
+    }
+    const range = plainRange
+      ? cypherArgumentRange(a, argNamed, d("range"), at)
+      : undefined;
+    const defaultValue = argumentDefault(a);
+    if (range && outOfRange(defaultValue, range) !== undefined) {
+      at(`argument ${a.name}: its default is outside @range`);
+    }
+    const argType = ctx.schema.getType(argNamed);
+    const constraints = readConstraints(
+      d,
+      a,
+      (message) => at(`argument ${a.name}: ${message}`),
+      {
+        type:
+          BUILTIN_SCALARS[argNamed] ??
+          (argType && isEnumType(argType)
+            ? "Enum"
+            : ((argType && storageOf(argType)) ?? "String")),
+        list: argShape.list,
+        vector: false,
+        timestamp: false,
+        defaultValue:
+          defaultValue === undefined ? undefined : { value: defaultValue },
+        defaultLabel: "its default",
+        scalar:
+          argType && isScalarType(argType) && !(argNamed in BUILTIN_SCALARS)
+            ? argType
+            : undefined,
+        skip: new Set([
+          ...(plainSize ? ["size"] : []),
+          ...(plainRange ? ["range"] : []),
+        ]),
+      },
+    );
+    // The statement would get a null for an argument declared non-null.
+    if (constraints?.normalize?.emptyToNull && argShape.required) {
+      at(
+        `argument ${a.name}: @normalize(emptyToNull:) needs a nullable argument`,
+      );
+    }
+    out.push({
+      name: a.name,
+      type: { named: argNamed, ...argShape },
+      defaultValue,
+      description: a.description ?? undefined,
+      ...(size !== undefined ? { maxItems: size } : {}),
+      ...(range ? { range } : {}),
+      ...(constraints ? { constraints } : {}),
+    });
+  }
+
+  return out;
 }

@@ -1229,6 +1229,69 @@ A missing resolver or an invalid `requires` fails at startup. The field
 cannot be filtered, sorted or grouped by, since it does not exist in the
 database.
 
+The field may declare arguments: scalars, enums and
+[input object types](/docs/graphql/cypher-fields#input-object-arguments).
+The resolver gets them as GraphQL passes them, after the same checks a
+`@cypher` field's arguments get: `@normalize`, the
+[validation directives](#validation), `@size(max:)` and
+`maxListArgument`.
+
+#### On Query and Mutation {#customresolver-root}
+
+A `Query` or `Mutation` field with `@customResolver` is resolved by
+`resolvers.Query.<field>` or `resolvers.Mutation.<field>`. It returns
+scalars, enums or an object type without `@node`, and takes
+`@authentication` and `@authorization(validate:)`, checked before the
+resolver runs as on a
+[root `@cypher` field](/docs/graphql/cypher-fields#guarding-root-fields).
+
+```graphql
+type Claims @jwt {
+  sub: String!
+}
+
+type Event @node {
+  key: String! @key
+  genre: String!
+}
+
+input TasteInput {
+  genres: [String!]!
+  weight: Float = 1
+}
+
+type TastePreview {
+  genre: String!
+  score: Float!
+}
+
+type Query {
+  tastePreview(taste: TasteInput!): [TastePreview!]! @customResolver
+    @authentication
+}
+```
+
+```ts
+new LoraGraphQL({
+  typeDefs,
+  driver: loraDriver(db),
+  resolvers: {
+    Query: {
+      tastePreview: (_root, { taste }, context) =>
+        rankTaste(taste.genres, taste.weight, context),
+    },
+  },
+});
+```
+
+- `requires` is a model error here: there is no node to read it from.
+- The library cannot see what the resolver reads or writes. A query with
+  one has `readSet.opaque: true`, and a `Mutation` field reports a
+  [broad change](/docs/graphql/api-reference#writechange) when it returns, as a
+  `@cypher` mutation without a write-set does.
+- It is in the [access matrix](/docs/graphql/authorization#checking-access)
+  like a root `@cypher` field.
+
 ## Reading
 
 ### @query {#query}
@@ -2098,8 +2161,8 @@ while the claim is an identity provider's opaque id.
 
 ### @authentication {#authentication}
 
-Requires a signed-in caller, and optionally a claim. On a type or a
-field. A caller who fails gets `UNAUTHENTICATED`.
+Requires a signed-in caller, and optionally a claim. On a type, an
+interface, a union or a field. A caller who fails gets `UNAUTHENTICATED`.
 
 ```graphql
 type Claims @jwt {
@@ -2133,9 +2196,14 @@ Arguments:
 Anyone reads articles; only signed-in callers write them or read
 `internalNotes`; only analysts touch reports.
 
+On an interface or union it guards that type's root fields
+(`<plural>` and `<plural>Connection`) and nothing else; see
+[`@authorization` on an interface](#authorization-on-an-interface).
+
 ### @authorization {#authorization}
 
-Row-level rules, compiled into the statements. On a type or a field.
+Row-level rules, compiled into the statements. On a type or a field,
+and on an interface or union for its root fields.
 
 ```graphql
 type Claims @jwt {
@@ -2194,6 +2262,39 @@ rule), and `AND`, `OR`, `NOT`.
 
 Here a note exists only for its owner, a note can only be created for
 oneself, and a phone number reads as `null` to everyone but its owner.
+
+#### On an interface or union {#authorization-on-an-interface}
+
+`validate` rules on an interface or union guard its root fields
+(`<plural>` and `<plural>Connection`), tested on `jwt` and `viewer`
+before the statement runs, as on a root `@cypher` field. A caller who
+fails gets `FORBIDDEN`, or `UNAUTHENTICATED` without a token. Each
+implementation's own rules still hold for its rows, and its own roots and
+the relationship fields typed by the interface answer to those alone.
+`filter`, `mask`, `bypass`, `public` and `node` tests are refused.
+
+```graphql
+type Claims @jwt {
+  sub: String!
+  roles: [String!]
+}
+
+interface MediaFile
+  @authorization(
+    validate: [{ where: { jwt: { roles: { includes: "admin" } } } }]
+  ) {
+  key: String!
+  path: String!
+}
+
+type Image implements MediaFile @node {
+  key: String! @key
+  path: String!
+}
+```
+
+The [recipe](/docs/graphql/authorization-recipes#interface-roots) runs it
+with callers.
 
 ### @authorizationRule {#authorizationrule}
 

@@ -3,6 +3,7 @@
 
 import type { FieldNode, GraphQLObjectType, SelectionSetNode } from "graphql";
 import { memberWhere, rootFilterCost } from "../cost.js";
+import type { Pattern } from "../cypher.js";
 import { requestError } from "../../errors.js";
 import type {
   AbstractType,
@@ -52,6 +53,8 @@ import {
   assertNoneDenied,
 } from "./common.js";
 import { resolveLimit } from "./sort.js";
+import { computedFields } from "./match.js";
+import { projectCypher } from "./cypher-field.js";
 import { projectNode } from "./project.js";
 
 // ---------------------------------------------------------------------------
@@ -119,8 +122,13 @@ function memberList(
   rows: number,
   /** The key's direction: DESC when a connection pages backward. */
   tie: "ASC" | "DESC" = "ASC",
+  /** A root list: computed (`@cypher`) fields may be filtered by. */
+  root = false,
 ): { body: Clause[]; list: string } | undefined {
   const x = freshVar(ctx, `this_${member.name}`);
+  const computed = root
+    ? bindComputed(ctx, abstract, member, x, where)
+    : { pre: [], carry: [] };
   const filter = compileMemberWhere(ctx, abstract, member, x, where);
   if (filter === false) return undefined;
   checkAuthentication(ctx, member, "READ");
@@ -156,16 +164,78 @@ function memberList(
   return {
     list,
     body: [
-      {
-        kind: "match",
-        pattern: from.pattern,
-        where: and(from.where, filter, authFilter(ctx, member, x, "READ")),
-      },
+      ...matchMember(
+        { pattern: from.pattern, where: from.where },
+        x,
+        filter,
+        authFilter(ctx, member, x, "READ"),
+        computed,
+      ),
       { kind: "with", items: [{ expr: v(x) }], orderBy: sortExprs, limit },
       ...projection.pre,
       { kind: "return", items: [{ expr: fn("collect", tagged), alias: list }] },
     ],
   };
+}
+
+/**
+ * The computed (`@cypher`) fields a member's filter uses, run once per
+ * candidate before the filter, as on a node type's root list.
+ */
+function bindComputed(
+  ctx: CompileContext,
+  abstract: AbstractType,
+  member: NodeType,
+  x: string,
+  where: Record<string, unknown> | null | undefined,
+): { pre: Clause[]; carry: string[] } {
+  const pre: Clause[] = [];
+  const carry: string[] = [];
+  const fields = computedFields(
+    member,
+    memberWhere(abstract, member.name, where as Where | undefined),
+    [],
+  );
+  for (const field of fields) {
+    const projection = projectCypher(ctx, x, field, field.name, {}, [], 1);
+    const out = (projection.expr as { name: string }).name;
+    ctx.computed.set(`${x}\0${field.name}`, out);
+    pre.push(...projection.pre);
+    carry.push(out);
+  }
+  return { pre, carry };
+}
+
+/**
+ * A member's MATCH and filter. With computed fields the filter waits for
+ * their values: the MATCH keeps the source's condition and the read rule,
+ * and the filter follows the CALLs that compute them.
+ */
+function matchMember(
+  from: { pattern: Pattern; where: Expr | undefined },
+  x: string,
+  filter: Expr | undefined,
+  auth: Expr | undefined,
+  computed: { pre: Clause[]; carry: string[] },
+): Clause[] {
+  if (computed.pre.length === 0) {
+    return [
+      {
+        kind: "match",
+        pattern: from.pattern,
+        where: and(from.where, filter, auth),
+      },
+    ];
+  }
+  return [
+    { kind: "match", pattern: from.pattern, where: and(from.where, auth) },
+    ...computed.pre,
+    {
+      kind: "with",
+      items: [{ expr: v(x) }, ...computed.carry.map((c) => ({ expr: v(c) }))],
+      where: filter,
+    },
+  ];
 }
 
 /** The merged order: requested fields, then type name, then key. */
@@ -216,6 +286,8 @@ export function compileAbstractRoot(
       limit,
       sets,
       limitValue,
+      "ASC",
+      true,
     );
     if (!slice) continue;
     ctx.cost += rootFilterCost(
@@ -366,6 +438,7 @@ export function compileAbstractConnection(
         nodeSets,
         first + 1,
         tie,
+        true,
       );
       if (!slice) continue;
       ctx.cost += rootFilterCost(
@@ -431,6 +504,7 @@ export function compileAbstractConnection(
     const denied: string[] = [];
     for (const member of members) {
       const x = freshVar(statsCtx, `this_${member.name}`);
+      const computed = bindComputed(statsCtx, abstract, member, x, where);
       const filter = compileMemberWhere(statsCtx, abstract, member, x, where);
       if (filter === false) continue;
       checkAuthentication(statsCtx, member, "READ");
@@ -448,14 +522,19 @@ export function compileAbstractConnection(
         kind: "call",
         imports: [],
         body: [
-          {
-            kind: "match",
-            pattern: {
-              start: { variable: x, labels: [member.labels[0]!] },
-              hops: [],
+          ...matchMember(
+            {
+              pattern: {
+                start: { variable: x, labels: [member.labels[0]!] },
+                hops: [],
+              },
+              where: undefined,
             },
-            where: and(filter, authFilter(statsCtx, member, x, "READ")),
-          },
+            x,
+            filter,
+            authFilter(statsCtx, member, x, "READ"),
+            computed,
+          ),
           ...(capped === undefined
             ? []
             : [

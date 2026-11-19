@@ -52,6 +52,11 @@ const yoga = createYoga({
 });
 ```
 
+> **Offline docs:** the published package includes a plain-Markdown copy of
+> the LoraDB documentation for its own version under `docs/` (start at
+> `node_modules/@loradb/lora-graphql/docs/README.md`). Coding agents and editors can read
+> it without network access. The full site is at https://loradb.com/docs.
+
 ## Contents
 
 - [What it generates](#what-it-generates)
@@ -1437,8 +1442,9 @@ name, its parent's label and the type it returns:
 Where the text cannot tell (a procedure `CALL`, `MATCH (n)` with no label,
 `-->` with no type), `@cypher(reads: ["Festival", "PLAYS_AT"])` names
 type names, labels or relationship types; without it such a read, and
-any mutation, carries `opaque: true`, which every change affects. `@customResolver` fields
-are not seen; key the cache so they do not need to be.
+any mutation, carries `opaque: true`, which every change affects. So does
+a `Query` field resolved by `@customResolver`. A `@customResolver` field on
+a node type is not seen; key the cache so it does not need to be.
 
 ## Subscriptions
 

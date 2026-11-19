@@ -94,7 +94,11 @@ export function principalsOf(model: GraphModel): Principal[] {
   for (const props of model.relationshipProperties.values()) {
     for (const f of props.fields.values()) visit(rules(f.authorization));
   }
-  for (const f of [...model.queries, ...model.mutations]) {
+  for (const f of [
+    ...model.queries,
+    ...model.mutations,
+    ...model.customRoots,
+  ]) {
     visit(rules(f.authorization));
     visit(claims(f.authenticationJwt));
   }

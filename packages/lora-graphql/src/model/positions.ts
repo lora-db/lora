@@ -76,8 +76,22 @@ export const DIRECTIVE_POSITIONS: Readonly<
   "@jwt type": ["jwt"],
   "object type without @node": ["cacheControl"],
   "Query or Mutation type": [],
-  interface: ["query", "plural", "limit", "cacheControl"],
-  union: ["query", "plural", "limit", "cacheControl"],
+  interface: [
+    "query",
+    "plural",
+    "limit",
+    "cacheControl",
+    "authentication",
+    "authorization",
+  ],
+  union: [
+    "query",
+    "plural",
+    "limit",
+    "cacheControl",
+    "authentication",
+    "authorization",
+  ],
   "node field": [
     "cacheControl",
     "key",
@@ -154,6 +168,7 @@ export const DIRECTIVE_POSITIONS: Readonly<
   "Query or Mutation field": [
     "cacheControl",
     "cypher",
+    "customResolver",
     "authorization",
     "authentication",
     // Refused with a specific message.
@@ -336,12 +351,15 @@ export function checkDirectivePositions(
       check(f.astNode?.directives ?? [], fieldPosition(f), t.name, f.name);
     }
   }
-  // Argument directives (`@size`, `@range`) apply to arguments of @cypher fields:
-  // every other argument is generated, or passed to a resolver as is.
+  // Argument directives (`@size`, `@range`) apply to arguments of @cypher
+  // and @customResolver fields: every other argument is generated.
   for (const t of ctx.userTypes) {
     if (!isObjectType(t) && !isInterfaceType(t)) continue;
     for (const f of Object.values(t.getFields())) {
-      const cypher = has(f as GraphQLField<unknown, unknown>, "cypher");
+      const cypher =
+        isObjectType(t) &&
+        (has(f as GraphQLField<unknown, unknown>, "cypher") ||
+          has(f as GraphQLField<unknown, unknown>, "customResolver"));
       for (const a of f.args) {
         for (const dir of a.astNode?.directives ?? []) {
           const name = dir.name.value;
@@ -350,7 +368,7 @@ export function checkDirectivePositions(
           problems.push({
             type: t.name,
             field: f.name,
-            message: `argument ${a.name}: @${name} applies to arguments of @cypher fields`,
+            message: `argument ${a.name}: @${name} applies to arguments of @cypher and @customResolver fields`,
           });
         }
       }

@@ -67,6 +67,14 @@ export interface SchemaHooks {
     node: NodeType,
     field: CustomField,
   ) => GraphQLFieldResolver<Record<string, unknown>, unknown>;
+  /** A `@customResolver` field on Query or Mutation. */
+  resolveCustomRoot: (
+    field: CustomField,
+    source: unknown,
+    args: Record<string, unknown>,
+    context: unknown,
+    info: GraphQLResolveInfo,
+  ) => unknown;
   resolveSearch: (
     node: NodeType,
     index: SearchIndex,
