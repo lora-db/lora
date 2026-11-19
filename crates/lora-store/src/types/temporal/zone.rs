@@ -52,6 +52,9 @@ fn registry() -> &'static Registry {
 }
 
 impl ZoneId {
+    /// Above every zone: the end of an index range.
+    pub(crate) const MAX: Self = Self(NonZeroU16::MAX);
+
     /// The zone named `name` (case-insensitive), or `None` when the
     /// database has no such zone.
     pub fn lookup(name: &str) -> Option<Self> {

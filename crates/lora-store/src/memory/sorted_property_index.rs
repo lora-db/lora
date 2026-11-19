@@ -53,6 +53,9 @@ use crate::scratch::ScratchVec;
 #[derive(Debug, Default, Clone)]
 pub(super) struct SortedPropertyIndex {
     pub(super) by_scope: BTreeMap<ScopedPropertyKey, SortedScope>,
+    /// Composite scopes in `by_scope`: writes skip composite maintenance
+    /// while there are none.
+    composites: usize,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -71,11 +74,85 @@ pub(super) struct SortedScope {
     /// Element → ids of the entities whose list value holds it (see
     /// "List elements" above). Empty unless the property holds lists.
     pub(super) by_element: CowMap<PropertyIndexKey, IdSet>,
+    /// Ids whose value has no key (a duration, point, vector, NaN, or a
+    /// list holding one). They are in no range, but they are not null:
+    /// an unbounded probe (`n.p IS NOT NULL`) lists them too. Few by
+    /// construction: a RANGE index on such a property serves nothing.
+    pub(super) unkeyed: BTreeSet<u64>,
+    /// Set on a composite scope (see [`Composite`]).
+    pub(super) composite: Option<Box<Composite>>,
     /// Sum of the `by_element` bucket sizes: with the bucket count, the
     /// average number of entities one element seek finds.
     element_postings: usize,
     /// Refcount of catalog entries pointing at this scope.
     refcount: u32,
+}
+
+/// A composite RANGE index `(n.a, n.b, ...)` as a sorted scope: each entity
+/// holding every component is filed under the tuple of their keys, so an
+/// equality on the leading components and a range or order on the last is
+/// one contiguous, ordered run (taste N-06: a person's timeline by
+/// `(person, at)`). Entities missing a component, or with a component
+/// that has no key, are not in it.
+///
+/// The scope is filed under [`composite_property`] of its components.
+#[derive(Debug, Clone)]
+pub(super) struct Composite {
+    pub(super) components: std::sync::Arc<[String]>,
+    /// Each entity's current tuple. Maintenance re-derives an entity's
+    /// tuple from its record and moves it, so several properties changed in
+    /// one write cannot leave a stale entry behind.
+    by_id: super::id_map::CowIdMap<PropertyIndexKey>,
+}
+
+const COMPOSITE_PREFIX: &str = "\0composite";
+
+/// The scope name of a composite index on `components`, never a property
+/// name a query can write (a NUL cannot be in an identifier).
+pub(crate) fn composite_property(components: &[String]) -> String {
+    let mut name = String::from(COMPOSITE_PREFIX);
+    for c in components {
+        name.push('\0');
+        name.push_str(c);
+    }
+    name
+}
+
+/// The key a composite component is filed under: [`PropertyIndexKey`],
+/// with a whole float as the integer it equals, so `{at: 5}` and
+/// `{at: 5.0}` share a tuple prefix (`5 = 5.0`). `None` for a value with
+/// no key.
+pub(super) fn component_key(value: &PropertyValue) -> Option<PropertyIndexKey> {
+    match value {
+        PropertyValue::Float(f) if f.fract() == 0.0 && f.abs() < 9.0e15 => {
+            Some(PropertyIndexKey::Int(*f as i64))
+        }
+        PropertyValue::Null => None,
+        other => PropertyIndexKey::from_value(other),
+    }
+}
+
+/// The tuple key of an entity from its property values, `None` unless it
+/// holds every component with a key.
+pub(super) fn composite_key(
+    components: &[String],
+    mut get: impl FnMut(&str) -> Option<PropertyValue>,
+) -> Option<PropertyIndexKey> {
+    components
+        .iter()
+        .map(|c| component_key(&get(c)?))
+        .collect::<Option<Box<[_]>>>()
+        .map(PropertyIndexKey::List)
+}
+
+/// A key above every component key: the end of a tuple prefix's run.
+fn component_ceiling() -> PropertyIndexKey {
+    PropertyIndexKey::Temporal {
+        kind: super::property_index::TemporalKind::DateTime,
+        nanos: i128::MAX.into(),
+        offset: i32::MAX,
+        zone: Some(crate::ZoneId::MAX),
+    }
 }
 
 /// A key read from a scope: one of `by_value`'s, or a packed string.
@@ -238,10 +315,215 @@ impl SortedPropertyIndex {
             entry.by_value = built.by_value;
             entry.strings = built.strings;
             entry.by_element = built.by_element;
+            entry.unkeyed = built.unkeyed;
             entry.element_postings = built.element_postings;
         }
         entry.refcount = entry.refcount.saturating_add(1);
         new
+    }
+
+    /// Add a composite scope on `components` for `label`, refcounted like
+    /// [`Self::add_scope`]. Returns whether it is new (and must be filled).
+    pub(super) fn add_composite_scope(&mut self, label: &str, components: &[String]) -> bool {
+        let entry = self
+            .by_scope
+            .entry(ScopedPropertyKey::new(
+                label,
+                &composite_property(components),
+            ))
+            .or_default();
+        let new = entry.refcount == 0;
+        if new {
+            self.composites += 1;
+            entry.composite = Some(Box::new(Composite {
+                components: components.into(),
+                by_id: Default::default(),
+            }));
+        }
+        entry.refcount = entry.refcount.saturating_add(1);
+        new
+    }
+
+    /// Whether `label` has a composite scope with `property` among its
+    /// components (`None` for any property). Checked through a read guard
+    /// before maintenance takes a write guard.
+    pub(super) fn has_composites(&self) -> bool {
+        self.composites != 0
+    }
+
+    /// The components of every composite scope of `label` that has
+    /// `property` among them. Composite scope names start with a NUL, so
+    /// they lead the label's run of scopes.
+    pub(super) fn composites_with(
+        &self,
+        label: &str,
+        property: &str,
+    ) -> Vec<std::sync::Arc<[String]>> {
+        if self.composites == 0 {
+            return Vec::new();
+        }
+        let start: &dyn ScopeKey = &(label, COMPOSITE_PREFIX);
+        self.by_scope
+            .range::<dyn ScopeKey, _>((Bound::Included(start), Bound::Unbounded))
+            .take_while(|(key, _)| key.label == label && key.property.starts_with(COMPOSITE_PREFIX))
+            .filter_map(|(_, scope)| scope.composite.as_deref())
+            .filter(|c| c.components.iter().any(|component| component == property))
+            .map(|c| c.components.clone())
+            .collect()
+    }
+
+    /// File `id` under `key` in `label`'s composite scope on `components`,
+    /// moving it from the tuple it had; `None` takes it out.
+    pub(super) fn set_composite(
+        &mut self,
+        label: &str,
+        components: &[String],
+        id: u64,
+        key: Option<PropertyIndexKey>,
+    ) {
+        let property = composite_property(components);
+        let Some(scope) = self
+            .by_scope
+            .get_mut(&(label, property.as_str()) as &dyn ScopeKey)
+        else {
+            return;
+        };
+        let Some(composite) = scope.composite.as_deref_mut() else {
+            return;
+        };
+        if composite.by_id.get(&id) == key.as_ref() {
+            return;
+        }
+        let old = match &key {
+            Some(key) => composite.by_id.insert(id, key.clone()),
+            None => composite.by_id.remove(&id),
+        };
+        if let Some(old) = old {
+            Self::remove_from_scope(scope, id, &old);
+        }
+        if let Some(key) = key {
+            insert_id(scope, key, id);
+        }
+    }
+
+    /// Ids in `label`'s composite scope on `components` whose tuple starts
+    /// with `prefix` and whose last component is in `[lo, hi]` (inclusive;
+    /// the caller refilters), in tuple order then id order, strictly after
+    /// the `(last component, id)` cursor, at most `max`. `None` when no
+    /// such scope exists or a bound has no key.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn composite_chunk(
+        &self,
+        label: &str,
+        components: &[String],
+        prefix: &[PropertyValue],
+        lo: Option<&PropertyValue>,
+        hi: Option<&PropertyValue>,
+        descending: bool,
+        after: Option<(&PropertyValue, u64)>,
+        max: usize,
+    ) -> Option<Vec<u64>> {
+        if prefix.len() + 1 != components.len() {
+            return None;
+        }
+        let property = composite_property(components);
+        let scope = self
+            .by_scope
+            .get(&(label, property.as_str()) as &dyn ScopeKey)?;
+        scope.composite.as_ref()?;
+        let prefix: Vec<PropertyIndexKey> =
+            prefix.iter().map(component_key).collect::<Option<_>>()?;
+        let tuple = |last: Option<PropertyIndexKey>, tail: Option<PropertyIndexKey>| {
+            let mut keys = prefix.clone();
+            keys.extend(last);
+            keys.extend(tail);
+            PropertyIndexKey::List(keys.into_boxed_slice())
+        };
+        // The run of the prefix, narrowed by the bounds on the last
+        // component. `[p]` sorts before every `[p, x]`, and `[p, x, MAX]`
+        // after `[p, x]` and before `[p, y]` for `y > x`.
+        let mut lower_last = match lo {
+            Some(v) => Some(component_bound(v, true)?),
+            None => None,
+        };
+        let mut upper_last = match hi {
+            Some(v) => Some(component_bound(v, false)?),
+            None => None,
+        };
+        // A one-sided range stops at the end of its kind; with no bound at
+        // all, the run is only in Cypher order when it holds one kind.
+        match (&lower_last, &upper_last) {
+            (Some(l), None) => upper_last = l.kind_ceiling(),
+            (None, Some(h)) => lower_last = h.kind_floor(),
+            (None, None) => {
+                let (start, end) = (
+                    tuple(None, None),
+                    tuple(Some(component_ceiling()), Some(component_ceiling())),
+                );
+                let mut run = scope
+                    .by_value
+                    .range_by(Bound::Included(&start), Bound::Included(&end));
+                let last = |key: Option<(&PropertyIndexKey, _)>| match key {
+                    Some((PropertyIndexKey::List(parts), _)) => parts.last().cloned(),
+                    _ => None,
+                };
+                let first = last(run.next());
+                let end = last(run.next_back()).or_else(|| first.clone());
+                match (first, end) {
+                    (None, _) => return Some(Vec::new()),
+                    (Some(a), Some(b)) if same_order_kind(&a, &b) => {}
+                    _ => return None,
+                }
+            }
+            _ => {}
+        }
+        let mut lower = Bound::Included(tuple(lower_last, None));
+        let mut upper = Bound::Included(match upper_last {
+            Some(h) => tuple(Some(h), Some(component_ceiling())),
+            None => tuple(Some(component_ceiling()), Some(component_ceiling())),
+        });
+        let after = match after {
+            Some((v, id)) => Some((tuple(Some(component_key(v)?), None), id)),
+            None => None,
+        };
+        if let Some((key, _)) = &after {
+            if descending {
+                upper = Bound::Included(key.clone());
+            } else {
+                lower = Bound::Included(key.clone());
+            }
+        }
+        if let (Bound::Included(l), Bound::Included(u)) = (&lower, &upper) {
+            if l > u {
+                return Some(Vec::new());
+            }
+        }
+        let mut out = Vec::with_capacity(max.min(1024));
+        let range = scope.by_value.range_by(lower.as_ref(), upper.as_ref());
+        let mut push = |key: &PropertyIndexKey, ids: &IdSet| -> bool {
+            let cursor_id = after.as_ref().filter(|(k, _)| k == key).map(|(_, id)| *id);
+            for id in ids.iter_after(cursor_id, descending) {
+                if out.len() >= max {
+                    return true;
+                }
+                out.push(id);
+            }
+            out.len() >= max
+        };
+        if descending {
+            for (key, ids) in range.rev() {
+                if push(key, ids) {
+                    break;
+                }
+            }
+        } else {
+            for (key, ids) in range {
+                if push(key, ids) {
+                    break;
+                }
+            }
+        }
+        Some(out)
     }
 
     pub(super) fn remove_scope(&mut self, label: &str, property: &str) {
@@ -249,6 +531,9 @@ impl SortedPropertyIndex {
         if let Some(scope) = self.by_scope.get_mut(&key) {
             scope.refcount = scope.refcount.saturating_sub(1);
             if scope.refcount == 0 {
+                if scope.composite.is_some() {
+                    self.composites -= 1;
+                }
                 self.by_scope.remove(&key);
             }
         }
@@ -264,10 +549,21 @@ impl SortedPropertyIndex {
             }
             // A list holding a duration has no key as a whole, but its
             // other elements do.
-            if let Some(key) = PropertyIndexKey::from_value(value) {
-                insert_id(scope, key, id);
+            match PropertyIndexKey::from_value(value) {
+                Some(key) => insert_id(scope, key, id),
+                None => {
+                    scope.unkeyed.insert(id);
+                }
             }
             insert_elements(scope, value, id);
+        }
+    }
+
+    /// Record `id` as holding a value with no key (see
+    /// [`SortedScope::unkeyed`]).
+    pub(super) fn insert_unkeyed(&mut self, label: &str, property: &str, id: u64) {
+        if let Some(scope) = self.by_scope.get_mut(&(label, property) as &dyn ScopeKey) {
+            scope.unkeyed.insert(id);
         }
     }
 
@@ -312,8 +608,11 @@ impl SortedPropertyIndex {
                 scope.strings.remove(s, id);
             }
             Some(old) => {
-                if let Some(key) = PropertyIndexKey::from_value(old) {
-                    Self::remove_from_scope(scope, id, &key);
+                match PropertyIndexKey::from_value(old) {
+                    Some(key) => Self::remove_from_scope(scope, id, &key),
+                    None => {
+                        scope.unkeyed.remove(&id);
+                    }
                 }
                 remove_elements(scope, old, id);
             }
@@ -322,8 +621,11 @@ impl SortedPropertyIndex {
         match new {
             Some(PropertyValue::String(s)) => scope.strings.insert(s, id),
             Some(new) => {
-                if let Some(key) = PropertyIndexKey::from_value(new) {
-                    insert_id(scope, key, id);
+                match PropertyIndexKey::from_value(new) {
+                    Some(key) => insert_id(scope, key, id),
+                    None => {
+                        scope.unkeyed.insert(id);
+                    }
                 }
                 insert_elements(scope, new, id);
             }
@@ -382,17 +684,42 @@ impl SortedPropertyIndex {
         property: &str,
         lo: Option<&PropertyValue>,
         hi: Option<&PropertyValue>,
-    ) -> Option<BTreeSet<u64>> {
+    ) -> Option<Vec<u64>> {
         let scope = self.by_scope.get(&(label, property) as &dyn ScopeKey)?;
         let (lower, upper) = probe_bounds(lo, hi)?;
-        let mut out = BTreeSet::new();
+        let mut out = Vec::new();
         if let (Bound::Included(l), Bound::Included(u)) = (&lower, &upper) {
             if l > u {
                 return Some(out);
             }
         }
         extend_ids(&mut out, scope.entries(&lower, &upper));
+        // No bounds: every id holding a value, keyed or not.
+        if lo.is_none() && hi.is_none() {
+            out.extend(scope.unkeyed.iter().copied());
+        }
+        // Gathered flat and sorted once: a set built id by id cost more
+        // than the probe (an `IS NOT NULL` over a whole label ran a third
+        // slower than scanning the label).
+        out.sort_unstable();
+        out.dedup();
         Some(out)
+    }
+
+    /// Whether `label`'s scope on `property` holds a value for at least `n`
+    /// ids, counted bucket by bucket and stopped at `n`.
+    pub(super) fn holds_at_least(&self, label: &str, property: &str, n: usize) -> bool {
+        let Some(scope) = self.by_scope.get(&(label, property) as &dyn ScopeKey) else {
+            return false;
+        };
+        let mut held = scope.unkeyed.len();
+        for (_, ids) in scope.entries(&Bound::Unbounded, &Bound::Unbounded) {
+            if held >= n {
+                break;
+            }
+            held += ids.len();
+        }
+        held >= n
     }
 
     /// Ids whose value is a temporal of another kind than `like` (a DATE
@@ -512,6 +839,29 @@ impl SortedPropertyIndex {
     }
 }
 
+/// Whether every key from `a` to `b` is of one kind, ordered in the index
+/// as Cypher orders it: numbers, strings, booleans, or one temporal kind.
+/// Kinds are contiguous in key order, so the ends decide.
+fn same_order_kind(a: &PropertyIndexKey, b: &PropertyIndexKey) -> bool {
+    use PropertyIndexKey as K;
+    match (a, b) {
+        (K::Int(_) | K::Float(_), K::Int(_) | K::Float(_)) => true,
+        (K::String(_), K::String(_)) | (K::Bool(_), K::Bool(_)) => true,
+        (K::Temporal { kind: x, .. }, K::Temporal { kind: y, .. }) => x == y,
+        _ => false,
+    }
+}
+
+/// A composite's bound on its last component: [`component_key`], widened
+/// for temporals the way a single-property range bound is.
+fn component_bound(value: &PropertyValue, lower: bool) -> Option<PropertyIndexKey> {
+    match value {
+        PropertyValue::Int(_) | PropertyValue::Float(_) => component_key(value),
+        _ if lower => PropertyIndexKey::range_lower(value),
+        _ => PropertyIndexKey::range_upper(value),
+    }
+}
+
 /// Index bounds for an inclusive `[lo, hi]` probe. `None` when a bound has
 /// no index image (a duration, say): values of that type are not indexed,
 /// so the caller must scan. Temporal bounds widen across UTC offsets, and a
@@ -574,6 +924,7 @@ pub(super) fn build_scope(
     mut values: Vec<(PropertyIndexKey, u64)>,
     mut strings: ScratchVec<(&str, u64)>,
     mut elements: Vec<(PropertyIndexKey, u64)>,
+    unkeyed: BTreeSet<u64>,
 ) -> SortedScope {
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
     {
@@ -626,6 +977,8 @@ pub(super) fn build_scope(
         by_value: CowOrdMap::from_sorted(grouped(values)),
         strings: packed.finish(),
         by_element,
+        unkeyed,
+        composite: None,
         element_postings,
         refcount: 0,
     }
@@ -672,7 +1025,7 @@ fn remove_elements(scope: &mut SortedScope, value: &PropertyValue, id: u64) {
     }
 }
 
-fn extend_ids<'a>(out: &mut BTreeSet<u64>, iter: impl Iterator<Item = (KeyRef<'a>, &'a IdSet)>) {
+fn extend_ids<'a>(out: &mut impl Extend<u64>, iter: impl Iterator<Item = (KeyRef<'a>, &'a IdSet)>) {
     for (_, ids) in iter {
         out.extend(ids.iter());
     }

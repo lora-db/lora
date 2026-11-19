@@ -1616,7 +1616,8 @@ pub(crate) fn node_by_property_range_scan_rows<S: GraphStorage>(
         }
 
         if op.order.is_some() {
-            let mut cursor = OrderedRangeCursor::new(storage, op, range.clone());
+            let prefix = eval_range_prefix(op, &row, &eval_ctx);
+            let mut cursor = OrderedRangeCursor::new(storage, op, range.clone(), prefix);
             while let Some(id) = cursor.next_id(storage) {
                 check_optional_deadline(deadline)?;
                 let mut new_row = row.clone();
@@ -3512,6 +3513,40 @@ pub(crate) fn rel_by_point_scan_rows<S: GraphStorage>(
     Ok(out)
 }
 
+/// A prefix value of an ordered composite seek as the store keys it, when
+/// the index finds exactly the nodes Cypher calls equal to it: a boolean,
+/// a string, a temporal, or a number the store keys exactly (below 2^53,
+/// where an integer and a float of the same value share a key). `None`
+/// sends the cursor to its sorting fallback, which compares with `=`.
+fn seekable_prefix_value(value: &LoraValue) -> Option<PropertyValue> {
+    const EXACT: f64 = 9.0e15;
+    let ok = match value {
+        LoraValue::Bool(_) | LoraValue::String(_) => true,
+        LoraValue::Int(i) => (*i as f64).abs() < EXACT,
+        LoraValue::Float(f) => f.is_finite() && f.abs() < EXACT,
+        LoraValue::Date(_)
+        | LoraValue::DateTime(_)
+        | LoraValue::LocalDateTime(_)
+        | LoraValue::Time(_)
+        | LoraValue::LocalTime(_) => true,
+        _ => false,
+    };
+    ok.then(|| lora_value_to_property(value.clone()).ok())
+        .flatten()
+}
+
+/// The values of an ordered range scan's prefix for `row`.
+pub(crate) fn eval_range_prefix<S: GraphStorage>(
+    op: &lora_compiler::NodeByPropertyRangeScanExec,
+    row: &Row,
+    ctx: &EvalContext<'_, S>,
+) -> Vec<LoraValue> {
+    op.prefix
+        .iter()
+        .map(|(_, expr)| eval_expr(expr, row, ctx))
+        .collect()
+}
+
 /// Node ids of an ordered range scan (`op.order` set), in `ORDER BY op.key`
 /// order, each already checked against the exact bounds and labels.
 ///
@@ -3528,6 +3563,11 @@ pub(crate) fn rel_by_point_scan_rows<S: GraphStorage>(
 /// With `op.nulls` set, the label's nodes without `op.key` come before
 /// (`First`) or after (`Last`) the range, read lazily from the label so
 /// that a `LIMIT` met inside the range never visits them.
+///
+/// With `op.prefix` set, the ids come from the composite index whose
+/// leading components equal the prefix values, the same way; with no bound
+/// at all the store serves the order only when the run holds one kind of
+/// value. Every id is checked against the prefix as well.
 pub(crate) struct OrderedRangeCursor {
     lo: Option<LoraValue>,
     hi: Option<LoraValue>,
@@ -3541,6 +3581,11 @@ pub(crate) struct OrderedRangeCursor {
     /// The label's ids, being searched for nulls; `None` until the null
     /// part starts.
     null_ids: Option<std::vec::IntoIter<NodeId>>,
+    /// `op.prefix` with its values.
+    prefix: Vec<(String, LoraValue)>,
+    /// With a prefix the index can seek: the composite index's components
+    /// and the prefix values as stored.
+    composite: Option<(Vec<String>, Vec<PropertyValue>)>,
 }
 
 enum OrderedMode {
@@ -3559,6 +3604,7 @@ impl OrderedRangeCursor {
         storage: &S,
         op: &lora_compiler::NodeByPropertyRangeScanExec,
         range: RangeValues,
+        prefix: Vec<LoraValue>,
     ) -> Self {
         let RangeValues {
             lo,
@@ -3585,11 +3631,51 @@ impl OrderedRangeCursor {
             ) => bounds.all(|v| std::mem::discriminant(v) == std::mem::discriminant(first)),
             _ => false,
         };
-        let index_label = single_label_hint(&op.labels).filter(|label| {
-            string_bounds
-                && storage
-                    .node_range_ordered_chunk(label, &op.key, None, None, descending, None, 0)
-                    .is_some()
+        let prefix: Vec<(String, LoraValue)> = op
+            .prefix
+            .iter()
+            .map(|(key, _)| key.clone())
+            .zip(prefix)
+            .collect();
+        let composite = (!prefix.is_empty())
+            .then(|| {
+                let values = prefix
+                    .iter()
+                    .map(|(_, v)| seekable_prefix_value(v))
+                    .collect::<Option<Vec<_>>>()?;
+                let mut components: Vec<String> = prefix.iter().map(|(k, _)| k.clone()).collect();
+                components.push(op.key.clone());
+                Some((components, values))
+            })
+            .flatten();
+        let index_label = single_label_hint(&op.labels).filter(|label| match &composite {
+            None if prefix.is_empty() => {
+                string_bounds
+                    && storage
+                        .node_range_ordered_chunk(label, &op.key, None, None, descending, None, 0)
+                        .is_some()
+            }
+            None => false,
+            Some((components, values)) => {
+                let unbounded = lo.is_none() && hi.is_none();
+                let (lo, hi) = (
+                    lo.clone().and_then(|v| lora_value_to_property(v).ok()),
+                    hi.clone().and_then(|v| lora_value_to_property(v).ok()),
+                );
+                (string_bounds || unbounded)
+                    && storage
+                        .node_composite_ordered_chunk(
+                            label,
+                            components,
+                            values,
+                            lo.as_ref(),
+                            hi.as_ref(),
+                            descending,
+                            None,
+                            0,
+                        )
+                        .is_some()
+            }
         });
 
         let mut cursor = Self {
@@ -3603,6 +3689,8 @@ impl OrderedRangeCursor {
             hi_inclusive,
             nulls: op.nulls,
             null_ids: None,
+            prefix,
+            composite,
         };
         match index_label {
             Some(label) => {
@@ -3614,6 +3702,11 @@ impl OrderedRangeCursor {
                     exhausted: false,
                 }
             }
+            // `key = null` holds for no node.
+            None if cursor
+                .prefix
+                .iter()
+                .any(|(_, v)| matches!(v, LoraValue::Null)) => {}
             None => {
                 cursor.pending = cursor
                     .sorted_candidates(storage, op, descending)
@@ -3634,6 +3727,21 @@ impl OrderedRangeCursor {
         }
     }
 
+    /// Whether `id` is in the range and equals the prefix.
+    fn matches<S: GraphStorage>(&self, storage: &S, id: NodeId) -> bool {
+        node_matches_range_filter(storage, id, &self.filter())
+            && (self.prefix.is_empty()
+                || storage
+                    .with_node(id, |n| {
+                        self.prefix.iter().all(|(key, expected)| {
+                            n.properties().get(key.as_str()).is_some_and(|actual| {
+                                crate::eval::value_eq(&LoraValue::from(actual), expected)
+                            })
+                        })
+                    })
+                    .unwrap_or(false))
+    }
+
     /// Fallback: every matching id, sorted by the property value in Cypher
     /// order (ties by id).
     fn sorted_candidates<S: GraphStorage>(
@@ -3650,10 +3758,9 @@ impl OrderedRangeCursor {
                 .unwrap_or_else(|| scan_node_ids_for_label_groups(storage, &op.labels)),
             None => scan_node_ids_for_label_groups(storage, &op.labels),
         };
-        let filter = self.filter();
         let mut keyed: Vec<(LoraValue, NodeId)> = candidates
             .into_iter()
-            .filter(|&id| node_matches_range_filter(storage, id, &filter))
+            .filter(|&id| self.matches(storage, id))
             .map(|id| {
                 let value = storage
                     .with_node(id, |n| {
@@ -3713,9 +3820,7 @@ impl OrderedRangeCursor {
     fn next_in_range<S: GraphStorage>(&mut self, storage: &S) -> Option<NodeId> {
         loop {
             if let Some(id) = self.pending.next() {
-                if matches!(self.mode, OrderedMode::Buffered)
-                    || node_matches_range_filter(storage, id, &self.filter())
-                {
+                if matches!(self.mode, OrderedMode::Buffered) || self.matches(storage, id) {
                     return Some(id);
                 }
                 continue;
@@ -3735,15 +3840,28 @@ impl OrderedRangeCursor {
             if *exhausted {
                 return None;
             }
-            let ids = storage.node_range_ordered_chunk(
-                label,
-                &self.key,
-                lo_prop.as_ref(),
-                hi_prop.as_ref(),
-                *descending,
-                after.as_ref().map(|(v, id)| (v, *id)),
-                *chunk,
-            )?;
+            let after_ref = after.as_ref().map(|(v, id)| (v, *id));
+            let ids = match &self.composite {
+                Some((components, values)) => storage.node_composite_ordered_chunk(
+                    label,
+                    components,
+                    values,
+                    lo_prop.as_ref(),
+                    hi_prop.as_ref(),
+                    *descending,
+                    after_ref,
+                    *chunk,
+                ),
+                None => storage.node_range_ordered_chunk(
+                    label,
+                    &self.key,
+                    lo_prop.as_ref(),
+                    hi_prop.as_ref(),
+                    *descending,
+                    after_ref,
+                    *chunk,
+                ),
+            }?;
             if ids.len() < *chunk {
                 *exhausted = true;
             }

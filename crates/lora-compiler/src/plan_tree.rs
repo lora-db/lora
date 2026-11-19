@@ -221,6 +221,14 @@ fn describe(op: &PhysicalOp) -> PlanDescription {
                 d.insert("labels".to_string(), label_groups_str(&n.labels));
             }
             d.insert("key".to_string(), n.key.clone());
+            if !n.prefix.is_empty() {
+                let prefix: Vec<String> = n
+                    .prefix
+                    .iter()
+                    .map(|(key, value)| format!("{key} = {value:?}"))
+                    .collect();
+                d.insert("prefix".to_string(), prefix.join(", "));
+            }
             insert_range_bounds(
                 &mut d,
                 (&n.lo, n.lo_inclusive),

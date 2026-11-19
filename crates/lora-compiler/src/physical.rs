@@ -148,6 +148,8 @@ pub struct NodeByPropertyRangeScanExec {
     pub var: VarId,
     pub labels: Vec<Vec<String>>,
     pub key: String,
+    /// See [`crate::logical::NodeByPropertyRangeScan::prefix`].
+    pub prefix: Vec<(String, ResolvedExpr)>,
     pub lo: Option<ResolvedExpr>,
     pub lo_inclusive: bool,
     pub hi: Option<ResolvedExpr>,

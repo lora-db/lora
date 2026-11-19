@@ -878,6 +878,9 @@ pub trait GraphStorage {
     /// the precise predicate inclusivity (`>` vs `>=`, `<` vs `<=`).
     ///
     /// Returns `None` when no scope exists — caller falls back to scan.
+    /// With neither bound (`IS NOT NULL`), also `None` when at least half
+    /// the label holds the property: listing it from the index then costs
+    /// more than scanning the label.
     fn node_range_candidates(
         &self,
         _label: &str,
@@ -913,6 +916,30 @@ pub trait GraphStorage {
         &self,
         _label: &str,
         _property: &str,
+        _lo: Option<&PropertyValue>,
+        _hi: Option<&PropertyValue>,
+        _descending: bool,
+        _after: Option<(&PropertyValue, NodeId)>,
+        _max: usize,
+    ) -> Option<Vec<NodeId>> {
+        None
+    }
+
+    /// One chunk of an ordered seek on the composite RANGE index of
+    /// `label` on `components`: the nodes whose leading components equal
+    /// `prefix` (one value each, all but the last component), ordered by
+    /// the last component within `[lo, hi]` (inclusive, the caller
+    /// refilters) and then by id, strictly after the `after` cursor
+    /// (the last component's value and id of the previous chunk's last
+    /// node), at most `max`. `None` when no such index exists, a value has
+    /// no index key, or the index order is not Cypher's order here (an
+    /// unbounded run holding several kinds of value): the caller sorts.
+    #[allow(clippy::too_many_arguments)]
+    fn node_composite_ordered_chunk(
+        &self,
+        _label: &str,
+        _components: &[String],
+        _prefix: &[PropertyValue],
         _lo: Option<&PropertyValue>,
         _hi: Option<&PropertyValue>,
         _descending: bool,

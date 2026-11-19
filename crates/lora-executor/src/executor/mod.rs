@@ -75,7 +75,9 @@ pub(crate) use helpers::{
     rel_by_text_scan_rows, resolve_range, scan_node_ids_for_label_groups, GroupValueKey,
     NodePropertyCandidates,
 };
-pub(crate) use helpers::{other_kind_node_ids, OrderedRangeCursor, OtherKindScan, RangeValues};
+pub(crate) use helpers::{
+    eval_range_prefix, other_kind_node_ids, OrderedRangeCursor, OtherKindScan, RangeValues,
+};
 pub(crate) use helpers::{project_row, ProjectionNames};
 pub(crate) use helpers::{RowKeyBuilder, RowKeyPart};
 pub(crate) use optional::{

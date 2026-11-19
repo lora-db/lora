@@ -38,7 +38,7 @@ use super::property_index::{
 };
 use super::record_slab::{BuiltLeaves, RecordSlab};
 use super::secondary_index_maintenance::SecondaryIndexMutation;
-use super::sorted_property_index::SortedPropertyIndex;
+use super::sorted_property_index::{composite_property, SortedPropertyIndex};
 use super::stats::GraphStats;
 use super::text_index::TrigramRegistry;
 use super::vector_index::{VectorIndexProvider, VectorIndexRegistry, VectorSimilarity};
@@ -1700,6 +1700,7 @@ impl InMemoryGraph {
             /// key, and the sorted index of a label's key.
             Hash(StoredIndexEntity, String),
             Sorted(StoredIndexEntity, String, String),
+            Composite(StoredIndexEntity, String, Vec<String>),
             Validate(super::ConstraintDefinition),
         }
         // Scans first: a constraint scan is as long as an index build, and
@@ -1719,6 +1720,13 @@ impl InMemoryGraph {
                 if let Some(label) = def.label.as_deref().filter(|_| is_sorted(&def)) {
                     work.push(Work::Sorted(def.entity, label.to_owned(), key.clone()));
                 }
+            }
+            if let Some(label) = composite_label(&def) {
+                work.push(Work::Composite(
+                    def.entity,
+                    label.to_owned(),
+                    def.properties.clone(),
+                ));
             }
         }
         // Each hash index reads one key of the records. With several to
@@ -1758,6 +1766,10 @@ impl InMemoryGraph {
             }
             Work::Sorted(entity, label, key) => {
                 self.activate_sorted_scope(entity, &label, &key);
+                Ok(())
+            }
+            Work::Composite(entity, label, components) => {
+                self.activate_composite_scope(entity, &label, &components);
                 Ok(())
             }
             Work::Validate(def) => {
@@ -1883,6 +1895,10 @@ impl InMemoryGraph {
                             self.deactivate_sorted_scope(def.entity, label, prop);
                         }
                     }
+                    if let Some(label) = composite_label(def) {
+                        self.sorted_indexes_write(def.entity)
+                            .remove_scope(label, &composite_property(&def.properties));
+                    }
                     // Writes stop paying for a hash index nothing declares
                     // any more; an equality lookup rebuilds it on demand.
                     let declared = self.declared_property_index_keys();
@@ -1966,6 +1982,9 @@ impl InMemoryGraph {
                     if let Some(label) = def.label.as_deref().filter(|_| is_sorted(def)) {
                         self.activate_sorted_scope(def.entity, label, key);
                     }
+                }
+                if let Some(label) = composite_label(def) {
+                    self.activate_composite_scope(def.entity, label, &def.properties);
                 }
             }
             StoredIndexKind::Text => {
@@ -2234,11 +2253,10 @@ impl InMemoryGraph {
                         Some(crate::ValueRef::String(s)) => {
                             registry.insert_str(label, property, id, s)
                         }
-                        Some(value) => {
-                            if let Some(key) = PropertyIndexKey::from_value_ref(value) {
-                                registry.insert_key(label, property, id, key);
-                            }
-                        }
+                        Some(value) => match PropertyIndexKey::from_value_ref(value) {
+                            Some(key) => registry.insert_key(label, property, id, key),
+                            None => registry.insert_unkeyed(label, property, id),
+                        },
                         None => {}
                     }
                 }
@@ -2253,11 +2271,10 @@ impl InMemoryGraph {
                         Some(crate::ValueRef::String(s)) => {
                             registry.insert_str(label, property, id, s)
                         }
-                        Some(value) => {
-                            if let Some(key) = PropertyIndexKey::from_value_ref(value) {
-                                registry.insert_key(label, property, id, key);
-                            }
-                        }
+                        Some(value) => match PropertyIndexKey::from_value_ref(value) {
+                            Some(key) => registry.insert_key(label, property, id, key),
+                            None => registry.insert_unkeyed(label, property, id),
+                        },
                         None => {}
                     }
                 }
@@ -2307,6 +2324,7 @@ impl InMemoryGraph {
             let mut values = Vec::new();
             let mut strings = ScratchVec::with_capacity(in_range);
             let mut elements = Vec::new();
+            let mut unkeyed = Vec::new();
             for id in ids.iter_from(start).take_while(|&id| id < start + RANGE) {
                 let value = match entity {
                     StoredIndexEntity::Node => self.nodes.get(id as usize).and_then(|bytes| {
@@ -2326,21 +2344,21 @@ impl InMemoryGraph {
                     // A list is indexed by its elements too.
                     Some(crate::ValueRef::Other(value)) => {
                         let value = value.get();
-                        if let Some(key) = PropertyIndexKey::from_value(&value) {
-                            values.push((key, id));
+                        match PropertyIndexKey::from_value(&value) {
+                            Some(key) => values.push((key, id)),
+                            None => unkeyed.push(id),
                         }
                         elements.extend(element_keys(&value).into_iter().map(|key| (key, id)));
                     }
                     Some(crate::ValueRef::String(s)) => strings.push((s, id)),
-                    Some(value) => {
-                        if let Some(key) = PropertyIndexKey::from_value_ref(value) {
-                            values.push((key, id));
-                        }
-                    }
+                    Some(value) => match PropertyIndexKey::from_value_ref(value) {
+                        Some(key) => values.push((key, id)),
+                        None => unkeyed.push(id),
+                    },
                     None => {}
                 }
             }
-            (values, strings, elements)
+            (values, strings, elements, unkeyed)
         };
         let starts: Vec<u64> = (0..(slots as u64).div_ceil(RANGE))
             .map(|i| i * RANGE)
@@ -2352,15 +2370,18 @@ impl InMemoryGraph {
         };
         #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
         let gathered: Vec<_> = starts.into_iter().map(gather).collect();
-        let mut values = Vec::with_capacity(gathered.iter().map(|(v, _, _)| v.len()).sum());
-        let mut strings = ScratchVec::with_capacity(gathered.iter().map(|(_, s, _)| s.len()).sum());
+        let mut values = Vec::with_capacity(gathered.iter().map(|(v, ..)| v.len()).sum());
+        let mut strings =
+            ScratchVec::with_capacity(gathered.iter().map(|(_, s, ..)| s.len()).sum());
         let mut elements = Vec::new();
-        for (v, s, e) in gathered {
+        let mut unkeyed = std::collections::BTreeSet::new();
+        for (v, s, e, u) in gathered {
             values.extend(v);
             strings.extend_from(&s);
             elements.extend(e);
+            unkeyed.extend(u);
         }
-        let built = build_scope(values, strings, elements);
+        let built = build_scope(values, strings, elements, unkeyed);
         self.sorted_indexes_write(entity)
             .add_built_scope(label, property, built);
     }
@@ -2516,10 +2537,8 @@ impl InMemoryGraph {
                 .collect(),
         };
 
-        let mut registry = self.vector_indexes_write(entity);
-        for (id, vector) in backfill {
-            registry.insert_for(label, property, id, &vector);
-        }
+        self.vector_indexes_write(entity)
+            .insert_many_for(label, property, backfill);
     }
 
     /// Lazy-populate a `Populating` vector index: backfill from the
@@ -2596,6 +2615,14 @@ impl InMemoryGraph {
             let Some(label) = def.label else {
                 continue;
             };
+            if def.entity == StoredIndexEntity::Node
+                && def.kind == StoredIndexKind::Range
+                && def.properties.len() > 1
+            {
+                stats
+                    .node_composite_indexes
+                    .insert((label.clone(), def.properties.clone()));
+            }
             for property in def.properties {
                 let scope = (label.clone(), property);
                 match (def.entity, def.kind) {
@@ -3596,6 +3623,14 @@ fn edit_record_property(
 pub(super) const SORTED_OPTION: &str = "sorted";
 
 /// Whether a RANGE index keeps a sorted copy of its values.
+/// The label of a sorted RANGE index on several properties, which also
+/// keeps a composite scope (see [`super::sorted_property_index::Composite`]).
+fn composite_label(def: &IndexDefinition) -> Option<&str> {
+    (def.kind == StoredIndexKind::Range && def.properties.len() > 1 && is_sorted(def))
+        .then_some(def.label.as_deref())
+        .flatten()
+}
+
 pub(super) fn is_sorted(def: &IndexDefinition) -> bool {
     !matches!(
         def.options.get(SORTED_OPTION),

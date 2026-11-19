@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 
 use crate::{NodeRecord, PropertyValue, RelationshipRecord};
 
+use super::property_index::PropertyIndexKey;
+use super::sorted_property_index::composite_key;
 use super::{InMemoryGraph, StoredIndexEntity};
 
 use super::fulltext_index::{PropertyTermCounts, TermCounts};
@@ -167,6 +169,7 @@ impl InMemoryGraph {
         self.update_sorted_property(entity, scopes.clone(), entity_id, key, old, new);
         self.update_point_property(entity, scopes.clone(), entity_id, key, old, new);
         self.update_vector_property(entity, scopes.clone(), entity_id, key, old, new);
+        self.update_composite_property(entity, scopes.clone(), entity_id, key);
         if self.has_active_fulltext_indexes() {
             self.update_fulltext_property(entity, scopes, entity_id, key);
         }
@@ -415,6 +418,112 @@ impl InMemoryGraph {
                 (Some(_), None) => registry.remove_for(scope, key, entity_id),
                 (None, None) => {}
             }
+        }
+    }
+}
+
+/// Composite RANGE scopes (see
+/// [`super::sorted_property_index::Composite`]). An entity's tuple is
+/// derived from its record as it stands, so the hooks run after the record
+/// changed: a removed entity, or one that lost the label, has no tuple.
+impl InMemoryGraph {
+    /// Re-file `entity_id` in the composite scopes of `scopes` that have
+    /// `key` among their components.
+    pub(super) fn update_composite_property<'a>(
+        &self,
+        entity: StoredIndexEntity,
+        scopes: impl IntoIterator<Item = &'a str>,
+        entity_id: u64,
+        key: &str,
+    ) {
+        let targets: Vec<(&str, std::sync::Arc<[String]>)> = {
+            let registry = self.sorted_indexes_read(entity);
+            if !registry.has_composites() {
+                return;
+            }
+            scopes
+                .into_iter()
+                .flat_map(|label| {
+                    registry
+                        .composites_with(label, key)
+                        .into_iter()
+                        .map(move |components| (label, components))
+                })
+                .collect()
+        };
+        if targets.is_empty() {
+            return;
+        }
+        let keys: Vec<_> = targets
+            .iter()
+            .map(|(label, components)| self.composite_key_of(entity, entity_id, label, components))
+            .collect();
+        let mut registry = self.sorted_indexes_write(entity);
+        for ((label, components), tuple) in targets.iter().zip(keys) {
+            registry.set_composite(label, components, entity_id, tuple);
+        }
+    }
+
+    /// The tuple `entity_id` is filed under in `label`'s composite scope on
+    /// `components`, from its current record.
+    fn composite_key_of(
+        &self,
+        entity: StoredIndexEntity,
+        entity_id: u64,
+        label: &str,
+        components: &[String],
+    ) -> Option<PropertyIndexKey> {
+        match entity {
+            StoredIndexEntity::Node => {
+                let node = self.node_at(entity_id).filter(|n| n.has_label(label))?;
+                composite_key(components, |c| node.property(c).map(|v| v.to_owned()))
+            }
+            StoredIndexEntity::Relationship => {
+                let rel = self
+                    .rel_at(entity_id)
+                    .filter(|r| r.type_name().as_str() == label)?;
+                composite_key(components, |c| {
+                    rel.properties().get(c).map(|v| v.to_owned())
+                })
+            }
+        }
+    }
+
+    /// Add `label`'s composite scope on `components`, filling it from the
+    /// entities that have the label when it is new.
+    pub(super) fn activate_composite_scope(
+        &self,
+        entity: StoredIndexEntity,
+        label: &str,
+        components: &[String],
+    ) {
+        if !self
+            .sorted_indexes_write(entity)
+            .add_composite_scope(label, components)
+        {
+            return;
+        }
+        let tuples: Vec<(u64, PropertyIndexKey)> = match entity {
+            StoredIndexEntity::Node => self
+                .iter_nodes_labelled(label)
+                .filter_map(|(id, node)| {
+                    composite_key(components, |c| node.property(c).map(|v| v.to_owned()))
+                        .map(|key| (id, key))
+                })
+                .collect(),
+            StoredIndexEntity::Relationship => self
+                .iter_rels_typed(label)
+                .filter_map(|(id, rel)| {
+                    composite_key(components, |c| {
+                        rel.properties().get(c).map(|v| v.to_owned())
+                    })
+                    .map(|key| (id, key))
+                })
+                .collect(),
+        };
+        let mut registry = self.sorted_indexes_write(entity);
+        for (id, key) in tuples {
+            registry.set_composite(label, components, id, Some(key));
         }
     }
 }

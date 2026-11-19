@@ -106,9 +106,9 @@ impl Optimizer {
                         predicates.push(f.predicate.clone());
                         cursor = f.input;
                     }
-                    LogicalOp::NodeByPropertyRangeScan(_) | LogicalOp::NodeScan(_) => {
-                        break Some(cursor)
-                    }
+                    LogicalOp::NodeByPropertyRangeScan(_)
+                    | LogicalOp::NodeByPropertyScan(_)
+                    | LogicalOp::NodeScan(_) => break Some(cursor),
                     _ => break None,
                 }
             };
@@ -121,50 +121,63 @@ impl Optimizer {
             };
             let (key_var, property) = (*key_var, property.clone());
 
-            match &mut plan.nodes[scan_id] {
-                LogicalOp::NodeByPropertyRangeScan(scan) => {
-                    if scan.var != key_var
-                        || scan.key != property
-                        || scan.input.is_some()
-                        || scan.order.is_some()
-                    {
-                        continue;
+            if let Some(seek) =
+                composite_order_seek(&plan.nodes[scan_id], key_var, &property, &predicates, stats)
+            {
+                plan.nodes[scan_id] = LogicalOp::NodeByPropertyRangeScan(NodeByPropertyRangeScan {
+                    order: Some(lead.direction),
+                    ..seek
+                });
+            } else {
+                match &mut plan.nodes[scan_id] {
+                    LogicalOp::NodeByPropertyRangeScan(scan) => {
+                        // An unbounded scan (`IS NOT NULL`) also lists values
+                        // the index cannot order (points, durations, ...).
+                        if scan.var != key_var
+                            || scan.key != property
+                            || scan.input.is_some()
+                            || scan.order.is_some()
+                            || is_unbounded(scan)
+                        {
+                            continue;
+                        }
+                        // The range holds no nulls, so where they go is moot.
+                        scan.order = Some(lead.direction);
                     }
-                    // The range holds no nulls, so where they go is moot.
-                    scan.order = Some(lead.direction);
+                    LogicalOp::NodeScan(scan) => {
+                        if scan.var != key_var || scan.input.is_some() {
+                            continue;
+                        }
+                        let Some(label) = first_simple_label(&scan.labels) else {
+                            continue;
+                        };
+                        if !stats.has_node_range_index(label, &property) {
+                            continue;
+                        }
+                        let Some(bounds) = predicates
+                            .iter()
+                            .find_map(|p| range_or_null_bounds(p, key_var, &property))
+                        else {
+                            continue;
+                        };
+                        plan.nodes[scan_id] =
+                            LogicalOp::NodeByPropertyRangeScan(NodeByPropertyRangeScan {
+                                input: None,
+                                var: key_var,
+                                labels: scan.labels.clone(),
+                                key: bounds.key,
+                                lo: bounds.lo,
+                                lo_inclusive: bounds.lo_inclusive,
+                                hi: bounds.hi,
+                                hi_inclusive: bounds.hi_inclusive,
+                                extra_bounds: bounds.extra,
+                                order: Some(lead.direction),
+                                nulls: Some(lead.nulls),
+                                prefix: Vec::new(),
+                            });
+                    }
+                    _ => continue,
                 }
-                LogicalOp::NodeScan(scan) => {
-                    if scan.var != key_var || scan.input.is_some() {
-                        continue;
-                    }
-                    let Some(label) = first_simple_label(&scan.labels) else {
-                        continue;
-                    };
-                    if !stats.has_node_range_index(label, &property) {
-                        continue;
-                    }
-                    let Some(bounds) = predicates
-                        .iter()
-                        .find_map(|p| range_or_null_bounds(p, key_var, &property))
-                    else {
-                        continue;
-                    };
-                    plan.nodes[scan_id] =
-                        LogicalOp::NodeByPropertyRangeScan(NodeByPropertyRangeScan {
-                            input: None,
-                            var: key_var,
-                            labels: scan.labels.clone(),
-                            key: bounds.key,
-                            lo: bounds.lo,
-                            lo_inclusive: bounds.lo_inclusive,
-                            hi: bounds.hi,
-                            hi_inclusive: bounds.hi_inclusive,
-                            extra_bounds: bounds.extra,
-                            order: Some(lead.direction),
-                            nulls: Some(lead.nulls),
-                        });
-                }
-                _ => continue,
             }
 
             if single_key {
@@ -426,6 +439,7 @@ fn lower_logical_op(op: LogicalOp) -> PhysicalOp {
                 extra_bounds: scan.extra_bounds,
                 order: scan.order,
                 nulls: scan.nulls,
+                prefix: scan.prefix,
             })
         }
 
@@ -751,6 +765,34 @@ fn collect_index_candidates(
             bounds
         });
 
+    // `var.key IS NOT NULL`: every node a RANGE index on the key holds.
+    // The scan with no bounds lists them, unkeyed values included (taste
+    // N-08: a cleanup of a property on a few nodes read the whole label).
+    let ranged = range.as_ref().map(|b| b.key.clone());
+    if let Some(label) = first_simple_label(&scan.labels) {
+        for key in not_null_keys_for_var(predicate, scan.var) {
+            if ranged.as_deref() == Some(key.as_str()) || !stats.has_node_range_index(label, &key) {
+                continue;
+            }
+            out.push(LogicalOp::NodeByPropertyRangeScan(
+                NodeByPropertyRangeScan {
+                    input: scan.input,
+                    var: scan.var,
+                    labels: scan.labels.clone(),
+                    key,
+                    lo: None,
+                    lo_inclusive: false,
+                    hi: None,
+                    hi_inclusive: false,
+                    extra_bounds: Vec::new(),
+                    order: None,
+                    nulls: None,
+                    prefix: Vec::new(),
+                },
+            ));
+        }
+    }
+
     for bounds in range.into_iter().chain(prefix_range) {
         if !is_tautological_range(&bounds)
             && first_simple_label(&scan.labels)
@@ -769,6 +811,7 @@ fn collect_index_candidates(
                     extra_bounds: bounds.extra,
                     order: None,
                     nulls: None,
+                    prefix: Vec::new(),
                 },
             ));
         }
@@ -1022,6 +1065,10 @@ fn score_logical_op(op: &LogicalOp, stats: &GraphStats) -> Option<u64> {
             let base = label_estimate(&scan.labels, stats)?;
             let denom = match (scan.lo.is_some(), scan.hi.is_some()) {
                 (true, true) => 4,
+                // `IS NOT NULL`: at most the label. Equal to the label
+                // scan, so it wins the tie (it never reads a node without
+                // the key) and loses to any bounded or equality seek.
+                (false, false) if scan.extra_bounds.is_empty() => 1,
                 _ => 3,
             };
             Some(base.div_ceil(denom))
@@ -1137,8 +1184,88 @@ fn label_estimate(labels: &[Vec<String>], stats: &GraphStats) -> Option<u64> {
     stats.label_count(label)
 }
 
+/// An ordered seek on a composite RANGE index for `ORDER BY var.key` over
+/// `scan` (a label scan or a seek on `var`, with no input): one whose
+/// leading components all have an equality in `predicates` and whose last
+/// component is `key`, which `predicates` bound or test `IS NOT NULL` (a
+/// row without `key` is not in the index, and an `ORDER BY` alone must
+/// emit it). Values must not depend on the row. The Filters above keep
+/// judging every row; the seek only narrows and orders the candidates.
+fn composite_order_seek(
+    scan: &LogicalOp,
+    var: VarId,
+    key: &str,
+    predicates: &[ResolvedExpr],
+    stats: &GraphStats,
+) -> Option<NodeByPropertyRangeScan> {
+    let (scan_var, labels) = match scan {
+        LogicalOp::NodeScan(s) if s.input.is_none() => (s.var, &s.labels),
+        LogicalOp::NodeByPropertyScan(s) if s.input.is_none() => (s.var, &s.labels),
+        LogicalOp::NodeByPropertyRangeScan(s) if s.input.is_none() && s.order.is_none() => {
+            (s.var, &s.labels)
+        }
+        _ => return None,
+    };
+    let label = first_simple_label(labels).filter(|_| scan_var == var)?;
+    let row_free = |expr: &ResolvedExpr| collect_vars(expr).is_empty();
+    let equalities: Vec<(String, ResolvedExpr)> = predicates
+        .iter()
+        .flat_map(|p| property_equalities_for_var(p, var))
+        .filter(|(_, value)| row_free(value))
+        .collect();
+    let (components, prefix) = stats
+        .node_composite_indexes(label)
+        .filter(|components| components.last().map(String::as_str) == Some(key))
+        .find_map(|components| {
+            let prefix = components[..components.len() - 1]
+                .iter()
+                .map(|c| {
+                    let (_, value) = equalities.iter().find(|(k, _)| k == c)?;
+                    Some((c.clone(), value.clone()))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some((components, prefix))
+        })?;
+    debug_assert_eq!(components.len(), prefix.len() + 1);
+
+    let mut bounds = RangeBounds::new(key.to_string());
+    let mut bounded = false;
+    for predicate in predicates {
+        walk_and_for_range(predicate, var, &mut |found, side, value, inclusive| {
+            if found == key && row_free(&value) {
+                bounds.add(side, value, inclusive);
+                bounded = true;
+            }
+        });
+    }
+    let not_null = predicates
+        .iter()
+        .any(|p| not_null_keys_for_var(p, var).iter().any(|k| k == key));
+    if !bounded && !not_null {
+        return None;
+    }
+    Some(NodeByPropertyRangeScan {
+        input: None,
+        var,
+        labels: labels.clone(),
+        key: key.to_string(),
+        prefix,
+        lo: bounds.lo,
+        lo_inclusive: bounds.lo_inclusive,
+        hi: bounds.hi,
+        hi_inclusive: bounds.hi_inclusive,
+        extra_bounds: bounds.extra,
+        order: None,
+        nulls: None,
+    })
+}
+
 fn first_simple_label(labels: &[Vec<String>]) -> Option<&str> {
     labels.first()?.first().map(String::as_str)
+}
+
+fn is_unbounded(scan: &NodeByPropertyRangeScan) -> bool {
+    scan.lo.is_none() && scan.hi.is_none() && scan.extra_bounds.is_empty()
 }
 
 fn is_tautological_range(bounds: &RangeBounds) -> bool {
@@ -1776,6 +1903,23 @@ fn property_equalities_for_var(
     out
 }
 
+/// The keys of every `var.key IS NOT NULL` conjunct of an AND-tree.
+fn not_null_keys_for_var(predicate: &ResolvedExpr, var: VarId) -> Vec<String> {
+    let mut keys: Vec<String> = and_conjuncts(predicate)
+        .into_iter()
+        .filter_map(|conjunct| match conjunct {
+            ResolvedExpr::Binary {
+                lhs,
+                op: BinaryOp::IsNotNull,
+                ..
+            } => property_access_for_var(lhs, var),
+            _ => None,
+        })
+        .collect();
+    keys.dedup();
+    keys
+}
+
 /// Every `var.key IN list` conjunct of an AND-tree, in order, where `list`
 /// does not mention `var`.
 fn property_in_lists_for_var(predicate: &ResolvedExpr, var: VarId) -> Vec<(String, ResolvedExpr)> {
@@ -2193,6 +2337,7 @@ mod tests {
                 extra_bounds: Vec::new(),
                 order: None,
                 nulls: None,
+                prefix: Vec::new(),
             }),
             LogicalOp::NodeByPropertyScan(NodeByPropertyScan {
                 input: None,

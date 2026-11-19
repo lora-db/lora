@@ -737,7 +737,9 @@ impl<'a, S: GraphStorage> RowSource for OrderedRangeScanSource<'a, S> {
                 [range.lo.as_ref(), range.hi.as_ref()],
                 &mut crate::executor::OtherKindScan::default(),
             );
-            let cursor = crate::executor::OrderedRangeCursor::new(self.ctx.storage, self.op, range);
+            let prefix = crate::executor::eval_range_prefix(self.op, &row, &self.ctx.eval_ctx());
+            let cursor =
+                crate::executor::OrderedRangeCursor::new(self.ctx.storage, self.op, range, prefix);
             self.current = Some((row, others.into_iter(), cursor));
         }
     }

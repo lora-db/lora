@@ -174,6 +174,11 @@ pub struct NodeByPropertyRangeScan {
     pub var: VarId,
     pub labels: Vec<Vec<String>>,
     pub key: String,
+    /// Equalities on the leading components of a composite RANGE index
+    /// whose last component is `key`, in index order: the scan seeks the
+    /// run of those values in that index, ordered by `key` (taste N-06).
+    /// The Filter above still judges every row. Empty for a plain range.
+    pub prefix: Vec<(String, ResolvedExpr)>,
     pub lo: Option<ResolvedExpr>,
     pub lo_inclusive: bool,
     pub hi: Option<ResolvedExpr>,

@@ -349,6 +349,10 @@ impl GraphStorage for InMemoryGraph {
         hi: Option<&PropertyValue>,
     ) -> Option<Vec<NodeId>> {
         let registry = self.sorted_indexes_read(crate::StoredIndexEntity::Node);
+        let members = self.nodes_by_label.get(label).map_or(0, |ids| ids.len());
+        if lo.is_none() && hi.is_none() && registry.holds_at_least(label, property, members / 2) {
+            return None;
+        }
         // The sorted index returns a [lo, hi] inclusive candidate set.
         // The executor refilters each id against the precise predicate
         // (handling `>` vs `>=`, `<` vs `<=`).
@@ -378,6 +382,21 @@ impl GraphStorage for InMemoryGraph {
     ) -> Option<Vec<NodeId>> {
         self.sorted_indexes_read(crate::StoredIndexEntity::Node)
             .ordered_chunk(label, property, lo, hi, descending, after, max)
+    }
+
+    fn node_composite_ordered_chunk(
+        &self,
+        label: &str,
+        components: &[String],
+        prefix: &[PropertyValue],
+        lo: Option<&PropertyValue>,
+        hi: Option<&PropertyValue>,
+        descending: bool,
+        after: Option<(&PropertyValue, NodeId)>,
+        max: usize,
+    ) -> Option<Vec<NodeId>> {
+        self.sorted_indexes_read(crate::StoredIndexEntity::Node)
+            .composite_chunk(label, components, prefix, lo, hi, descending, after, max)
     }
 
     fn node_list_element_candidates(
@@ -443,6 +462,14 @@ impl GraphStorage for InMemoryGraph {
         hi: Option<&PropertyValue>,
     ) -> Option<Vec<RelationshipId>> {
         let registry = self.sorted_indexes_read(crate::StoredIndexEntity::Relationship);
+        let members = self
+            .relationships_by_type
+            .get(rel_type)
+            .map_or(0, |ids| ids.len());
+        if lo.is_none() && hi.is_none() && registry.holds_at_least(rel_type, property, members / 2)
+        {
+            return None;
+        }
         let candidates = registry.range_candidates(rel_type, property, lo, hi)?;
         Some(candidates.into_iter().collect())
     }

@@ -46,6 +46,10 @@ pub struct GraphStats {
     /// Online catalog-backed range indexes by `(label_or_type, property)`.
     pub node_range_indexes: BTreeSet<(String, String)>,
     pub relationship_range_indexes: BTreeSet<(String, String)>,
+    /// Online composite RANGE indexes on nodes, by label and components
+    /// in index order: what an ordered seek on an equality prefix plus a
+    /// range on the last component is planned from.
+    pub node_composite_indexes: BTreeSet<(String, Vec<String>)>,
     /// Online catalog-backed text indexes by `(label_or_type, property)`.
     pub node_text_indexes: BTreeSet<(String, String)>,
     pub relationship_text_indexes: BTreeSet<(String, String)>,
@@ -242,6 +246,7 @@ impl GraphStats {
         self.relationship_distinct_values.hash(&mut hasher);
         self.node_range_indexes.hash(&mut hasher);
         self.relationship_range_indexes.hash(&mut hasher);
+        self.node_composite_indexes.hash(&mut hasher);
         self.node_text_indexes.hash(&mut hasher);
         self.relationship_text_indexes.hash(&mut hasher);
         self.node_point_indexes.hash(&mut hasher);
@@ -339,6 +344,17 @@ impl GraphStats {
     pub fn has_node_range_index(&self, label: &str, property: &str) -> bool {
         self.node_range_indexes
             .contains(&(label.to_owned(), property.to_owned()))
+    }
+
+    /// The components of every composite RANGE index on `label`.
+    pub fn node_composite_indexes<'a>(
+        &'a self,
+        label: &'a str,
+    ) -> impl Iterator<Item = &'a [String]> + 'a {
+        self.node_composite_indexes
+            .iter()
+            .filter(move |(l, _)| l == label)
+            .map(|(_, components)| components.as_slice())
     }
 
     pub fn has_node_text_index(&self, label: &str, property: &str) -> bool {
