@@ -768,13 +768,17 @@ fn collect_index_candidates(
     // `var.key IS NOT NULL`: every node a RANGE index on the key holds.
     // The scan with no bounds lists them, unkeyed values included (taste
     // N-08: a cleanup of a property on a few nodes read the whole label).
+    // Added after every other seek (below), so it loses their ties: on an
+    // empty label every estimate is 0, and a POINT or bounded seek beside
+    // it must still win (taste N-11).
     let ranged = range.as_ref().map(|b| b.key.clone());
+    let mut not_null = Vec::new();
     if let Some(label) = first_simple_label(&scan.labels) {
         for key in not_null_keys_for_var(predicate, scan.var) {
             if ranged.as_deref() == Some(key.as_str()) || !stats.has_node_range_index(label, &key) {
                 continue;
             }
-            out.push(LogicalOp::NodeByPropertyRangeScan(
+            not_null.push(LogicalOp::NodeByPropertyRangeScan(
                 NodeByPropertyRangeScan {
                     input: scan.input,
                     var: scan.var,
@@ -848,6 +852,7 @@ fn collect_index_candidates(
         }
     }
 
+    out.append(&mut not_null);
     out
 }
 

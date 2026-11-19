@@ -171,3 +171,35 @@ fn an_index_built_in_parallel_holds_unkeyed_values() {
     let ks = db.sorted_ints("MATCH (b:B) WHERE b.p IS NOT NULL RETURN b.k AS k", "k");
     assert_eq!(ks, (1..=14).map(|i| i * 10000).collect::<Vec<_>>());
 }
+
+/// Beside a POINT or bounded seek, `IS NOT NULL` loses: it lists every
+/// node with the key. On an empty label every estimate is 0, and it used
+/// to win that tie by coming first (taste N-11: a schema check plans on
+/// an empty graph).
+#[test]
+fn a_point_or_bounded_seek_beats_not_null_on_an_empty_label() {
+    let db = TestDb::new();
+    db.run("CREATE POINT INDEX v_at FOR (v:Venue) ON (v.coordinates)");
+    db.run("CREATE INDEX v_capacity FOR (v:Venue) ON (v.capacity)");
+    db.run("CREATE INDEX v_rank FOR (v:Venue) ON (v.rank)");
+    let point = "MATCH (v:Venue) \
+                 WHERE geo.within_bbox(v.coordinates, {x: 0, y: 0}::POINT, {x: 10, y: 10}::POINT) \
+                   AND v.capacity IS NOT NULL RETURN v";
+    let bounded = "MATCH (v:Venue) WHERE v.rank > 3 AND v.capacity IS NOT NULL RETURN v";
+    for populated in [false, true] {
+        if populated {
+            db.run(
+                "UNWIND range(1, 50) AS i CREATE (:Venue {coordinates: point({x: i, y: i}), \
+                 capacity: i, rank: i})",
+            );
+        }
+        let plan = operators(&db, point);
+        assert!(find(&plan, "NodeByPointScan").is_some(), "{plan:#?}");
+        let plan = operators(&db, bounded);
+        let seek = find(&plan, "NodeByPropertyRangeScan").expect("a range seek");
+        assert!(
+            format!("{seek:?}").contains("rank"),
+            "populated={populated}: {seek:#?}"
+        );
+    }
+}
