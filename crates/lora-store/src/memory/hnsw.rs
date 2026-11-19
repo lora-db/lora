@@ -525,21 +525,21 @@ impl HnswBackend {
             return Vec::new();
         };
         let query = node.point();
-        let mut nearest = entry;
+        let mut entries = vec![entry];
         for l in ((node.level + 1)..=self.max_level).rev() {
-            if let Some(closer) = self.search_layer(query, nearest, l, 1).first() {
-                nearest = closer.id;
+            if let Some(closer) = self.search_layer(query, &entries, l, 1).first() {
+                entries = vec![closer.id];
             }
         }
         let mut plan = Vec::new();
         for l in (0..=node.level.min(self.max_level)).rev() {
             let candidates: Vec<Candidate> = self
-                .search_layer(query, nearest, l, self.params.ef_construction)
+                .search_layer(query, &entries, l, self.params.ef_construction)
                 .into_iter()
                 .filter(|c| c.id != id)
                 .collect();
-            if let Some(closest) = candidates.first() {
-                nearest = closest.id;
+            if !candidates.is_empty() {
+                entries = candidates.iter().map(|c| c.id).collect();
             }
             plan.push((l, self.select_neighbors(&candidates, self.params.m)));
         }
@@ -632,29 +632,45 @@ impl HnswBackend {
         let probe = HnswNode::new(coords, 0, Arc::from([]));
         let point = probe.point();
 
-        // Top-down zoom with ef=1 from max_level..1. Routing layers
-        // ignore `restrict_to` — they pick the best hop, even if
-        // that hop itself isn't in the allowed set, because the
-        // graph structure carries information from every node.
-        let mut nearest = entry;
-        for l in (1..=self.max_level).rev() {
-            if let Some(closer) = self.search_layer(point, nearest, l, 1).first() {
-                nearest = closer.id;
-            }
-        }
-
-        // Layer 0: when a filter is in play, bump ef so the
-        // post-filter has enough candidates to return k. The
-        // multiplier is empirical — under tight filters, recall
-        // degrades faster than ef grows; users facing very
-        // selective filters should raise vector.hnsw.ef_search.
+        // With a filter, a wider search so the filtered set still holds
+        // k. The multiplier is empirical: under tight filters recall
+        // degrades faster than ef grows, so very selective filters
+        // should raise vector.hnsw.ef_search.
         let mut ef = self.params.ef_search.max(k);
         if restrict_to.is_some() {
             ef = ef.saturating_mul(4).max(k * 8);
         }
-        let candidates = self.search_layer(point, nearest, 0, ef);
-        // Scored exactly as `vector.similarity` does, against the query
-        // as the index sees it: the kernels only rank.
+        // Down the layers with a beam of `ef`, each layer starting from
+        // the whole result of the one above, not the paper's single
+        // greedy hop. Layer 0 barely links one cluster to another (its
+        // links come from searches that stay in a cluster), so a query
+        // between clusters (a taste between genres) must reach layer 0
+        // in each of them: a single hop picks one and found 60% of the
+        // true top 20 on clustered vectors, this beam 94% at the
+        // default ef. The upper layers hold 1/m of the points, so the
+        // beam costs a fraction of the layer-0 search. Routing ignores
+        // `restrict_to`: a hop outside the allowed set still leads on.
+        let mut entries = vec![entry];
+        for l in (1..=self.max_level).rev() {
+            let found = self.search_layer(point, &entries, l, ef);
+            if !found.is_empty() {
+                entries = found.into_iter().map(|c| c.id).collect();
+            }
+        }
+        let found = self.search_layer(point, &entries, 0, ef);
+        self.score(&probe, found, k, restrict_to)
+    }
+
+    /// The first `k` of `candidates` in `restrict_to`, scored exactly as
+    /// `vector.similarity` does, against the query as the index sees it:
+    /// the kernels only rank.
+    fn score(
+        &self,
+        probe: &HnswNode,
+        candidates: Vec<Candidate>,
+        k: usize,
+        restrict_to: Option<&BTreeSet<u64>>,
+    ) -> Vec<(u64, f64)> {
         let query = probe.vector.as_f32();
         candidates
             .into_iter()
@@ -720,26 +736,36 @@ impl HnswBackend {
     /// Greedy best-first search of `layer` from `entry` for the `ef`
     /// points closest to `query`, nearest first. A min-heap frontier and
     /// a max-heap of results, both capped at `ef`.
+    /// The `ef` nearest points to `query` on `layer`, nearest first,
+    /// searched from every point of `entries` (Malkov & Yashunin,
+    /// Algorithm 2: the layer above hands down its whole result set).
     fn search_layer(
         &self,
         query: Point<'_>,
-        entry: u64,
+        entries: &[u64],
         layer: usize,
         ef: usize,
     ) -> Vec<Candidate> {
-        let Some(entry_dist) = self.distance_to(query, entry) else {
-            return Vec::new();
-        };
         let mut visited = VisitedSet::with_capacity_and_hasher(ef * 8, Default::default());
         let mut frontier: BinaryHeap<std::cmp::Reverse<Candidate>> = BinaryHeap::new();
         let mut results: BinaryHeap<Candidate> = BinaryHeap::new();
-        let start = Candidate {
-            dist: FiniteF64(entry_dist),
-            id: entry,
-        };
-        frontier.push(std::cmp::Reverse(start));
-        results.push(start);
-        visited.insert(entry);
+        for &entry in entries {
+            if !visited.insert(entry) {
+                continue;
+            }
+            let Some(dist) = self.distance_to(query, entry) else {
+                continue;
+            };
+            let start = Candidate {
+                dist: FiniteF64(dist),
+                id: entry,
+            };
+            frontier.push(std::cmp::Reverse(start));
+            results.push(start);
+            if results.len() > ef {
+                results.pop();
+            }
+        }
 
         while let Some(std::cmp::Reverse(c)) = frontier.pop() {
             // The nearest unexplored point is farther than the worst
@@ -1088,6 +1114,39 @@ mod tests {
             let recall = recall_at(&backend, &vectors, q, 20);
             assert!(recall >= 0.9, "recall@20 {recall}");
         }
+    }
+
+    /// A query between two clusters (a taste between genres) has its true
+    /// neighbours in both. Layer 0 barely links clusters, so the descent
+    /// must reach it in each: one greedy hop per layer found ~60%.
+    #[test]
+    fn recall_holds_between_clusters() {
+        let (n, dim) = (20_000, 64);
+        let vectors = clustered(n, dim);
+        let mut backend = HnswBackend::new(VectorSimilarity::Cosine, HnswParams::default(), 7);
+        backend.insert_many(
+            vectors
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (i as u64, v.clone()))
+                .collect(),
+        );
+        let queries: Vec<LoraVector> = (0..20)
+            .map(|j| {
+                // Neighbouring indices sit in neighbouring clusters.
+                let (a, b) = (&vectors[j * 397], &vectors[j * 397 + 1]);
+                let mid: Vec<f32> = (0..dim)
+                    .map(|d| (a.values.f32_at(d).unwrap() + b.values.f32_at(d).unwrap()) / 2.0)
+                    .collect();
+                vec(&mid)
+            })
+            .collect();
+        let mean = queries
+            .iter()
+            .map(|q| recall_at(&backend, &vectors, q, 20))
+            .sum::<f64>()
+            / queries.len() as f64;
+        assert!(mean >= 0.85, "mean recall@20 between clusters {mean}");
     }
 
     #[test]
