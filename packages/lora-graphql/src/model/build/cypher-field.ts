@@ -8,6 +8,7 @@ import {
   valueFromAST,
   type ConstValueNode,
   type GraphQLArgument,
+  type GraphQLInputField,
   type GraphQLDirective,
   type GraphQLField,
   type GraphQLObjectType,
@@ -244,12 +245,6 @@ export function buildCypherField(
  * `RETURN coalesce(a, b) AS n` and a RETURN inside `CALL { }` do not
  * confuse it.
  */
-/**
- * An SDL argument's default, as a value. graphql 16 keeps it on
- * `defaultValue`; graphql 17 builds `default: { literal }` from SDL and
- * leaves `defaultValue` undefined, so reading only `defaultValue` drops
- * `peers(limit: Int = 2)` to `peers(limit: Int)` there.
- */
 /** `@range(min:, max:)` of a @cypher argument, checked against its type. */
 function cypherArgumentRange(
   a: GraphQLArgument,
@@ -279,7 +274,14 @@ function cypherArgumentRange(
   };
 }
 
-function argumentDefault(a: GraphQLArgument): unknown {
+/**
+ * An SDL argument's or input field's default, as a value. graphql 16
+ * keeps it on `defaultValue`; graphql 17 builds `default: { literal }`
+ * from SDL and leaves `defaultValue` undefined, so reading only
+ * `defaultValue` drops `peers(limit: Int = 2)` to `peers(limit: Int)`
+ * there, and an input field's default with it.
+ */
+export function argumentDefault(a: GraphQLArgument | GraphQLInputField): unknown {
   if (a.defaultValue !== undefined) return a.defaultValue;
   const d = (a as { default?: { value?: unknown; literal?: ConstValueNode } })
     .default;

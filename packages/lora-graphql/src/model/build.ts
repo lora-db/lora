@@ -77,7 +77,11 @@ import {
   declareRelationship,
   buildRelationshipField,
 } from "./build/relationship-field.js";
-import { buildArguments, buildCypherField } from "./build/cypher-field.js";
+import {
+  argumentDefault,
+  buildArguments,
+  buildCypherField,
+} from "./build/cypher-field.js";
 import {
   authOps,
   readAuthorization,
@@ -327,7 +331,7 @@ export function buildModel(
       fields.set(f.name, {
         name: f.name,
         type: { named, ...unwrapInput(f.type) },
-        defaultValue: f.defaultValue,
+        defaultValue: argumentDefault(f),
         description: f.description ?? undefined,
       });
     }
