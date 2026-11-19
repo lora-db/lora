@@ -537,12 +537,8 @@ fn stable_ref<'r, S: GraphStorage>(
             }
         }
         ResolvedExpr::Index { expr: base, index } => {
-            if !matches!(
-                **index,
-                ResolvedExpr::Literal(_) | ResolvedExpr::Variable(_) | ResolvedExpr::Parameter(_)
-            ) {
-                return None;
-            }
+            // Any index expression: the list it picks is still the
+            // shared one, so `tiers[r + 1]` hashes like `tiers[1]` (N-10c).
             let (owner, value) = stable_ref(base, row, ctx)?;
             let idx = eval_expr(index, row, ctx);
             Some((owner, index_ref(value, &idx)?))
