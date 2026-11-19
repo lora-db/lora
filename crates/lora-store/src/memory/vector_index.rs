@@ -69,6 +69,19 @@ impl VectorSimilarity {
         }
     }
 
+    /// [`Self::score`] of two coordinate slices (a vector's `f32` image,
+    /// which every similarity computes with): the same value, without
+    /// reading each coordinate through its type.
+    pub(super) fn score_f32(self, a: &[f32], b: &[f32]) -> Option<f64> {
+        use crate::types::vector::similarity as s;
+        match self {
+            VectorSimilarity::Cosine => s::cosine_similarity_bounded_f32(a, b),
+            VectorSimilarity::Euclidean => s::euclidean_similarity_f32(a, b),
+            VectorSimilarity::Dot => s::dot_product_f32(a, b),
+            VectorSimilarity::Manhattan => s::manhattan_distance_f32(a, b).map(|d| 1.0 / (1.0 + d)),
+        }
+    }
+
     /// Resolve `vector.similarity_function` from a catalog `OPTIONS`
     /// map. Returns `None` when the key is missing or unrecognised;
     /// DDL validation has already rejected invalid values, so a
@@ -90,14 +103,32 @@ impl VectorSimilarity {
 /// Copy-on-write like the other indexes: a staged write clones the
 /// graph, and its first change here copies one chunk of `Arc` pointers
 /// (see [`CowIdMap`]) instead of every vector.
+///
+/// Each vector is kept as its `f32` coordinates, exactly sized: the image
+/// the similarity functions compute with, so scores are unchanged, at
+/// 4 bytes a coordinate (a `LoraVector` adds its header, and a FLOAT64
+/// one 8 bytes a coordinate).
 #[derive(Debug, Default, Clone)]
 pub(super) struct FlatBackend {
-    pub(super) items: CowIdMap<Arc<LoraVector>>,
+    pub(super) items: CowIdMap<Arc<[f32]>>,
+}
+
+/// A vector's coordinates as `f32`, or `None` when its dimension does
+/// not match its coordinates (no similarity is defined for it).
+pub(super) fn f32_coords(vector: &LoraVector) -> Option<Arc<[f32]>> {
+    (vector.values.len() == vector.dimension).then(|| {
+        (0..vector.dimension)
+            .map(|i| vector.values.f32_at(i).unwrap_or(0.0))
+            .collect()
+    })
 }
 
 impl FlatBackend {
     fn insert(&mut self, id: u64, vector: LoraVector) {
-        self.items.insert(id, Arc::new(vector));
+        match f32_coords(&vector) {
+            Some(coords) => self.items.insert(id, coords),
+            None => self.items.remove(&id),
+        };
     }
 
     fn remove(&mut self, id: u64) {
@@ -110,18 +141,29 @@ impl FlatBackend {
         similarity: VectorSimilarity,
         restrict_to: Option<&BTreeSet<u64>>,
     ) -> Vec<(u64, f64)> {
-        let mut out = Vec::with_capacity(self.items.len());
-        for (&id, v) in self.items.iter() {
-            if let Some(set) = restrict_to {
-                if !set.contains(&id) {
-                    continue;
-                }
-            }
-            if let Some(score) = similarity.score(v, query) {
-                out.push((id, score));
-            }
+        let Some(query) = f32_coords(query) else {
+            return Vec::new();
+        };
+        let score = |id: u64, v: &[f32]| similarity.score_f32(v, &query).map(|s| (id, s));
+        match restrict_to {
+            // A filter smaller than the index: score only its ids, not
+            // every vector with a set lookup each.
+            Some(set) if set.len() < self.items.len() => set
+                .iter()
+                .filter_map(|&id| score(id, self.items.get(&id)?))
+                .collect(),
+            Some(set) => self
+                .items
+                .iter()
+                .filter(|(id, _)| set.contains(id))
+                .filter_map(|(&id, v)| score(id, v))
+                .collect(),
+            None => self
+                .items
+                .iter()
+                .filter_map(|(&id, v)| score(id, v))
+                .collect(),
         }
-        out
     }
 
     #[cfg(test)]
@@ -295,6 +337,28 @@ impl VectorIndexRegistry {
         for entry in self.by_name.values_mut() {
             if entry.label == label && entry.property == property {
                 entry.backend.insert(entity_id, vector.clone());
+            }
+        }
+    }
+
+    /// [`Self::insert_for`] for many entities at once: an HNSW index is
+    /// built in parallel rounds (see [`HnswBackend::insert_many`]).
+    pub(super) fn insert_many_for(
+        &mut self,
+        label: &str,
+        property: &str,
+        items: Vec<(u64, LoraVector)>,
+    ) {
+        for entry in self.by_name.values_mut() {
+            if entry.label == label && entry.property == property {
+                match &mut entry.backend {
+                    VectorBackend::Hnsw(b) => b.insert_many(items.clone()),
+                    VectorBackend::Flat(b) => {
+                        for (id, vector) in &items {
+                            b.insert(*id, vector.clone());
+                        }
+                    }
+                }
             }
         }
     }
@@ -518,11 +582,18 @@ mod tests {
             assert_eq!(before[0].0, 299, "{provider:?}");
 
             // Untouched vectors are shared between the two, not copied.
-            let shared = |r: &VectorIndexRegistry| match &r.by_name["v"].backend {
-                VectorBackend::Flat(b) => Arc::clone(b.items.get(&3).unwrap()),
-                VectorBackend::Hnsw(b) => Arc::clone(&b.nodes.get(&3).unwrap().vector),
+            let backends = (&reg.by_name["v"].backend, &staged.by_name["v"].backend);
+            let shared = match backends {
+                (VectorBackend::Flat(a), VectorBackend::Flat(b)) => {
+                    Arc::ptr_eq(a.items.get(&3).unwrap(), b.items.get(&3).unwrap())
+                }
+                (VectorBackend::Hnsw(a), VectorBackend::Hnsw(b)) => {
+                    let (a, b) = (a.nodes.get(&3).unwrap(), b.nodes.get(&3).unwrap());
+                    a.vector.ptr_eq(&b.vector)
+                }
+                _ => false,
             };
-            assert!(Arc::ptr_eq(&shared(&reg), &shared(&staged)), "{provider:?}");
+            assert!(shared, "{provider:?}");
         }
     }
 

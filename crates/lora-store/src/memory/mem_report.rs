@@ -539,10 +539,12 @@ fn point_registry_bytes(bundle: &IndexBundle) -> usize {
 fn point_one(registry: &PointRegistry) -> usize {
     let mut total = 0;
     for (scope, scope_data) in &registry.by_scope {
-        total +=
-            HASHMAP_PER_ENTRY + scoped_key_bytes(scope) + scope_data.grid.cells.structure_bytes();
-        for cell in scope_data.grid.cells.values() {
-            total += HASHMAP_PER_ENTRY + cell.heap_bytes();
+        total += HASHMAP_PER_ENTRY + scoped_key_bytes(scope);
+        for grid in [&scope_data.grid.planar, &scope_data.grid.geographic] {
+            total += grid.cells.structure_bytes();
+            for cell in grid.cells.values() {
+                total += HASHMAP_PER_ENTRY + cell.heap_bytes();
+            }
         }
     }
     total
@@ -608,7 +610,7 @@ fn vector_one(registry: &VectorIndexRegistry) -> usize {
 fn flat_backend_bytes(b: &FlatBackend) -> usize {
     let mut total = b.items.heap_bytes();
     for (_, v) in b.items.iter() {
-        total += ARC_HEADER + size_of::<LoraVector>() + vector_heap_bytes(v);
+        total += ARC_HEADER + std::mem::size_of_val::<[f32]>(v);
     }
     total
 }
@@ -617,12 +619,11 @@ fn hnsw_backend_bytes(b: &HnswBackend) -> usize {
     let mut total = b.nodes.heap_bytes();
     for (_, node) in b.nodes.iter() {
         total += ARC_HEADER
-            + size_of::<LoraVector>()
-            + vector_heap_bytes(&node.vector)
+            + node.vector.heap_bytes()
             + ARC_HEADER
-            + node.neighbors.len() * size_of::<Vec<u64>>();
+            + node.neighbors.len() * size_of::<Box<[u64]>>();
         for layer in node.neighbors.iter() {
-            total += layer.capacity() * size_of::<u64>();
+            total += layer.len() * size_of::<u64>();
         }
     }
     total

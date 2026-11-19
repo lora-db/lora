@@ -35,17 +35,52 @@ fn for_each_value_as_f32(v: &LoraVector, mut f: impl FnMut(f32)) -> Option<()> {
     Some(())
 }
 
+/// The coordinate pairs of two slices of one length, for the `_f32`
+/// forms below: a vector index keeps coordinates as `f32`, the image
+/// every function here computes with, so its scores match these exactly.
+fn slice_pairs<'a>(a: &'a [f32], b: &'a [f32]) -> Option<impl Iterator<Item = (f32, f32)> + 'a> {
+    (a.len() == b.len()).then(|| a.iter().copied().zip(b.iter().copied()))
+}
+
 /// Raw cosine similarity in the range [-1, 1]. Returns `None` when
 /// either vector has zero norm, since cosine is undefined in that case.
 pub fn cosine_similarity_raw(a: &LoraVector, b: &LoraVector) -> Option<f64> {
+    let dim = check_same_dim(a, b)?;
+    // In range: `check_same_dim` checked both lengths.
+    let at = |v: &LoraVector, i| v.values.f32_at(i).unwrap_or(0.0);
+    cosine_of((0..dim).map(|i| (at(a, i), at(b, i))))
+}
+
+/// [`cosine_similarity_bounded`] of two coordinate slices.
+pub(crate) fn cosine_similarity_bounded_f32(a: &[f32], b: &[f32]) -> Option<f64> {
+    cosine_of(slice_pairs(a, b)?).map(|raw| ((raw + 1.0) / 2.0).clamp(0.0, 1.0))
+}
+
+/// [`euclidean_similarity`] of two coordinate slices.
+pub(crate) fn euclidean_similarity_f32(a: &[f32], b: &[f32]) -> Option<f64> {
+    let d2 = slice_pairs(a, b)?.fold(0f32, |sum, (x, y)| sum + (x - y) * (x - y));
+    Some(1.0 / (1.0 + d2 as f64))
+}
+
+/// [`dot_product`] of two coordinate slices.
+pub(crate) fn dot_product_f32(a: &[f32], b: &[f32]) -> Option<f64> {
+    Some(slice_pairs(a, b)?.fold(0f32, |acc, (x, y)| acc + x * y) as f64)
+}
+
+/// [`manhattan_distance`] of two coordinate slices.
+pub(crate) fn manhattan_distance_f32(a: &[f32], b: &[f32]) -> Option<f64> {
+    Some(slice_pairs(a, b)?.fold(0f32, |sum, (x, y)| sum + (x - y).abs()) as f64)
+}
+
+fn cosine_of(pairs: impl Iterator<Item = (f32, f32)>) -> Option<f64> {
     let mut dot = 0f32;
     let mut na = 0f32;
     let mut nb = 0f32;
-    for_each_pair_as_f32(a, b, |x, y| {
+    for (x, y) in pairs {
         dot += x * y;
         na += x * x;
         nb += y * y;
-    })?;
+    }
     if na == 0.0 || nb == 0.0 {
         return None;
     }

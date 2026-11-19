@@ -20,7 +20,7 @@
 //! LIMIT k` works today; an index-backed variant is future work.
 
 mod build;
-mod similarity;
+pub(crate) mod similarity;
 mod types;
 
 pub use build::{parse_string_values, RawCoordinate, VectorBuildError};

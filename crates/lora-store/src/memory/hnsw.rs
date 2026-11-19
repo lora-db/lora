@@ -1,8 +1,9 @@
 //! Hand-rolled HNSW (Hierarchical Navigable Small World) backend for
-//! vector indexes. Implements Malkov & Yashunin (2018), with the
-//! simple closest-M neighbor selection rather than the heuristic
-//! variant (Algorithm 4) — empirically still delivers recall@10 ≥
-//! 0.95 on uniform data at the defaults below.
+//! vector indexes. Implements Malkov & Yashunin (2018) with the
+//! neighbor selection heuristic (Algorithm 4): keeping just the closest
+//! M neighbors met recall targets on uniform data but split clustered
+//! data into islands a search could not leave (recall 0 at 20,000
+//! clustered 64-dim vectors).
 //!
 //! ## Determinism
 //!
@@ -25,6 +26,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, BinaryHeap, HashSet};
+use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -32,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::vector::RawCoordinate;
 use crate::{LoraVector, VectorCoordinateType};
 
+use super::cow::KeyHasher;
 use super::id_map::CowIdMap;
 use super::index_catalog::IndexConfigValue;
 use super::vector_index::VectorSimilarity;
@@ -175,24 +178,194 @@ fn quantize_to_int8(input: &LoraVector) -> Option<LoraVector> {
     LoraVector::try_new(coords, dim, VectorCoordinateType::Integer8).ok()
 }
 
-/// One graph node. The vector and the neighbor lists are behind `Arc`,
-/// so copying a node (a chunk of [`CowIdMap`] after a graph clone) bumps
-/// two counts, and changing its links copies only the lists.
+/// A stored vector's coordinates, flat: what the distance kernels read.
+/// FLOAT vectors keep their `f32` image (LoraDB's vector math runs in
+/// `f32`, so scores are unchanged), and an int8-quantized index keeps one
+/// byte per coordinate. Behind `Arc`, so copying a node shares them.
+#[derive(Debug, Clone)]
+pub(super) enum Coords {
+    F32(Arc<[f32]>),
+    I8(Arc<[i8]>),
+}
+
+impl Coords {
+    /// The coordinates of a stored vector (already quantized, for an
+    /// int8 index): its integer-8 values as bytes, any other type as
+    /// `f32`.
+    fn of(vector: &LoraVector) -> Self {
+        match &vector.values {
+            crate::types::VectorValues::Integer8(values) => Self::I8(values.as_slice().into()),
+            values => Self::F32(
+                (0..values.len())
+                    .map(|i| values.f32_at(i).unwrap_or(0.0))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn view(&self) -> View<'_> {
+        match self {
+            Self::F32(values) => View::F32(values),
+            Self::I8(values) => View::I8(values),
+        }
+    }
+
+    /// The coordinates as `f32`, the image the similarity functions
+    /// compute with.
+    fn as_f32(&self) -> std::borrow::Cow<'_, [f32]> {
+        match self {
+            Self::F32(values) => std::borrow::Cow::Borrowed(values),
+            Self::I8(values) => values.iter().map(|v| f32::from(*v)).collect(),
+        }
+    }
+
+    /// Back to a vector, for snapshots.
+    pub(super) fn to_vector(&self) -> LoraVector {
+        let (coords, kind): (Vec<RawCoordinate>, _) = match self {
+            Self::F32(values) => (
+                values
+                    .iter()
+                    .map(|v| RawCoordinate::Float(f64::from(*v)))
+                    .collect(),
+                VectorCoordinateType::Float32,
+            ),
+            Self::I8(values) => (
+                values
+                    .iter()
+                    .map(|v| RawCoordinate::Int(i64::from(*v)))
+                    .collect(),
+                VectorCoordinateType::Integer8,
+            ),
+        };
+        let dim = coords.len() as i64;
+        LoraVector::try_new(coords, dim, kind).expect("coordinates of a stored vector")
+    }
+
+    pub(super) fn heap_bytes(&self) -> usize {
+        match self {
+            Self::F32(values) => values.len() * std::mem::size_of::<f32>(),
+            Self::I8(values) => values.len(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn ptr_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::F32(a), Self::F32(b)) => Arc::ptr_eq(a, b),
+            (Self::I8(a), Self::I8(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+/// Borrowed coordinates. Both sides of a distance are of one kind: an
+/// int8 index quantizes its queries too.
+#[derive(Clone, Copy)]
+enum View<'a> {
+    F32(&'a [f32]),
+    I8(&'a [i8]),
+}
+
+/// Lanes the kernels accumulate in: independent sums the compiler keeps
+/// in vector registers, where one running sum would serialize every add.
+const LANES: usize = 8;
+
+fn lanes_f32(a: &[f32], b: &[f32], term: impl Fn(f32, f32) -> f32) -> f32 {
+    let mut acc = [0f32; LANES];
+    let (ca, cb) = (a.chunks_exact(LANES), b.chunks_exact(LANES));
+    let (ra, rb) = (ca.remainder(), cb.remainder());
+    for (x, y) in ca.zip(cb) {
+        for i in 0..LANES {
+            acc[i] += term(x[i], y[i]);
+        }
+    }
+    let tail: f32 = ra.iter().zip(rb).map(|(x, y)| term(*x, *y)).sum();
+    acc.iter().sum::<f32>() + tail
+}
+
+fn lanes_i8(a: &[i8], b: &[i8], term: impl Fn(i32, i32) -> i32) -> f32 {
+    // Exact in i32: 127² per term, far below overflow for any dimension
+    // the catalog accepts.
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| term(i32::from(*x), i32::from(*y)))
+        .sum::<i32>() as f32
+}
+
+impl View<'_> {
+    fn dot(self, other: View<'_>) -> f32 {
+        match (self, other) {
+            (View::F32(a), View::F32(b)) => lanes_f32(a, b, |x, y| x * y),
+            (View::I8(a), View::I8(b)) => lanes_i8(a, b, |x, y| x * y),
+            _ => 0.0,
+        }
+    }
+
+    fn l2_squared(self, other: View<'_>) -> f32 {
+        match (self, other) {
+            (View::F32(a), View::F32(b)) => lanes_f32(a, b, |x, y| (x - y) * (x - y)),
+            (View::I8(a), View::I8(b)) => lanes_i8(a, b, |x, y| (x - y) * (x - y)),
+            _ => f32::INFINITY,
+        }
+    }
+
+    fn l1(self, other: View<'_>) -> f32 {
+        match (self, other) {
+            (View::F32(a), View::F32(b)) => lanes_f32(a, b, |x, y| (x - y).abs()),
+            (View::I8(a), View::I8(b)) => lanes_i8(a, b, |x, y| (x - y).abs()),
+            _ => f32::INFINITY,
+        }
+    }
+
+    fn norm(self) -> f32 {
+        self.dot(self).sqrt()
+    }
+}
+
+/// One graph node. The coordinates and the neighbor lists are behind
+/// `Arc`, so copying a node (a chunk of [`CowIdMap`] after a graph clone)
+/// bumps two counts, and changing its links copies only the lists.
 #[derive(Debug, Clone)]
 pub(super) struct HnswNode {
-    pub(super) vector: Arc<LoraVector>,
+    pub(super) vector: Coords,
+    /// The L2 norm of `vector`, for cosine.
+    norm: f32,
     pub(super) level: usize,
-    /// One neighbor list per layer 0..=level. Each is a `Vec<u64>` so
-    /// graph traversal stays cache-friendly; the list length is
-    /// bounded by `m_max(layer)` (2·m at layer 0, m above).
-    pub(super) neighbors: Arc<[Vec<u64>]>,
+    /// One neighbor list per layer 0..=level, each at most
+    /// `m_max(layer)` long (2·m at layer 0, m above). Exact-size slices:
+    /// a list grown by pushes held up to twice its links.
+    pub(super) neighbors: Arc<[Links]>,
+}
+
+impl HnswNode {
+    fn new(vector: Coords, level: usize, neighbors: Arc<[Links]>) -> Self {
+        let norm = vector.view().norm();
+        Self {
+            vector,
+            norm,
+            level,
+            neighbors,
+        }
+    }
+
+    fn point(&self) -> Point<'_> {
+        Point {
+            view: self.vector.view(),
+            norm: self.norm,
+        }
+    }
+}
+
+/// Coordinates with their norm: one side of a distance.
+#[derive(Clone, Copy)]
+struct Point<'a> {
+    view: View<'a>,
+    norm: f32,
 }
 
 /// Wrapper that turns f64 into a totally-ordered type for heap use.
-/// Similarity functions only return finite values (they check for
-/// degenerate inputs), so NaN should not arise here; if it ever did,
-/// treat it as equal to everything to avoid panicking the search
-/// loop.
+/// Distances are finite (degenerate inputs are skipped); if one ever
+/// were NaN, treat it as equal to everything rather than panic.
 #[derive(Copy, Clone, PartialEq)]
 struct FiniteF64(f64);
 
@@ -227,6 +400,14 @@ impl PartialOrd for Candidate {
     }
 }
 
+type VisitedSet = HashSet<u64, BuildHasherDefault<KeyHasher>>;
+
+/// One layer's neighbor ids.
+type Links = Box<[u64]>;
+
+/// A new node's links per layer, top down: see [`HnswBackend::plan`].
+type Plan = Vec<(usize, Vec<Candidate>)>;
+
 #[derive(Debug, Clone)]
 pub(super) struct HnswBackend {
     params: HnswParams,
@@ -259,81 +440,129 @@ impl HnswBackend {
         }
     }
 
+    /// `vector` as the index stores it: quantized for an int8 index.
+    /// `None` when it cannot be (a zero vector under int8).
+    fn stored(&self, vector: &LoraVector) -> Option<Coords> {
+        match self.params.quantization {
+            HnswQuantization::None => Some(Coords::of(vector)),
+            HnswQuantization::Int8 => quantize_to_int8(vector).map(|q| Coords::of(&q)),
+        }
+    }
+
     pub(super) fn insert(&mut self, id: u64, vector: LoraVector) {
-        // Replace-on-duplicate: drop the old links first so we don't
-        // double-link. The maintenance hook does this on property
-        // SET; protect against direct re-insert just in case.
+        if let Some(node) = self.prepare(id, &vector) {
+            let plan = self.plan(id, &node);
+            self.apply(id, node, plan);
+        }
+    }
+
+    /// Insert many vectors, as building the index over existing data
+    /// does. They go in rounds: each round's vectors search the graph as
+    /// it stood when the round began (on every core when the build
+    /// allows), then are linked one by one in input order. A round is a
+    /// sixteenth of the graph, so a vector misses at most that share of
+    /// the others while it searches, and then only ones it is linked to
+    /// through their common neighbors. The rounds do not depend on the
+    /// thread count: every build of the same input gives the same graph.
+    pub(super) fn insert_many(&mut self, items: Vec<(u64, LoraVector)>) {
+        const MAX_ROUND: usize = 1024;
+        let mut pending: Vec<(u64, HnswNode)> = Vec::with_capacity(items.len());
+        for (id, vector) in items {
+            if let Some(node) = self.prepare(id, &vector) {
+                pending.push((id, node));
+            }
+        }
+        let mut rest = pending.as_slice();
+        while !rest.is_empty() {
+            let size = (self.nodes.len() / 16).clamp(1, MAX_ROUND).min(rest.len());
+            let (round, after) = rest.split_at(size);
+            let plans = self.plan_round(round);
+            for ((id, node), plan) in round.iter().zip(plans) {
+                self.apply(*id, node.clone(), plan);
+            }
+            rest = after;
+        }
+    }
+
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    fn plan_round(&self, round: &[(u64, HnswNode)]) -> Vec<Plan> {
+        use rayon::prelude::*;
+        round
+            .par_iter()
+            .map(|(id, node)| self.plan(*id, node))
+            .collect()
+    }
+
+    #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
+    fn plan_round(&self, round: &[(u64, HnswNode)]) -> Vec<Plan> {
+        round
+            .iter()
+            .map(|(id, node)| self.plan(*id, node))
+            .collect()
+    }
+
+    /// The node `vector` becomes, with its level drawn, after dropping any
+    /// node `id` already has (a property SET re-inserts). `None` when the
+    /// vector cannot be stored.
+    fn prepare(&mut self, id: u64, vector: &LoraVector) -> Option<HnswNode> {
         if self.nodes.contains_key(&id) {
             self.remove(id);
         }
-
-        // Quantize at the boundary so the rest of the graph
-        // (neighbor distances, search expansion) reads a single
-        // representation. Cosine is scale-invariant, so the same
-        // distance helpers work without modification.
-        let vector = match self.params.quantization {
-            HnswQuantization::None => vector,
-            HnswQuantization::Int8 => match quantize_to_int8(&vector) {
-                Some(vector) => vector,
-                None => return,
-            },
-        };
-
+        let coords = self.stored(vector)?;
         let level = self.sample_level();
-        let node = HnswNode {
-            vector: Arc::new(vector),
+        Some(HnswNode::new(
+            coords,
             level,
-            neighbors: vec![Vec::new(); level + 1].into(),
-        };
-        self.nodes.insert(id, node);
+            vec![Links::default(); level + 1].into(),
+        ))
+    }
 
-        // First node ever — becomes the entry point. No links to make.
-        let entry = match self.entry_point {
-            Some(ep) => ep,
-            None => {
-                self.entry_point = Some(id);
-                self.max_level = level;
-                return;
-            }
+    /// Where `node` links on each layer it shares with the graph, top
+    /// down: an ef=1 descent to its level, then on each layer an
+    /// ef_construction search and the selection heuristic.
+    fn plan(&self, id: u64, node: &HnswNode) -> Plan {
+        let Some(entry) = self.entry_point else {
+            return Vec::new();
         };
-
-        // Phase 1: zoom from max_level down to level+1 with ef=1 to
-        // find a good local entry point at layer `level`.
+        let query = node.point();
         let mut nearest = entry;
-        for l in ((level + 1)..=self.max_level).rev() {
-            nearest = self
-                .greedy_search_layer(id, nearest, l, 1)
+        for l in ((node.level + 1)..=self.max_level).rev() {
+            if let Some(closer) = self.search_layer(query, nearest, l, 1).first() {
+                nearest = closer.id;
+            }
+        }
+        let mut plan = Vec::new();
+        for l in (0..=node.level.min(self.max_level)).rev() {
+            let candidates: Vec<Candidate> = self
+                .search_layer(query, nearest, l, self.params.ef_construction)
                 .into_iter()
-                .next()
-                .map(|c| c.id)
-                .unwrap_or(nearest);
+                .filter(|c| c.id != id)
+                .collect();
+            if let Some(closest) = candidates.first() {
+                nearest = closest.id;
+            }
+            plan.push((l, self.select_neighbors(&candidates, self.params.m)));
         }
+        plan
+    }
 
-        // Phase 2: at each layer from `level` down to 0, run a
-        // wider ef-search, pick top-M closest, install bidirectional
-        // links (with bounded-degree pruning for the back-link
-        // direction).
-        for l in (0..=level.min(self.max_level)).rev() {
+    /// Add `node` and its links from `plan`, both ways.
+    fn apply(&mut self, id: u64, mut node: HnswNode, plan: Plan) {
+        let level = node.level;
+        {
+            let links = Arc::make_mut(&mut node.neighbors);
+            for (l, selected) in &plan {
+                links[*l] = selected.iter().map(|c| c.id).collect();
+            }
+        }
+        self.nodes.insert(id, node);
+        for (l, selected) in plan {
             let m_max = self.m_max(l);
-            let candidates = self.greedy_search_layer(id, nearest, l, self.params.ef_construction);
-            let selected = self.select_closest(candidates, self.params.m);
-
-            // Forward links: id -> selected.
-            if let Some(node) = self.nodes.get_mut(&id) {
-                Arc::make_mut(&mut node.neighbors)[l] = selected.iter().map(|c| c.id).collect();
+            for c in selected {
+                self.add_back_link(c.id, l, id, c.dist, m_max);
             }
-
-            // Back links: each selected -> id. Prune the back-side
-            // list if it grows beyond `m_max(l)` by keeping the
-            // closest m_max neighbors.
-            for c in &selected {
-                self.add_back_link(c.id, l, id, m_max);
-            }
-
-            nearest = selected.first().map(|c| c.id).unwrap_or(nearest);
         }
-
-        if level > self.max_level {
+        if self.entry_point.is_none() || level > self.max_level {
             self.max_level = level;
             self.entry_point = Some(id);
         }
@@ -343,8 +572,10 @@ impl HnswBackend {
         let Some(node) = self.nodes.remove(&id) else {
             return;
         };
-        // Strip back-references. The neighbor lists may carry the
-        // removed id at any layer up to `node.level`.
+        // Repair the links through the removed node: each neighbor that
+        // linked back re-selects its links from its own and the removed
+        // node's other neighbors. Only dropping the link could cut a
+        // point off: the heuristic may have given it just that one.
         for (layer, neighbors) in node.neighbors.iter().enumerate() {
             for &nid in neighbors {
                 // Links need not be mutual: only copy a node that has one.
@@ -353,13 +584,8 @@ impl HnswBackend {
                     .get(&nid)
                     .and_then(|other| other.neighbors.get(layer))
                     .is_some_and(|list| list.contains(&id));
-                if !links_back {
-                    continue;
-                }
-                if let Some(other) = self.nodes.get_mut(&nid) {
-                    if let Some(list) = Arc::make_mut(&mut other.neighbors).get_mut(layer) {
-                        list.retain(|&x| x != id);
-                    }
+                if links_back {
+                    self.relink(nid, layer, id, neighbors);
                 }
             }
         }
@@ -399,21 +625,12 @@ impl HnswBackend {
         if k == 0 || self.nodes.is_empty() {
             return Vec::new();
         }
-
-        // Quantize the query to match stored vectors. The clone-on-
-        // None branch avoids touching the input when quantization is
-        // off (no per-query allocation in the common case).
-        let owned_query;
-        let query: &LoraVector = match self.params.quantization {
-            HnswQuantization::None => query,
-            HnswQuantization::Int8 => {
-                let Some(quantized) = quantize_to_int8(query) else {
-                    return Vec::new();
-                };
-                owned_query = quantized;
-                &owned_query
-            }
+        // Quantized like the stored vectors, so distances compare.
+        let Some(coords) = self.stored(query) else {
+            return Vec::new();
         };
+        let probe = HnswNode::new(coords, 0, Arc::from([]));
+        let point = probe.point();
 
         // Top-down zoom with ef=1 from max_level..1. Routing layers
         // ignore `restrict_to` — they pick the best hop, even if
@@ -421,11 +638,7 @@ impl HnswBackend {
         // graph structure carries information from every node.
         let mut nearest = entry;
         for l in (1..=self.max_level).rev() {
-            if let Some(closer) = self
-                .greedy_search_layer_against(query, nearest, l, 1)
-                .into_iter()
-                .next()
-            {
+            if let Some(closer) = self.search_layer(point, nearest, l, 1).first() {
                 nearest = closer.id;
             }
         }
@@ -439,16 +652,19 @@ impl HnswBackend {
         if restrict_to.is_some() {
             ef = ef.saturating_mul(4).max(k * 8);
         }
-        let candidates = self.greedy_search_layer_against(query, nearest, 0, ef);
-        let mut filtered: Vec<Candidate> = match restrict_to {
-            None => candidates,
-            Some(set) => candidates
-                .into_iter()
-                .filter(|c| set.contains(&c.id))
-                .collect(),
-        };
-        filtered.truncate(k);
-        filtered.into_iter().map(|c| (c.id, -c.dist.0)).collect()
+        let candidates = self.search_layer(point, nearest, 0, ef);
+        // Scored exactly as `vector.similarity` does, against the query
+        // as the index sees it: the kernels only rank.
+        let query = probe.vector.as_f32();
+        candidates
+            .into_iter()
+            .filter(|c| restrict_to.is_none_or(|set| set.contains(&c.id)))
+            .take(k)
+            .filter_map(|c| {
+                let stored = self.nodes.get(&c.id)?.vector.as_f32();
+                Some((c.id, self.similarity.score_f32(&query, &stored)?))
+            })
+            .collect()
     }
 
     fn m_max(&self, layer: usize) -> usize {
@@ -477,50 +693,46 @@ impl HnswBackend {
         (-(unit.ln()) * self.ml).floor() as usize
     }
 
-    /// Run a Phase-2 greedy search starting from `entry` at `layer`,
-    /// scoring against the vector for the *newly inserted* node
-    /// `query_id` (which is now in the node store). Returns candidates
-    /// sorted ascending by distance.
-    fn greedy_search_layer(
-        &self,
-        query_id: u64,
-        entry: u64,
-        layer: usize,
-        ef: usize,
-    ) -> Vec<Candidate> {
-        let query_vec = match self.nodes.get(&query_id) {
-            Some(n) => &*n.vector,
-            None => return Vec::new(),
+    /// Distance between two points, lower is closer: the similarity
+    /// negated, or for the distance-derived similarities the distance
+    /// itself (same order, without the final transform). `None` where
+    /// the similarity is undefined (cosine of a zero vector).
+    fn distance(&self, a: Point<'_>, b: Point<'_>) -> Option<f64> {
+        let d = match self.similarity {
+            VectorSimilarity::Cosine => {
+                let denom = a.norm * b.norm;
+                if denom == 0.0 {
+                    return None;
+                }
+                -(a.view.dot(b.view) / denom)
+            }
+            VectorSimilarity::Dot => -a.view.dot(b.view),
+            VectorSimilarity::Euclidean => a.view.l2_squared(b.view),
+            VectorSimilarity::Manhattan => a.view.l1(b.view),
         };
-        self.greedy_search_layer_against(query_vec, entry, layer, ef)
+        Some(f64::from(d))
     }
 
-    /// The actual greedy search. Maintains a min-heap frontier and
-    /// max-heap result set, both capped at `ef`. Skips nodes whose
-    /// (id == query_id_to_exclude) match — but Phase 2 doesn't need
-    /// exclusion because the only caller from `insert` runs *after*
-    /// the new node is already in `nodes`, and we want to allow
-    /// linking it (just not include itself as its own neighbor; that
-    /// is filtered in `select_closest`).
-    fn greedy_search_layer_against(
+    fn distance_to(&self, a: Point<'_>, id: u64) -> Option<f64> {
+        self.distance(a, self.nodes.get(&id)?.point())
+    }
+
+    /// Greedy best-first search of `layer` from `entry` for the `ef`
+    /// points closest to `query`, nearest first. A min-heap frontier and
+    /// a max-heap of results, both capped at `ef`.
+    fn search_layer(
         &self,
-        query: &LoraVector,
+        query: Point<'_>,
         entry: u64,
         layer: usize,
         ef: usize,
     ) -> Vec<Candidate> {
-        let mut visited: HashSet<u64> = HashSet::new();
-        // `frontier` is a min-heap of unexplored nodes (closest first).
-        // BinaryHeap is max-heap; use std::cmp::Reverse for min behavior.
-        let mut frontier: BinaryHeap<std::cmp::Reverse<Candidate>> = BinaryHeap::new();
-        // `results` is a max-heap of best-so-far (farthest first, so
-        // peek() is the worst we'd evict when the heap is full).
-        let mut results: BinaryHeap<Candidate> = BinaryHeap::new();
-
-        let entry_dist = self.dist(query, entry);
-        let Some(entry_dist) = entry_dist else {
+        let Some(entry_dist) = self.distance_to(query, entry) else {
             return Vec::new();
         };
+        let mut visited = VisitedSet::with_capacity_and_hasher(ef * 8, Default::default());
+        let mut frontier: BinaryHeap<std::cmp::Reverse<Candidate>> = BinaryHeap::new();
+        let mut results: BinaryHeap<Candidate> = BinaryHeap::new();
         let start = Candidate {
             dist: FiniteF64(entry_dist),
             id: entry,
@@ -530,26 +742,19 @@ impl HnswBackend {
         visited.insert(entry);
 
         while let Some(std::cmp::Reverse(c)) = frontier.pop() {
-            // Early exit when the nearest unexplored is already worse
-            // than our worst result and the result set is full.
-            if results.len() >= ef {
-                if let Some(worst) = results.peek() {
-                    if c.dist > worst.dist {
-                        break;
-                    }
-                }
+            // The nearest unexplored point is farther than the worst
+            // result of a full set: nothing closer is left to find.
+            if results.len() >= ef && results.peek().is_some_and(|worst| c.dist > worst.dist) {
+                break;
             }
-            let Some(node) = self.nodes.get(&c.id) else {
-                continue;
-            };
-            let Some(neighbors) = node.neighbors.get(layer) else {
+            let Some(neighbors) = self.nodes.get(&c.id).and_then(|n| n.neighbors.get(layer)) else {
                 continue;
             };
             for &nid in neighbors {
                 if !visited.insert(nid) {
                     continue;
                 }
-                let Some(d) = self.dist(query, nid) else {
+                let Some(d) = self.distance_to(query, nid) else {
                     continue;
                 };
                 let cand = Candidate {
@@ -559,78 +764,118 @@ impl HnswBackend {
                 if results.len() < ef {
                     frontier.push(std::cmp::Reverse(cand));
                     results.push(cand);
-                } else if let Some(worst) = results.peek() {
-                    if cand.dist < worst.dist {
-                        frontier.push(std::cmp::Reverse(cand));
-                        results.pop();
-                        results.push(cand);
-                    }
+                } else if results.peek().is_some_and(|worst| cand.dist < worst.dist) {
+                    frontier.push(std::cmp::Reverse(cand));
+                    results.pop();
+                    results.push(cand);
                 }
             }
         }
-
-        let mut out: Vec<Candidate> = results.into_sorted_vec();
-        // into_sorted_vec yields ascending by Ord — Candidate ordering
-        // is ascending by dist, so this is already nearest-first.
-        out.truncate(ef);
-        out
+        results.into_sorted_vec()
     }
 
-    fn select_closest(&self, mut candidates: Vec<Candidate>, m: usize) -> Vec<Candidate> {
-        candidates.sort();
-        candidates.truncate(m);
-        candidates
-    }
-
-    fn add_back_link(&mut self, target: u64, layer: usize, source: u64, m_max: usize) {
-        // Pull the target's neighbor list at this layer, push the new
-        // source, prune if oversized by selecting the closest m_max.
-        let target_vec = match self.nodes.get(&target) {
-            Some(n) if layer <= n.level => Arc::clone(&n.vector),
-            _ => return,
-        };
-        // Gather candidate distances for prune-by-closest.
-        let mut current: Vec<Candidate> = {
-            let Some(target_node) = self.nodes.get(&target) else {
-                return;
+    /// The neighbor selection heuristic (Malkov & Yashunin, Algorithm 4):
+    /// from `candidates`, nearest first, keep each one closer to the base
+    /// point than to every point already kept, up to `m`. Unlike keeping
+    /// the `m` closest, this keeps links that lead out of a cluster, so
+    /// clustered data (real embeddings) stays one connected graph.
+    fn select_neighbors(&self, candidates: &[Candidate], m: usize) -> Vec<Candidate> {
+        let mut kept: Vec<(Candidate, &HnswNode)> = Vec::with_capacity(m);
+        for c in candidates {
+            if kept.len() >= m {
+                break;
+            }
+            let Some(node) = self.nodes.get(&c.id) else {
+                continue;
             };
-            target_node
-                .neighbors
-                .get(layer)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|&id| id != source)
-                .filter_map(|id| {
-                    let d = self.dist(&target_vec, id)?;
+            let diverse = kept.iter().all(|(_, other)| {
+                self.distance(node.point(), other.point())
+                    .is_none_or(|d| FiniteF64(d) > c.dist)
+            });
+            if diverse {
+                kept.push((*c, node));
+            }
+        }
+        kept.into_iter().map(|(c, _)| c).collect()
+    }
+
+    /// Link `target` to `source` (at `dist`) on `layer`. A list with room
+    /// takes the link as is; a full one is re-selected with the heuristic
+    /// from its links and the new one.
+    fn add_back_link(
+        &mut self,
+        target: u64,
+        layer: usize,
+        source: u64,
+        dist: FiniteF64,
+        m_max: usize,
+    ) {
+        let Some(node) = self.nodes.get(&target).filter(|n| layer <= n.level) else {
+            return;
+        };
+        let current = &node.neighbors[layer];
+        if current.contains(&source) {
+            return;
+        }
+        let list: Links = if current.len() < m_max {
+            current.iter().copied().chain([source]).collect()
+        } else {
+            let base = node.point();
+            let mut candidates: Vec<Candidate> = current
+                .iter()
+                .filter_map(|&id| {
                     Some(Candidate {
-                        dist: FiniteF64(d),
+                        dist: FiniteF64(self.distance_to(base, id)?),
                         id,
                     })
                 })
+                .collect();
+            candidates.push(Candidate { dist, id: source });
+            candidates.sort();
+            self.select_neighbors(&candidates, m_max)
+                .into_iter()
+                .map(|c| c.id)
                 .collect()
         };
-        if let Some(d) = self.dist(&target_vec, source) {
-            current.push(Candidate {
-                dist: FiniteF64(d),
-                id: source,
-            });
-        }
-        current.sort();
-        current.truncate(m_max);
-
-        if let Some(list) = self
-            .nodes
-            .get_mut(&target)
-            .and_then(|target_node| Arc::make_mut(&mut target_node.neighbors).get_mut(layer))
-        {
-            *list = current.into_iter().map(|c| c.id).collect();
+        if let Some(node) = self.nodes.get_mut(&target) {
+            Arc::make_mut(&mut node.neighbors)[layer] = list;
         }
     }
 
-    fn dist(&self, query: &LoraVector, id: u64) -> Option<f64> {
-        let other = &self.nodes.get(&id)?.vector;
-        self.similarity.score(query, other).map(|s| -s)
+    /// Re-select `target`'s links on `layer` without `removed`, from its
+    /// other links and `offered` (the removed node's neighbors).
+    fn relink(&mut self, target: u64, layer: usize, removed: u64, offered: &[u64]) {
+        let Some(node) = self.nodes.get(&target) else {
+            return;
+        };
+        let base = node.point();
+        let mut ids: Vec<u64> = node.neighbors[layer]
+            .iter()
+            .chain(offered)
+            .copied()
+            .filter(|&id| id != removed && id != target)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut candidates: Vec<Candidate> = ids
+            .into_iter()
+            .filter(|id| self.nodes.get(id).is_some_and(|n| layer <= n.level))
+            .filter_map(|id| {
+                Some(Candidate {
+                    dist: FiniteF64(self.distance_to(base, id)?),
+                    id,
+                })
+            })
+            .collect();
+        candidates.sort();
+        let list: Links = self
+            .select_neighbors(&candidates, self.m_max(layer))
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        if let Some(node) = self.nodes.get_mut(&target) {
+            Arc::make_mut(&mut node.neighbors)[layer] = list;
+        }
     }
 
     #[cfg(test)]
@@ -649,8 +894,8 @@ impl HnswBackend {
             .map(|(&id, n)| HnswNodeSnapshot {
                 id,
                 level: n.level,
-                vector: LoraVector::clone(&n.vector),
-                neighbors: n.neighbors.to_vec(),
+                vector: n.vector.to_vector(),
+                neighbors: n.neighbors.iter().map(|l| l.to_vec()).collect(),
             })
             .collect();
         HnswSnapshot {
@@ -672,11 +917,11 @@ impl HnswBackend {
         for n in snap.nodes {
             nodes.insert(
                 n.id,
-                HnswNode {
-                    vector: Arc::new(n.vector),
-                    level: n.level,
-                    neighbors: n.neighbors.into(),
-                },
+                HnswNode::new(
+                    Coords::of(&n.vector),
+                    n.level,
+                    n.neighbors.into_iter().map(Vec::into_boxed_slice).collect(),
+                ),
             );
         }
         Self {
@@ -786,6 +1031,90 @@ mod tests {
         assert!(
             recall >= 0.9,
             "recall@10 too low: {recall} (HNSW={hnsw_ids:?}, oracle={oracle_top10:?})"
+        );
+    }
+
+    /// Embedding-like vectors: 40 cluster centers and per-vector noise,
+    /// the shape closest-M selection splits into islands.
+    fn clustered(n: usize, dim: usize) -> Vec<LoraVector> {
+        let centers = make_vecs(0xC1u64, 40, dim);
+        let mut state = 0x5EED_u64;
+        (0..n)
+            .map(|i| {
+                let center = &centers[i % centers.len()];
+                let coords: Vec<f32> = (0..dim)
+                    .map(|d| center.values.f32_at(d).unwrap() + 0.25 * lcg(&mut state))
+                    .collect();
+                vec(&coords)
+            })
+            .collect()
+    }
+
+    fn recall_at(
+        backend: &HnswBackend,
+        vectors: &[LoraVector],
+        query: &LoraVector,
+        k: usize,
+    ) -> f64 {
+        let found: HashSet<u64> = backend
+            .query(query, k, None)
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        let mut exact: Vec<(u64, f64)> = vectors
+            .iter()
+            .enumerate()
+            .filter_map(|(i, v)| Some((i as u64, VectorSimilarity::Cosine.score(v, query)?)))
+            .collect();
+        exact.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let hits = exact
+            .iter()
+            .take(k)
+            .filter(|(id, _)| found.contains(id))
+            .count();
+        hits as f64 / k as f64
+    }
+
+    #[test]
+    fn recall_holds_on_clustered_vectors() {
+        let (n, dim) = (6_000, 64);
+        let vectors = clustered(n, dim);
+        let mut backend = HnswBackend::new(VectorSimilarity::Cosine, HnswParams::default(), 7);
+        for (i, v) in vectors.iter().enumerate() {
+            backend.insert(i as u64, v.clone());
+        }
+        let queries = make_vecs(0x0BE7, 5, dim);
+        for q in &queries {
+            let recall = recall_at(&backend, &vectors, q, 20);
+            assert!(recall >= 0.9, "recall@20 {recall}");
+        }
+    }
+
+    #[test]
+    fn a_bulk_build_keeps_recall_and_is_deterministic() {
+        let (n, dim) = (6_000, 64);
+        let vectors = clustered(n, dim);
+        let items: Vec<(u64, LoraVector)> = vectors
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(i, v)| (i as u64, v))
+            .collect();
+        let build = || {
+            let mut backend = HnswBackend::new(VectorSimilarity::Cosine, HnswParams::default(), 7);
+            backend.insert_many(items.clone());
+            backend
+        };
+        let backend = build();
+        assert_eq!(backend.len(), n);
+        for q in &make_vecs(0x0BE7, 5, dim) {
+            let recall = recall_at(&backend, &vectors, q, 20);
+            assert!(recall >= 0.9, "recall@20 {recall}");
+        }
+        let similarity = VectorSimilarity::Cosine;
+        assert_eq!(
+            backend.to_snapshot(similarity),
+            build().to_snapshot(similarity)
         );
     }
 
