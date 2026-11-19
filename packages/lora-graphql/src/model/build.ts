@@ -347,11 +347,25 @@ export function buildModel(
   for (const t of plainTypes) {
     const fields = new Map<
       string,
-      { name: string; type: TypeShape; node?: string | undefined }
+      {
+        name: string;
+        type: TypeShape;
+        node?: string | undefined;
+        object?: string | undefined;
+      }
     >();
     for (const f of Object.values(t.getFields())) {
       const named = getNamedType(f.type).name;
-      const shape = shapeOf(unwrap(f.type));
+      const unwrapped = unwrap(f.type);
+      const shape = shapeOf(unwrapped);
+      if (unwrapped.depth > 1) {
+        problems.push({
+          type: t.name,
+          field: f.name,
+          message: "nested lists are not supported",
+        });
+        continue;
+      }
       if (nodeNames.has(named)) {
         if (shape.list) {
           problems.push({
@@ -369,12 +383,22 @@ export function buildModel(
         });
         continue;
       }
+      // Another object type without @node, one or a list: its map nests
+      // in this one (G-85). Checked below to hold no nodes.
+      if (plainNames.has(named)) {
+        fields.set(f.name, {
+          name: f.name,
+          type: { named, ...shape },
+          object: named,
+        });
+        continue;
+      }
       if (!isScalarLike(named, schema)) {
         problems.push({
           type: t.name,
           field: f.name,
           message:
-            "fields of an object type without @node are scalars, enums or one @node type",
+            "fields of an object type without @node are scalars, enums, one @node type or other object types without @node",
         });
         continue;
       }
@@ -387,6 +411,21 @@ export function buildModel(
       description: t.description ?? undefined,
     });
   }
+  // A nested object is read from its map as it stands: a node in it would
+  // skip its type's read rules, which are compiled only for the node
+  // fields of the outermost object of a @cypher result.
+  for (const plain of objects.values()) {
+    for (const f of plain.fields.values()) {
+      if (f.object && objects.get(f.object)?.holdsNodes) {
+        problems.push({
+          type: plain.name,
+          field: f.name,
+          message: `${f.object} holds nodes, which are read only at the top of a @cypher result, not inside another object`,
+        });
+      }
+    }
+  }
+
   // Relationships may target an interface or union over @node types.
   const targetNames = new Set([
     ...nodeNames,
@@ -1609,12 +1648,18 @@ export function buildModel(
           : [],
     ),
   );
+  // ...or another such type holds them, at any depth.
+  for (const name of returned) {
+    for (const f of objects.get(name)?.fields.values() ?? []) {
+      if (f.object) returned.add(f.object);
+    }
+  }
   for (const name of objects.keys()) {
     if (!returned.has(name)) {
       problems.push({
         type: name,
         message:
-          "object types need @node or @relationshipProperties, unless a @cypher or @customResolver field returns them",
+          "object types need @node or @relationshipProperties, unless a @cypher or @customResolver field returns them or another such type holds them",
       });
     }
   }

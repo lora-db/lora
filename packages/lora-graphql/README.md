@@ -876,7 +876,9 @@ index applies, and the model warns so `check` reports it.
 A `@cypher` field may return an interface or union over `@node` types
 (each node is projected as the member its label says) or an object type
 without `@node`, whose fields are read from the returned map:
-`RETURN { events: count(e), titles: collect(e.title) } AS s`.
+`RETURN { events: count(e), titles: collect(e.title) } AS s`. Such a
+type may hold other such types, one or a list, as long as those hold no
+nodes.
 
 ## Authorization
 

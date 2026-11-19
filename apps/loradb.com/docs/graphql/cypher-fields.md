@@ -106,6 +106,43 @@ statement's last top-level `RETURN` has exactly one item, written
 Lists must be written `[T!]` or `[T!]!`: nested lists and nullable items
 are refused.
 
+### Objects inside objects {#nested-objects}
+
+A field of an object type without `@node` may hold another such type,
+one or a list, so a single result carries counts beside a ranked list.
+The inner maps are read as the statement or resolver returns them:
+
+```graphql
+type TasteRecommendation {
+  eventKey: String!
+  score: Float!
+}
+
+type TastePreview {
+  matchCount: Int!
+  recommendations: [TasteRecommendation!]!
+}
+
+type Query {
+  previewFromGraph: TastePreview!
+    @cypher(
+      statement: """
+      MATCH (e:Event)
+      WITH e ORDER BY e.rank DESC
+      WITH collect({ eventKey: e.key, score: e.rank }) AS recs
+      RETURN { matchCount: size(recs), recommendations: recs } AS p
+      """
+    )
+}
+```
+
+A root [`@customResolver`](/docs/graphql/directives#customresolver-root)
+can return the same shape from JavaScript. A type may hold itself (a
+tree). An inner type holds no nodes: a node is projected under its read
+rules only in a field of the outermost object, so
+`TasteRecommendation { event: Event! }` inside `TastePreview` is refused
+at startup.
+
 ## Nodes with a value per row {#nodes-with-row-values}
 
 A ranked list often needs something beside each node: a score, a reason,

@@ -499,11 +499,18 @@ export interface PlainObjectType {
   /**
    * `node` names the @node type of a field holding one node: the map's
    * value at that key is projected like any node the statement returns,
-   * under that type's read rules.
+   * under that type's read rules. `object` names another object type
+   * without @node (holding no nodes) whose map, or list of maps, nests
+   * here.
    */
   fields: ReadonlyMap<
     string,
-    { name: string; type: TypeShape; node?: string | undefined }
+    {
+      name: string;
+      type: TypeShape;
+      node?: string | undefined;
+      object?: string | undefined;
+    }
   >;
   /** Whether a field holds a node: such maps come from @cypher only. */
   holdsNodes: boolean;

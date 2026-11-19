@@ -690,7 +690,7 @@ describe("@cypher returning interfaces, unions and plain objects", () => {
     await expect(
       festivalHarness({ typeDefs: broken, seed: [] }),
     ).rejects.toThrow(
-      "Orphan: object types need @node or @relationshipProperties, unless a @cypher or @customResolver field returns them",
+      "Orphan: object types need @node or @relationshipProperties, unless a @cypher or @customResolver field returns them or another such type holds them",
     );
   });
 });

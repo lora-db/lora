@@ -1240,7 +1240,9 @@ The resolver gets them as GraphQL passes them, after the same checks a
 
 A `Query` or `Mutation` field with `@customResolver` is resolved by
 `resolvers.Query.<field>` or `resolvers.Mutation.<field>`. It returns
-scalars, enums or an object type without `@node`, and takes
+scalars, enums or an object type without `@node` (which may hold
+[other such types](/docs/graphql/cypher-fields#nested-objects), so one
+result can carry counts and a list), and takes
 `@authentication` and `@authorization(validate:)`, checked before the
 resolver runs as on a
 [root `@cypher` field](/docs/graphql/cypher-fields#guarding-root-fields).

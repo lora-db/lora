@@ -65,7 +65,7 @@ describe("model validation", () => {
       "B.key: @key must be String, ID, Int or BigInt",
       "B.key: @key fields must be non-null",
       "C: only one @key field is allowed (found k1, k2)",
-      "D: object types need @node or @relationshipProperties, unless a @cypher or @customResolver field returns them",
+      "D: object types need @node or @relationshipProperties, unless a @cypher or @customResolver field returns them or another such type holds them",
     ]);
   });
 
