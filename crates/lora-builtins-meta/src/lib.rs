@@ -444,7 +444,8 @@ pub const BUILTIN_SPECS: &[BuiltinSpec] = &[
     spec_enum("vector.distance", 3, Some(3), &[2]),
     spec("vector.similarity", 2, Some(3)),
     spec_enum("vector.norm", 2, Some(2), &[1]),
-    spec_enum("vector.coordinates", 2, Some(2), &[1]),
+    spec_enum("vector.coordinates", 1, Some(2), &[1]),
+    spec_enum("vector.of", 3, Some(3), &[2]),
     // -- node.* -------------------------------------------------------------
     spec("node.id", 1, Some(1)),
     spec("node.labels", 1, Some(1)),
@@ -488,6 +489,7 @@ pub const BUILTIN_ALIASES: &[BuiltinAlias] = &[
     alias("list.find_index", "list.index_of"),
     alias("list.find_indexes", "list.indexes_of"),
     alias("vector.dim", "vector.dimension"),
+    alias("vector", "vector.of"),
     alias("value.first_non_null", "value.coalesce"),
     alias("type.cast", "cast.to"),
     alias("type.try_cast", "cast.try"),

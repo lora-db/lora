@@ -26,13 +26,13 @@ coordinate type.
 
 | Goal | Function |
 |---|---|
-| Construct a vector | [<CypherCode code="[1, 2, 3]::VECTOR<INTEGER>(3)" />](#construction) |
+| Construct a vector | [<CypherCode code="[1, 2, 3]::VECTOR<INTEGER>(3)" />, <CypherCode code="vector(list, dim, FLOAT32)" />](#construction) |
 | Bounded similarity (higher = closer, in `[0, 1]`) | [<CypherCode code="vector.similarity(a, b)" />, <CypherCode code="vector.similarity(a, b, 'euclidean')" />](#bounded-similarity) |
 | Signed distance under a named metric (smaller = closer) | [<CypherCode code="vector.distance(a, b, METRIC)" />](#signed-distance) |
 | Magnitude of a vector | [<CypherCode code="vector.norm(v, METRIC)" />](#norms) |
 | Dimension | [<CypherCode code="vector.dimension(v)" />](#introspection), <CypherCode code="value.size(v)" /> |
 | Runtime type tag | [<CypherCode code="type.of(v)" />](#introspection) |
-| Back to a `LIST` | [<CypherCode code="vector.coordinates(v, INTEGER)" />, <CypherCode code="vector.coordinates(v, FLOAT)" />](#list-conversion) |
+| Back to a `LIST` | [<CypherCode code="vector.coordinates(v)" />, <CypherCode code="vector.coordinates(v, INTEGER)" />, <CypherCode code="vector.coordinates(v, FLOAT)" />](#list-conversion) |
 
 `vector.similarity` also accepts a plain `LIST<NUMBER>` on either
 side — the list is coerced to a `FLOAT32` vector of the same length.
@@ -59,6 +59,22 @@ RETURN [0.1, 0.2, 0.3]::VECTOR<FLOAT>(3)   AS v  // FLOAT is an alias for FLOAT6
 ;// CAST(...) form, useful when the value is already parenthesized
 RETURN CAST('[1.05, 0.123, 5]' AS VECTOR<FLOAT64>(3)) AS v;
 RETURN CAST('[1e-2, 2e-2, 3e-2]' AS VECTOR<FLOAT32>(3)) AS v`} />
+
+### The `vector()` function
+
+`vector(value, dimension, coordinateType)` builds the same value as the
+cast, but the dimension is an ordinary expression, so it can come from
+`size(list)` or a parameter. `value` is a `LIST<NUMBER>` or a string
+such as `'[1, 2, 3]'`. A null argument gives null; a value that does not
+fit (wrong length, a non-number, an unknown coordinate type, an
+overflow) is an error, where the cast gives null.
+
+<QueryCodeBlock code={String.raw`WITH [0.5, 1, 2] AS l
+RETURN vector(l, size(l), FLOAT32) AS v;             // VECTOR<FLOAT32>(3)
+RETURN vector('[1, 2, 3]', 3, INTEGER8) AS v;         // VECTOR<INTEGER8>(3)
+RETURN vector([1, 2, 3], 2, FLOAT32) AS v             // error: 3 coordinates, dimension 2`} />
+
+`vector.of` is the namespaced name of the same function.
 
 ### Coordinate-type tag forms
 
@@ -118,6 +134,17 @@ RETURN CAST(null AS VECTOR<FLOAT32>(3)) // null`} />
 third argument for bounded Euclidean similarity. Both forms return a
 scalar in `[0, 1]` where **higher = more similar** and accept a `VECTOR`
 or a `LIST<NUMBER>` on either side.
+
+The cosine form is **not** the raw cosine. It returns `(1 + cos) / 2`,
+so orthogonal vectors score `0.5` and opposite vectors `0`. This is the
+same score `db.index.vector.queryNodes` reports for a cosine index. To
+get the raw cosine back, compute `2 * vector.similarity(a, b) - 1`, or
+use `1 - vector.distance(a, b, COSINE)` on two `VECTOR` values.
+
+It returns null, not `0`, when either side is null (a missing property
+reads as null) or when either vector has zero length under cosine.
+Wrap it in `coalesce(..., 0.0)` when a missing embedding should rank
+last instead of dropping out of a comparison.
 
 <QueryCodeBlock code={String.raw`// Cosine: (1 + raw_cosine) / 2
 RETURN vector.similarity([1, 0, 0], [1, 0, 0]);    // 1.0     (identical direction)
@@ -298,13 +325,16 @@ RETURN count(*) AS docs_with_384d`} />
 
 | Function | From | To |
 |---|---|---|
+| `vector.coordinates(v)` | any `VECTOR` | `LIST<FLOAT>` for a float vector, `LIST<INTEGER>` for an integer one |
 | `vector.coordinates(v, INTEGER)` | any `VECTOR` | `LIST<INTEGER>` — truncates toward zero |
 | `vector.coordinates(v, FLOAT)` | any `VECTOR` | `LIST<FLOAT>` — widens exact |
 
 <QueryCodeBlock code={String.raw`RETURN vector.coordinates([1.9, -1.9, 3.0]::VECTOR<FLOAT32>(3), INTEGER)
 ;       // [1, -1, 3]
 RETURN vector.coordinates([1, 2, 3]::VECTOR<INT8>(3), FLOAT)
-       // [1.0, 2.0, 3.0]
+;       // [1.0, 2.0, 3.0]
+RETURN vector.coordinates(vector([0.5, 1], 2, FLOAT32))
+       // [0.5, 1.0]
 
 ;// null propagates
 RETURN vector.coordinates(null, INTEGER);   // null

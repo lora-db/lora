@@ -16,7 +16,7 @@ use crate::value::LoraValue;
 
 use super::errors::set_eval_error;
 
-fn coerce_list_to_raw_coords(items: &[LoraValue]) -> Result<Vec<RawCoordinate>, String> {
+pub(super) fn coerce_list_to_raw_coords(items: &[LoraValue]) -> Result<Vec<RawCoordinate>, String> {
     let mut out = Vec::with_capacity(items.len());
     for item in items {
         match item {
