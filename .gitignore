@@ -151,3 +151,9 @@ mdbook/
 
 # Local release marketing drafts
 release-marketing/
+
+# Docs bundled into npm packages at build time (scripts/bundle-package-docs.mjs)
+crates/bindings/lora-node/docs/
+crates/bindings/lora-wasm/docs/
+packages/lora-graphql/docs/
+**/.docs-bundle.tmp/

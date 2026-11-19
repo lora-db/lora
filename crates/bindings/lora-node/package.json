@@ -40,6 +40,7 @@
     "dist/",
     "ts/native.js",
     "ts/native.d.ts",
+    "docs/",
     "README.md",
     "LICENSE"
   ],
@@ -75,7 +76,8 @@
     "build:native": "napi build --platform --release --js false",
     "build:native:debug": "napi build --platform --js false",
     "build:ts": "tsc -p tsconfig.json",
-    "build": "yarn run sync:types && yarn run build:native && yarn run build:ts",
+    "build": "yarn run sync:types && yarn run build:native && yarn run build:ts && yarn run docs:bundle",
+    "docs:bundle": "node ../../../scripts/bundle-package-docs.mjs",
     "typecheck": "yarn run sync:types && tsc -p tsconfig.json --noEmit",
     "test": "yarn run sync:types && vitest run",
     "test:watch": "vitest",

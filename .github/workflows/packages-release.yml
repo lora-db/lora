@@ -683,6 +683,11 @@ jobs:
           corepack yarn run typecheck
           corepack yarn run build:ts
 
+      - name: Bundle the offline docs (docs/)
+        run: |
+          corepack yarn run docs:bundle
+          test -f docs/README.md
+
       - uses: ./.github/actions/copy-license
         with:
           destination: crates/bindings/lora-node

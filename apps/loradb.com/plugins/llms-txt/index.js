@@ -7,9 +7,10 @@
 // of engineering essays. Crawlers use it as a shortcut to canonical
 // content, so we keep it tight rather than dumping the entire sitemap.
 //
-// llms-full.txt concatenates the raw markdown body of those same pages
-// (frontmatter stripped) so a single fetch carries the full canonical
-// surface. Both files live at the site root next to robots.txt.
+// llms-full.txt concatenates the markdown body of those same pages
+// (frontmatter stripped, MDX components rewritten to plain Markdown by
+// ./mdx-to-markdown.js, links made absolute) so a single fetch carries
+// the full canonical surface. Both files live at the site root next to robots.txt.
 //
 // Curation is declared in plugin options (see plugins/llms-txt/manifest.js).
 // Pages not listed there are still indexed by search engines via the
@@ -19,6 +20,8 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const matter = require("gray-matter");
+const { mdxToMarkdown } = require("./mdx-to-markdown");
+const { resolveDocHref } = require("./docs-index");
 
 module.exports = function llmsTxtPlugin(context, options = {}) {
   const { siteDir, siteConfig } = context;
@@ -41,7 +44,9 @@ module.exports = function llmsTxtPlugin(context, options = {}) {
           title: section.title,
           intro: section.intro || null,
           entries: await Promise.all(
-            (section.entries || []).map((entry) => loadEntry(siteDir, entry)),
+            (section.entries || []).map((entry) =>
+              loadEntry(siteDir, entry, siteUrl),
+            ),
           ),
         })),
       );
@@ -72,7 +77,7 @@ module.exports = function llmsTxtPlugin(context, options = {}) {
   };
 };
 
-async function loadEntry(siteDir, entry) {
+async function loadEntry(siteDir, entry, siteUrl) {
   if (!entry.source || !entry.url) {
     throw new Error(
       `[llms-txt] manifest entry missing source or url: ${JSON.stringify(entry)}`,
@@ -95,7 +100,15 @@ async function loadEntry(siteDir, entry) {
     title,
     description,
     url: entry.url,
-    body: content.trim(),
+    body: mdxToMarkdown(content, {
+      source: entry.source,
+      siteUrl,
+      pageUrl: entry.url,
+      resolveLink: (href) => {
+        const r = resolveDocHref(entry.source, href, entry.url);
+        return r.kind === "external" ? r.href : `${siteUrl}${r.url}${r.hash}`;
+      },
+    }).trim(),
   };
 }
 

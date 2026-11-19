@@ -8,6 +8,11 @@ the result.
 
 > **Package:** `@loradb/lora-wasm`.
 
+> **Offline docs:** the published package includes a plain-Markdown copy of
+> the LoraDB documentation for its own version under `docs/` (start at
+> `node_modules/@loradb/lora-wasm/docs/README.md`). Coding agents and editors can read
+> it without network access. The full site is at https://loradb.com/docs.
+
 ## Build
 
 From the repository root:

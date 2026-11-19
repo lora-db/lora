@@ -54,6 +54,7 @@
     "pkg-node/",
     "pkg-bundler/",
     "pkg-web/",
+    "docs/",
     "README.md",
     "LICENSE"
   ],
@@ -74,7 +75,8 @@
     "build:wasm": "yarn run build:wasm:node && yarn run build:wasm:bundler && yarn run build:wasm:web && yarn run clean:wasm-gitignore",
     "clean:wasm-gitignore": "node -e \"for (const d of ['pkg-node','pkg-bundler','pkg-web']) { try { require('fs').rmSync(d + '/.gitignore'); } catch {} }\"",
     "build:ts": "tsc -p tsconfig.json",
-    "build": "yarn run sync:types && yarn run build:wasm && yarn run build:ts",
+    "build": "yarn run sync:types && yarn run build:wasm && yarn run build:ts && yarn run docs:bundle",
+    "docs:bundle": "node ../../../scripts/bundle-package-docs.mjs",
     "typecheck": "yarn run sync:types && tsc -p tsconfig.test.json --noEmit",
     "test": "yarn run sync:types && vitest run",
     "test:watch": "vitest",

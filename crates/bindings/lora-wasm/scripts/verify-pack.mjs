@@ -23,6 +23,9 @@ add(pkg.types);
 for (const entry of Object.values(pkg.exports)) {
   for (const target of Object.values(entry)) add(target);
 }
+// Bundled offline docs (scripts/bundle-package-docs.mjs, run by `build`).
+add("docs/README.md");
+add("docs/getting-started/wasm.md");
 for (const dir of ["pkg-node", "pkg-bundler", "pkg-web"]) {
   add(`${dir}/lora_wasm.js`);
   add(`${dir}/lora_wasm.d.ts`);
