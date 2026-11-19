@@ -85,6 +85,11 @@ pub enum LoraErrorCode {
     // -------- Server errors --------
     /// I/O failure outside the WAL / snapshot boundaries.
     Io,
+    /// The database directory or a file in it cannot be written (or
+    /// read): permission denied, or a read-only file system. Opening a
+    /// database writes its lock and WAL, so a read-only directory fails
+    /// here, not with [`Self::Io`].
+    StoragePermission,
     /// The database could not open or use its backing connection/handle.
     Connection,
     /// WAL record was truncated, mis-CRC'd, or otherwise unreadable.
@@ -141,6 +146,7 @@ impl LoraErrorCode {
             Self::ChangesLagged => "LORA_CHANGES_LAGGED",
             Self::ResultTooLarge => "LORA_RESULT_TOO_LARGE",
             Self::Io => "LORA_IO",
+            Self::StoragePermission => "LORA_STORAGE_PERMISSION",
             Self::Connection => "LORA_CONNECTION",
             Self::WalCorruption => "LORA_WAL_CORRUPTION",
             Self::WalPoisoned => "LORA_WAL_POISONED",
@@ -173,6 +179,7 @@ impl LoraErrorCode {
             | Self::ChangesLagged
             | Self::ResultTooLarge => LoraErrorCategory::Client,
             Self::Io
+            | Self::StoragePermission
             | Self::Connection
             | Self::WalCorruption
             | Self::WalPoisoned
@@ -253,6 +260,13 @@ impl LoraError {
             LoraErrorCategory::Client => self.message.clone(),
             LoraErrorCategory::Server => match self.code {
                 LoraErrorCode::Io => "database storage is temporarily unavailable".to_string(),
+                // Names the cause, not the path: the path stays in
+                // `message` for logs.
+                LoraErrorCode::StoragePermission => {
+                    "database storage is not writable: permission denied or a read-only \
+                     file system"
+                        .to_string()
+                }
                 LoraErrorCode::Connection => {
                     "database connection is temporarily unavailable".to_string()
                 }
@@ -465,6 +479,9 @@ fn io_code(err: &std::io::Error) -> LoraErrorCode {
         | std::io::ErrorKind::AddrInUse
         | std::io::ErrorKind::AddrNotAvailable => LoraErrorCode::Connection,
         std::io::ErrorKind::TimedOut => LoraErrorCode::Timeout,
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
+            LoraErrorCode::StoragePermission
+        }
         _ => LoraErrorCode::Io,
     }
 }

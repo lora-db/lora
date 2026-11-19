@@ -95,6 +95,7 @@ fn status_for(err: &LoraError) -> StatusCode {
         // Server-category
         LoraErrorCode::WalPoisoned | LoraErrorCode::Connection => StatusCode::SERVICE_UNAVAILABLE,
         LoraErrorCode::Io
+        | LoraErrorCode::StoragePermission
         | LoraErrorCode::WalCorruption
         | LoraErrorCode::SnapshotCodec
         | LoraErrorCode::SnapshotCrypto

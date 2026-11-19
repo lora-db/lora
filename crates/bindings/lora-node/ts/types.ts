@@ -699,6 +699,7 @@ export interface RowParseError {
  *
  * Server errors (engine-side):
  * - `LORA_IO` — I/O failure outside the WAL / snapshot boundaries
+ * - `LORA_STORAGE_PERMISSION` — the database directory cannot be written (permission denied or a read-only file system)
  * - `LORA_CONNECTION` — database backing connection or handle failed
  * - `LORA_WAL_CORRUPTION` — WAL record was truncated, mis-CRC'd, or otherwise unreadable
  * - `LORA_WAL_POISONED` — WAL is poisoned and no longer accepts durable writes
@@ -731,6 +732,7 @@ export type LoraErrorCode =
   | "LORA_CHANGES_TRUNCATED"
   | "LORA_CHANGES_LAGGED"
   | "LORA_IO"
+  | "LORA_STORAGE_PERMISSION"
   | "LORA_CONNECTION"
   | "LORA_WAL_CORRUPTION"
   | "LORA_WAL_POISONED"
@@ -761,6 +763,7 @@ const KNOWN_ERROR_CODES = new Set<LoraErrorCode>([
   "LORA_CHANGES_TRUNCATED",
   "LORA_CHANGES_LAGGED",
   "LORA_IO",
+  "LORA_STORAGE_PERMISSION",
   "LORA_CONNECTION",
   "LORA_WAL_CORRUPTION",
   "LORA_WAL_POISONED",

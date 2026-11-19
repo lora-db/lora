@@ -67,6 +67,9 @@ const (
 
 	// CodeIO — I/O failure outside the WAL / snapshot boundaries.
 	CodeIO Code = "LORA_IO"
+	// CodeStoragePermission — the database directory cannot be written:
+	// permission denied, or a read-only file system.
+	CodeStoragePermission Code = "LORA_STORAGE_PERMISSION"
 	// CodeConnection — database backing connection or handle failed.
 	CodeConnection Code = "LORA_CONNECTION"
 	// CodeWalCorruption — WAL record was truncated, mis-CRC'd, or
@@ -118,6 +121,7 @@ var allKnownCodes = []Code{
 	CodeChangesTruncated,
 	CodeChangesLagged,
 	CodeIO,
+	CodeStoragePermission,
 	CodeConnection,
 	CodeWalCorruption,
 	CodeWalPoisoned,

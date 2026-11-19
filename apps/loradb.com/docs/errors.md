@@ -43,6 +43,7 @@ on the message.
 | Code | When you'll see it |
 |---|---|
 | `LORA_IO` | An I/O failure outside the WAL / snapshot subsystems. |
+| `LORA_STORAGE_PERMISSION` | The database directory cannot be written: permission denied, or a read-only file system. Opening a database writes its lock file and WAL, so this is what opening a read-only directory returns. |
 | `LORA_CONNECTION` | The database backing connection or handle failed. |
 | `LORA_WAL_CORRUPTION` | A WAL record was truncated, mis-CRC'd, or otherwise unreadable. |
 | `LORA_WAL_POISONED` | The WAL is poisoned and no longer accepts durable writes. |
@@ -81,7 +82,7 @@ code follows the category, with these refinements:
 | `408 Request Timeout` | `LORA_TIMEOUT` |
 | `409 Conflict` | `LORA_CONSTRAINT`, `LORA_UNIQUE_CONSTRAINT`, `LORA_NOT_NULL_CONSTRAINT`, `LORA_FOREIGN_KEY`, `LORA_TRANSACTION` |
 | `422 Unprocessable Entity` | `LORA_INVALID_PARAMS`, `LORA_INVALID_VECTOR`, `LORA_VALIDATION`, `LORA_RESULT_TOO_LARGE` |
-| `500 Internal Server Error` | `LORA_IO`, `LORA_WAL_CORRUPTION`, `LORA_SNAPSHOT_CODEC`, `LORA_SNAPSHOT_CRYPTO`, `LORA_INTERNAL` |
+| `500 Internal Server Error` | `LORA_IO`, `LORA_STORAGE_PERMISSION`, `LORA_WAL_CORRUPTION`, `LORA_SNAPSHOT_CODEC`, `LORA_SNAPSHOT_CRYPTO`, `LORA_INTERNAL` |
 | `503 Service Unavailable` | `LORA_CONNECTION`, `LORA_WAL_POISONED` |
 
 ## Examples per language
